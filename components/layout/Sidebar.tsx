@@ -14,6 +14,7 @@ export interface SidebarItem {
   href: string;
   icon: string;
   mode: "dashboard" | "settings";
+  children?: SidebarItem[];
 }
 
 interface SidebarProps {
@@ -103,26 +104,53 @@ export default function Sidebar({
     setSigningOut(false);
   };
 
-  // ------------------ Determine Current Mode ------------------
-  const currentMode = pathname.startsWith("/dashboard") ? "dashboard" : pathname.startsWith("/settings") ? "settings" : "dashboard";
-
-  // Filter items based on current mode
-  const visibleItems = items.filter((item) => item.mode === currentMode);
-
-  // ------------------ Determine Active Item ------------------
-  const getActiveKey = () => {
-    let bestMatch = "";
-    for (const item of visibleItems) {
-      if (pathname === item.href || pathname.startsWith(item.href + "/")) {
-        if (item.href.length > bestMatch.length) bestMatch = item.key;
-      }
-    }
-    return bestMatch;
+  // Helper to determine if item (or any child) is active
+  const isItemActive = (item: SidebarItem): boolean => {
+    if (pathname === item.href || pathname.startsWith(item.href + "/")) return true;
+    if (item.children) return item.children.some(isItemActive);
+    return false;
   };
 
-  const activeKey = getActiveKey();
+  // Recursive render for nested children
+  const renderItem = (item: SidebarItem, level: number = 0) => {
+    const activeItem = isItemActive(item);
+    const padding = level * 12; // indent for submenus
 
-  // ------------------ Render ------------------
+    const link = (
+      <Link
+        key={item.key}
+        href={item.href}
+        onClick={() => onClick(item)}
+        role="menuitem"
+        aria-current={activeItem ? "page" : undefined}
+        tabIndex={0}
+        className={`flex items-center gap-3 px-4 py-3 rounded-md text-sm font-medium transition-all
+          ${activeItem ? "bg-black text-white" : "text-gray-700 hover:bg-gray-100"}`}
+        style={{ paddingLeft: `${padding + 16}px` }}
+      >
+        <i className={`bx ${item.icon} text-xl w-6`} />
+        <span
+          className={`transition-all duration-300 ${
+            collapsed ? "opacity-0 w-0 overflow-hidden" : "opacity-100"
+          }`}
+        >
+          {item.name}
+        </span>
+      </Link>
+    );
+
+    return (
+      <div key={item.key} className="pl-2 pr-4">
+        {collapsed ? <Tooltip content={item.name}>{link}</Tooltip> : link}
+        {item.children && (
+          <div className="flex flex-col">
+            {item.children.map((child) => renderItem(child, level + 1))}
+          </div>
+        )}
+      </div>
+    );
+  };
+
   return (
     <>
       <ConfirmModal
@@ -151,7 +179,7 @@ export default function Sidebar({
           ${open ? "translate-x-0" : "-translate-x-64 lg:translate-x-0"}`}
       >
         {status === "loading" ? (
-          <SidebarSkeleton collapsed={collapsed} navCount={visibleItems.length} />
+          <SidebarSkeleton collapsed={collapsed} navCount={items.length} />
         ) : (
           <>
             {/* Header */}
@@ -159,13 +187,13 @@ export default function Sidebar({
               <div className="flex items-center gap-2">
                 <i className="bx bx-bar-chart-alt-2 text-3xl w-6" />
                 <span
-                  className={`text-lg font-semibold transition-all duration-300
-                    ${collapsed ? "opacity-0 w-0 overflow-hidden" : "opacity-100"}`}
+                  className={`text-lg font-semibold transition-all duration-300 ${
+                    collapsed ? "opacity-0 w-0 overflow-hidden" : "opacity-100"
+                  }`}
                 >
                   MASA
                 </span>
               </div>
-
               <div className="ml-auto">
                 <button
                   onClick={() => setCollapsed(!collapsed)}
@@ -174,9 +202,7 @@ export default function Sidebar({
                   className="p-1 rounded hover:bg-gray-100 transition"
                 >
                   <i
-                    className={`bx text-2xl ${
-                      collapsed ? "bx-chevron-right" : "bx-chevron-left"
-                    }`}
+                    className={`bx text-2xl ${collapsed ? "bx-chevron-right" : "bx-chevron-left"}`}
                   />
                 </button>
               </div>
@@ -188,42 +214,8 @@ export default function Sidebar({
             </div>
 
             {/* Navigation */}
-            <nav
-              role="menu"
-              aria-label="Primary"
-              className="flex-1 flex flex-col py-3 space-y-2"
-            >
-              {visibleItems.map((item) => {
-                const isActive = item.key === activeKey;
-
-                const link = (
-                  <Link
-                    key={item.key}
-                    href={item.href}
-                    onClick={() => onClick(item)}
-                    role="menuitem"
-                    aria-current={isActive ? "page" : undefined}
-                    tabIndex={0}
-                    className={`flex items-center gap-3 px-4 py-3 rounded-md text-sm font-medium
-                      transition-all
-                      ${isActive ? "bg-black text-white" : "text-gray-700 hover:bg-gray-100"}`}
-                  >
-                    <i className={`bx ${item.icon} text-xl w-6`} />
-                    <span
-                      className={`transition-all duration-300
-                        ${collapsed ? "opacity-0 w-0 overflow-hidden" : "opacity-100"}`}
-                    >
-                      {item.name}
-                    </span>
-                  </Link>
-                );
-
-                return (
-                  <div key={item.key} className="pl-2 pr-4">
-                    {collapsed ? <Tooltip content={item.name}>{link}</Tooltip> : link}
-                  </div>
-                );
-              })}
+            <nav role="menu" aria-label="Primary" className="flex-1 flex flex-col py-3 space-y-2">
+              {items.map((item) => renderItem(item))}
             </nav>
 
             {/* Sign Out */}
@@ -236,8 +228,9 @@ export default function Sidebar({
               >
                 <i className="bx bx-log-out text-xl w-6" />
                 <span
-                  className={`transition-all duration-300
-                    ${collapsed ? "opacity-0 w-0 overflow-hidden" : "opacity-100"}`}
+                  className={`transition-all duration-300 ${
+                    collapsed ? "opacity-0 w-0 overflow-hidden" : "opacity-100"
+                  }`}
                 >
                   {signingOut ? "Signing out..." : "Sign out"}
                 </span>

@@ -1,3 +1,4 @@
+/* eslint-disable react-hooks/set-state-in-effect */
 "use client";
 
 import { ReactNode, useState, useEffect } from "react";
@@ -14,7 +15,8 @@ const dashboardItems: SidebarItem[] = [
   { key: "invoices", name: "Invoices", href: "/dashboard/invoices", icon: "bx-file", mode: "dashboard" },
   { key: "customers", name: "Customers", href: "/dashboard/customers", icon: "bx-user", mode: "dashboard" },
   { key: "personnel", name: "Personnel", href: "/dashboard/personnel", icon: "bx-user-circle", mode: "dashboard" },
-  { key: "settings", name: "Settings", href: "/dashboard/settings/general", icon: "bx-cog", mode: "dashboard" }, // default settings page
+  // Settings parent for highlighting
+  { key: "settings", name: "Settings", href: "/dashboard/settings/general", icon: "bx-cog", mode: "dashboard" },
 ];
 
 // ---------------- Settings Items ----------------
@@ -37,29 +39,32 @@ export default function DashboardRootLayout({ children }: DashboardRootLayoutPro
   const [mode, setMode] = useState<"dashboard" | "settings">("dashboard");
   const [activeKey, setActiveKey] = useState<string>("overview");
 
-  // Detect mode and active key from pathname
   useEffect(() => {
     if (pathname.startsWith("/dashboard/settings")) {
+      // Switch to settings mode
+      const match = settingsItems.find(item =>
+        pathname === item.href || pathname.startsWith(item.href + "/")
+      );
       setMode("settings");
-      const match = settingsItems.find(item => pathname.startsWith(item.href));
       setActiveKey(match ? match.key : "general");
     } else {
+      // Dashboard mode
+      const match = dashboardItems.find(item => {
+        if (item.key === "settings" && pathname.startsWith("/dashboard/settings")) return true;
+        return pathname === item.href || pathname.startsWith(item.href + "/");
+      });
       setMode("dashboard");
-      const match = dashboardItems.find(item => pathname === item.href || pathname.startsWith(item.href + "/"));
       setActiveKey(match ? match.key : "overview");
     }
   }, [pathname]);
 
-  const items = mode === "dashboard" ? dashboardItems : settingsItems;
-
-  // Handle sidebar item click
   const handleItemClick = (item: SidebarItem) => {
     setActiveKey(item.key);
-
-    // If clicked the "Settings" dashboard item, switch mode
-    if (item.mode === "settings") setMode("settings");
-    if (item.mode === "dashboard") setMode("dashboard");
+    setMode(item.mode);
   };
+
+  // Sidebar shows dashboard or settings items depending on mode
+  const items = mode === "dashboard" ? dashboardItems : settingsItems;
 
   return (
     <div className="flex h-screen bg-white select-none">
@@ -72,6 +77,7 @@ export default function DashboardRootLayout({ children }: DashboardRootLayoutPro
         onClick={handleItemClick}
       />
 
+      {/* Main content */}
       <div className="flex flex-1 flex-col overflow-hidden bg-white">
         {/* Desktop TopBar */}
         <div className="hidden lg:flex bg-white">
@@ -81,7 +87,7 @@ export default function DashboardRootLayout({ children }: DashboardRootLayoutPro
         {/* Mobile TopBar */}
         <div className="flex items-center justify-end px-3 py-2 border-b bg-white lg:hidden">
           <button
-            className="p-2 rounded-md border border-gray-300 hover:bg-gray-100 transition select-auto"
+            className="p-2 rounded-md border border-gray-300 hover:bg-gray-100 transition"
             onClick={() => setSidebarOpen(true)}
             aria-label="Open sidebar"
           >
@@ -89,7 +95,6 @@ export default function DashboardRootLayout({ children }: DashboardRootLayoutPro
           </button>
         </div>
 
-        {/* Main Content */}
         <main className="flex-1 overflow-y-auto p-4 md:p-6 bg-white">
           {children}
         </main>
