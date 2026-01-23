@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import prisma from "@/lib/prisma";
-import { Customer, CustomerType } from "@prisma/client";
+import { Customer, CustomerType, Prisma } from "@prisma/client";
 
 interface GetParams {
   search?: string;
@@ -15,13 +15,20 @@ export async function GET(req: NextRequest) {
     const params = Object.fromEntries(req.nextUrl.searchParams.entries()) as GetParams;
     const { search, type, page = "1", perPage = "12", organizationId } = params;
 
-    if (!organizationId) return NextResponse.json({ customers: [], total: 0 });
+    if (!organizationId) {
+      return NextResponse.json({ customers: [], total: 0 });
+    }
 
     const pageNum = parseInt(page, 10);
     const perPageNum = parseInt(perPage, 10);
 
-    const where: Parameters<typeof prisma.customer.findMany>[0]["where"] = { organizationId };
-    if (type && type !== "ALL") where.type = type;
+    // ✅ Use Prisma.CustomerWhereInput for proper typing
+    const where: Prisma.CustomerWhereInput = { organizationId };
+
+    if (type && type !== "ALL") {
+      where.type = type;
+    }
+
     if (search) {
       where.OR = [
         { name: { contains: search, mode: "insensitive" } },
@@ -51,7 +58,6 @@ export async function POST(req: NextRequest) {
     const body: Pick<Customer, "name" | "email" | "phone" | "type" | "organizationId"> = await req.json();
 
     const { name, type, organizationId } = body;
-
     if (!name || !type || !organizationId) {
       return NextResponse.json({ error: "Missing required fields" }, { status: 400 });
     }
@@ -68,7 +74,9 @@ export async function PATCH(req: NextRequest) {
   try {
     const url = new URL(req.url);
     const id = url.searchParams.get("id");
-    if (!id) return NextResponse.json({ error: "Customer ID required" }, { status: 400 });
+    if (!id) {
+      return NextResponse.json({ error: "Customer ID required" }, { status: 400 });
+    }
 
     const body: Partial<Omit<Customer, "id" | "createdAt" | "updatedAt">> = await req.json();
 
@@ -84,7 +92,9 @@ export async function DELETE(req: NextRequest) {
   try {
     const url = new URL(req.url);
     const id = url.searchParams.get("id");
-    if (!id) return NextResponse.json({ error: "Customer ID required" }, { status: 400 });
+    if (!id) {
+      return NextResponse.json({ error: "Customer ID required" }, { status: 400 });
+    }
 
     await prisma.customer.delete({ where: { id } });
     return NextResponse.json({ success: true });

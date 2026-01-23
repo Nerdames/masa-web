@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { useState, useEffect } from "react";
+import React, { useState, useEffect, useMemo, useCallback } from "react";
 import { useSession, signOut } from "next-auth/react";
 import ConfirmModal from "@/components/modal/ConfirmModal";
 import { Tooltip } from "@/components/feedback/Tooltip";
@@ -65,13 +65,7 @@ const SidebarSkeleton: React.FC<SidebarSkeletonProps> = ({ collapsed, navCount }
 );
 
 // ------------------ Sidebar ------------------
-export default function Sidebar({
-  open,
-  onClose,
-  items,
-  active,
-  onClick,
-}: SidebarProps) {
+function Sidebar({ open, onClose, items, onClick }: SidebarProps) {
   const pathname = usePathname() ?? "/";
   const { status } = useSession();
 
@@ -97,59 +91,67 @@ export default function Sidebar({
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [open, onClose]);
 
-  const handleSignOut = async () => {
+  // -------- ACTIVE STATE PRECOMPUTATION (FIXED) --------
+  const activeKeys = useMemo(() => {
+    let longestMatchLength = 0;
+    let matchedKey: string | null = null;
+
+    const walk = (item: SidebarItem) => {
+      const match = pathname === item.href || pathname.startsWith(item.href + "/");
+      if (match && item.href.length > longestMatchLength) {
+        // pick the most specific (longest) href
+        longestMatchLength = item.href.length;
+        matchedKey = item.key;
+      }
+      item.children?.forEach(walk);
+    };
+
+    items.forEach(walk);
+    return matchedKey ? new Set([matchedKey]) : new Set<string>();
+  }, [items, pathname]);
+
+  // -------- STABLE HANDLERS --------
+  const handleSignOut = useCallback(async () => {
     setConfirmOpen(false);
     setSigningOut(true);
-    await signOut({ callbackUrl: "/" });
-    setSigningOut(false);
-  };
+    try {
+      await signOut({ callbackUrl: "/" });
+    } finally {
+      setSigningOut(false);
+    }
+  }, []);
 
-  // Helper to determine if item (or any child) is active
-  const isItemActive = (item: SidebarItem): boolean => {
-    if (pathname === item.href || pathname.startsWith(item.href + "/")) return true;
-    if (item.children) return item.children.some(isItemActive);
-    return false;
-  };
+  // -------- MEMOIZED RENDER --------
+  const renderItem = useCallback(
+    (item: SidebarItem, level = 0) => {
+      const activeItem = activeKeys.has(item.key);
+      const padding = level * 12;
 
-  // Recursive render for nested children
-  const renderItem = (item: SidebarItem, level: number = 0) => {
-    const activeItem = isItemActive(item);
-    const padding = level * 12; // indent for submenus
-
-    const link = (
-      <Link
-        key={item.key}
-        href={item.href}
-        onClick={() => onClick(item)}
-        role="menuitem"
-        aria-current={activeItem ? "page" : undefined}
-        tabIndex={0}
-        className={`flex items-center gap-3 px-4 py-3 rounded-md text-sm font-medium transition-all
-          ${activeItem ? "bg-black text-white" : "text-gray-700 hover:bg-gray-100"}`}
-        style={{ paddingLeft: `${padding + 16}px` }}
-      >
-        <i className={`bx ${item.icon} text-xl w-6`} />
-        <span
-          className={`transition-all duration-300 ${
-            collapsed ? "opacity-0 w-0 overflow-hidden" : "opacity-100"
-          }`}
+      const link = (
+        <Link
+          key={item.key}
+          href={item.href}
+          onClick={() => onClick(item)}
+          role="menuitem"
+          aria-current={activeItem ? "page" : undefined}
+          className={`flex items-center gap-3 px-4 py-3 rounded-md text-sm font-medium transition-all
+            ${activeItem ? "bg-black text-white" : "text-gray-700 hover:bg-gray-100"}`}
+          style={{ paddingLeft: `${padding + 16}px` }}
         >
-          {item.name}
-        </span>
-      </Link>
-    );
+          <i className={`bx ${item.icon} text-xl w-6`} />
+          {!collapsed && <span>{item.name}</span>}
+        </Link>
+      );
 
-    return (
-      <div key={item.key} className="pl-2 pr-4">
-        {collapsed ? <Tooltip content={item.name}>{link}</Tooltip> : link}
-        {item.children && (
-          <div className="flex flex-col">
-            {item.children.map((child) => renderItem(child, level + 1))}
-          </div>
-        )}
-      </div>
-    );
-  };
+      return (
+        <div key={item.key} className="pl-2 pr-4 z-9999">
+          {collapsed ? <Tooltip content={item.name}>{link}</Tooltip> : link}
+          {item.children?.map(child => renderItem(child, level + 1))}
+        </div>
+      );
+    },
+    [activeKeys, collapsed, onClick]
+  );
 
   return (
     <>
@@ -186,36 +188,27 @@ export default function Sidebar({
             <div className="flex items-center h-12 px-4 border-b border-gray-200">
               <div className="flex items-center gap-2">
                 <i className="bx bx-bar-chart-alt-2 text-3xl w-6" />
-                <span
-                  className={`text-lg font-semibold transition-all duration-300 ${
-                    collapsed ? "opacity-0 w-0 overflow-hidden" : "opacity-100"
-                  }`}
-                >
-                  MASA
-                </span>
+                {!collapsed && <span className="text-lg font-semibold">MASA</span>}
               </div>
               <div className="ml-auto">
                 <button
-                  onClick={() => setCollapsed(!collapsed)}
+                  onClick={() => setCollapsed(v => !v)}
                   aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
                   aria-expanded={!collapsed}
                   className="p-1 rounded hover:bg-gray-100 transition"
                 >
                   <i
-                    className={`bx text-2xl ${collapsed ? "bx-chevron-right" : "bx-chevron-left"}`}
+                    className={`bx text-2xl ${
+                      collapsed ? "bx-chevron-right" : "bx-chevron-left"
+                    }`}
                   />
                 </button>
               </div>
             </div>
 
-            {/* Menu label */}
-            <div className="sticky top-12 bg-white px-4 pt-4 pb-2 text-gray-500 text-sm font-medium uppercase">
-              Menu
-            </div>
-
-            {/* Navigation */}
-            <nav role="menu" aria-label="Primary" className="flex-1 flex flex-col py-3 space-y-2">
-              {items.map((item) => renderItem(item))}
+            {/* Menu */}
+            <nav role="menu" className="flex-1 flex flex-col py-3 space-y-2">
+              {items.map(item => renderItem(item))}
             </nav>
 
             {/* Sign Out */}
@@ -223,17 +216,12 @@ export default function Sidebar({
               <button
                 onClick={() => setConfirmOpen(true)}
                 disabled={signingOut}
-                aria-label="Sign out"
                 className="flex items-center gap-3 text-gray-700 hover:text-black transition"
               >
                 <i className="bx bx-log-out text-xl w-6" />
-                <span
-                  className={`transition-all duration-300 ${
-                    collapsed ? "opacity-0 w-0 overflow-hidden" : "opacity-100"
-                  }`}
-                >
-                  {signingOut ? "Signing out..." : "Sign out"}
-                </span>
+                {!collapsed && (
+                  <span>{signingOut ? "Signing out..." : "Sign out"}</span>
+                )}
               </button>
             </div>
           </>
@@ -242,3 +230,5 @@ export default function Sidebar({
     </>
   );
 }
+
+export default React.memo(Sidebar);

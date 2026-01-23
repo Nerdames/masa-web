@@ -1,14 +1,14 @@
 import { NextRequest, NextResponse } from "next/server";
-import prisma  from "@/lib/prisma";
+import prisma from "@/lib/prisma";
 import { getToken } from "next-auth/jwt";
 
 const secret = process.env.NEXTAUTH_SECRET as string;
 
-// --------------------------
-// Types
-// --------------------------
+/* --------------------------------
+   Types
+-------------------------------- */
 interface SaleItem {
-  productId: string;
+  branchProductId: string;
   quantity: number;
 }
 
@@ -21,65 +21,75 @@ interface BuyerInfo {
 interface SalePayload {
   buyer: BuyerInfo;
   items: SaleItem[];
-  payment?: string;
   date?: string;
 }
 
 interface SaleResponse {
-  orderId: string;
   success: boolean;
+  orderId: string;
 }
 
-// --------------------------
-// GET — Fetch sales
-// --------------------------
+/* --------------------------------
+   GET — Fetch sales
+-------------------------------- */
 export async function GET(req: NextRequest) {
   try {
     const token = await getToken({ req, secret });
+
     if (!token || !["DEV", "ADMIN", "SALES"].includes(token.role as string)) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
     const sales = await prisma.sale.findMany({
+      where: { organizationId: token.organizationId },
       include: {
         product: true,
-        order: { include: { customer: true, user: true } },
+        branchProduct: { include: { branch: true } },
       },
       orderBy: { createdAt: "desc" },
     });
 
-    return NextResponse.json(sales, { status: 200 });
+    return NextResponse.json(sales);
   } catch (error) {
     console.error("GET /api/sales error:", error);
-    return NextResponse.json({ error: "Failed to fetch sales" }, { status: 500 });
+    return NextResponse.json(
+      { error: "Failed to fetch sales" },
+      { status: 500 }
+    );
   }
 }
 
-// --------------------------
-// POST — Create sale
-// --------------------------
+/* --------------------------------
+   POST — Create sale (Order + Sales + Stock Movements)
+-------------------------------- */
 export async function POST(req: NextRequest) {
   try {
     const token = await getToken({ req, secret });
+
     if (!token || !["DEV", "ADMIN", "SALES"].includes(token.role as string)) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
     const body = (await req.json()) as SalePayload;
-    const { buyer, items, payment, date } = body;
+    const { buyer, items, date } = body;
 
     if (!buyer || !items?.length) {
       return NextResponse.json({ error: "Invalid sale payload" }, { status: 400 });
     }
 
-    // 1️⃣ Find or create buyer
+    // Find or create customer
     let customer = await prisma.customer.findFirst({
-      where: { name: { equals: buyer.name, mode: "insensitive" }, type: "BUYER" },
+      where: {
+        organizationId: token.organizationId,
+        name: { equals: buyer.name, mode: "insensitive" },
+        type: "BUYER",
+      },
     });
 
     if (!customer) {
       customer = await prisma.customer.create({
         data: {
+          organizationId: token.organizationId!,
           name: buyer.name,
           email: buyer.email ?? null,
           phone: buyer.phone ?? null,
@@ -88,86 +98,104 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    // 2️⃣ Load products
-    const productIds = items.map((i) => i.productId);
-    const products = await prisma.product.findMany({ where: { id: { in: productIds } } });
+    // Load branch products
+    const branchProductIds = items.map(i => i.branchProductId);
+    const branchProducts = await prisma.branchProduct.findMany({
+      where: {
+        id: { in: branchProductIds },
+        organizationId: token.organizationId,
+      },
+      include: { product: true },
+    });
 
-    let totalAmount = 0;
-    for (const item of items) {
-      const p = products.find((x) => x.id === item.productId);
-      if (!p) return NextResponse.json({ error: `Product not found: ${item.productId}` }, { status: 404 });
-      if (p.sellingPrice == null) return NextResponse.json({ error: `Product '${p.name}' has no selling price` }, { status: 400 });
-      if (item.quantity > p.stock) return NextResponse.json({ error: `Insufficient stock for '${p.name}'` }, { status: 400 });
-      totalAmount += p.sellingPrice * item.quantity;
+    if (branchProducts.length !== items.length) {
+      return NextResponse.json({ error: "Invalid branch product reference" }, { status: 404 });
     }
 
-    // 3️⃣ Transaction — create order, order items, sales, stock movements
-    const order = await prisma.$transaction(async (tx) => {
+    // Validate stock & calculate total
+    let totalAmount = 0;
+    for (const item of items) {
+      const bp = branchProducts.find(b => b.id === item.branchProductId)!;
+      if (item.quantity > bp.stock) {
+        return NextResponse.json(
+          { error: `Insufficient stock for ${bp.product.name}` },
+          { status: 400 }
+        );
+      }
+      totalAmount += bp.sellingPrice * item.quantity;
+    }
+
+    // Transaction: create order, items, sales, stock movements
+    const order = await prisma.$transaction(async tx => {
       const createdOrder = await tx.order.create({
         data: {
-          userId: token.sub ?? "SYSTEM",
+          organizationId: token.organizationId!,
+          branchId: branchProducts[0].branchId,
+          personnelId: token.sub!,
           customerId: customer.id,
-          status: "COMPLETED",
           total: totalAmount,
-          paymentMethod: payment ?? "UNKNOWN",
+          paidAmount: totalAmount,
+          balance: 0,
+          status: "COMPLETED",
           createdAt: date ? new Date(date) : undefined,
         },
       });
 
       for (const item of items) {
-        const product = products.find((p) => p.id === item.productId);
-        if (!product) continue;
-
-        const lineTotal = product.sellingPrice! * item.quantity;
+        const bp = branchProducts.find(b => b.id === item.branchProductId)!;
+        const lineTotal = bp.sellingPrice * item.quantity;
 
         // Order item
         await tx.orderItem.create({
           data: {
             orderId: createdOrder.id,
-            productId: product.id,
+            branchProductId: bp.id,
+            productId: bp.productId,
             quantity: item.quantity,
-            price: product.sellingPrice!,
+            price: bp.sellingPrice,
             total: lineTotal,
           },
         });
 
-        // Update product stock & stats
-        await tx.product.update({
-          where: { id: product.id },
-          data: {
-            stock: { decrement: item.quantity },
-            totalSold: { increment: item.quantity },
-            revenue: { increment: lineTotal },
-          },
-        });
-
-        // Stock movement log
-        await tx.stockMovement.create({
-          data: {
-            productId: product.id,
-            branchId: product.branchId ?? null,
-            userId: token.sub ?? "SYSTEM",
-            type: "OUT",
-            quantity: item.quantity,
-            note: "Sale processed",
-          },
+        // Decrement stock
+        await tx.branchProduct.update({
+          where: { id: bp.id },
+          data: { stock: { decrement: item.quantity } },
         });
 
         // Sale log
         await tx.sale.create({
           data: {
-            productId: product.id,
+            organizationId: token.organizationId!,
+            branchProductId: bp.id,
+            productId: bp.productId,
             quantity: item.quantity,
             total: lineTotal,
+            currency: bp.product.currency,
             createdAt: date ? new Date(date) : undefined,
+          },
+        });
+
+        // Stock movement
+        await tx.stockMovement.create({
+          data: {
+            branchProductId: bp.id,
+            branchId: bp.branchId,
+            personnelId: token.sub!,
+            type: "OUT",
+            quantity: item.quantity,
+            note: "Sale",
           },
         });
       }
 
-      // Update buyer totals
+      // Update customer aggregates
       await tx.customer.update({
         where: { id: customer.id },
-        data: { totalOrders: { increment: 1 }, totalSpent: { increment: totalAmount } },
+        data: {
+          totalOrders: { increment: 1 },
+          totalSpent: { increment: totalAmount },
+        },
       });
 
       return createdOrder;

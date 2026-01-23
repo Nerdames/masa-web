@@ -5,8 +5,8 @@ import { useRouter } from "next/navigation";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import ConfirmModal from "@/components/modal/ConfirmModal";
 import { Role } from "@prisma/client";
-import { useState } from "react";
-import { NotificationsButton } from "@/components/shared/NotificationsButton"; // <-- your new component
+import { useState, useMemo } from "react";
+import { NotificationsButton } from "@/components/shared/NotificationsButton";
 
 /* ---------------------------------------------
  * Role helpers
@@ -35,7 +35,7 @@ function getInitials(name?: string) {
  * Skeleton Component
  * ------------------------------------------- */
 const TopBarSkeleton: React.FC = () => (
-  <header className="w-full h-12 flex items-center px-4 border-b bg-white animate-pulse">
+  <header className="w-full h-12 flex items-center px-4 py-2 border-b border-gray-200 bg-white animate-pulse">
     <div className="h-4 bg-gray-200 rounded w-48" />
     <div className="flex-1" />
     <div className="w-8 h-8 bg-gray-200 rounded-full mr-3" />
@@ -49,26 +49,27 @@ const TopBarSkeleton: React.FC = () => (
  * TopBar Component
  * ------------------------------------------- */
 export default function TopBar() {
-  const { data: session, status } = useSession();
+  const { data: session, status } = useSession({ required: false });
   const router = useRouter();
   const [confirmOpen, setConfirmOpen] = useState(false);
 
   const user = session?.user;
 
-  // Ensure organizationName fallback
-  const orgName = user?.organizationName || "Organization";
-  const branchName = user?.branchName;
-  const role = user?.role;
+  // Memoize to avoid re-calculation on every render
+  const orgName = useMemo(() => user?.organizationName || "Organization", [user]);
+  const branchName = useMemo(() => user?.branchName, [user]);
+  const role = useMemo(() => user?.role as Role | undefined, [user]);
 
-  const canAccessSettings =
-    user && rolePriority[user.role] >= rolePriority.MANAGER;
+  const canAccessSettings = useMemo(
+    () => role && rolePriority[role] >= rolePriority.MANAGER,
+    [role]
+  );
 
-  const dashboardTitle = `Dashboard · ${orgName}`;
+  const dashboardTitle = useMemo(() => `Dashboard · ${orgName}`, [orgName]);
 
   // ---------------- Loading / guard ----------------
-  if (status === "loading" || !user) {
-    return <TopBarSkeleton />;
-  }
+  if (status === "loading") return <TopBarSkeleton />;
+  if (!user) return <TopBarSkeleton />;
 
   const handleSignOut = async () => {
     setConfirmOpen(false);
@@ -79,17 +80,15 @@ export default function TopBar() {
     <>
       <header className="w-full h-12 flex items-center px-4 py-2 border-b border-gray-200 bg-white">
         {/* Dashboard Title */}
-        <span className="text-lg font-semibold tracking-wide">
-          {dashboardTitle}
-        </span>
+        <span className="text-lg font-semibold tracking-wide">{dashboardTitle}</span>
 
         <div className="flex-1" />
 
         <div className="flex items-center gap-3">
-          {/* ---------------- Notifications ---------------- */}
+          {/* Notifications */}
           <NotificationsButton />
 
-          {/* ---------------- User Dropdown ---------------- */}
+          {/* User Dropdown */}
           <DropdownMenu.Root>
             <DropdownMenu.Trigger asChild>
               <button className="flex items-center gap-2 px-2 py-1 rounded hover:bg-gray-100 cursor-pointer">
@@ -109,7 +108,7 @@ export default function TopBar() {
               sideOffset={6}
               className="bg-white border border-gray-200 rounded shadow-lg w-56 p-2 z-50"
             >
-              {/* -------- Organization / Branch / Role -------- */}
+              {/* Organization / Branch / Role */}
               <div className="px-2 py-2 border-b mb-2 text-sm space-y-1">
                 <div className="flex items-center gap-2 font-semibold text-gray-800">
                   <i className="bx bx-buildings text-[16px]" />
@@ -131,7 +130,7 @@ export default function TopBar() {
                 )}
               </div>
 
-              {/* -------- Settings -------- */}
+              {/* Settings */}
               {canAccessSettings && (
                 <DropdownMenu.Item asChild>
                   <button
@@ -144,7 +143,7 @@ export default function TopBar() {
                 </DropdownMenu.Item>
               )}
 
-              {/* -------- Logout -------- */}
+              {/* Logout */}
               <DropdownMenu.Item asChild>
                 <button
                   onClick={() => setConfirmOpen(true)}
@@ -159,7 +158,7 @@ export default function TopBar() {
         </div>
       </header>
 
-      {/* ---------------- Sign Out Modal ---------------- */}
+      {/* Sign Out Modal */}
       <ConfirmModal
         open={confirmOpen}
         title="Confirm Sign Out"

@@ -1,35 +1,18 @@
-// auth.ts
 import CredentialsProvider from "next-auth/providers/credentials";
-import { NextAuthOptions, DefaultSession, DefaultUser } from "next-auth";
-import type { JWT } from "next-auth/jwt";
+import type { NextAuthOptions, DefaultSession, DefaultUser } from "next-auth";
 import bcrypt from "bcryptjs";
 import prisma from "./prisma";
 import { Role } from "@/types/enums";
 
 /* ------------------------------------------
- * Public user returned by authorize()
- * ----------------------------------------- */
-interface AuthUser {
-  id: string;
-  name: string | null;
-  email: string;
-  role: Role;
-  organizationId?: string | null;
-  organizationName?: string | null;
-  branchId?: string | null;
-  branchName?: string | null;
-  lastLogin?: string | null; // string to match JWT serialization
-}
-
-/* ------------------------------------------
- * Extend NextAuth types
- * ----------------------------------------- */
+ * Module augmentation
+ * ------------------------------------------ */
 declare module "next-auth" {
   interface Session {
     user: {
-      id: string;
-      role: Role;
-      organizationId?: string | null;
+      id?: string;
+      role?: Role;
+      organizationId?: string;
       organizationName?: string | null;
       branchId?: string | null;
       branchName?: string | null;
@@ -39,7 +22,7 @@ declare module "next-auth" {
 
   interface User extends DefaultUser {
     role: Role;
-    organizationId?: string | null;
+    organizationId: string;
     organizationName?: string | null;
     branchId?: string | null;
     branchName?: string | null;
@@ -51,7 +34,7 @@ declare module "next-auth/jwt" {
   interface JWT {
     id?: string;
     role?: Role;
-    organizationId?: string | null;
+    organizationId?: string;
     organizationName?: string | null;
     branchId?: string | null;
     branchName?: string | null;
@@ -61,24 +44,34 @@ declare module "next-auth/jwt" {
 
 /* ------------------------------------------
  * NextAuth configuration
- * ----------------------------------------- */
+ * ------------------------------------------ */
 export const authOptions: NextAuthOptions = {
-  session: { strategy: "jwt" },
+  session: {
+    strategy: "jwt",
+  },
 
   providers: [
     CredentialsProvider({
       name: "Credentials",
+
       credentials: {
-        email: { label: "Email", type: "text" },
+        email: { label: "Email", type: "email" },
         password: { label: "Password", type: "password" },
       },
 
-      async authorize(credentials): Promise<AuthUser | null> {
-        if (!credentials?.email || !credentials?.password) {
-          throw new Error("Email and password are required.");
-        }
+      async authorize(credentials): Promise<{
+        id: string;
+        name: string | null;
+        email: string;
+        role: Role;
+        organizationId: string;
+        organizationName: string | null;
+        branchId: string | null;
+        branchName: string | null;
+        lastLogin: string;
+      } | null> {
+        if (!credentials?.email || !credentials?.password) return null;
 
-        // Load personnel with organization, branch, branchAssignments
         const personnel = await prisma.authorizedPersonnel.findFirst({
           where: {
             email: credentials.email,
@@ -92,23 +85,12 @@ export const authOptions: NextAuthOptions = {
           },
         });
 
-        if (!personnel) throw new Error("Invalid email or password.");
+        if (!personnel) return null;
 
-        const isValid = await bcrypt.compare(
-          credentials.password,
-          personnel.password
-        );
+        const isValid = await bcrypt.compare(credentials.password, personnel.password);
+        if (!isValid) return null;
 
-        if (!isValid) throw new Error("Invalid email or password.");
-
-        // Update last login
-        const now = new Date();
-        await prisma.authorizedPersonnel.update({
-          where: { id: personnel.id },
-          data: { lastLogin: now },
-        });
-
-        // Determine effective role (branch > assignment > fallback)
+        // Determine effective role
         let effectiveRole: Role | null = null;
 
         if (personnel.branchId) {
@@ -122,18 +104,25 @@ export const authOptions: NextAuthOptions = {
           effectiveRole = personnel.branchAssignments[0].role;
         }
 
-        if (!effectiveRole) throw new Error("User has no assigned role.");
+        if (!effectiveRole) return null;
+
+        const now = new Date();
+
+        await prisma.authorizedPersonnel.update({
+          where: { id: personnel.id },
+          data: { lastLogin: now },
+        });
 
         return {
           id: personnel.id,
-          name: personnel.name ?? null,
+          name: personnel.name,
           email: personnel.email,
           role: effectiveRole,
-          organizationId: personnel.organizationId ?? null,
+          organizationId: personnel.organizationId,
           organizationName: personnel.organization?.name ?? null,
           branchId: personnel.branchId ?? null,
           branchName: personnel.branch?.name ?? null,
-          lastLogin: now.toISOString(), // string for JWT
+          lastLogin: now.toISOString(),
         };
       },
     }),
@@ -149,7 +138,7 @@ export const authOptions: NextAuthOptions = {
       if (user) {
         token.id = user.id;
         token.role = user.role;
-        token.organizationId = user.organizationId ?? null;
+        token.organizationId = user.organizationId;
         token.organizationName = user.organizationName ?? null;
         token.branchId = user.branchId ?? null;
         token.branchName = user.branchName ?? null;
@@ -159,30 +148,19 @@ export const authOptions: NextAuthOptions = {
     },
 
     async session({ session, token }) {
-      if (!token.id || !token.role) {
-        throw new Error("Invalid session token");
+      if (token?.id && token?.role) {
+        session.user.id = token.id;
+        session.user.role = token.role;
+        session.user.organizationId = token.organizationId!;
+        session.user.organizationName = token.organizationName ?? null;
+        session.user.branchId = token.branchId ?? null;
+        session.user.branchName = token.branchName ?? null;
+        session.user.lastLogin = token.lastLogin ?? null;
       }
-
-      session.user.id = token.id;
-      session.user.role = token.role;
-      session.user.organizationId = token.organizationId ?? null;
-      session.user.organizationName = token.organizationName ?? null;
-      session.user.branchId = token.branchId ?? null;
-      session.user.branchName = token.branchName ?? null;
-      session.user.lastLogin = token.lastLogin ?? null;
-
       return session;
     },
   },
 
   secret: process.env.NEXTAUTH_SECRET,
-
-  // Optional: log signouts
-  events: {
-    async signOut() {
-      console.log("User signed out");
-    },
-  },
-
   debug: process.env.NODE_ENV === "development",
 };
