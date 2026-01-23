@@ -5,10 +5,12 @@ import { OrderStatus, ProductTag } from "@prisma/client";
 
 const secret = process.env.NEXTAUTH_SECRET as string;
 
+// Standardized Access Denied response
+const ACCESS_DENIED = { type: "error", message: "Access Denied" };
+
 /* --------------------------------
    TypeScript interfaces
 --------------------------------- */
-
 interface OrderItemPayload {
   branchProductId: string;
   quantity: number;
@@ -32,9 +34,8 @@ interface OrderUpdatePayload {
 export async function GET(req: NextRequest) {
   try {
     const token = await getToken({ req, secret });
-
     if (!token || !token.organizationId) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+      return NextResponse.json(ACCESS_DENIED, { status: 403 });
     }
 
     const url = new URL(req.url);
@@ -75,14 +76,13 @@ export async function GET(req: NextRequest) {
 export async function POST(req: NextRequest) {
   try {
     const token = await getToken({ req, secret });
-
     if (
       !token ||
       !token.organizationId ||
       !token.branchId ||
       !["DEV", "ADMIN", "SALES", "CASHIER"].includes(token.role as string)
     ) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+      return NextResponse.json(ACCESS_DENIED, { status: 403 });
     }
 
     const body = (await req.json()) as OrderCreatePayload;
@@ -92,17 +92,9 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Order must have items" }, { status: 400 });
     }
 
-    // Validate branchProductIds
-    const branchProductIds = [
-      ...new Set(items.map((i) => i.branchProductId).filter(Boolean)),
-    ];
-
-    // Load branch products with product details
+    const branchProductIds = [...new Set(items.map((i) => i.branchProductId).filter(Boolean))];
     const branchProducts = await prisma.branchProduct.findMany({
-      where: {
-        id: { in: branchProductIds },
-        branchId: token.branchId,
-      },
+      where: { id: { in: branchProductIds }, branchId: token.branchId },
       include: { product: true },
     });
 
@@ -114,22 +106,20 @@ export async function POST(req: NextRequest) {
     let total = 0;
     for (const item of items) {
       const bp = branchProducts.find((b) => b.id === item.branchProductId)!;
-
       if (bp.stock < item.quantity) {
         return NextResponse.json(
           { error: `Insufficient stock for ${bp.product.name}` },
           { status: 400 }
         );
       }
-
       total += bp.sellingPrice * item.quantity;
     }
 
     const balance = total - paidAmount;
 
-    // Transaction: create order, order items, sales, stock movements, invoice
-    const order = await prisma.$transaction(async (tx) => {
-      const createdOrder = await tx.order.create({
+    // Transaction: create order + items + stock + sales + invoice
+    const createdOrder = await prisma.$transaction(async (tx) => {
+      const order = await tx.order.create({
         data: {
           organizationId: token.organizationId!,
           branchId: token.branchId!,
@@ -146,10 +136,9 @@ export async function POST(req: NextRequest) {
         const bp = branchProducts.find((b) => b.id === item.branchProductId)!;
         const lineTotal = bp.sellingPrice * item.quantity;
 
-        // OrderItem
         await tx.orderItem.create({
           data: {
-            orderId: createdOrder.id,
+            orderId: order.id,
             branchProductId: bp.id,
             productId: bp.productId,
             quantity: item.quantity,
@@ -158,10 +147,16 @@ export async function POST(req: NextRequest) {
           },
         });
 
-        // Update stock and tag
+        // Stock update and tag
         let newTag: ProductTag = bp.tag;
-        if (bp.stock - item.quantity <= bp.reorderLevel) {
+        const remainingStock = bp.stock - item.quantity;
+
+        if (remainingStock === 0) {
+          newTag = ProductTag.OUT_OF_STOCK;
+        } else if (remainingStock <= bp.reorderLevel) {
           newTag = ProductTag.LOW_STOCK;
+        } else {
+          newTag = ProductTag.HOT;
         }
 
         await tx.branchProduct.update({
@@ -169,7 +164,6 @@ export async function POST(req: NextRequest) {
           data: { stock: { decrement: item.quantity }, tag: newTag },
         });
 
-        // Stock movement log
         await tx.stockMovement.create({
           data: {
             branchProductId: bp.id,
@@ -181,7 +175,6 @@ export async function POST(req: NextRequest) {
           },
         });
 
-        // Sale record (reporting)
         await tx.sale.create({
           data: {
             organizationId: token.organizationId!,
@@ -194,20 +187,25 @@ export async function POST(req: NextRequest) {
         });
       }
 
-      // Create invoice
       await tx.invoice.create({
-        data: {
-          orderId: createdOrder.id,
-          total,
-          paid: balance <= 0,
-          currency: "NGN",
-        },
+        data: { orderId: order.id, total, paid: balance <= 0, currency: "NGN" },
       });
 
-      return createdOrder;
+      return order;
     });
 
-    return NextResponse.json(order, { status: 201 });
+    // Fetch the full order with items, product details, invoices
+    const fullOrder = await prisma.order.findUnique({
+      where: { id: createdOrder.id },
+      include: {
+        customer: true,
+        personnel: true,
+        items: { include: { product: true, branchProduct: true } },
+        invoices: true,
+      },
+    });
+
+    return NextResponse.json(fullOrder, { status: 201 });
   } catch (error) {
     console.error("POST /api/orders error:", error);
     return NextResponse.json({ error: "Failed to create order" }, { status: 500 });
@@ -221,7 +219,7 @@ export async function PATCH(req: NextRequest) {
   try {
     const token = await getToken({ req, secret });
     if (!token || !token.organizationId) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+      return NextResponse.json(ACCESS_DENIED, { status: 403 });
     }
 
     const body = (await req.json()) as OrderUpdatePayload;
@@ -247,7 +245,6 @@ export async function PATCH(req: NextRequest) {
       },
     });
 
-    // Update invoice if fully paid
     if (newBalance <= 0) {
       await prisma.invoice.updateMany({
         where: { orderId: id },
@@ -268,9 +265,8 @@ export async function PATCH(req: NextRequest) {
 export async function DELETE(req: NextRequest) {
   try {
     const token = await getToken({ req, secret });
-
     if (!token || !["DEV", "ADMIN"].includes(token.role as string)) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+      return NextResponse.json(ACCESS_DENIED, { status: 403 });
     }
 
     const { id }: { id?: string } = await req.json();
