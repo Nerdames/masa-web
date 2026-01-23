@@ -2,6 +2,7 @@
 import type { Organization } from "./organization";
 import type { Order } from "./order";
 import type { Attachment } from "./attachment";
+import type { Sale } from "./sale";
 
 /* ---------------------------------------------
  * CustomerType Enum
@@ -14,9 +15,12 @@ export type CustomerType = "BUYER" | "SUPPLIER";
 export interface Customer {
   id: string;
   organizationId: string;
+
   name: string;
   email?: string | null;
   phone?: string | null;
+  address?: string | null; // ✅ added (matches Prisma)
+
   type: CustomerType;
 
   totalOrders: number;
@@ -26,8 +30,11 @@ export interface Customer {
   createdAt: Date;
   updatedAt: Date;
 
+  /* relations */
   organization: Organization;
   orders: Order[];
+  sales: Sale[]; // ✅ back-relation from Sale.customer
+
   attachments: Attachment[];
   tags: CustomerTag[];
   groups: CustomerGroup[];
@@ -40,10 +47,11 @@ export interface CustomerTag {
   id: string;
   organizationId: string;
   customerId: string;
-  name: string;
 
+  name: string;
   createdAt: Date;
 
+  /* relations */
   organization: Organization;
   customer: Customer;
 }
@@ -54,11 +62,12 @@ export interface CustomerTag {
 export interface CustomerGroup {
   id: string;
   organizationId: string;
+
   name: string;
   description?: string | null;
-
   createdAt: Date;
 
+  /* relations */
   organization: Organization;
   customers: Customer[];
 }

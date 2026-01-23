@@ -146,6 +146,9 @@ model AuthorizedPersonnel {
   sessions          Session[]
 
   ownedOrganizations Organization[] @relation("OrgOwner")
+
+  // BACK-RELATIONS FOR SALES
+  salesAttended Sale[] @relation("AttendantSales")
 }
 
 model BranchAssignment {
@@ -168,6 +171,7 @@ model Customer {
   name           String
   email          String?
   phone          String?
+  address        String?      
   type           CustomerType
 
   totalOrders Int       @default(0)
@@ -182,6 +186,8 @@ model Customer {
   tags              CustomerTag[]
   groups            CustomerGroup[]        @relation("CustomerGroups")
   customerSummaries CustomerOrderSummary[]
+
+  sales Sale[] @relation("CustomerSales")
 }
 
 model CustomerTag {
@@ -242,13 +248,16 @@ model BranchProduct {
   branchId       String
   productId      String
 
-  stock        Int        @default(0)
-  reorderLevel Int        @default(0)
-  tag          ProductTag @default(LOW_STOCK)
-
-  sellingPrice Float
-  supplierId   String?
-  costPrice    Float?
+  stock           Int        @default(0)
+  reorderLevel    Int        @default(0)
+  tag             ProductTag @default(LOW_STOCK)
+  lastSoldAt      DateTime?  
+  lastRestockedAt DateTime?  
+  safetyStock     Int?       @default(0)
+  unit            String?    @default("pcs")
+  sellingPrice    Float
+  supplierId      String?
+  costPrice       Float?
 
   organization Organization @relation(fields: [organizationId], references: [id])
   branch       Branch       @relation(fields: [branchId], references: [id])
@@ -309,6 +318,9 @@ model Order {
   balance    Float       @default(0)
   currency   String      @default("NGN")
   status     OrderStatus @default(PENDING)
+  dueDate    DateTime?   
+  paymentTerms String?   
+  notes      String?     
   deletedAt  DateTime?
 
   createdAt DateTime @default(now())
@@ -331,6 +343,8 @@ model OrderItem {
   quantity        Int
   price           Float
   total           Float
+  discount        Float? @default(0)
+  tax             Float? @default(0)
 
   order         Order         @relation(fields: [orderId], references: [id])
   branchProduct BranchProduct @relation("BranchProductOrderItems", fields: [branchProductId], references: [id])
@@ -347,6 +361,8 @@ model Invoice {
   total     Float
   paid      Boolean  @default(false)
   currency  String   @default("NGN")
+  discount  Float?   @default(0)
+  tax       Float?   @default(0)
   createdAt DateTime @default(now())
 
   order Order @relation(fields: [orderId], references: [id])
@@ -366,9 +382,18 @@ model Sale {
   currency        String   @default("NGN")
   createdAt       DateTime @default(now())
 
+  attendantId String?  
+  customerId  String?  
+  paymentType String?  
+  discount    Float? @default(0)
+  tax         Float? @default(0)
+
   organization  Organization  @relation(fields: [organizationId], references: [id])
   branchProduct BranchProduct @relation("BranchProductSales", fields: [branchProductId], references: [id])
   product       Product       @relation("ProductSales", fields: [productId], references: [id])
+
+  attendant AuthorizedPersonnel? @relation("AttendantSales", fields: [attendantId], references: [id])
+  customer  Customer?            @relation("CustomerSales", fields: [customerId], references: [id])
 
   @@index([organizationId])
   @@index([branchProductId])
@@ -388,6 +413,8 @@ model StockMovement {
   type            StockMovementType
   quantity        Int
   note            String?
+  sourceBranchId  String? 
+  targetBranchId  String? 
 
   createdAt DateTime @default(now())
 
@@ -416,6 +443,7 @@ model Notification {
   title   String
   message String
   read    Boolean          @default(false)
+  readBy  Json?            // array of personnelIds
 
   createdAt DateTime @default(now())
 

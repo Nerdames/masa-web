@@ -1,51 +1,74 @@
-import type { Category } from "./domain";
-import type { Supplier } from "./domain";
+import type { Category, Supplier } from "./domain";
 import type { ProductTag } from "./enums";
 
-// -------------------- BranchProduct Type --------------------
+/* ---------------------------------------------
+ * BranchProduct (Branch-scoped inventory)
+ * ------------------------------------------- */
 export interface BranchProduct {
   id: string;
-  branchId: string;
   organizationId: string;
+  branchId: string;
   productId: string;
+
   stock: number;
-  sellingPrice: number;
-  costPrice?: number;
+  reorderLevel: number;
   tag: ProductTag;
-  supplierId?: string;
+
+  sellingPrice: number;
+  costPrice?: number | null;
+
+  safetyStock?: number | null;
+  unit?: string | null;
+
+  lastSoldAt?: string | null;
+  lastRestockedAt?: string | null;
+
+  supplierId?: string | null;
   supplier?: Supplier | null;
+
+  pendingOrders?: number;       // aggregated
+  totalSold?: number;           // aggregated
+  salesVelocity?: number;       // units/day
+  stockCoverageDays?: number;   // stock / velocity
+
+  stockMoves?: {
+    type: "IN" | "OUT" | "ADJUST" | "TRANSFER";
+    quantity: number;
+    createdAt: string;
+  }[];
+
+  createdAt: string;
+  updatedAt?: string;
 }
 
-// -------------------- Product Type --------------------
+/* ---------------------------------------------
+ * Product (Organization-scoped catalog)
+ * ------------------------------------------- */
 export interface Product {
   id: string;
   organizationId: string;
+
   name: string;
   sku: string;
   barcode?: string | null;
   description?: string | null;
+
   categoryId?: string | null;
   costPrice: number;
-  sellingPrice?: number; // derived from branch
   currency: string;
-  tag: ProductTag;
-  stock: number; // branch stock
+
   deletedAt?: string | null;
   createdAt: string;
   updatedAt: string;
 
   // Relations
   category?: Category | null;
-  supplier?: Supplier | null;
   branches: BranchProduct[];
-
-  // Optional frontend arrays
-  orderItems?: unknown[];
-  sales?: unknown[];
-  stockMoves?: unknown[];
 }
 
-// -------------------- API Query Params --------------------
+/* ---------------------------------------------
+ * API Query Params
+ * ------------------------------------------- */
 export interface BranchProductsQuery {
   page?: string;
   pageSize?: string;
@@ -53,7 +76,9 @@ export interface BranchProductsQuery {
   tag?: "ALL" | ProductTag;
 }
 
-// -------------------- API Response --------------------
+/* ---------------------------------------------
+ * API Response
+ * ------------------------------------------- */
 export interface ProductsResponse {
   data: Product[];
   total: number;

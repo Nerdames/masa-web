@@ -4,10 +4,9 @@ import { useState, useMemo } from "react";
 import useSWR from "swr";
 import { useDebounce } from "@/hooks/useDebounce";
 import { useToast } from "@/components/feedback/ToastProvider";
-import { Tooltip } from "@/components/feedback/Tooltip";
 import ConfirmModal from "@/components/modal/ConfirmModal";
-import Link from "next/link";
-import { motion } from "framer-motion";
+import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
+import { useRouter } from "next/navigation";
 
 // Types
 interface Order {
@@ -29,28 +28,30 @@ type OrderFilter = "ALL" | "PENDING" | "PROCESSING" | "COMPLETED" | "CANCELLED" 
 const fetcher = (url: string) =>
   fetch(url, { credentials: "include" }).then(res => res.json());
 
-// Skeleton Card for loading state
-const SkeletonCard = () => (
-  <div className="animate-pulse p-4 rounded-lg bg-gray-50 shadow space-y-2">
-    <div className="h-4 w-3/4 bg-gray-200 rounded" />
-    <div className="h-3 w-1/2 bg-gray-200 rounded" />
-    <div className="h-3 w-full bg-gray-200 rounded" />
-  </div>
+// Skeleton Row
+const SkeletonRow = () => (
+  <tr className="animate-pulse bg-white shadow-sm rounded-lg">
+    {Array.from({ length: 9 }).map((_, i) => (
+      <td key={i} className="p-3">
+        <div className="h-4 bg-gray-200 rounded w-full" />
+      </td>
+    ))}
+  </tr>
 );
 
 export default function OrdersPage() {
   const toast = useToast();
+  const router = useRouter();
 
-  /* ---------------- State ---------------- */
   const [page, setPage] = useState(1);
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState<OrderFilter>("ALL");
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
 
   const debouncedSearch = useDebounce(search, 400);
 
-  /* ---------------- Query ---------------- */
   const query = useMemo(() => {
     const params = new URLSearchParams();
     params.set("page", String(page));
@@ -70,8 +71,19 @@ export default function OrdersPage() {
   const total = data?.total ?? 0;
   const pageCount = Math.max(1, Math.ceil(total / 10));
 
-  /* ---------------- Selection ---------------- */
+  // Summary counts
+  const pendingCount = orders.filter(o => o.status === "PENDING").length;
+  const completedCount = orders.filter(o => o.status === "COMPLETED").length;
+
+  // Orders that can be deleted (not CANCELLED/RETURNED)
+  const selectableOrderIds = useMemo(
+    () => orders.filter(o => o.status !== "CANCELLED" && o.status !== "RETURNED").map(o => o.id),
+    [orders]
+  );
+
   const toggleSelect = (id: string) => {
+    const order = orders.find(o => o.id === id);
+    if (!order || order.status === "CANCELLED" || order.status === "RETURNED") return;
     setSelectedIds(prev => {
       const next = new Set(prev);
       next.has(id) ? next.delete(id) : next.add(id);
@@ -79,23 +91,44 @@ export default function OrdersPage() {
     });
   };
 
+  const toggleSelectAll = () => {
+    const allSelected = selectableOrderIds.every(id => selectedIds.has(id));
+    setSelectedIds(allSelected ? new Set() : new Set(selectableOrderIds));
+  };
 
+  const isAllSelected = selectableOrderIds.length > 0 && selectableOrderIds.every(id => selectedIds.has(id));
+  const isIndeterminate = selectedIds.size > 0 && !isAllSelected;
 
-  /* ---------------- Actions ---------------- */
   const bulkDelete = async () => {
-    try {
-      await Promise.all(
-        [...selectedIds].map(id => fetch(`/api/orders/${id}`, { method: "DELETE" }))
-      );
-      toast.addToast({ type: "success", message: "Orders deleted" });
+    const idsToDelete = [...selectedIds].filter(id => {
+      const o = orders.find(o => o.id === id);
+      return o && o.status !== "CANCELLED" && o.status !== "RETURNED";
+    });
+
+    if (idsToDelete.length === 0) {
+      toast.addToast({ type: "info", message: "No deletable orders selected" });
       setSelectedIds(new Set());
+      setBulkDeleteOpen(false);
+      return;
+    }
+
+    try {
+      await Promise.all(idsToDelete.map(id => fetch(`/api/orders/${id}`, { method: "DELETE" })));
+      toast.addToast({ type: "success", message: `${idsToDelete.length} orders deleted` });
+      setSelectedIds(new Set([...selectedIds].filter(id => !idsToDelete.includes(id))));
+      setBulkDeleteOpen(false);
       mutate();
     } catch {
       toast.addToast({ type: "error", message: "Bulk delete failed" });
     }
   };
 
-  /* ---------------- Helper ---------------- */
+  const handleRefresh = async () => {
+    setRefreshing(true);
+    await mutate();
+    setTimeout(() => setRefreshing(false), 300);
+  };
+
   const statusClass = (status: string) => {
     switch (status) {
       case "COMPLETED":
@@ -113,141 +146,147 @@ export default function OrdersPage() {
     }
   };
 
-  /* ---------------- Render ---------------- */
+  const pendingColorClass =
+    pendingCount === 0 ? "text-green-600" : pendingCount <= 5 ? "text-amber-600" : "text-red-600";
+
   return (
-    <div className="flex flex-col space-y-4 min-h-[calc(100vh-4rem)] p-4">
-      {/* ================= Top Bar ================= */}
-      <div className="sticky top-0 z-20 bg-white flex justify-between items-center gap-4 p-2">
-        <div className="flex items-center gap-2">
-          {/* Status Filter */}
-          <div className="flex rounded-full bg-gray-100 h-10 overflow-hidden">
-            {(["ALL", "PENDING", "PROCESSING", "COMPLETED", "CANCELLED", "RETURNED"] as const).map(ft => (
-              <button
-                key={ft}
-                onClick={() => setFilter(ft)}
-                className={`px-4 text-sm font-medium transition-colors ${
-                  filter === ft ? "bg-blue-500 text-white" : "text-gray-700"
-                }`}
-              >
-                {ft}
-              </button>
-            ))}
-          </div>
+    <div className="flex flex-col space-y-4 min-h-[calc(100vh-4rem)]">
 
-          {/* Refresh */}
-          <Tooltip content="Refresh">
-            <button
-              onClick={() => mutate()}
-              className="flex items-center justify-center w-10 h-10 rounded-full bg-gray-100 hover:bg-gray-200 active:scale-95 transition"
-            >
-              <i className="bx bx-refresh text-lg" />
-            </button>
-          </Tooltip>
-
-          {/* Bulk Actions */}
-          {selectedIds.size > 0 && (
-            <>
-              <Tooltip content="Delete">
-                <button
-                  onClick={() => setBulkDeleteOpen(true)}
-                  className="flex items-center justify-center w-10 h-10 rounded-full bg-gray-100 hover:bg-gray-200 active:scale-95 transition text-red-600"
-                >
-                  <i className="bx bx-trash text-lg" />
-                </button>
-              </Tooltip>
-              <span className="ml-1 text-xs text-gray-500">{selectedIds.size} selected</span>
-            </>
-          )}
+      {/* ================= Summary Cards ================= */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <div className="p-4 bg-white rounded-xl shadow-sm border border-slate-200 cursor-pointer hover:bg-gray-50"
+             onClick={() => setFilter("ALL")}>
+          <div className="text-sm text-slate-500">Total Orders</div>
+          <div className="text-xl font-bold text-slate-900 mt-1">{total}</div>
         </div>
 
-        {/* Search */}
+        <div className="relative p-4 bg-white rounded-xl shadow-sm border border-slate-200 cursor-pointer hover:bg-gray-50"
+             onClick={() => setFilter("PENDING")}>
+          {pendingCount > 0 && (
+            <span
+              aria-hidden
+              className="absolute top-3 right-3 w-3 h-3 rounded-full bg-red-500 shadow-lg animate-pulse"
+            />
+          )}
+          <div className="text-sm text-slate-500">Pending Orders</div>
+          <div className={`text-xl font-bold mt-1 ${pendingColorClass}`}>{pendingCount}</div>
+        </div>
+
+        <div className="p-4 bg-white rounded-xl shadow-sm border border-slate-200 cursor-pointer hover:bg-gray-50"
+             onClick={() => setFilter("COMPLETED")}>
+          <div className="text-sm text-slate-500">Completed Orders</div>
+          <div className="text-xl font-bold text-green-600 mt-1">{completedCount}</div>
+        </div>
+      </div>
+
+      {/* ================= Top Bar ================= */}
+      <div className="sticky top-0 z-20 bg-white p-3 flex flex-wrap items-center gap-2 shadow-sm">
         <input
+          type="text"
           value={search}
           onChange={e => setSearch(e.target.value)}
           placeholder="Search by customer or ID"
-          className="border rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
+          className="border rounded-lg p-2 text-sm min-w-[300px]"
         />
-      </div>
 
-      {/* ================= Orders Cards ================= */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-        {isLoading
-          ? Array.from({ length: 6 }).map((_, i) => <SkeletonCard key={i} />)
-          : orders.length === 0
-          ? (
-            <div className="col-span-full text-center text-gray-400 p-8">
-              No orders found.
-            </div>
-          )
-          : orders.map(order => (
-            <motion.div
-              key={order.id}
-              initial={{ opacity: 0, y: 10 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ duration: 0.3 }}
-              className="bg-white p-4 rounded-lg shadow border flex flex-col justify-between"
-            >
-              <div className="flex justify-between items-start">
-                <input
-                  type="checkbox"
-                  checked={selectedIds.has(order.id)}
-                  onChange={() => toggleSelect(order.id)}
-                  className="mt-1"
-                />
-                <span className={`px-2 py-1 rounded-full text-xs font-semibold ${statusClass(order.status)}`}>
-                  {order.status}
-                </span>
-              </div>
+        <button
+          onClick={handleRefresh}
+          className={`w-10 h-10 rounded-full bg-gray-100 flex items-center justify-center transition-transform duration-300 ${refreshing ? "animate-spin" : ""}`}
+        >
+          <i className="bx bx-refresh text-lg" />
+        </button>
 
-              <div className="mt-2 space-y-1">
-                <h2 className="text-lg font-semibold text-gray-800">
-                  {order.customerId || "Customer N/A"}
-                </h2>
-                <p className="text-sm text-gray-500">
-                  Items: {order.items.length} | Invoices Paid: {order.invoices.filter(i => i.paid).length}/{order.invoices.length}
-                </p>
-                <p className="text-sm text-gray-500">
-                  Total: {order.total.toFixed(2)} {order.currency} | Paid: {order.paidAmount.toFixed(2)} | Balance: {order.balance.toFixed(2)}
-                </p>
-                <p className="text-xs text-gray-400">{new Date(order.createdAt).toLocaleString()}</p>
-              </div>
-
-              <div className="mt-4 flex gap-2 justify-end">
-                <Link
-                  href={`/dashboard/orders/${order.id}/edit`}
-                  className="w-8 h-8 flex items-center justify-center rounded-full hover:bg-gray-100 transition"
-                  title="Edit Order"
-                >
-                  <i className="bx bx-edit text-black p-2 rounded-full bg-gray-50"></i>
-                </Link>
-              </div>
-            </motion.div>
-          ))}
-      </div>
-
-      {/* ================= Pagination ================= */}
-      <div className="flex justify-between items-center text-xs text-gray-600">
-        <span>Total Orders: {total}</span>
-        <div className="flex gap-2 items-center">
+        {selectedIds.size > 0 && (
           <button
-            disabled={page <= 1}
-            onClick={() => setPage(p => p - 1)}
-            className="px-2 py-1 border rounded hover:bg-gray-50 disabled:opacity-40"
+            onClick={() => setBulkDeleteOpen(true)}
+            className="w-10 h-10 rounded-full bg-red-100 flex items-center justify-center"
           >
-            Prev
+            <i className="bx bx-trash-alt text-red-600 text-lg" />
           </button>
-          <span>{page} / {pageCount}</span>
-          <button
-            disabled={page >= pageCount}
-            onClick={() => setPage(p => p + 1)}
-            className="px-2 py-1 border rounded hover:bg-gray-50 disabled:opacity-40"
-          >
-            Next
-          </button>
+        )}
+
+        <div className="ml-auto flex gap-2 items-center">
+          {/* Filter Dropdown */}
+          <DropdownMenu.Root>
+            <DropdownMenu.Trigger className="bg-gray-100 px-3 rounded-full h-10 flex items-center justify-center text-sm">
+              Filter: {filter}
+            </DropdownMenu.Trigger>
+            <DropdownMenu.Content className="bg-white shadow rounded-md py-1 min-w-[140px]">
+              {(["ALL","PENDING","PROCESSING","COMPLETED","CANCELLED","RETURNED"] as OrderFilter[]).map(ft => (
+                <DropdownMenu.Item key={ft} className="px-4 py-2 cursor-pointer hover:bg-gray-100" onSelect={() => setFilter(ft)}>
+                  {ft}
+                </DropdownMenu.Item>
+              ))}
+            </DropdownMenu.Content>
+          </DropdownMenu.Root>
         </div>
       </div>
 
-      {/* ================= Confirm Modals ================= */}
+      {/* ================= Table ================= */}
+      <div className="flex-1 overflow-x-auto">
+        <table className="w-full text-sm border-separate border-spacing-y-3 min-w-[800px]">
+          <thead className="bg-gray-50 text-xs uppercase text-gray-500 sticky top-0 z-20">
+            <tr>
+              <th className="w-10 p-2">
+                <input
+                  type="checkbox"
+                  checked={isAllSelected}
+                  ref={el => { if (el) el.indeterminate = isIndeterminate; }}
+                  onChange={toggleSelectAll}
+                />
+              </th>
+              <th className="sticky left-0 bg-gray-50 p-2 z-30">Customer</th>
+              <th className="p-2">Status</th>
+              <th className="p-2 text-right">Total</th>
+              <th className="p-2 text-right">Paid</th>
+              <th className="p-2 text-right">Balance</th>
+              <th className="p-2 text-right">Items</th>
+              <th className="p-2 text-right">Invoices Paid</th>
+              <th className="p-2">Created At</th>
+            </tr>
+          </thead>
+
+          <tbody>
+            {isLoading && Array.from({ length: 8 }).map((_, i) => <SkeletonRow key={i} />)}
+
+            {!isLoading && orders.map(order => {
+              const isDisabled = order.status === "CANCELLED" || order.status === "RETURNED";
+              return (
+                <tr key={order.id} className={`bg-white shadow-sm rounded-lg ${isDisabled ? "opacity-60" : ""}`}>
+                  <td className="p-3">
+                    <input
+                      type="checkbox"
+                      checked={selectedIds.has(order.id)}
+                      disabled={isDisabled}
+                      onChange={e => { e.stopPropagation(); toggleSelect(order.id); }}
+                    />
+                  </td>
+                  <td className="p-3 sticky left-0 bg-white z-20">{order.customerId ?? "N/A"}</td>
+                  <td className={`p-3 px-2 py-1 rounded-full text-xs font-semibold ${statusClass(order.status)}`}>{order.status}</td>
+                  <td className="p-3 text-right">{order.total.toFixed(2)} {order.currency}</td>
+                  <td className="p-3 text-right">{order.paidAmount.toFixed(2)}</td>
+                  <td className="p-3 text-right">{order.balance.toFixed(2)}</td>
+                  <td className="p-3 text-right">{order.items.length}</td>
+                  <td className="p-3 text-right">{order.invoices.filter(i => i.paid).length}/{order.invoices.length}</td>
+                  <td className="p-3">{new Date(order.createdAt).toLocaleString()}</td>
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+      </div>
+
+      {/* ================= Pagination ================= */}
+      <div className="flex justify-between items-center text-xs">
+        <span>Total Orders: {total}</span>
+        <div className="flex gap-2 items-center">
+          <button disabled={page <= 1} onClick={() => setPage(p => p - 1)} className="px-2 py-1 border rounded hover:bg-gray-50 disabled:opacity-40">Prev</button>
+          <span>{page} / {pageCount}</span>
+          <button disabled={page >= pageCount} onClick={() => setPage(p => p + 1)} className="px-2 py-1 border rounded hover:bg-gray-50 disabled:opacity-40">Next</button>
+        </div>
+      </div>
+
+      {/* ================= Bulk Delete Modal ================= */}
       {bulkDeleteOpen && (
         <ConfirmModal
           open
@@ -258,6 +297,7 @@ export default function OrdersPage() {
           onConfirm={bulkDelete}
         />
       )}
+
     </div>
   );
 }
