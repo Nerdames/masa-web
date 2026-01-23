@@ -1,36 +1,65 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+MASA App
 
-## Getting Started
+MASA is a web-based business management application designed to support everyday operational workflows for organizations.
+The application focuses on efficiency, scalability, and role-based access, providing a clean foundation for managing internal processes.
 
-First, run the development server:
+---
 
-```bash
+✨ Features
+
+- Secure authentication
+- Role-based access control
+- Modular and scalable design
+- Modern web interface
+- Optimized for performance and maintainability
+
+---
+
+🛠️ Built With
+
+- Modern JavaScript framework
+- Server-side rendering & API routes
+- Relational database
+- Type-safe ORM
+- Component-based UI architecture
+
+---
+
+🚀 Getting Started
+
+Install Dependencies
+
+npm install
+
+Run Development Server
+
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
-```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+The application will be available at:
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+http://localhost:3000
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+---
 
-## Learn More
+🔐 Environment Variables
 
-To learn more about Next.js, take a look at the following resources:
+The application requires environment variables for database and authentication configuration.
+Refer to ".env.example" for required values.
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+---
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+📦 Project Structure
 
-## Deploy on Vercel
+The codebase follows a modular structure that separates concerns between UI, business logic, and server functionality.
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+---
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+🧪 Status
+
+This project is under active development.
+
+---
+
+📄 License
+
+MIT License
