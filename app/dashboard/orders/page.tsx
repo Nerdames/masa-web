@@ -2,7 +2,7 @@
 
 import { useState, useMemo } from "react";
 import useSWR from "swr";
-import { useDebounce } from "@/hooks/useDebounce";
+import { useDebounce } from "@/app/hooks/useDebounce";
 import { useToast } from "@/components/feedback/ToastProvider";
 import ConfirmModal from "@/components/modal/ConfirmModal";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
