@@ -1,7 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import prisma from "@/lib/prisma";
-import { Customer, CustomerType, Prisma } from "@prisma/client";
+import { CustomerType, Prisma } from "@prisma/client";
 
+/* --------------------------
+ * Types
+ * ------------------------- */
 interface GetParams {
   search?: string;
   type?: CustomerType | "ALL";
@@ -10,6 +13,30 @@ interface GetParams {
   organizationId?: string;
 }
 
+interface CreateCustomerInput {
+  name: string;
+  type: CustomerType;
+  organizationId: string;
+  email?: string | null;
+  phone?: string | null;
+  address?: string | null;
+}
+
+interface UpdateCustomerInput {
+  name?: string;
+  type?: CustomerType;
+  email?: string | null;
+  phone?: string | null;
+  address?: string | null;
+}
+
+interface BulkDeleteBody {
+  ids: string[];
+}
+
+/* --------------------------
+ * GET: List customers
+ * ------------------------- */
 export async function GET(req: NextRequest) {
   try {
     const params = Object.fromEntries(req.nextUrl.searchParams.entries()) as GetParams;
@@ -22,13 +49,9 @@ export async function GET(req: NextRequest) {
     const pageNum = parseInt(page, 10);
     const perPageNum = parseInt(perPage, 10);
 
-    // ✅ Use Prisma.CustomerWhereInput for proper typing
     const where: Prisma.CustomerWhereInput = { organizationId };
 
-    if (type && type !== "ALL") {
-      where.type = type;
-    }
-
+    if (type && type !== "ALL") where.type = type;
     if (search) {
       where.OR = [
         { name: { contains: search, mode: "insensitive" } },
@@ -44,6 +67,13 @@ export async function GET(req: NextRequest) {
       orderBy: { createdAt: "desc" },
       skip: (pageNum - 1) * perPageNum,
       take: perPageNum,
+      include: {
+        organization: true,
+        orders: true,
+        sales: true,
+        tags: true,
+        groups: true,
+      },
     });
 
     return NextResponse.json({ customers, total });
@@ -53,9 +83,12 @@ export async function GET(req: NextRequest) {
   }
 }
 
+/* --------------------------
+ * POST: Create customer
+ * ------------------------- */
 export async function POST(req: NextRequest) {
   try {
-    const body: Pick<Customer, "name" | "email" | "phone" | "type" | "organizationId"> = await req.json();
+    const body = (await req.json()) as CreateCustomerInput;
 
     const { name, type, organizationId } = body;
     if (!name || !type || !organizationId) {
@@ -70,15 +103,16 @@ export async function POST(req: NextRequest) {
   }
 }
 
+/* --------------------------
+ * PATCH: Update customer
+ * ------------------------- */
 export async function PATCH(req: NextRequest) {
   try {
     const url = new URL(req.url);
     const id = url.searchParams.get("id");
-    if (!id) {
-      return NextResponse.json({ error: "Customer ID required" }, { status: 400 });
-    }
+    if (!id) return NextResponse.json({ error: "Customer ID required" }, { status: 400 });
 
-    const body: Partial<Omit<Customer, "id" | "createdAt" | "updatedAt">> = await req.json();
+    const body = (await req.json()) as UpdateCustomerInput;
 
     const customer = await prisma.customer.update({ where: { id }, data: body });
     return NextResponse.json(customer);
@@ -88,18 +122,24 @@ export async function PATCH(req: NextRequest) {
   }
 }
 
+/* --------------------------
+ * DELETE: Bulk delete customers
+ * ------------------------- */
 export async function DELETE(req: NextRequest) {
   try {
-    const url = new URL(req.url);
-    const id = url.searchParams.get("id");
-    if (!id) {
-      return NextResponse.json({ error: "Customer ID required" }, { status: 400 });
+    const body = (await req.json()) as BulkDeleteBody;
+
+    if (!body?.ids?.length) {
+      return NextResponse.json({ error: "No customer IDs provided" }, { status: 400 });
     }
 
-    await prisma.customer.delete({ where: { id } });
-    return NextResponse.json({ success: true });
+    const deleteResult = await prisma.customer.deleteMany({
+      where: { id: { in: body.ids } },
+    });
+
+    return NextResponse.json({ success: true, deletedCount: deleteResult.count });
   } catch (error) {
     console.error(error);
-    return NextResponse.json({ error: "Failed to delete customer" }, { status: 500 });
+    return NextResponse.json({ error: "Failed to delete customers" }, { status: 500 });
   }
 }

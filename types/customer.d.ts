@@ -1,7 +1,6 @@
 // customer.d.ts
 import type { Organization } from "./organization";
 import type { Order } from "./order";
-import type { Attachment } from "./attachment";
 import type { Sale } from "./sale";
 
 /* ---------------------------------------------
@@ -19,7 +18,7 @@ export interface Customer {
   name: string;
   email?: string | null;
   phone?: string | null;
-  address?: string | null; // ✅ added (matches Prisma)
+  address?: string | null;
 
   type: CustomerType;
 
@@ -33,9 +32,7 @@ export interface Customer {
   /* relations */
   organization: Organization;
   orders: Order[];
-  sales: Sale[]; // ✅ back-relation from Sale.customer
-
-  attachments: Attachment[];
+  sales: Sale[];
   tags: CustomerTag[];
   groups: CustomerGroup[];
 }
