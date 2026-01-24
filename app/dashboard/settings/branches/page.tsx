@@ -1,7 +1,9 @@
 "use client";
 
 import React, { useState, useEffect, useMemo, useCallback } from "react";
-import { useSession} from "next-auth/react";
+import useSWR from "swr";
+import { useDebounce } from "@/hooks/useDebounce";
+import { useSession } from "next-auth/react";
 import { useToast } from "@/components/feedback/ToastProvider";
 import { Tooltip } from "@/components/feedback/Tooltip";
 import ConfirmModal from "@/components/modal/ConfirmModal";
@@ -18,13 +20,8 @@ const SkeletonRow = () => (
   </tr>
 );
 
-/* ---------------- MINIMUM LOADING HELPER ---------------- */
-const minLoading = async (fn: () => Promise<void>, delay = 400) => {
-  const start = Date.now();
-  await fn();
-  const elapsed = Date.now() - start;
-  if (elapsed < delay) await new Promise((res) => setTimeout(res, delay - elapsed));
-};
+/* ---------------- FETCHER ---------------- */
+const fetcher = (url: string) => fetch(url).then((res) => res.json());
 
 /* ---------------- CUSTOM USER TYPE ---------------- */
 interface CustomUser {
@@ -39,14 +36,11 @@ interface CustomUser {
 export default function BranchesPage() {
   const { data: session } = useSession();
   const toast = useToast();
-
   const user = session?.user as CustomUser | undefined;
   const organizationId = user?.organizationId ?? "";
   const organizationName = user?.organizationName ?? "Unknown";
 
   /* ---------------- STATE ---------------- */
-  const [branches, setBranches] = useState<Branch[]>([]);
-  const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState("");
   const [page, setPage] = useState(1);
   const perPage = 12;
@@ -60,52 +54,25 @@ export default function BranchesPage() {
   const [confirmLoading, setConfirmLoading] = useState(false);
   const [confirmAction, setConfirmAction] = useState<() => Promise<void>>(async () => {});
 
-  /* ---------------- FETCH BRANCHES ---------------- */
-  const fetchBranches = useCallback(
-    async (pageIndex: number = 1) => {
-      if (!organizationId) return;
+  const debouncedSearch = useDebounce(searchQuery, 300);
 
-      await minLoading(async () => {
-        setLoading(true);
-        try {
-          const params = new URLSearchParams();
-          params.set("organizationId", organizationId);
-          params.set("page", String(pageIndex));
-          params.set("perPage", String(perPage));
-          if (searchQuery.trim()) params.set("search", searchQuery.trim());
-
-          const res = await fetch(`/api/dashboard/branches?${params.toString()}`);
-          if (!res.ok) throw new Error("Failed to load branches");
-
-          const json: { branches: Branch[] } = await res.json();
-          setBranches(json.branches ?? []);
-          setSelectedIds(new Set());
-        } catch (err: unknown) {
-          toast.addToast({ type: "error", message: (err as Error).message });
-          setBranches([]);
-          setSelectedIds(new Set());
-        } finally {
-          setLoading(false);
-        }
-      });
-    },
-    [organizationId, perPage, searchQuery, toast]
+  /* ---------------- SWR FETCH ---------------- */
+  const { data, mutate, isValidating } = useSWR(
+    organizationId
+      ? `/api/dashboard/branches?organizationId=${organizationId}&search=${debouncedSearch}&page=${page}&perPage=${perPage}`
+      : null,
+    fetcher
   );
 
-  useEffect(() => {
-    fetchBranches(1);
-  }, [fetchBranches]);
-
-  /* ---------------- PAGINATION ---------------- */
-  const filteredBranches = useMemo(
-    () => branches.filter((b) => b.name.toLowerCase().includes(searchQuery.toLowerCase())),
-    [branches, searchQuery]
-  );
+  const branches: Branch[] = data?.branches ?? [];
+  const filteredBranches = branches; // already filtered server-side
   const pageCount = Math.max(1, Math.ceil(filteredBranches.length / perPage));
   const paginatedBranches = useMemo(() => {
     const start = (page - 1) * perPage;
     return filteredBranches.slice(start, start + perPage);
   }, [filteredBranches, page, perPage]);
+
+  const hasSelection = selectedIds.size > 0;
 
   /* ---------------- SELECTION ---------------- */
   const toggleSelect = (id: string) => {
@@ -119,7 +86,6 @@ export default function BranchesPage() {
     if (selectedIds.size === filteredBranches.length) setSelectedIds(new Set());
     else setSelectedIds(new Set(filteredBranches.map((b) => b.id)));
   };
-  const hasSelection = selectedIds.size > 0;
 
   /* ---------------- INLINE EDIT ---------------- */
   const startInlineEdit = (branch: Branch) => {
@@ -138,8 +104,7 @@ export default function BranchesPage() {
           body: JSON.stringify({ name: inlineName }),
         });
         if (!res.ok) throw new Error("Update failed");
-
-        setBranches((prev) => prev.map((b) => (b.id === branch.id ? { ...b, name: inlineName } : b)));
+        mutate();
         setEditingBranchId(null);
         toast.addToast({ type: "success", message: "Branch updated" });
       } catch (err) {
@@ -166,8 +131,7 @@ export default function BranchesPage() {
           body: JSON.stringify({ active: !branch.active }),
         });
         if (!res.ok) throw new Error("Update failed");
-
-        setBranches((prev) => prev.map((b) => (b.id === branch.id ? { ...b, active: !b.active } : b)));
+        mutate();
         toast.addToast({ type: "success", message: "Branch status updated" });
       } catch (err) {
         toast.addToast({ type: "error", message: (err as Error).message });
@@ -179,7 +143,7 @@ export default function BranchesPage() {
     setConfirmOpen(true);
   };
 
-  /* ---------------- BULK TOGGLE ACTIVE ---------------- */
+  /* ---------------- BULK ACTIONS ---------------- */
   const handleBulkToggle = () => {
     if (!hasSelection) return;
     setConfirmMessage(`Toggle active status for ${selectedIds.size} selected branches?`);
@@ -187,17 +151,16 @@ export default function BranchesPage() {
       setConfirmLoading(true);
       try {
         await Promise.all(
-          [...selectedIds].map((id) => {
-            const branch = branches.find((b) => b.id === id);
-            if (!branch) return;
-            return fetch(`/api/dashboard/branches/${id}`, {
+          [...selectedIds].map((id) =>
+            fetch(`/api/dashboard/branches/${id}`, {
               method: "PATCH",
               headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ active: !branch.active }),
-            });
-          })
+              body: JSON.stringify({ active: !branches.find((b) => b.id === id)?.active }),
+            })
+          )
         );
-        setBranches((prev) => prev.map((b) => (selectedIds.has(b.id) ? { ...b, active: !b.active } : b)));
+        setSelectedIds(new Set());
+        mutate();
         toast.addToast({ type: "success", message: "Bulk status updated" });
       } catch (err) {
         toast.addToast({ type: "error", message: (err as Error).message });
@@ -209,7 +172,6 @@ export default function BranchesPage() {
     setConfirmOpen(true);
   };
 
-  /* ---------------- BULK DELETE ---------------- */
   const handleBulkDelete = () => {
     if (!hasSelection) return;
     setConfirmMessage(`Are you sure you want to delete ${selectedIds.size} selected branches?`);
@@ -217,8 +179,8 @@ export default function BranchesPage() {
       setConfirmLoading(true);
       try {
         await Promise.all([...selectedIds].map((id) => fetch(`/api/dashboard/branches/${id}`, { method: "DELETE" })));
-        setBranches((prev) => prev.filter((b) => !selectedIds.has(b.id)));
         setSelectedIds(new Set());
+        mutate();
         toast.addToast({ type: "success", message: "Branches deleted" });
       } catch (err) {
         toast.addToast({ type: "error", message: (err as Error).message });
@@ -230,45 +192,63 @@ export default function BranchesPage() {
     setConfirmOpen(true);
   };
 
+  /* ---------------- SUMMARY CARDS ---------------- */
+  const totalBranches = branches.length;
+  const activeBranches = branches.filter((b) => b.active).length;
+  const inactiveBranches = totalBranches - activeBranches;
+
   /* ---------------- RENDER ---------------- */
   return (
     <div className="flex flex-col min-h-[calc(100vh-4rem)] space-y-4">
+      {/* ---------------- SUMMARY CARDS ---------------- */}
+      <div className="grid grid-cols-3 gap-4">
+        <div className="p-4 bg-white rounded shadow flex flex-col">
+          <span className="text-gray-500 text-sm">Total Branches</span>
+          <span className="text-2xl font-bold">{totalBranches}</span>
+        </div>
+        <div className="p-4 bg-white rounded shadow flex flex-col">
+          <span className="text-gray-500 text-sm">Active Branches</span>
+          <span className="text-2xl font-bold">{activeBranches}</span>
+        </div>
+        <div className="p-4 bg-white rounded shadow flex flex-col">
+          <span className="text-gray-500 text-sm">Inactive Branches</span>
+          <span className="text-2xl font-bold">{inactiveBranches}</span>
+        </div>
+      </div>
+
       {/* ---------------- TOP TOOLBAR ---------------- */}
-      <div className="sticky top-0 z-20 bg-white flex justify-between items-center w-full gap-4 p-2 border-b border-gray-200">
+      <div className="flex justify-between items-center gap-4 p-2 bg-white rounded shadow">
         <input
           type="text"
           placeholder="Search branches..."
           value={searchQuery}
           onChange={(e) => setSearchQuery(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && fetchBranches(1)}
           className="border border-gray-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
         />
         <div className="flex gap-2 items-center">
           <Tooltip content="Refresh">
             <button
-              onClick={() => fetchBranches(page)}
-              disabled={loading}
-              className="px-2 py-2 flex bg-gray-100 rounded-full hover:bg-gray-200 transition transform hover:scale-105"
+              onClick={() => mutate()}
+              disabled={isValidating}
+              className="px-2 py-2 bg-gray-100 rounded-full hover:bg-gray-200 transition transform hover:scale-105"
             >
               <i className="bx bx-refresh text-lg" />
             </button>
           </Tooltip>
-
           {hasSelection && (
             <>
               <Tooltip content="Toggle Active Status">
                 <button
                   onClick={handleBulkToggle}
-                  className="px-2 py-2 flex bg-gray-100 rounded-full hover:bg-gray-200 transition transform hover:scale-105"
+                  className="px-2 py-2 bg-gray-100 rounded-full hover:bg-gray-200 transition transform hover:scale-105"
                 >
                   <i className="bx bx-toggle-left text-lg" />
                 </button>
               </Tooltip>
-
               <Tooltip content="Delete Selected">
                 <button
                   onClick={handleBulkDelete}
-                  className="px-2 py-2 flex bg-red-100 rounded-full hover:bg-red-200 transition transform hover:scale-105"
+                  className="px-2 py-2 bg-red-100 rounded-full hover:bg-red-200 transition transform hover:scale-105"
                 >
                   <i className="bx bx-trash text-red-600 text-lg" />
                 </button>
@@ -299,9 +279,8 @@ export default function BranchesPage() {
               <th className="p-3 text-left">Status</th>
             </tr>
           </thead>
-
           <tbody className="divide-y divide-gray-100">
-            {loading
+            {isValidating
               ? Array.from({ length: 10 }).map((_, i) => <SkeletonRow key={i} />)
               : paginatedBranches.map((branch) => (
                   <tr
@@ -354,8 +333,7 @@ export default function BranchesPage() {
                     </td>
                   </tr>
                 ))}
-
-            {!loading && filteredBranches.length === 0 && (
+            {!isValidating && filteredBranches.length === 0 && (
               <tr>
                 <td colSpan={4} className="p-6 text-center text-gray-400">
                   No branches found.
