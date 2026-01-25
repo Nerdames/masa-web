@@ -230,7 +230,7 @@ export default function BranchesPage() {
             <button
               onClick={() => mutate()}
               disabled={isValidating}
-              className="px-2 py-2 bg-gray-100 rounded-full hover:bg-gray-200 transition transform hover:scale-105"
+              className="flex px-3 py-3 bg-gray-100 rounded-full hover:bg-gray-200 transition transform hover:scale-105"
             >
               <i className="bx bx-refresh text-lg" />
             </button>
@@ -240,7 +240,7 @@ export default function BranchesPage() {
               <Tooltip content="Toggle Active Status">
                 <button
                   onClick={handleBulkToggle}
-                  className="px-2 py-2 bg-gray-100 rounded-full hover:bg-gray-200 transition transform hover:scale-105"
+                  className="flex px-3 py-3 bg-gray-100 rounded-full hover:bg-gray-200 transition transform hover:scale-105"
                 >
                   <i className="bx bx-toggle-left text-lg" />
                 </button>
@@ -248,7 +248,7 @@ export default function BranchesPage() {
               <Tooltip content="Delete Selected">
                 <button
                   onClick={handleBulkDelete}
-                  className="px-2 py-2 bg-red-100 rounded-full hover:bg-red-200 transition transform hover:scale-105"
+                  className="flex px-3 py-3 bg-gray-100 rounded-full hover:bg-gray-200 transition transform hover:scale-105"
                 >
                   <i className="bx bx-trash text-red-600 text-lg" />
                 </button>

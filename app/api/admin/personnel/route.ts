@@ -1,33 +1,59 @@
-import { prisma } from ""@/lib/prisma"";
-import { NextRequest, NextResponse } from ""next/server"";
-import { requireAdmin } from ""@/lib/guards/requireAdmin"";
+import { NextResponse } from "next/server";
+import { getServerSession } from "next-auth";
+import { authOptions } from "@/lib/auth";
+import prisma from "@/lib/prisma";
+import { Role } from "@prisma/client";
 
-export async function GET(req: NextRequest) {
-  await requireAdmin(req);
-  const data = await prisma.personnel.findMany();
-  return NextResponse.json(data);
-}
+export async function GET(req: Request) {
+  const session = await getServerSession(authOptions);
 
-export async function POST(req: NextRequest) {
-  await requireAdmin(req);
-  const body = await req.json();
-  const item = await prisma.personnel.create({ data: body });
-  return NextResponse.json(item);
-}
+  if (!session?.user) {
+    return NextResponse.json({ message: "Unauthenticated" }, { status: 401 });
+  }
 
-export async function PUT(req: NextRequest) {
-  await requireAdmin(req);
-  const body = await req.json();
-  const item = await prisma.personnel.update({
-    where: { id: body.id },
-    data: body,
+  const { role, organizationId } = session.user;
+
+  const allowed =
+    role === Role.DEV || role === Role.ADMIN || role === Role.MANAGER;
+
+  if (!allowed) {
+    return NextResponse.json({ message: "Access denied" }, { status: 403 });
+  }
+
+  const { searchParams } = new URL(req.url);
+  const page = Number(searchParams.get("page") ?? 1);
+  const pageSize = Number(searchParams.get("pageSize") ?? 10);
+  const search = searchParams.get("search") ?? "";
+
+  const where = {
+    organizationId,
+    deletedAt: null,
+    ...(search && {
+      OR: [
+        { name: { contains: search, mode: "insensitive" } },
+        { email: { contains: search, mode: "insensitive" } },
+      ],
+    }),
+  };
+
+  const [data, total, activeCount] = await Promise.all([
+    prisma.authorizedPersonnel.findMany({
+      where,
+      skip: (page - 1) * pageSize,
+      take: pageSize,
+      orderBy: { createdAt: "desc" },
+    }),
+    prisma.authorizedPersonnel.count({ where }),
+    prisma.authorizedPersonnel.count({
+      where: { ...where, disabled: false },
+    }),
+  ]);
+
+  return NextResponse.json({
+    data,
+    total,
+    page,
+    pageSize,
+    activeCount,
   });
-  return NextResponse.json(item);
-}
-
-export async function DELETE(req: NextRequest) {
-  await requireAdmin(req);
-   = await req.json();
-  await prisma.personnel.delete({ where: { id: .id } });
-  return NextResponse.json({ success: true });
 }
