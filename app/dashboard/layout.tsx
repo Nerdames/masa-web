@@ -22,8 +22,9 @@ const dashboardItems: SidebarItem[] = [
 // ---------------- Settings Items ----------------
 const settingsItems: SidebarItem[] = [
   { key: "general", name: "General", href: "/dashboard/settings/general", icon: "bx-cog", mode: "settings" },
+  { key: "personalization", name: "Personalization", href: "/dashboard/settings/personalization", icon: "bx-color", mode: "settings" },
+  { key: "organization", name: "Organization", href: "/dashboard/settings/organization", icon: "bx-building", mode: "settings" },
   { key: "branches", name: "Branches", href: "/dashboard/settings/branches", icon: "bx-git-branch", mode: "settings" },
-  { key: "products", name: "Products", href: "/dashboard/settings/products", icon: "bx-box", mode: "settings" },
   { key: "personnel", name: "Personnels", href: "/dashboard/settings/personnels", icon: "bx-user-circle", mode: "settings" },
   { key: "integrations", name: "Integrations", href: "/dashboard/settings/integrations", icon: "bx-plug", mode: "settings" },
   { key: "billing", name: "Billing", href: "/dashboard/settings/billing", icon: "bx-credit-card", mode: "settings" },

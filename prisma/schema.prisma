@@ -85,11 +85,6 @@ model Organization {
   customerGroups    CustomerGroup[]
   customerSummaries CustomerOrderSummary[]
 
-  // NEW — SETTINGS & VIEWS
-  tableConfigs  OrgTableConfig[]
-  tablePresets  OrgTablePreset[]
-  userTableViews UserTableView[]
-
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -154,9 +149,6 @@ model AuthorizedPersonnel {
 
   // SALES
   salesAttended Sale[] @relation("AttendantSales")
-
-  // NEW — PERSONAL DATA VIEWS
-  tableViews UserTableView[]
 }
 
 model BranchAssignment {
@@ -170,69 +162,6 @@ model BranchAssignment {
 }
 
 ////////////////////////////////////
-// TABLE SETTINGS & VIEWS (NEW)
-////////////////////////////////////
-
-model OrgTableConfig {
-  id        String @id @default(cuid())
-  orgId     String
-  entity    String // "orders" | "inventory" | "sales" | ...
-
-  allowedCols String[]
-  lockedCols  String[]
-
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  organization Organization @relation(fields: [orgId], references: [id])
-
-  @@unique([orgId, entity])
-  @@index([orgId])
-}
-
-model OrgTablePreset {
-  id        String @id @default(cuid())
-  orgId     String
-  entity    String
-  name      String
-  isDefault Boolean @default(false)
-
-  visibleCols String[]
-  order       String[]
-
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  organization Organization @relation(fields: [orgId], references: [id])
-
-  @@unique([orgId, entity, name])
-  @@index([orgId])
-}
-
-model UserTableView {
-  id        String @id @default(cuid())
-  userId    String
-  orgId     String
-  entity    String
-  name      String
-
-  visibleCols  String[]
-  order        String[]
-  basePresetId String?
-
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  user         AuthorizedPersonnel @relation(fields: [userId], references: [id])
-  organization Organization        @relation(fields: [orgId], references: [id])
-
-  @@unique([userId, orgId, entity, name])
-  @@index([userId])
-  @@index([orgId])
-}
-
-
-////////////////////////////////////
 // CUSTOMERS
 ////////////////////////////////////
 
@@ -242,7 +171,7 @@ model Customer {
   name           String
   email          String?
   phone          String?
-  address        String?      
+  address        String?
   type           CustomerType
 
   totalOrders Int       @default(0)
@@ -322,8 +251,8 @@ model BranchProduct {
   stock           Int        @default(0)
   reorderLevel    Int        @default(0)
   tag             ProductTag @default(LOW_STOCK)
-  lastSoldAt      DateTime?  
-  lastRestockedAt DateTime?  
+  lastSoldAt      DateTime?
+  lastRestockedAt DateTime?
   safetyStock     Int?       @default(0)
   unit            String?    @default("pcs")
   sellingPrice    Float
@@ -389,9 +318,9 @@ model Order {
   balance    Float       @default(0)
   currency   String      @default("NGN")
   status     OrderStatus @default(PENDING)
-  dueDate    DateTime?   
-  paymentTerms String?   
-  notes      String?     
+  dueDate    DateTime?
+  paymentTerms String?
+  notes      String?
   deletedAt  DateTime?
 
   createdAt DateTime @default(now())
@@ -453,9 +382,9 @@ model Sale {
   currency        String   @default("NGN")
   createdAt       DateTime @default(now())
 
-  attendantId String?  
-  customerId  String?  
-  paymentType String?  
+  attendantId String?
+  customerId  String?
+  paymentType String?
   discount    Float? @default(0)
   tax         Float? @default(0)
 
@@ -484,8 +413,8 @@ model StockMovement {
   type            StockMovementType
   quantity        Int
   note            String?
-  sourceBranchId  String? 
-  targetBranchId  String? 
+  sourceBranchId  String?
+  targetBranchId  String?
 
   createdAt DateTime @default(now())
 
@@ -514,7 +443,7 @@ model Notification {
   title   String
   message String
   read    Boolean          @default(false)
-  readBy  Json?            // array of personnelIds
+  readBy  Json?
 
   createdAt DateTime @default(now())
 
