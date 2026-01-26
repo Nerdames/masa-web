@@ -81,7 +81,6 @@ export default function InventoryPage() {
     return "text-gray-900";
   };
 
-  // List of IDs that can be deleted (not OUT_OF_STOCK)
   const selectableProductIds = useMemo(
     () => products.filter(p => p.tag !== "OUT_OF_STOCK").map(p => p.id),
     [products]
@@ -89,7 +88,7 @@ export default function InventoryPage() {
 
   const toggleSelect = (id: string) => {
     const product = products.find(p => p.id === id);
-    if (!product || product.tag === "OUT_OF_STOCK") return; // cannot select OUT_OF_STOCK
+    if (!product || product.tag === "OUT_OF_STOCK") return;
     setSelectedIds(prev => {
       const next = new Set(prev);
       next.has(id) ? next.delete(id) : next.add(id);
@@ -102,7 +101,6 @@ export default function InventoryPage() {
     setSelectedIds(allSelected ? new Set() : new Set(selectableProductIds));
   };
 
-  // Top checkbox state
   const isAllSelected = selectableProductIds.length > 0 && selectableProductIds.every(id => selectedIds.has(id));
   const isIndeterminate = selectedIds.size > 0 && !isAllSelected;
 
@@ -112,7 +110,7 @@ export default function InventoryPage() {
       return product && product.tag !== "OUT_OF_STOCK";
     });
 
-    if (idsToDelete.length === 0) {
+    if (!idsToDelete.length) {
       toast.addToast({ type: "info", message: "No deletable products selected" });
       setSelectedIds(new Set());
       setBulkDeleteOpen(false);
@@ -120,19 +118,26 @@ export default function InventoryPage() {
     }
 
     try {
-      await Promise.all(idsToDelete.map(id =>
-        fetch(`/api/dashboard/products/${id}`, { method: "DELETE" })
-      ));
-      toast.addToast({ type: "success", message: `${idsToDelete.length} products removed` });
+      // --- Use BULK DELETE PATCH endpoint ---
+      const res = await fetch("/api/dashboard/branches/products", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ids: idsToDelete }),
+      });
 
-      const remainingSelected = new Set([...selectedIds].filter(id => !idsToDelete.includes(id)));
-      setSelectedIds(remainingSelected);
+      if (!res.ok) throw new Error("Bulk delete failed");
+
+      toast.addToast({ type: "success", message: `${idsToDelete.length} products removed` });
+      // Remove deleted IDs from selection
+      setSelectedIds(prev => new Set([...prev].filter(id => !idsToDelete.includes(id))));
       setBulkDeleteOpen(false);
-      mutate();
-    } catch {
+      mutate(); // refresh products
+    } catch (e) {
       toast.addToast({ type: "error", message: "Bulk delete failed" });
+      console.error(e);
     }
   };
+
 
   const handleRefresh = async () => {
     setRefreshing(true);
@@ -141,24 +146,30 @@ export default function InventoryPage() {
   };
 
   return (
-    <div className="flex flex-col space-y-4 min-h-[calc(100vh-4rem)]">
+    <div className="flex flex-col space-y-4 min-h-[calc(100vh-4rem)] p-4">
 
       {/* ================= Summary Cards ================= */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        <div className="p-4 bg-white rounded-xl shadow-sm border border-slate-200 cursor-pointer hover:bg-gray-50"
-             onClick={() => setFilterTag("ALL")}>
+        <div
+          className="p-4 bg-white rounded-xl shadow-sm border border-slate-200 cursor-pointer hover:bg-gray-50"
+          onClick={() => setFilterTag("ALL")}
+        >
           <div className="text-sm text-slate-500">Total Quantity</div>
           <div className="text-xl font-bold text-slate-900 mt-1">{totalQuantity}</div>
         </div>
 
-        <div className="p-4 bg-white rounded-xl shadow-sm border border-slate-200 cursor-pointer hover:bg-gray-50"
-             onClick={() => setFilterTag("ALL")}>
+        <div
+          className="p-4 bg-white rounded-xl shadow-sm border border-slate-200 cursor-pointer hover:bg-gray-50"
+          onClick={() => setFilterTag("ALL")}
+        >
           <div className="text-sm text-slate-500">Total Value</div>
           <div className="text-xl font-bold text-slate-900 mt-1">₦{totalValue.toFixed(2)}</div>
         </div>
 
-        <div className="relative p-4 bg-white rounded-xl shadow-sm border border-slate-200 cursor-pointer hover:bg-gray-50"
-             onClick={() => setFilterTag("LOW_STOCK")}>
+        <div
+          className="relative p-4 bg-white rounded-xl shadow-sm border border-slate-200 cursor-pointer hover:bg-gray-50"
+          onClick={() => setFilterTag("LOW_STOCK")}
+        >
           {lowStockCount > 0 && (
             <span
               aria-hidden
@@ -171,7 +182,7 @@ export default function InventoryPage() {
       </div>
 
       {/* ================= Top Bar ================= */}
-      <div className="sticky top-0 z-20 bg-white p-3 flex flex-wrap items-center gap-2 shadow-sm">
+      <div className="sticky top-0 z-50 bg-white p-3 flex flex-wrap items-center gap-2 shadow-sm">
         <input
           type="text"
           placeholder="Search by product"
@@ -203,12 +214,9 @@ export default function InventoryPage() {
               <i className="bx bx-sort text-lg" />
             </DropdownMenu.Trigger>
             <DropdownMenu.Content className="bg-white shadow rounded-md py-1 min-w-[120px]">
-              <DropdownMenu.Item className="px-4 py-2 cursor-pointer hover:bg-gray-100"
-                                 onSelect={() => setSortOrder("az")}>A → Z</DropdownMenu.Item>
-              <DropdownMenu.Item className="px-4 py-2 cursor-pointer hover:bg-gray-100"
-                                 onSelect={() => setSortOrder("newest")}>Newest</DropdownMenu.Item>
-              <DropdownMenu.Item className="px-4 py-2 cursor-pointer hover:bg-gray-100"
-                                 onSelect={() => setSortOrder("")}>Clear</DropdownMenu.Item>
+              <DropdownMenu.Item className="px-4 py-2 cursor-pointer hover:bg-gray-100" onSelect={() => setSortOrder("az")}>A → Z</DropdownMenu.Item>
+              <DropdownMenu.Item className="px-4 py-2 cursor-pointer hover:bg-gray-100" onSelect={() => setSortOrder("newest")}>Newest</DropdownMenu.Item>
+              <DropdownMenu.Item className="px-4 py-2 cursor-pointer hover:bg-gray-100" onSelect={() => setSortOrder("")}>Clear</DropdownMenu.Item>
             </DropdownMenu.Content>
           </DropdownMenu.Root>
 
@@ -219,13 +227,27 @@ export default function InventoryPage() {
             </DropdownMenu.Trigger>
             <DropdownMenu.Content className="bg-white shadow rounded-md py-1 min-w-[140px]">
               {(["ALL","LOW_STOCK","OUT_OF_STOCK"] as TagFilter[]).map(tag => (
-                <DropdownMenu.Item key={tag} className="px-4 py-2 cursor-pointer hover:bg-gray-100"
-                                   onSelect={() => setFilterTag(tag)}>
+                <DropdownMenu.Item
+                  key={tag}
+                  className="px-4 py-2 cursor-pointer hover:bg-gray-100"
+                  onSelect={() => setFilterTag(tag)}
+                >
                   {tag.replace("_", " ")}
                 </DropdownMenu.Item>
               ))}
             </DropdownMenu.Content>
           </DropdownMenu.Root>
+
+          {/* Add New Product */}
+          <button
+            onClick={() => router.push("/dashboard/inventory/add")}
+            className="relative group w-10 h-10 rounded-full bg-green-100 flex items-center justify-center"
+          >
+            <i className="bx bx-plus text-green-600 text-lg" />
+            <span className="absolute bottom-full mb-2 left-1/2 -translate-x-1/2 hidden group-hover:block bg-black text-white text-xs rounded px-2 py-1 whitespace-nowrap">
+              Add New Product
+            </span>
+          </button>
         </div>
       </div>
 
@@ -238,9 +260,7 @@ export default function InventoryPage() {
                 <input
                   type="checkbox"
                   checked={isAllSelected}
-                  ref={el => {
-                    if (el) el.indeterminate = isIndeterminate;
-                  }}
+                  ref={el => { if (el) el.indeterminate = isIndeterminate; }}
                   onChange={toggleSelectAll}
                 />
               </th>
@@ -261,13 +281,24 @@ export default function InventoryPage() {
               products.map(p => {
                 const isOutOfStock = p.tag === "OUT_OF_STOCK";
                 return (
-                  <tr key={p.id} className={`bg-white shadow-sm rounded-lg ${isOutOfStock ? "opacity-60" : ""}`}>
+                  <tr
+                    key={p.id}
+                    className={`bg-white shadow-sm rounded-lg hover:bg-gray-50 
+                                ${isOutOfStock ? "opacity-60 cursor-not-allowed" : "cursor-pointer"}`}
+                    onClick={e => {
+                      // Only navigate if click is NOT on an input (checkbox)
+                      if ((e.target as HTMLElement).tagName !== "INPUT" && !isOutOfStock) {
+                        router.push(`/dashboard/products/${p.id}`);
+                      }
+                    }}
+                  >
                     <td className="p-3">
                       <input
                         type="checkbox"
                         checked={selectedIds.has(p.id)}
                         disabled={isOutOfStock}
-                        onChange={e => { e.stopPropagation(); if (!isOutOfStock) toggleSelect(p.id); }}
+                        onClick={e => e.stopPropagation()} // Stop row click
+                        onChange={() => toggleSelect(p.id)}
                       />
                     </td>
                     <td className="p-3 font-medium truncate sticky left-0 bg-white z-20">{p.name}</td>
@@ -278,6 +309,7 @@ export default function InventoryPage() {
                     <td className="p-3">{p.supplier?.name ?? "-"}</td>
                     <td className="p-3">{p.lastSoldAt ? new Date(p.lastSoldAt).toLocaleDateString() : "-"}</td>
                   </tr>
+
                 );
               })}
           </tbody>

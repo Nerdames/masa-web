@@ -8,8 +8,17 @@ import ConfirmModal from "@/components/modal/ConfirmModal";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { useRouter } from "next/navigation";
 
-// Types
-interface Order {
+// ---------------- Types ----------------
+interface OrderItem {
+  id: string;
+}
+
+interface Invoice {
+  id: string;
+  paid: boolean;
+}
+
+export interface Order {
   id: string;
   customerId?: string;
   total: number;
@@ -19,19 +28,20 @@ interface Order {
   status: "PENDING" | "PROCESSING" | "COMPLETED" | "CANCELLED" | "RETURNED";
   createdAt: string;
   updatedAt: string;
-  items: { id: string }[];
-  invoices: { id: string; paid: boolean }[];
+  items: OrderItem[];
+  invoices: Invoice[];
 }
 
 type OrderFilter = "ALL" | "PENDING" | "PROCESSING" | "COMPLETED" | "CANCELLED" | "RETURNED";
 
+// ---------------- Fetcher ----------------
 const fetcher = (url: string) =>
   fetch(url, { credentials: "include" }).then(res => res.json());
 
-// Skeleton Row
+// ---------------- Skeleton Row ----------------
 const SkeletonRow = () => (
   <tr className="animate-pulse bg-white shadow-sm rounded-lg">
-    {Array.from({ length: 9 }).map((_, i) => (
+    {Array.from({ length: 10 }).map((_, i) => (
       <td key={i} className="p-3">
         <div className="h-4 bg-gray-200 rounded w-full" />
       </td>
@@ -39,27 +49,32 @@ const SkeletonRow = () => (
   </tr>
 );
 
+// ---------------- Component ----------------
 export default function OrdersPage() {
   const toast = useToast();
   const router = useRouter();
 
-  const [page, setPage] = useState(1);
-  const [search, setSearch] = useState("");
+  // ----- State -----
+  const [page, setPage] = useState<number>(1);
+  const [search, setSearch] = useState<string>("");
   const [filter, setFilter] = useState<OrderFilter>("ALL");
+  const [targetDate, setTargetDate] = useState<string>(""); // YYYY-MM-DD
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
-  const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false);
-  const [refreshing, setRefreshing] = useState(false);
+  const [bulkDeleteOpen, setBulkDeleteOpen] = useState<boolean>(false);
+  const [refreshing, setRefreshing] = useState<boolean>(false);
 
   const debouncedSearch = useDebounce(search, 400);
 
+  // ----- Query String -----
   const query = useMemo(() => {
     const params = new URLSearchParams();
     params.set("page", String(page));
     params.set("pageSize", "10");
     if (debouncedSearch) params.set("search", debouncedSearch);
     if (filter !== "ALL") params.set("status", filter);
+    if (targetDate) params.set("date", targetDate);
     return params.toString();
-  }, [page, debouncedSearch, filter]);
+  }, [page, debouncedSearch, filter, targetDate]);
 
   const { data, isLoading, mutate } = useSWR<{ orders: Order[]; total: number }>(
     `/api/dashboard/orders?${query}`,
@@ -71,11 +86,14 @@ export default function OrdersPage() {
   const total = data?.total ?? 0;
   const pageCount = Math.max(1, Math.ceil(total / 10));
 
-  // Summary counts
+  // ----- Summary counts -----
   const pendingCount = orders.filter(o => o.status === "PENDING").length;
   const completedCount = orders.filter(o => o.status === "COMPLETED").length;
 
-  // Orders that can be deleted (not CANCELLED/RETURNED)
+  const pendingColorClass =
+    pendingCount === 0 ? "text-green-600" : pendingCount <= 5 ? "text-amber-600" : "text-red-600";
+
+  // ----- Selectable -----
   const selectableOrderIds = useMemo(
     () => orders.filter(o => o.status !== "CANCELLED" && o.status !== "RETURNED").map(o => o.id),
     [orders]
@@ -99,13 +117,14 @@ export default function OrdersPage() {
   const isAllSelected = selectableOrderIds.length > 0 && selectableOrderIds.every(id => selectedIds.has(id));
   const isIndeterminate = selectedIds.size > 0 && !isAllSelected;
 
+  // ----- Actions -----
   const bulkDelete = async () => {
     const idsToDelete = [...selectedIds].filter(id => {
-      const o = orders.find(o => o.id === id);
+      const o = orders.find(order => order.id === id);
       return o && o.status !== "CANCELLED" && o.status !== "RETURNED";
     });
 
-    if (idsToDelete.length === 0) {
+    if (!idsToDelete.length) {
       toast.addToast({ type: "info", message: "No deletable orders selected" });
       setSelectedIds(new Set());
       setBulkDeleteOpen(false);
@@ -115,7 +134,7 @@ export default function OrdersPage() {
     try {
       await Promise.all(idsToDelete.map(id => fetch(`/api/orders/${id}`, { method: "DELETE" })));
       toast.addToast({ type: "success", message: `${idsToDelete.length} orders deleted` });
-      setSelectedIds(new Set([...selectedIds].filter(id => !idsToDelete.includes(id))));
+      setSelectedIds(prev => new Set([...prev].filter(id => !idsToDelete.includes(id))));
       setBulkDeleteOpen(false);
       mutate();
     } catch {
@@ -129,39 +148,40 @@ export default function OrdersPage() {
     setTimeout(() => setRefreshing(false), 300);
   };
 
-  const statusClass = (status: string) => {
+  const statusClass = (status: Order["status"]) => {
     switch (status) {
       case "COMPLETED":
-        return "bg-green-100 text-green-700";
+        return "text-green-700";
       case "PENDING":
-        return "bg-yellow-100 text-yellow-700";
+        return "text-yellow-700";
       case "PROCESSING":
-        return "bg-blue-100 text-blue-700";
+        return "text-blue-700";
       case "CANCELLED":
-        return "bg-red-100 text-red-700";
+        return "text-red-700";
       case "RETURNED":
-        return "bg-purple-100 text-purple-700";
+        return "text-purple-700";
       default:
-        return "bg-gray-100 text-gray-700";
+        return "text-gray-700";
     }
   };
 
-  const pendingColorClass =
-    pendingCount === 0 ? "text-green-600" : pendingCount <= 5 ? "text-amber-600" : "text-red-600";
-
   return (
-    <div className="flex flex-col space-y-4 min-h-[calc(100vh-4rem)]">
+    <div className="flex flex-col space-y-4 min-h-[calc(100vh-4rem)] p-4">
 
       {/* ================= Summary Cards ================= */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        <div className="p-4 bg-white rounded-xl shadow-sm border border-slate-200 cursor-pointer hover:bg-gray-50"
-             onClick={() => setFilter("ALL")}>
+        <div
+          className="p-4 bg-white rounded-xl shadow-sm border border-slate-200 cursor-pointer hover:bg-gray-50"
+          onClick={() => setFilter("ALL")}
+        >
           <div className="text-sm text-slate-500">Total Orders</div>
           <div className="text-xl font-bold text-slate-900 mt-1">{total}</div>
         </div>
 
-        <div className="relative p-4 bg-white rounded-xl shadow-sm border border-slate-200 cursor-pointer hover:bg-gray-50"
-             onClick={() => setFilter("PENDING")}>
+        <div
+          className="relative p-4 bg-white rounded-xl shadow-sm border border-slate-200 cursor-pointer hover:bg-gray-50"
+          onClick={() => setFilter("PENDING")}
+        >
           {pendingCount > 0 && (
             <span
               aria-hidden
@@ -172,8 +192,10 @@ export default function OrdersPage() {
           <div className={`text-xl font-bold mt-1 ${pendingColorClass}`}>{pendingCount}</div>
         </div>
 
-        <div className="p-4 bg-white rounded-xl shadow-sm border border-slate-200 cursor-pointer hover:bg-gray-50"
-             onClick={() => setFilter("COMPLETED")}>
+        <div
+          className="p-4 bg-white rounded-xl shadow-sm border border-slate-200 cursor-pointer hover:bg-gray-50"
+          onClick={() => setFilter("COMPLETED")}
+        >
           <div className="text-sm text-slate-500">Completed Orders</div>
           <div className="text-xl font-bold text-green-600 mt-1">{completedCount}</div>
         </div>
@@ -186,12 +208,23 @@ export default function OrdersPage() {
           value={search}
           onChange={e => setSearch(e.target.value)}
           placeholder="Search by customer or ID"
-          className="border rounded-lg p-2 text-sm min-w-[300px]"
+          className="border rounded-lg p-2 text-sm min-w-[250px]"
         />
+
+        {/* Date Filter */}
+        <div className="flex items-center gap-2 border rounded-lg px-3 py-2 cursor-pointer bg-white h-10">
+          <i className="bx bx-calendar text-gray-500" />
+          <input
+            type="date"
+            value={targetDate}
+            onChange={e => setTargetDate(e.target.value)}
+            className="text-sm outline-none"
+          />
+        </div>
 
         <button
           onClick={handleRefresh}
-          className={`w-10 h-10 rounded-full bg-gray-100 flex items-center justify-center transition-transform duration-300 ${refreshing ? "animate-spin" : ""}`}
+          className={`w-10 h-10 rounded-full bg-gray-100 flex items-center justify-center ${refreshing ? "animate-spin" : ""}`}
         >
           <i className="bx bx-refresh text-lg" />
         </button>
@@ -213,12 +246,27 @@ export default function OrdersPage() {
             </DropdownMenu.Trigger>
             <DropdownMenu.Content className="bg-white shadow rounded-md py-1 min-w-[140px]">
               {(["ALL","PENDING","PROCESSING","COMPLETED","CANCELLED","RETURNED"] as OrderFilter[]).map(ft => (
-                <DropdownMenu.Item key={ft} className="px-4 py-2 cursor-pointer hover:bg-gray-100" onSelect={() => setFilter(ft)}>
+                <DropdownMenu.Item
+                  key={ft}
+                  className="px-4 py-2 cursor-pointer hover:bg-gray-100"
+                  onSelect={() => setFilter(ft)}
+                >
                   {ft}
                 </DropdownMenu.Item>
               ))}
             </DropdownMenu.Content>
           </DropdownMenu.Root>
+
+          {/* Add New Order */}
+          <button
+            onClick={() => router.push("/dashboard/orders/create")}
+            className="relative group w-10 h-10 rounded-full bg-green-100 flex items-center justify-center"
+          >
+            <i className="bx bx-plus text-green-600 text-lg" />
+            <span className="absolute bottom-full mb-2 left-1/2 -translate-x-1/2 hidden group-hover:block bg-black text-white text-xs rounded px-2 py-1 whitespace-nowrap">
+              Create New Order
+            </span>
+          </button>
         </div>
       </div>
 
@@ -231,7 +279,7 @@ export default function OrdersPage() {
                 <input
                   type="checkbox"
                   checked={isAllSelected}
-                  ref={el => { if (el) el.indeterminate = isIndeterminate; }}
+                  ref={el => { if (el) el && (el.indeterminate = isIndeterminate); }}
                   onChange={toggleSelectAll}
                 />
               </th>
@@ -251,8 +299,13 @@ export default function OrdersPage() {
 
             {!isLoading && orders.map(order => {
               const isDisabled = order.status === "CANCELLED" || order.status === "RETURNED";
+              const created = new Date(order.createdAt);
               return (
-                <tr key={order.id} className={`bg-white shadow-sm rounded-lg ${isDisabled ? "opacity-60" : ""}`}>
+                <tr
+                  key={order.id}
+                  className={`bg-white shadow-sm rounded-lg cursor-pointer hover:bg-gray-50 transition ${isDisabled ? "opacity-60 cursor-not-allowed" : ""}`}
+                  onClick={() => !isDisabled && router.push(`/dashboard/orders/${order.id}`)}
+                >
                   <td className="p-3">
                     <input
                       type="checkbox"
@@ -262,15 +315,18 @@ export default function OrdersPage() {
                     />
                   </td>
                   <td className="p-3 sticky left-0 bg-white z-20">{order.customerId ?? "N/A"}</td>
-                  <td className={`p-3 px-2 py-1 rounded-full text-xs font-semibold ${statusClass(order.status)}`}>{order.status}</td>
+                  <td className={`p-3 px-2 py-1 text-xs font-semibold ${statusClass(order.status)}`}>{order.status}</td>
                   <td className="p-3 text-right">{order.total.toFixed(2)} {order.currency}</td>
                   <td className="p-3 text-right">{order.paidAmount.toFixed(2)}</td>
                   <td className="p-3 text-right">{order.balance.toFixed(2)}</td>
                   <td className="p-3 text-right">{order.items.length}</td>
                   <td className="p-3 text-right">{order.invoices.filter(i => i.paid).length}/{order.invoices.length}</td>
-                  <td className="p-3">{new Date(order.createdAt).toLocaleString()}</td>
+                  <td className="p-3 text-left">
+                    <div className="text-sm">{created.toLocaleDateString()}</div>
+                    <div className="text-xs text-gray-500">{created.toLocaleTimeString()}</div>
+                  </td>
                 </tr>
-              )
+              );
             })}
           </tbody>
         </table>

@@ -1,55 +1,44 @@
 import { NextRequest, NextResponse } from "next/server";
-import prisma from "@/lib/prisma";
 import { getToken } from "next-auth/jwt";
+import prisma from "@/lib/prisma";
 
 const secret = process.env.NEXTAUTH_SECRET as string;
 
-interface OrderItemUpdatePayload {
-  id: string;
-  quantity?: number;
-}
-
-export async function PATCH(req: NextRequest) {
+export async function GET(req: NextRequest) {
   try {
     const token = await getToken({ req, secret });
-    if (!token || !token.organizationId) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    if (!token?.organizationId) {
+      return NextResponse.json({ error: "Access Denied" }, { status: 403 });
     }
 
-    const { id, quantity }: OrderItemUpdatePayload = await req.json();
-    if (!id) return NextResponse.json({ error: "Order item ID required" }, { status: 400 });
+    const orderId = new URL(req.url).searchParams.get("orderId");
+    if (!orderId) {
+      return NextResponse.json(
+        { error: "orderId is required" },
+        { status: 400 }
+      );
+    }
 
-    const orderItem = await prisma.orderItem.findFirst({
-      where: { id },
-      include: { branchProduct: true, product: true },
+    const items = await prisma.orderItem.findMany({
+      where: {
+        orderId,
+        order: {
+          organizationId: token.organizationId,
+          deletedAt: null,
+        },
+      },
+      include: {
+        product: true,
+        branchProduct: true,
+      },
     });
-    if (!orderItem) return NextResponse.json({ error: "Order item not found" }, { status: 404 });
 
-    if (quantity !== undefined) {
-      if (orderItem.branchProduct.stock + orderItem.quantity < quantity) {
-        return NextResponse.json(
-          { error: `Insufficient stock for ${orderItem.product.name}` },
-          { status: 400 }
-        );
-      }
-
-      const delta = quantity - orderItem.quantity;
-
-      await prisma.$transaction([
-        prisma.orderItem.update({
-          where: { id },
-          data: { quantity, total: orderItem.price * quantity },
-        }),
-        prisma.branchProduct.update({
-          where: { id: orderItem.branchProductId },
-          data: { stock: { decrement: delta } },
-        }),
-      ]);
-    }
-
-    return NextResponse.json({ success: true });
+    return NextResponse.json(items);
   } catch (error) {
-    console.error("PATCH /api/orders/items error:", error);
-    return NextResponse.json({ error: "Failed to update order item" }, { status: 500 });
+    console.error("GET /orders/items error:", error);
+    return NextResponse.json(
+      { error: "Failed to fetch order items" },
+      { status: 500 }
+    );
   }
 }

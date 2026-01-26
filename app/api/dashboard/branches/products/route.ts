@@ -13,8 +13,10 @@ interface BranchProductsQuery {
   pageSize?: string;
   search?: string;
   tag?: "ALL" | ProductTag;
+  sort?: "az" | "newest" | "";
 }
 
+// ------------------------------ GET PRODUCTS ------------------------------
 export async function GET(req: NextRequest) {
   try {
     const session = await getServerSession(authOptions);
@@ -30,12 +32,11 @@ export async function GET(req: NextRequest) {
     const pageSize = Math.max(Number(params.pageSize ?? 10), 1);
     const search = params.search?.trim();
     const tag = params.tag ?? "ALL";
+    const sort = params.sort ?? "";
 
-    // ------------------------------ BranchProduct Filter ------------------------------
+    // ------------------------------ Branch Filter ------------------------------
     const branchProductWhere: Prisma.BranchProductWhereInput = { branchId, organizationId };
-    if (tag !== "ALL") {
-      branchProductWhere.tag = tag; // exact tag filter, no calculation
-    }
+    if (tag !== "ALL") branchProductWhere.tag = tag;
 
     // ------------------------------ Product Filter ------------------------------
     const productWhere: Prisma.ProductWhereInput = {
@@ -51,6 +52,12 @@ export async function GET(req: NextRequest) {
       }),
     };
 
+    // ------------------------------ Sort ------------------------------
+    let orderBy: Prisma.ProductOrderByWithRelationInput;
+    if (sort === "az") orderBy = { name: "asc" };
+    else if (sort === "newest") orderBy = { createdAt: "desc" };
+    else orderBy = { createdAt: "desc" };
+
     // ------------------------------ Fetch Data ------------------------------
     const [total, products] = await Promise.all([
       prisma.product.count({ where: productWhere }),
@@ -58,7 +65,7 @@ export async function GET(req: NextRequest) {
         where: productWhere,
         skip: (page - 1) * pageSize,
         take: pageSize,
-        orderBy: { createdAt: "desc" },
+        orderBy,
         include: {
           category: true,
           branches: {
@@ -134,29 +141,22 @@ export async function GET(req: NextRequest) {
       totalValue,
       lowStockCount,
     });
-
   } catch (e) {
     console.error(e);
     return NextResponse.json({ error: "Failed to fetch products" }, { status: 500 });
   }
 }
 
-// ------------------------------ DELETE Single Product ------------------------------
+// ------------------------------ DELETE SINGLE PRODUCT ------------------------------
 export async function DELETE(req: NextRequest) {
   try {
     const session = await getServerSession(authOptions);
-    if (!session?.user?.organizationId) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
+    if (!session?.user?.organizationId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
-    const { searchParams } = req.nextUrl;
-    const id = searchParams.get("id");
+    const id = req.nextUrl.searchParams.get("id");
     if (!id) return NextResponse.json({ error: "Missing product ID" }, { status: 400 });
 
-    await prisma.product.update({
-      where: { id },
-      data: { deletedAt: new Date() },
-    });
+    await prisma.product.update({ where: { id }, data: { deletedAt: new Date() } });
 
     return NextResponse.json({ message: "Product deleted" });
   } catch (e) {
@@ -169,13 +169,11 @@ export async function DELETE(req: NextRequest) {
 export async function PATCH(req: NextRequest) {
   try {
     const session = await getServerSession(authOptions);
-    if (!session?.user?.organizationId) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
+    if (!session?.user?.organizationId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
     const body = await req.json();
     const { ids } = body as { ids: string[] };
-    if (!ids || !ids.length) return NextResponse.json({ error: "No product IDs provided" }, { status: 400 });
+    if (!ids?.length) return NextResponse.json({ error: "No product IDs provided" }, { status: 400 });
 
     await prisma.product.updateMany({
       where: { id: { in: ids } },
