@@ -3,7 +3,6 @@
 import { useEffect, useState } from "react";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { DragDropContext, Droppable, Draggable, DropResult } from "@hello-pangea/dnd";
-import { Tooltip } from "@/components/feedback/Tooltip"; // keep tooltip if desired
 
 export type SummaryCard = {
   id: string;
@@ -21,25 +20,48 @@ export default function Summary({ cardsData }: SummaryProps) {
   const [showSummary, setShowSummary] = useState(true);
   const [showCardModal, setShowCardModal] = useState(false);
   const [isReorderMode, setIsReorderMode] = useState(false);
+
+  // Cards state
   const [cards, setCards] = useState<SummaryCard[]>(cardsData);
 
+  // ======================= Visible Cards =======================
   const [visibleCardIds, setVisibleCardIds] = useState<string[]>(() => {
-    if (typeof window === "undefined") return cardsData.slice(0, 3).map(c => c.id);
+    if (typeof window === "undefined") {
+      return cardsData.slice(0, 3).map(c => c.id);
+    }
     const saved = localStorage.getItem("visibleCards");
-    return saved ? JSON.parse(saved) : cardsData.slice(0, 3).map(c => c.id);
+    if (saved) {
+      const parsed: string[] = JSON.parse(saved);
+      const valid = parsed.filter(id => cardsData.some(c => c.id === id));
+      while (valid.length < 3) {
+        const next = cardsData.find(c => !valid.includes(c.id));
+        if (!next) break;
+        valid.push(next.id);
+      }
+      return valid;
+    }
+    return cardsData.slice(0, 3).map(c => c.id);
   });
 
-  // Sync cards when props change
+  // ======================= Sync cardsData =======================
   useEffect(() => {
     setCards(cardsData);
+    setVisibleCardIds(prev => {
+      const validPrev = prev.filter(id => cardsData.some(c => c.id === id));
+      const additional = cardsData
+        .map(c => c.id)
+        .filter(id => !validPrev.includes(id))
+        .slice(0, Math.max(0, 3 - validPrev.length));
+      return [...validPrev, ...additional];
+    });
   }, [cardsData]);
 
-  // Persist visible cards
+  // ======================= Persist visible cards =======================
   useEffect(() => {
     localStorage.setItem("visibleCards", JSON.stringify(visibleCardIds));
   }, [visibleCardIds]);
 
-  // Drag & Drop handler
+  // ======================= Drag & Drop Handler =======================
   const onDragEnd = (result: DropResult) => {
     if (!result.destination) return;
     const reordered = Array.from(cards);
@@ -48,7 +70,7 @@ export default function Summary({ cardsData }: SummaryProps) {
     setCards(reordered);
   };
 
-  // Toggle card visibility
+  // ======================= Toggle Visible Cards =======================
   const toggleVisibleCard = (id: string) => {
     setVisibleCardIds(prev => {
       if (prev.includes(id)) return prev.filter(v => v !== id);
@@ -61,14 +83,9 @@ export default function Summary({ cardsData }: SummaryProps) {
     <div className="space-y-4">
       {/* ================= Header ================= */}
       <div className="flex items-center justify-between">
-        {/* Show/Hide Summary Icon */}
         <button
           onClick={() => setShowSummary(p => !p)}
-          className="
-            w-10 h-10 rounded-lg
-            bg-gray-100 flex items-center justify-center
-            hover:bg-gray-200 transition
-          "
+          className="w-10 h-10 rounded-lg bg-gray-100 flex items-center justify-center hover:bg-gray-200 transition"
           title={showSummary ? "Hide Summary" : "Show Summary"}
         >
           <i className={showSummary ? "bx bx-hide text-lg" : "bx bx-show text-lg"} />
@@ -76,15 +93,10 @@ export default function Summary({ cardsData }: SummaryProps) {
 
         {showSummary && (
           <div className="flex items-center gap-2">
-            {/* Done button appears only when reordering */}
             {isReorderMode && (
               <button
                 onClick={() => setIsReorderMode(false)}
-                className="
-                  w-10 h-10 rounded-full
-                  bg-blue-100 flex items-center justify-center
-                  hover:bg-blue-200 transition
-                "
+                className="w-10 h-10 rounded-full bg-blue-100 flex items-center justify-center hover:bg-blue-200 transition"
                 title="Done"
               >
                 <i className="bx bx-check text-blue-600 text-xl" />
@@ -94,14 +106,7 @@ export default function Summary({ cardsData }: SummaryProps) {
             {/* Dropdown */}
             <DropdownMenu.Root>
               <DropdownMenu.Trigger asChild>
-                <button
-                  className="
-                    w-10 h-10 rounded-full
-                    bg-gray-100 flex items-center justify-center
-                    hover:bg-gray-200
-                    data-[state=open]:bg-gray-200
-                  "
-                >
+                <button className="w-10 h-10 rounded-full bg-gray-100 flex items-center justify-center hover:bg-gray-200">
                   <i className="bx bx-dots-vertical-rounded text-lg" />
                 </button>
               </DropdownMenu.Trigger>
@@ -110,20 +115,7 @@ export default function Summary({ cardsData }: SummaryProps) {
                 <DropdownMenu.Content
                   align="end"
                   sideOffset={8}
-                  className="
-                    z-50 min-w-[160px]
-                    rounded-md border border-slate-200
-                    bg-white py-1 shadow-md
-                    origin-top-right
-                    data-[state=open]:animate-in
-                    data-[state=closed]:animate-out
-                    data-[state=open]:fade-in-0
-                    data-[state=closed]:fade-out-0
-                    data-[state=open]:scale-100
-                    data-[state=closed]:scale-95
-                    data-[side=bottom]:slide-in-from-top-1
-                    data-[side=top]:slide-in-from-bottom-1
-                  "
+                  className="z-50 min-w-[160px] rounded-md border border-slate-200 bg-white py-1 shadow-md"
                 >
                   <DropdownMenu.Item
                     onSelect={() => setIsReorderMode(true)}
@@ -218,28 +210,60 @@ export default function Summary({ cardsData }: SummaryProps) {
             </div>
 
             {/* Body */}
-            <div className="p-4 space-y-2 max-h-[300px] overflow-auto">
-              {cards.map(card => {
-                const checked = visibleCardIds.includes(card.id);
-                const disabled = !checked && visibleCardIds.length >= 3;
-
-                return (
+            <DragDropContext
+              onDragEnd={(result) => {
+                if (!result.destination) return;
+                const reordered = Array.from(cards);
+                const [removed] = reordered.splice(result.source.index, 1);
+                reordered.splice(result.destination.index, 0, removed);
+                setCards(reordered);
+              }}
+            >
+              <Droppable droppableId="modal" direction="vertical">
+                {(provided) => (
                   <div
-                    key={card.id}
-                    className={`flex items-center justify-between p-3 rounded-lg border transition
-                      ${checked ? "bg-blue-50 border-blue-300" : "bg-white border-slate-200"}
-                      ${disabled ? "opacity-50 cursor-not-allowed" : "hover:bg-gray-50"}`}
+                    ref={provided.innerRef}
+                    {...provided.droppableProps}
+                    className="p-4 space-y-2 max-h-[300px] overflow-auto"
                   >
-                    <button
-                      onClick={() => !disabled && toggleVisibleCard(card.id)}
-                      className="text-sm font-medium"
-                    >
-                      {card.title}
-                    </button>
+                    {cards.map((card, index) => {
+                      const checked = visibleCardIds.includes(card.id);
+                      const disabled = !checked && visibleCardIds.length >= 3;
+
+                      return (
+                        <Draggable
+                          key={card.id}
+                          draggableId={card.id}
+                          index={index}
+                          isDragDisabled={!isReorderMode}
+                        >
+                          {(provided) => (
+                            <label
+                              ref={provided.innerRef}
+                              {...provided.draggableProps}
+                              {...provided.dragHandleProps}
+                              className={`flex items-center justify-between p-3 rounded-lg border transition
+                                ${checked ? "bg-blue-50 border-blue-300" : "bg-white border-slate-200"}
+                                ${disabled ? "opacity-50 cursor-not-allowed" : "hover:bg-gray-50"}`}
+                            >
+                              <span className="text-sm font-medium">{card.title}</span>
+                              <input
+                                type="checkbox"
+                                checked={checked}
+                                disabled={disabled}
+                                onChange={() => toggleVisibleCard(card.id)}
+                                className="w-4 h-4"
+                              />
+                            </label>
+                          )}
+                        </Draggable>
+                      );
+                    })}
+                    {provided.placeholder}
                   </div>
-                );
-              })}
-            </div>
+                )}
+              </Droppable>
+            </DragDropContext>
 
             {/* Footer */}
             <div className="flex justify-end px-4 py-3 border-t border-slate-200">
