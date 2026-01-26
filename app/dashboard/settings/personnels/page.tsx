@@ -9,6 +9,7 @@ import ConfirmModal from "@/components/modal/ConfirmModal";
 import { Tooltip } from "@/components/feedback/Tooltip";
 import AccessDenied from "@/components/feedback/AccessDenied";
 import { useRouter } from "next/navigation";
+import { DragDropContext, Droppable, Draggable, DropResult } from "@hello-pangea/dnd";
 import type {
   AuthorizedPersonnel,
   BranchAssignment,
@@ -66,6 +67,7 @@ export default function PersonnelPage() {
   const [search, setSearch] = useState("");
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false);
+  const [showSummary, setShowSummary] = useState(true);
 
   const debouncedSearch = useDebounce(search, 400);
 
@@ -92,13 +94,11 @@ export default function PersonnelPage() {
   const pageCount = Math.max(1, Math.ceil(total / 10));
 
   /* ---------------- HELPERS ---------------- */
-  const isActive = (p: PersonnelWithRoles) =>
-    !p.disabled && !p.deletedAt;
+  const isActive = (p: PersonnelWithRoles) => !p.disabled && !p.deletedAt;
 
   const resolveRole = (p: PersonnelWithRoles): Role | "—" => {
     if (p.branchAssignments.some(b => b.role === "DEV")) return "DEV";
-    if (p.id === session?.user?.id && session?.user?.isOrgOwner)
-      return "ADMIN";
+    if (p.id === session?.user?.id && session?.user?.isOrgOwner) return "ADMIN";
     return p.branchAssignments[0]?.role ?? "—";
   };
 
@@ -119,12 +119,8 @@ export default function PersonnelPage() {
     }
   };
 
-  const isAllSelected =
-    personnel.length > 0 &&
-    personnel.every(p => selectedIds.has(p.id));
-
-  const isIndeterminate =
-    selectedIds.size > 0 && !isAllSelected;
+  const isAllSelected = personnel.length > 0 && personnel.every(p => selectedIds.has(p.id));
+  const isIndeterminate = selectedIds.size > 0 && !isAllSelected;
 
   /* ---------------- BULK DELETE ---------------- */
   const bulkDelete = async () => {
@@ -136,44 +132,81 @@ export default function PersonnelPage() {
           })
         )
       );
-      toast.addToast({
-        type: "success",
-        message: "Personnel deleted",
-      });
+      toast.addToast({ type: "success", message: "Personnel deleted" });
       setSelectedIds(new Set());
       setBulkDeleteOpen(false);
       mutate();
     } catch {
-      toast.addToast({
-        type: "error",
-        message: "Bulk delete failed",
-      });
+      toast.addToast({ type: "error", message: "Bulk delete failed" });
     }
   };
 
-  /* ---------------- RENDER ---------------- */
+  /* ---------------- SUMMARY CARDS ---------------- */
+  const initialCards = [
+    { id: "total", label: "Total Personnel", value: total },
+    { id: "active", label: "Active", value: activeCount },
+    { id: "inactive", label: "Inactive", value: inactiveCount },
+  ];
+  const [cards, setCards] = useState(initialCards);
+
+  const onDragEnd = (result: DropResult) => {
+    if (!result.destination) return;
+    const reordered = Array.from(cards);
+    const [removed] = reordered.splice(result.source.index, 1);
+    reordered.splice(result.destination.index, 0, removed);
+    setCards(reordered);
+  };
+
   return (
-    <div className="flex flex-col space-y-4 min-h-[calc(100vh-4rem)]">
-      {/* ================= SUMMARY ================= */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        {[
-          { label: "Total Personnel", value: total },
-          { label: "Active", value: activeCount },
-          { label: "Inactive", value: inactiveCount },
-        ].map(card => (
-          <div
-            key={card.label}
-            className="p-4 bg-white rounded shadow"
-          >
-            <span className="text-gray-500 text-sm">
-              {card.label}
-            </span>
-            <span className="text-2xl font-bold">
-              {card.value}
-            </span>
-          </div>
-        ))}
-      </div>
+    <div className="flex flex-col space-y-4 min-h-[calc(100vh-4rem)] p-4">
+      {/* ================= SHOW/HIDE SUMMARY ================= */}
+      <button
+        className="self-start text-xs text-blue-600 hover:underline"
+        onClick={() => setShowSummary(prev => !prev)}
+      >
+        {showSummary ? "Hide Summary" : "Show Summary"}
+      </button>
+
+      {showSummary && (
+        <DragDropContext onDragEnd={onDragEnd}>
+          <Droppable droppableId="summary-cards" direction="horizontal">
+            {(provided) => (
+              <div
+                ref={provided.innerRef}
+                {...provided.droppableProps}
+                className="grid grid-cols-1 md:grid-cols-3 gap-4"
+              >
+                {cards.map((card, index) => (
+                  <Draggable key={card.id} draggableId={card.id} index={index}>
+                    {(provided) => (
+                      <div
+                        ref={provided.innerRef}
+                        {...provided.draggableProps}
+                        {...provided.dragHandleProps}
+                        className="p-4 bg-white rounded shadow cursor-move hover:bg-gray-50"
+                        onClick={() => {
+                          if (card.id === "active") {
+                            setPage(1);
+                            // Example: filter active personnel
+                          }
+                          if (card.id === "inactive") {
+                            setPage(1);
+                            // Example: filter inactive personnel
+                          }
+                        }}
+                      >
+                        <span className="text-gray-500 text-sm">{card.label}</span>
+                        <span className="text-2xl font-bold">{card.value}</span>
+                      </div>
+                    )}
+                  </Draggable>
+                ))}
+                {provided.placeholder}
+              </div>
+            )}
+          </Droppable>
+        </DragDropContext>
+      )}
 
       {/* ================= TOP BAR ================= */}
       <div className="flex flex-wrap items-center gap-2 p-2 bg-white rounded shadow">
@@ -208,9 +241,7 @@ export default function PersonnelPage() {
         <div className="ml-auto">
           <Tooltip content="Add Personnel">
             <button
-              onClick={() =>
-                router.push("/dashboard/personnel/add")
-              }
+              onClick={() => router.push("/dashboard/personnel/add")}
               className="flex px-3 py-3 bg-gray-100 rounded-full hover:bg-gray-200"
             >
               <i className="bx bx-plus text-blue-600 text-lg" />
@@ -228,9 +259,7 @@ export default function PersonnelPage() {
                 <input
                   type="checkbox"
                   checked={isAllSelected}
-                  ref={el => {
-                    if (el) el.indeterminate = isIndeterminate;
-                  }}
+                  ref={el => { if (el) el.indeterminate = isIndeterminate; }}
                   onChange={toggleSelectAll}
                 />
               </th>
@@ -244,9 +273,7 @@ export default function PersonnelPage() {
 
           <tbody className="divide-y">
             {isLoading
-              ? Array.from({ length: 8 }).map((_, i) => (
-                  <SkeletonRow key={i} />
-                ))
+              ? Array.from({ length: 8 }).map((_, i) => <SkeletonRow key={i} />)
               : personnel.map(p => (
                   <tr key={p.id} className="hover:bg-gray-50">
                     <td className="p-3">
@@ -256,31 +283,17 @@ export default function PersonnelPage() {
                         onChange={() => toggleSelect(p.id)}
                       />
                     </td>
-                    <td className="p-3 font-medium">
-                      {p.name ?? "—"}
-                    </td>
+                    <td className="p-3 font-medium">{p.name ?? "—"}</td>
                     <td className="p-3">{p.email}</td>
+                    <td className="p-3">{resolveRole(p)}</td>
                     <td className="p-3">
-                      {resolveRole(p)}
-                    </td>
-                    <td className="p-3">
-                      <span
-                        className={
-                          isActive(p)
-                            ? "text-green-600"
-                            : "text-gray-500"
-                        }
-                      >
+                      <span className={isActive(p) ? "text-green-600" : "text-gray-500"}>
                         {isActive(p) ? "Active" : "Inactive"}
                       </span>
                     </td>
                     <td className="p-3 text-right">
                       <button
-                        onClick={() =>
-                          router.push(
-                            `/dashboard/personnel/edit/${p.id}`
-                          )
-                        }
+                        onClick={() => router.push(`/dashboard/personnel/edit/${p.id}`)}
                         className="text-blue-600 hover:underline text-xs"
                       >
                         Edit
@@ -296,21 +309,9 @@ export default function PersonnelPage() {
       <div className="flex justify-between text-xs">
         <span>Total: {total}</span>
         <div className="flex gap-2 items-center">
-          <button
-            disabled={page <= 1}
-            onClick={() => setPage(p => p - 1)}
-          >
-            Prev
-          </button>
-          <span>
-            {page} / {pageCount}
-          </span>
-          <button
-            disabled={page >= pageCount}
-            onClick={() => setPage(p => p + 1)}
-          >
-            Next
-          </button>
+          <button disabled={page <= 1} onClick={() => setPage(p => p - 1)}>Prev</button>
+          <span>{page} / {pageCount}</span>
+          <button disabled={page >= pageCount} onClick={() => setPage(p => p + 1)}>Next</button>
         </div>
       </div>
 
