@@ -6,17 +6,11 @@ import prisma from "@/lib/prisma";
 export async function GET(req: NextRequest) {
   try {
     const session = await getServerSession(authOptions);
-    if (!session?.user?.organizationId) {
-      return NextResponse.json(
-        { error: "Unauthorized" },
-        { status: 401 }
-      );
-    }
-
-    const organizationId = session.user.organizationId;
+    if (!session?.user?.organizationId)
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
     const categories = await prisma.category.findMany({
-      where: { organizationId, deletedAt: null },
+      where: { organizationId: session.user.organizationId },
       orderBy: { name: "asc" },
       select: { id: true, name: true },
     });

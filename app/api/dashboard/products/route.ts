@@ -1,250 +1,188 @@
+"use server";
+
 import { NextRequest, NextResponse } from "next/server";
+import { getServerSession } from "next-auth/next";
+import { authOptions } from "@/lib/auth";
 import prisma from "@/lib/prisma";
-import { getToken } from "next-auth/jwt";
-import { Prisma } from "@prisma/client";
+import type { Prisma, ProductTag } from "@prisma/client";
+import type { ProductsResponse } from "@/types";
+import dayjs from "dayjs";
 
-const secret = process.env.NEXTAUTH_SECRET as string;
+interface BranchProductsQuery {
+  page?: string;
+  pageSize?: string;
+  search?: string;
+  tag?: "ALL" | ProductTag;
+  sort?: "az" | "newest" | "";
+}
 
-/* -----------------------------
-   Types
------------------------------ */
-
-export type ProductResponse = {
-  id: string;
-  name: string;
-  sku: string;
-  barcode?: string | null;
-  description?: string | null;
-  categoryId?: string | null;
-  costPrice: number;
-  currency: string;
-  createdAt: string;
-  updatedAt: string;
-  categoryName?: string | null;
-};
-
-export type ProductsApiResponse = {
-  products: ProductResponse[];
-  totalCount: number;
-};
-
-/* -----------------------------
-   GET — List generic products
------------------------------ */
+// ------------------------------ GET PRODUCTS ------------------------------
 export async function GET(req: NextRequest) {
   try {
-    const token = await getToken({ req, secret });
-
-    if (
-      !token ||
-      !["DEV", "ADMIN", "MANAGER", "INVENTORY"].includes(token.role as string)
-    ) {
-      return NextResponse.json(
-        { products: [], totalCount: 0, error: "Unauthorized" },
-        { status: 401 }
-      );
+    const session = await getServerSession(authOptions);
+    if (!session?.user?.branchId || !session.user.organizationId) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    const url = new URL(req.url);
-    const page = Math.max(Number(url.searchParams.get("page") ?? 1), 1);
-    const pageSize = Math.min(
-      Math.max(Number(url.searchParams.get("pageSize") ?? 20), 1),
-      100
-    );
-    const search = url.searchParams.get("search")?.trim() ?? "";
+    const branchId = session.user.branchId;
+    const organizationId = session.user.organizationId;
 
-    const skip = (page - 1) * pageSize;
+    const params = Object.fromEntries(req.nextUrl.searchParams.entries()) as BranchProductsQuery;
+    const page = Math.max(Number(params.page ?? 1), 1);
+    const pageSize = Math.max(Number(params.pageSize ?? 10), 1);
+    const search = params.search?.trim();
+    const tag = params.tag ?? "ALL";
+    const sort = params.sort ?? "";
 
-    const where: Prisma.ProductWhereInput = {
-      organizationId: token.organizationId,
+    // ------------------------------ Branch Filter ------------------------------
+    const branchProductWhere: Prisma.BranchProductWhereInput = { branchId, organizationId };
+    if (tag !== "ALL") branchProductWhere.tag = tag;
+
+    // ------------------------------ Product Filter ------------------------------
+    const productWhere: Prisma.ProductWhereInput = {
+      organizationId,
       deletedAt: null,
-      ...(search
-        ? {
-            OR: [
-              { name: { contains: search, mode: "insensitive" } },
-              { sku: { contains: search, mode: "insensitive" } },
-              { barcode: { contains: search, mode: "insensitive" } },
-            ],
-          }
-        : {}),
+      branches: { some: branchProductWhere },
+      ...(search && {
+        OR: [
+          { name: { contains: search, mode: "insensitive" } },
+          { sku: { contains: search, mode: "insensitive" } },
+          { category: { name: { contains: search, mode: "insensitive" } } },
+        ],
+      }),
     };
 
-    const [products, totalCount] = await Promise.all([
+    // ------------------------------ Sort ------------------------------
+    let orderBy: Prisma.ProductOrderByWithRelationInput;
+    if (sort === "az") orderBy = { name: "asc" };
+    else if (sort === "newest") orderBy = { createdAt: "desc" };
+    else orderBy = { createdAt: "desc" };
+
+    // ------------------------------ Fetch Data ------------------------------
+    const [total, products] = await Promise.all([
+      prisma.product.count({ where: productWhere }),
       prisma.product.findMany({
-        where,
-        skip,
+        where: productWhere,
+        skip: (page - 1) * pageSize,
         take: pageSize,
-        orderBy: { createdAt: "desc" },
+        orderBy,
         include: {
           category: true,
+          branches: {
+            where: { branchId },
+            include: {
+              supplier: true,
+              orderItems: {
+                where: { order: { status: { in: ["PENDING", "PROCESSING"] } } },
+                select: { quantity: true },
+              },
+              sales: { select: { quantity: true, createdAt: true } },
+              stockMoves: {
+                take: 5,
+                orderBy: { createdAt: "desc" },
+                select: { type: true, quantity: true, createdAt: true },
+              },
+            },
+          },
         },
       }),
-      prisma.product.count({ where }),
     ]);
 
-    const serialized: ProductResponse[] = products.map((p) => ({
-      id: p.id,
-      name: p.name,
-      sku: p.sku,
-      barcode: p.barcode ?? null,
-      description: p.description ?? null,
-      categoryId: p.categoryId ?? null,
-      costPrice: p.costPrice,
-      currency: p.currency,
-      createdAt: p.createdAt.toISOString(),
-      updatedAt: p.updatedAt.toISOString(),
-      categoryName: p.category?.name ?? null,
-    }));
+    // ------------------------------ Transform Data ------------------------------
+    let totalQuantity = 0;
+    let totalValue = 0;
+    let lowStockCount = 0;
 
-    return NextResponse.json({ products: serialized, totalCount });
-  } catch (error) {
-    console.error("GET /api/dashboard/products error:", error);
-    return NextResponse.json(
-      { products: [], totalCount: 0, error: "Failed to fetch products" },
-      { status: 500 }
-    );
-  }
-}
+    const data = products.map(product => {
+      const bp = product.branches[0];
 
-/* -----------------------------
-   POST — Create product (generic)
------------------------------ */
-export async function POST(req: NextRequest) {
-  try {
-    const token = await getToken({ req, secret });
+      totalQuantity += bp.stock;
+      totalValue += bp.stock * bp.sellingPrice;
+      if (bp.tag === "LOW_STOCK") lowStockCount++;
 
-    if (!token || !["DEV", "ADMIN", "INVENTORY"].includes(token.role as string)) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
+      const totalSold = bp.sales?.reduce((sum, s) => sum + s.quantity, 0) ?? 0;
+      const firstSaleAt = bp.sales?.length ? bp.sales[bp.sales.length - 1].createdAt : undefined;
+      const lastSaleAt = bp.sales?.length ? bp.sales[0].createdAt : undefined;
+      const daysActive = firstSaleAt && lastSaleAt ? Math.max(dayjs(lastSaleAt).diff(dayjs(firstSaleAt), "day"), 1) : 1;
+      const salesVelocity = totalSold / daysActive;
 
-    const body = await req.json();
-
-    if (!body.name || !body.sku || typeof body.costPrice !== "number") {
-      return NextResponse.json(
-        { error: "Missing required fields" },
-        { status: 400 }
-      );
-    }
-
-    const product = await prisma.product.create({
-      data: {
-        name: body.name,
-        sku: body.sku,
-        barcode: body.barcode ?? null,
-        description: body.description ?? null,
-        categoryId: body.categoryId ?? null,
-        costPrice: body.costPrice,
-        currency: body.currency ?? "NGN",
-        organizationId: token.organizationId!,
-      },
+      return {
+        id: product.id,
+        organizationId: product.organizationId,
+        name: product.name,
+        sku: product.sku,
+        category: product.category ?? null,
+        sellingPrice: bp.sellingPrice,
+        stock: bp.stock,
+        tag: bp.tag,
+        unit: bp.unit ?? "pcs",
+        pendingOrders: bp.orderItems?.reduce((s, i) => s + i.quantity, 0) ?? 0,
+        totalSold,
+        salesVelocity,
+        supplier: bp.supplier ? { id: bp.supplier.id, name: bp.supplier.name } : undefined,
+        lastSoldAt: bp.lastSoldAt?.toISOString() ?? lastSaleAt?.toISOString() ?? null,
+        lastRestockedAt: bp.lastRestockedAt?.toISOString() ?? null,
+        stockMoves: bp.stockMoves?.map(sm => ({
+          type: sm.type,
+          quantity: sm.quantity,
+          createdAt: sm.createdAt.toISOString(),
+        })) ?? [],
+        createdAt: product.createdAt.toISOString(),
+        updatedAt: product.updatedAt.toISOString(),
+      };
     });
 
-    return NextResponse.json(product, { status: 201 });
-  } catch (error) {
-    console.error("POST /api/dashboard/products error:", error);
-    return NextResponse.json(
-      { error: "Failed to create product" },
-      { status: 500 }
-    );
-  }
-}
-
-/* -----------------------------
-   PUT — Update product (generic)
------------------------------ */
-export async function PUT(req: NextRequest) {
-  try {
-    const token = await getToken({ req, secret });
-
-    if (!token || !["DEV", "ADMIN", "INVENTORY"].includes(token.role as string)) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
-
-    const body = await req.json();
-
-    if (!body.id) {
-      return NextResponse.json(
-        { error: "Product ID required" },
-        { status: 400 }
-      );
-    }
-
-    const updated = await prisma.product.updateMany({
-      where: {
-        id: body.id,
-        organizationId: token.organizationId,
-        deletedAt: null,
-      },
-      data: {
-        name: body.name,
-        sku: body.sku,
-        barcode: body.barcode ?? null,
-        description: body.description ?? null,
-        categoryId: body.categoryId ?? null,
-        costPrice: body.costPrice,
-        currency: body.currency,
-      },
+    return NextResponse.json<ProductsResponse>({
+      data,
+      total,
+      page,
+      pageSize,
+      totalQuantity,
+      totalValue,
+      lowStockCount,
     });
-
-    if (updated.count === 0) {
-      return NextResponse.json(
-        { error: "Product not found or unauthorized" },
-        { status: 404 }
-      );
-    }
-
-    return NextResponse.json({ success: true });
-  } catch (error) {
-    console.error("PUT /api/dashboard/products error:", error);
-    return NextResponse.json(
-      { error: "Failed to update product" },
-      { status: 500 }
-    );
+  } catch (e) {
+    console.error(e);
+    return NextResponse.json({ error: "Failed to fetch products" }, { status: 500 });
   }
 }
 
-/* -----------------------------
-   DELETE — Soft delete product
------------------------------ */
+// ------------------------------ DELETE SINGLE PRODUCT ------------------------------
 export async function DELETE(req: NextRequest) {
   try {
-    const token = await getToken({ req, secret });
+    const session = await getServerSession(authOptions);
+    if (!session?.user?.organizationId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
-    if (!token || !["DEV", "ADMIN"].includes(token.role as string)) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
+    const id = req.nextUrl.searchParams.get("id");
+    if (!id) return NextResponse.json({ error: "Missing product ID" }, { status: 400 });
 
-    const { id } = await req.json();
+    await prisma.product.update({ where: { id }, data: { deletedAt: new Date() } });
 
-    if (!id) {
-      return NextResponse.json(
-        { error: "Product ID required" },
-        { status: 400 }
-      );
-    }
+    return NextResponse.json({ message: "Product deleted" });
+  } catch (e) {
+    console.error(e);
+    return NextResponse.json({ error: "Failed to delete product" }, { status: 500 });
+  }
+}
 
-    const deleted = await prisma.product.updateMany({
-      where: {
-        id,
-        organizationId: token.organizationId,
-        deletedAt: null,
-      },
+// ------------------------------ BULK DELETE ------------------------------
+export async function PATCH(req: NextRequest) {
+  try {
+    const session = await getServerSession(authOptions);
+    if (!session?.user?.organizationId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+
+    const body = await req.json();
+    const { ids } = body as { ids: string[] };
+    if (!ids?.length) return NextResponse.json({ error: "No product IDs provided" }, { status: 400 });
+
+    await prisma.product.updateMany({
+      where: { id: { in: ids } },
       data: { deletedAt: new Date() },
     });
 
-    if (deleted.count === 0) {
-      return NextResponse.json(
-        { error: "Product not found or unauthorized" },
-        { status: 404 }
-      );
-    }
-
-    return NextResponse.json({ success: true, id });
-  } catch (error) {
-    console.error("DELETE /api/dashboard/products error:", error);
-    return NextResponse.json(
-      { error: "Failed to delete product" },
-      { status: 500 }
-    );
+    return NextResponse.json({ message: `${ids.length} products deleted` });
+  } catch (e) {
+    console.error(e);
+    return NextResponse.json({ error: "Bulk delete failed" }, { status: 500 });
   }
 }

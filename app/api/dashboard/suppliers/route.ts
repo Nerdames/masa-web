@@ -4,7 +4,7 @@ import { authOptions } from "@/lib/auth";
 import prisma from "@/lib/prisma";
 import type { Prisma } from "@prisma/client";
 
-interface BranchSuppliersQuery {
+interface SuppliersQuery {
   page?: string;
   pageSize?: string;
   search?: string;
@@ -13,35 +13,20 @@ interface BranchSuppliersQuery {
 export async function GET(req: NextRequest) {
   try {
     const session = await getServerSession(authOptions);
+    if (!session?.user?.organizationId || !session.user.branchId)
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
-    if (!session?.user?.branchId || !session.user.organizationId) {
-      return NextResponse.json(
-        { error: "Unauthorized or branch not assigned" },
-        { status: 401 }
-      );
-    }
-
+    const orgId = session.user.organizationId;
     const branchId = session.user.branchId;
-    const organizationId = session.user.organizationId;
 
-    // ---------------- Query params ----------------
-    const params = Object.fromEntries(
-      req.nextUrl.searchParams.entries()
-    ) as BranchSuppliersQuery;
-
+    const params = Object.fromEntries(req.nextUrl.searchParams.entries()) as SuppliersQuery;
     const page = Math.max(Number(params.page ?? 1), 1);
     const pageSize = Math.max(Number(params.pageSize ?? 10), 1);
     const search = params.search?.trim();
 
-    // ---------------- Supplier where ----------------
     const where: Prisma.SupplierWhereInput = {
-      organizationId,
-      branchProducts: {
-        some: {
-          branchId,
-          organizationId,
-        },
-      },
+      organizationId: orgId,
+      branchProducts: { some: { branchId } },
       ...(search && {
         OR: [
           { name: { contains: search, mode: "insensitive" } },
@@ -51,7 +36,6 @@ export async function GET(req: NextRequest) {
       }),
     };
 
-    // ---------------- Fetch ----------------
     const [total, suppliers] = await Promise.all([
       prisma.supplier.count({ where }),
       prisma.supplier.findMany({
@@ -59,41 +43,38 @@ export async function GET(req: NextRequest) {
         skip: (page - 1) * pageSize,
         take: pageSize,
         orderBy: { createdAt: "desc" },
-        include: {
-          branchProducts: {
-            where: { branchId },
-            select: {
-              id: true,
-              productId: true,
-              sellingPrice: true,
-              stock: true,
-            },
-          },
-        },
       }),
     ]);
 
-    return NextResponse.json({
-      data: suppliers.map((s) => ({
-        id: s.id,
-        organizationId: s.organizationId,
-        name: s.name,
-        email: s.email ?? null,
-        phone: s.phone ?? null,
-        address: s.address ?? null,
-        createdAt: s.createdAt.toISOString(),
-        updatedAt: s.updatedAt.toISOString(),
-        branchProducts: s.branchProducts,
-      })),
-      total,
-      page,
-      pageSize,
+    return NextResponse.json({ data: suppliers, total, page, pageSize });
+  } catch (err) {
+    console.error("Suppliers API Error:", err);
+    return NextResponse.json({ error: "Failed to fetch suppliers" }, { status: 500 });
+  }
+}
+
+export async function POST(req: NextRequest) {
+  try {
+    const session = await getServerSession(authOptions);
+    if (!session?.user?.organizationId)
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+
+    const body = await req.json();
+    if (!body.name) return NextResponse.json({ error: "Supplier name required" }, { status: 400 });
+
+    const supplier = await prisma.supplier.create({
+      data: {
+        name: body.name,
+        email: body.email ?? null,
+        phone: body.phone ?? null,
+        address: body.address ?? null,
+        organizationId: session.user.organizationId,
+      },
     });
-  } catch (error) {
-    console.error("Branch Suppliers API Error:", error);
-    return NextResponse.json(
-      { error: "Failed to fetch suppliers" },
-      { status: 500 }
-    );
+
+    return NextResponse.json(supplier, { status: 201 });
+  } catch (err) {
+    console.error("Create Supplier Error:", err);
+    return NextResponse.json({ error: "Failed to create supplier" }, { status: 500 });
   }
 }

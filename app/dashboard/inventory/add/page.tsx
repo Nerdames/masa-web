@@ -27,7 +27,7 @@ interface QuickAddProduct {
 }
 
 export default function AddProductPage() {
-  const currentUser: User = { id: "1", name: "Admin" }; // placeholder
+  const currentUser: User = { id: "1", name: "Admin" };
 
   const [suppliers, setSuppliers] = useState<Supplier[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
@@ -90,7 +90,7 @@ export default function AddProductPage() {
   };
 
   const handleCreateProduct = async () => {
-    if (!form.supplierId) return alert("Please select a supplier first");
+    if (!form.supplierId && !form.supplierName) return alert("Please select or add a supplier first");
     setSubmitting(true);
     try {
       const res = await fetch("/api/dashboard/products", {
@@ -99,15 +99,17 @@ export default function AddProductPage() {
         body: JSON.stringify({
           name: form.name,
           sku: form.sku,
-          costPrice: form.costPrice,
-          sellingPrice: form.sellingPrice,
-          stock: form.stock,
-          supplierId: form.supplierId,
-          categoryId: form.categoryId,
+          costPrice: form.costPrice || 0,
+          sellingPrice: form.sellingPrice || 0,
+          stock: form.stock || 0,
+          supplierId: form.supplierId || null,
+          supplierName: form.supplierName || null,
+          categoryId: form.categoryId || null,
           organizationId: "1",
         }),
       });
-      const newProduct = await res.json();
+      const newProduct: Product = await res.json();
+      if (!newProduct.id) throw new Error("Product creation failed");
       setProducts((prev) => [newProduct, ...prev]);
       setHighlightedProductId(newProduct.id);
 
@@ -125,13 +127,14 @@ export default function AddProductPage() {
       setTimeout(() => setHighlightedProductId(null), 2000);
     } catch (err) {
       console.error(err);
+      alert("Failed to create product");
     } finally {
       setSubmitting(false);
     }
   };
 
   const handleSaveAll = async () => {
-    if (!form.supplierId) return alert("Please select a supplier first");
+    if (!form.supplierId && !form.supplierName) return alert("Please select or add a supplier first");
     setSubmitting(true);
     try {
       const newProducts: Product[] = [];
@@ -140,13 +143,19 @@ export default function AddProductPage() {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            ...row,
-            supplierId: form.supplierId,
+            name: row.name,
+            sku: row.sku,
+            costPrice: row.costPrice || 0,
+            sellingPrice: row.sellingPrice || 0,
+            stock: row.stock || 0,
+            supplierId: form.supplierId || null,
+            supplierName: form.supplierName || null,
+            categoryId: row.categoryId || null,
             organizationId: "1",
           }),
         });
-        const p = await res.json();
-        newProducts.push(p);
+        const p: Product = await res.json();
+        if (p.id) newProducts.push(p);
       }
 
       setProducts((prev) => [...newProducts, ...prev]);
@@ -154,10 +163,10 @@ export default function AddProductPage() {
         setHighlightedProductId(newProducts[0].id);
         setTimeout(() => setHighlightedProductId(null), 2000);
       }
-
       setQuickAddRows([]);
     } catch (err) {
       console.error(err);
+      alert("Failed to save products");
     } finally {
       setSubmitting(false);
     }

@@ -65,7 +65,7 @@ export default function InventoryPage() {
   }, [page, debouncedSearch, sortOrder, filterTag]);
 
   const { data, isLoading, mutate } = useSWR<ProductsResponse>(
-    `/api/dashboard/branches/products?${query}`,
+    `/api/dashboard/products?${query}`,
     fetcher,
     { keepPreviousData: true }
   );
@@ -162,7 +162,7 @@ export default function InventoryPage() {
     }
 
     try {
-      const res = await fetch("/api/dashboard/branches/products", {
+      const res = await fetch("/api/dashboard/products", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ ids: idsToDelete }),
