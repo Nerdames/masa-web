@@ -1,13 +1,13 @@
 // Barrel file for frontend-safe types
 
 // -------------------- Enums --------------------
-export type { 
-  Role, 
-  CustomerType, 
-  OrderStatus, 
-  StockMovementType, 
-  ProductTag, 
-  NotificationType 
+export type {
+  Role,
+  CustomerType,
+  OrderStatus,
+  StockMovementType,
+  ProductTag,
+  NotificationType
 } from "./enums";
 
 // -------------------- Domain types --------------------
@@ -22,19 +22,19 @@ export type {
   CustomerTag
 } from "./domain";
 
-// -------------------- Product types --------------------
-export type { 
-  BranchProduct, 
-  Product, 
-  BranchProductsQuery, 
-  ProductsResponse 
+// -------------------- Product / Inventory types --------------------
+export type {
+  Product,               // catalog product (org-scoped)
+  BranchProduct,         // branch-product entity
+  InventoryProduct,      // ✅ inventory DTO used by UI
+  BranchProductsQuery,
+  ProductsResponse       // ✅ inventory API response
 } from "./product";
 
-// Orders
+// -------------------- Orders --------------------
 export type { Order } from "./order";
 export type { OrderItem } from "./orderItem";
 export type { Invoice } from "./invoice";
-
 
 // -------------------- Customers --------------------
 export type { Customer } from "./customer";
@@ -49,7 +49,7 @@ export type { StockMovement } from "./stockMovement";
 export type { Notification } from "./notifications";
 
 // -------------------- Sales --------------------
-export type { Sale } from "./sale"; // New: includes attendant, customer, paymentType, discount, tax
+export type { Sale } from "./sale";
 
 // -------------------- Auth / NextAuth --------------------
 export type { Account, Session, VerificationToken } from "./auth";

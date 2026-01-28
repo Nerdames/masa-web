@@ -4,17 +4,13 @@ import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "next-auth/next";
 import { authOptions } from "@/lib/auth";
 import prisma from "@/lib/prisma";
-import type { Prisma, ProductTag } from "@prisma/client";
-import type { ProductsResponse } from "@/types";
+import type { Prisma } from "@prisma/client";
+import type {
+  ProductsResponse,
+  BranchProductsQuery,
+  InventoryProduct,
+} from "@/types";
 import dayjs from "dayjs";
-
-interface BranchProductsQuery {
-  page?: string;
-  pageSize?: string;
-  search?: string;
-  tag?: "ALL" | ProductTag;
-  sort?: "az" | "newest" | "";
-}
 
 // ------------------------------ GET PRODUCTS ------------------------------
 export async function GET(req: NextRequest) {
@@ -27,7 +23,10 @@ export async function GET(req: NextRequest) {
     const branchId = session.user.branchId;
     const organizationId = session.user.organizationId;
 
-    const params = Object.fromEntries(req.nextUrl.searchParams.entries()) as BranchProductsQuery;
+    const params = Object.fromEntries(
+      req.nextUrl.searchParams.entries()
+    ) as BranchProductsQuery;
+
     const page = Math.max(Number(params.page ?? 1), 1);
     const pageSize = Math.max(Number(params.pageSize ?? 10), 1);
     const search = params.search?.trim();
@@ -35,8 +34,11 @@ export async function GET(req: NextRequest) {
     const sort = params.sort ?? "";
 
     // ------------------------------ Branch Filter ------------------------------
-    const branchProductWhere: Prisma.BranchProductWhereInput = { branchId, organizationId };
-    if (tag !== "ALL") branchProductWhere.tag = tag;
+    const branchProductWhere: Prisma.BranchProductWhereInput = {
+      branchId,
+      organizationId,
+      ...(tag !== "ALL" && { tag }),
+    };
 
     // ------------------------------ Product Filter ------------------------------
     const productWhere: Prisma.ProductWhereInput = {
@@ -53,10 +55,12 @@ export async function GET(req: NextRequest) {
     };
 
     // ------------------------------ Sort ------------------------------
-    let orderBy: Prisma.ProductOrderByWithRelationInput;
-    if (sort === "az") orderBy = { name: "asc" };
-    else if (sort === "newest") orderBy = { createdAt: "desc" };
-    else orderBy = { createdAt: "desc" };
+    const orderBy: Prisma.ProductOrderByWithRelationInput =
+      sort === "az"
+        ? { name: "asc" }
+        : sort === "newest"
+        ? { createdAt: "desc" }
+        : { createdAt: "desc" };
 
     // ------------------------------ Fetch Data ------------------------------
     const [total, products] = await Promise.all([
@@ -93,44 +97,84 @@ export async function GET(req: NextRequest) {
     let totalValue = 0;
     let lowStockCount = 0;
 
-    const data = products.map(product => {
-      const bp = product.branches[0];
+    const data = products
+      .map(product => {
+        const bp = product.branches[0];
+        if (!bp) return null; // defensive guard
 
-      totalQuantity += bp.stock;
-      totalValue += bp.stock * bp.sellingPrice;
-      if (bp.tag === "LOW_STOCK") lowStockCount++;
+        totalQuantity += bp.stock;
+        totalValue += bp.stock * bp.sellingPrice;
+        if (bp.tag === "LOW_STOCK") lowStockCount++;
 
-      const totalSold = bp.sales?.reduce((sum, s) => sum + s.quantity, 0) ?? 0;
-      const firstSaleAt = bp.sales?.length ? bp.sales[bp.sales.length - 1].createdAt : undefined;
-      const lastSaleAt = bp.sales?.length ? bp.sales[0].createdAt : undefined;
-      const daysActive = firstSaleAt && lastSaleAt ? Math.max(dayjs(lastSaleAt).diff(dayjs(firstSaleAt), "day"), 1) : 1;
-      const salesVelocity = totalSold / daysActive;
+        const totalSold =
+          bp.sales?.reduce((sum, s) => sum + s.quantity, 0) ?? 0;
 
-      return {
-        id: product.id,
-        organizationId: product.organizationId,
-        name: product.name,
-        sku: product.sku,
-        category: product.category ?? null,
-        sellingPrice: bp.sellingPrice,
-        stock: bp.stock,
-        tag: bp.tag,
-        unit: bp.unit ?? "pcs",
-        pendingOrders: bp.orderItems?.reduce((s, i) => s + i.quantity, 0) ?? 0,
-        totalSold,
-        salesVelocity,
-        supplier: bp.supplier ? { id: bp.supplier.id, name: bp.supplier.name } : undefined,
-        lastSoldAt: bp.lastSoldAt?.toISOString() ?? lastSaleAt?.toISOString() ?? null,
-        lastRestockedAt: bp.lastRestockedAt?.toISOString() ?? null,
-        stockMoves: bp.stockMoves?.map(sm => ({
-          type: sm.type,
-          quantity: sm.quantity,
-          createdAt: sm.createdAt.toISOString(),
-        })) ?? [],
-        createdAt: product.createdAt.toISOString(),
-        updatedAt: product.updatedAt.toISOString(),
-      };
-    });
+        const firstSaleAt =
+          bp.sales?.length ? bp.sales[bp.sales.length - 1].createdAt : null;
+        const lastSaleAt =
+          bp.sales?.length ? bp.sales[0].createdAt : null;
+
+        const daysActive =
+          firstSaleAt && lastSaleAt
+            ? Math.max(
+                dayjs(lastSaleAt).diff(dayjs(firstSaleAt), "day"),
+                1
+              )
+            : 1;
+
+        const salesVelocity = totalSold / daysActive;
+
+        const item: InventoryProduct = {
+          id: product.id,
+          organizationId: product.organizationId,
+          name: product.name,
+          sku: product.sku,
+          category: product.category
+            ? {
+                id: product.category.id,
+                organizationId: product.category.organizationId,
+                name: product.category.name,
+                description: product.category.description,
+                createdAt: product.category.createdAt.toISOString(),
+              }
+            : null,
+
+
+          sellingPrice: bp.sellingPrice,
+          stock: bp.stock,
+          tag: bp.tag,
+          unit: bp.unit ?? "pcs",
+
+          pendingOrders:
+            bp.orderItems?.reduce((s, i) => s + i.quantity, 0) ?? 0,
+          totalSold,
+          salesVelocity,
+
+          supplier: bp.supplier
+            ? { id: bp.supplier.id, name: bp.supplier.name }
+            : null,
+
+          lastSoldAt:
+            bp.lastSoldAt?.toISOString() ??
+            lastSaleAt?.toISOString() ??
+            null,
+
+          lastRestockedAt: bp.lastRestockedAt?.toISOString() ?? null,
+
+          stockMoves:
+            bp.stockMoves?.map(sm => ({
+              type: sm.type,
+              quantity: sm.quantity,
+              createdAt: sm.createdAt.toISOString(),
+            })) ?? [],
+
+          createdAt: product.createdAt.toISOString(),
+          updatedAt: product.updatedAt.toISOString(),
+        };
+
+        return item;
+      })
+      .filter((p): p is InventoryProduct => p !== null);
 
     return NextResponse.json<ProductsResponse>({
       data,
@@ -143,7 +187,10 @@ export async function GET(req: NextRequest) {
     });
   } catch (e) {
     console.error(e);
-    return NextResponse.json({ error: "Failed to fetch products" }, { status: 500 });
+    return NextResponse.json(
+      { error: "Failed to fetch products" },
+      { status: 500 }
+    );
   }
 }
 
@@ -151,17 +198,27 @@ export async function GET(req: NextRequest) {
 export async function DELETE(req: NextRequest) {
   try {
     const session = await getServerSession(authOptions);
-    if (!session?.user?.organizationId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    if (!session?.user?.organizationId) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
 
     const id = req.nextUrl.searchParams.get("id");
-    if (!id) return NextResponse.json({ error: "Missing product ID" }, { status: 400 });
+    if (!id) {
+      return NextResponse.json({ error: "Missing product ID" }, { status: 400 });
+    }
 
-    await prisma.product.update({ where: { id }, data: { deletedAt: new Date() } });
+    await prisma.product.update({
+      where: { id },
+      data: { deletedAt: new Date() },
+    });
 
     return NextResponse.json({ message: "Product deleted" });
   } catch (e) {
     console.error(e);
-    return NextResponse.json({ error: "Failed to delete product" }, { status: 500 });
+    return NextResponse.json(
+      { error: "Failed to delete product" },
+      { status: 500 }
+    );
   }
 }
 
@@ -169,20 +226,31 @@ export async function DELETE(req: NextRequest) {
 export async function PATCH(req: NextRequest) {
   try {
     const session = await getServerSession(authOptions);
-    if (!session?.user?.organizationId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    if (!session?.user?.organizationId) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
 
-    const body = await req.json();
-    const { ids } = body as { ids: string[] };
-    if (!ids?.length) return NextResponse.json({ error: "No product IDs provided" }, { status: 400 });
+    const body = (await req.json()) as { ids: string[] };
+    if (!body.ids?.length) {
+      return NextResponse.json(
+        { error: "No product IDs provided" },
+        { status: 400 }
+      );
+    }
 
     await prisma.product.updateMany({
-      where: { id: { in: ids } },
+      where: { id: { in: body.ids } },
       data: { deletedAt: new Date() },
     });
 
-    return NextResponse.json({ message: `${ids.length} products deleted` });
+    return NextResponse.json({
+      message: `${body.ids.length} products deleted`,
+    });
   } catch (e) {
     console.error(e);
-    return NextResponse.json({ error: "Bulk delete failed" }, { status: 500 });
+    return NextResponse.json(
+      { error: "Bulk delete failed" },
+      { status: 500 }
+    );
   }
 }

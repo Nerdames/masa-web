@@ -2,7 +2,8 @@ import type { Category, Supplier } from "./domain";
 import type { ProductTag } from "./enums";
 
 /* ---------------------------------------------
- * BranchProduct (Branch-scoped inventory)
+ * BranchProduct (Branch-scoped inventory entity)
+ * Mirrors Prisma BranchProduct
  * ------------------------------------------- */
 export interface BranchProduct {
   id: string;
@@ -26,10 +27,11 @@ export interface BranchProduct {
   supplierId?: string | null;
   supplier?: Supplier | null;
 
-  pendingOrders?: number;       // aggregated
-  totalSold?: number;           // aggregated
-  salesVelocity?: number;       // units/day
-  stockCoverageDays?: number;   // stock / velocity
+  // Aggregates
+  pendingOrders?: number;
+  totalSold?: number;
+  salesVelocity?: number;
+  stockCoverageDays?: number;
 
   stockMoves?: {
     type: "IN" | "OUT" | "ADJUST" | "TRANSFER";
@@ -42,7 +44,8 @@ export interface BranchProduct {
 }
 
 /* ---------------------------------------------
- * Product (Organization-scoped catalog)
+ * Product (Organization-scoped catalog product)
+ * Mirrors Prisma Product
  * ------------------------------------------- */
 export interface Product {
   id: string;
@@ -63,7 +66,48 @@ export interface Product {
 
   // Relations
   category?: Category | null;
-  branches: BranchProduct[];
+  branches?: BranchProduct[]; // optional outside Prisma contexts
+}
+
+/* ---------------------------------------------
+ * InventoryProduct (API DTO used by UI)
+ * THIS is what your inventory page consumes
+ * ------------------------------------------- */
+export interface InventoryProduct {
+  id: string;
+  organizationId: string;
+
+  name: string;
+  sku: string;
+
+  category?: Category | null;
+
+  // Branch-scoped fields (flattened)
+  stock: number;
+  sellingPrice: number;
+  tag: ProductTag;
+  unit: string;
+
+  pendingOrders: number;
+  totalSold: number;
+  salesVelocity: number;
+
+  supplier?: {
+    id: string;
+    name: string;
+  } | null;
+
+  lastSoldAt?: string | null;
+  lastRestockedAt?: string | null;
+
+  stockMoves: {
+    type: "IN" | "OUT" | "ADJUST" | "TRANSFER";
+    quantity: number;
+    createdAt: string;
+  }[];
+
+  createdAt: string;
+  updatedAt: string;
 }
 
 /* ---------------------------------------------
@@ -74,14 +118,24 @@ export interface BranchProductsQuery {
   pageSize?: string;
   search?: string;
   tag?: "ALL" | ProductTag;
+  sort?: "az" | "newest" | "";
 }
 
 /* ---------------------------------------------
- * API Response
+ * API Response (Inventory endpoint)
  * ------------------------------------------- */
 export interface ProductsResponse {
-  data: Product[];
+  data: InventoryProduct[];
+
   total: number;
   page: number;
   pageSize: number;
+
+  totalQuantity: number;
+  totalValue: number;
+  lowStockCount: number;
+  outOfStockCount?: number;
+  discontinuedCount?: number;
+  hotCount?: number;
+  pendingOrders?: number;
 }
