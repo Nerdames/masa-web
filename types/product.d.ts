@@ -123,6 +123,7 @@ export interface BranchProductsQuery {
 
 /* ---------------------------------------------
  * API Response (Inventory endpoint)
+ * Matches exactly what server returns
  * ------------------------------------------- */
 export interface ProductsResponse {
   data: InventoryProduct[];
@@ -133,9 +134,10 @@ export interface ProductsResponse {
 
   totalQuantity: number;
   totalValue: number;
+
   lowStockCount: number;
-  outOfStockCount?: number;
-  discontinuedCount?: number;
-  hotCount?: number;
-  pendingOrders?: number;
+  outOfStockCount: number;
+  discontinuedCount: number;
+  hotCount: number;
+  pendingOrders: number;
 }

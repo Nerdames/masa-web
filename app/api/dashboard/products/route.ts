@@ -96,33 +96,40 @@ export async function GET(req: NextRequest) {
     let totalQuantity = 0;
     let totalValue = 0;
     let lowStockCount = 0;
+    let outOfStockCount = 0;
+    let discontinuedCount = 0;
+    let hotCount = 0;
+    let totalPendingOrders = 0;
 
     const data = products
       .map(product => {
         const bp = product.branches[0];
-        if (!bp) return null; // defensive guard
+        if (!bp) return null;
 
         totalQuantity += bp.stock;
         totalValue += bp.stock * bp.sellingPrice;
+
         if (bp.tag === "LOW_STOCK") lowStockCount++;
+        if (bp.tag === "OUT_OF_STOCK") outOfStockCount++;
+        if (bp.tag === "DISCONTINUED") discontinuedCount++;
+        if (bp.tag === "HOT") hotCount++;
 
-        const totalSold =
-          bp.sales?.reduce((sum, s) => sum + s.quantity, 0) ?? 0;
+        const totalSold = bp.sales?.reduce((sum, s) => sum + s.quantity, 0) ?? 0;
 
-        const firstSaleAt =
-          bp.sales?.length ? bp.sales[bp.sales.length - 1].createdAt : null;
-        const lastSaleAt =
-          bp.sales?.length ? bp.sales[0].createdAt : null;
+        const firstSaleAt = bp.sales?.length
+          ? bp.sales[bp.sales.length - 1].createdAt
+          : null;
+        const lastSaleAt = bp.sales?.length ? bp.sales[0].createdAt : null;
 
         const daysActive =
           firstSaleAt && lastSaleAt
-            ? Math.max(
-                dayjs(lastSaleAt).diff(dayjs(firstSaleAt), "day"),
-                1
-              )
+            ? Math.max(dayjs(lastSaleAt).diff(dayjs(firstSaleAt), "day"), 1)
             : 1;
 
         const salesVelocity = totalSold / daysActive;
+
+        const pendingOrders = bp.orderItems?.reduce((s, i) => s + i.quantity, 0) ?? 0;
+        totalPendingOrders += pendingOrders;
 
         const item: InventoryProduct = {
           id: product.id,
@@ -138,36 +145,26 @@ export async function GET(req: NextRequest) {
                 createdAt: product.category.createdAt.toISOString(),
               }
             : null,
-
-
-          sellingPrice: bp.sellingPrice,
           stock: bp.stock,
+          sellingPrice: bp.sellingPrice,
           tag: bp.tag,
           unit: bp.unit ?? "pcs",
-
-          pendingOrders:
-            bp.orderItems?.reduce((s, i) => s + i.quantity, 0) ?? 0,
+          pendingOrders,
           totalSold,
           salesVelocity,
-
           supplier: bp.supplier
             ? { id: bp.supplier.id, name: bp.supplier.name }
             : null,
-
           lastSoldAt:
             bp.lastSoldAt?.toISOString() ??
-            lastSaleAt?.toISOString() ??
-            null,
-
+            (lastSaleAt ? lastSaleAt.toISOString() : null),
           lastRestockedAt: bp.lastRestockedAt?.toISOString() ?? null,
-
           stockMoves:
             bp.stockMoves?.map(sm => ({
               type: sm.type,
               quantity: sm.quantity,
               createdAt: sm.createdAt.toISOString(),
             })) ?? [],
-
           createdAt: product.createdAt.toISOString(),
           updatedAt: product.updatedAt.toISOString(),
         };
@@ -176,7 +173,8 @@ export async function GET(req: NextRequest) {
       })
       .filter((p): p is InventoryProduct => p !== null);
 
-    return NextResponse.json<ProductsResponse>({
+    // ------------------------------ Return Full Response ------------------------------
+    const response: ProductsResponse = {
       data,
       total,
       page,
@@ -184,9 +182,15 @@ export async function GET(req: NextRequest) {
       totalQuantity,
       totalValue,
       lowStockCount,
-    });
+      outOfStockCount,
+      discontinuedCount,
+      hotCount,
+      pendingOrders: totalPendingOrders,
+    };
+
+    return NextResponse.json<ProductsResponse>(response);
   } catch (e) {
-    console.error(e);
+    console.error("GET products failed:", e);
     return NextResponse.json(
       { error: "Failed to fetch products" },
       { status: 500 }
@@ -207,14 +211,18 @@ export async function DELETE(req: NextRequest) {
       return NextResponse.json({ error: "Missing product ID" }, { status: 400 });
     }
 
-    await prisma.product.update({
+    const deletedProduct = await prisma.product.update({
       where: { id },
       data: { deletedAt: new Date() },
     });
 
-    return NextResponse.json({ message: "Product deleted" });
-  } catch (e) {
-    console.error(e);
+    return NextResponse.json({
+      message: "Product deleted",
+      productId: deletedProduct.id,
+      deletedAt: deletedProduct.deletedAt?.toISOString() ?? null,
+    });
+  } catch (error) {
+    console.error("DELETE product failed:", error);
     return NextResponse.json(
       { error: "Failed to delete product" },
       { status: 500 }
@@ -222,7 +230,7 @@ export async function DELETE(req: NextRequest) {
   }
 }
 
-// ------------------------------ BULK DELETE ------------------------------
+// ------------------------------ BULK DELETE PRODUCTS ------------------------------
 export async function PATCH(req: NextRequest) {
   try {
     const session = await getServerSession(authOptions);
@@ -230,24 +238,23 @@ export async function PATCH(req: NextRequest) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    const body = (await req.json()) as { ids: string[] };
-    if (!body.ids?.length) {
-      return NextResponse.json(
-        { error: "No product IDs provided" },
-        { status: 400 }
-      );
+    const body = (await req.json()) as { ids?: string[] };
+    if (!body.ids || !body.ids.length) {
+      return NextResponse.json({ error: "No product IDs provided" }, { status: 400 });
     }
 
-    await prisma.product.updateMany({
+    const updateResult = await prisma.product.updateMany({
       where: { id: { in: body.ids } },
       data: { deletedAt: new Date() },
     });
 
     return NextResponse.json({
-      message: `${body.ids.length} products deleted`,
+      message: `${updateResult.count} product(s) deleted`,
+      deletedIds: body.ids,
+      timestamp: new Date().toISOString(),
     });
-  } catch (e) {
-    console.error(e);
+  } catch (error) {
+    console.error("PATCH bulk delete failed:", error);
     return NextResponse.json(
       { error: "Bulk delete failed" },
       { status: 500 }
