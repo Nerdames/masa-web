@@ -10,6 +10,7 @@ export type SummaryCard = {
   value: number;
   filter: string;
   color?: string;
+  isCurrency?: boolean;
 };
 
 interface SummaryProps {

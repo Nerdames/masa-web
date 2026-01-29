@@ -3,6 +3,7 @@ import type { Invoice } from "./invoice";
 import type { Customer } from "./customer";
 import type { AuthorizedPersonnel } from "./personnel";
 import type { Branch } from "./domain";
+import type { Sale } from "./sale"; // <-- imported Sale
 import type { OrderStatus } from "./enums";
 
 /* ---------------------------------------------
@@ -21,9 +22,9 @@ export interface Order {
   currency: string;
   status: OrderStatus;
 
-  dueDate?: string | null;        // new field
-  paymentTerms?: string | null;   // new field
-  notes?: string | null;          // new field
+  dueDate?: string | null;        // optional due date
+  paymentTerms?: string | null;   // optional payment terms
+  notes?: string | null;          // optional notes
 
   deletedAt?: string | null;
   createdAt: string;
@@ -38,4 +39,6 @@ export interface Order {
   customer?: Customer | null;
   personnel: AuthorizedPersonnel;
   branch: Branch;
+
+  sales: Sale[]; // fully typed
 }

@@ -10,8 +10,8 @@ import TopBar from "@/components/layout/TopBar";
 const dashboardItems: SidebarItem[] = [
   { key: "overview", name: "Overview", href: "/dashboard", icon: "bx-home", mode: "dashboard" },
   { key: "inventory", name: "Inventory", href: "/dashboard/inventory", icon: "bx-box", mode: "dashboard" },
-  { key: "orders", name: "Orders", href: "/dashboard/orders", icon: "bx-cart", mode: "dashboard" },
   { key: "sales", name: "Sales", href: "/dashboard/sales", icon: "bx-chart", mode: "dashboard" },
+  { key: "orders", name: "Orders", href: "/dashboard/orders", icon: "bx-cart", mode: "dashboard" },
   { key: "invoices", name: "Invoices", href: "/dashboard/invoices", icon: "bx-file", mode: "dashboard" },
   { key: "customers", name: "Customers", href: "/dashboard/customers", icon: "bx-user", mode: "dashboard" },
   { key: "notifications", name: "Notifications", href: "/dashboard/notifications", icon: "bx-bell", mode: "dashboard" },

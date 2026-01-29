@@ -37,6 +37,14 @@ enum OrderStatus {
   RETURNED
 }
 
+enum InvoiceStatus {
+  DRAFT
+  ISSUED
+  PARTIALLY_PAID
+  PAID
+  VOIDED
+}
+
 enum StockMovementType {
   IN
   OUT
@@ -149,6 +157,9 @@ model AuthorizedPersonnel {
 
   // SALES
   salesAttended Sale[] @relation("AttendantSales")
+
+  // INVOICES paid by this personnel
+  invoicesPaid Invoice[] @relation("InvoicePaidBy")
 }
 
 model BranchAssignment {
@@ -313,15 +324,15 @@ model Order {
   personnelId    String
   customerId     String?
 
-  total      Float
-  paidAmount Float       @default(0)
-  balance    Float       @default(0)
-  currency   String      @default("NGN")
-  status     OrderStatus @default(PENDING)
-  dueDate    DateTime?
+  total        Float
+  paidAmount   Float       @default(0)
+  balance      Float       @default(0)
+  currency     String      @default("NGN")
+  status       OrderStatus @default(PENDING)
+  dueDate      DateTime?
   paymentTerms String?
-  notes      String?
-  deletedAt  DateTime?
+  notes        String?
+  deletedAt    DateTime?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -333,6 +344,7 @@ model Order {
 
   items    OrderItem[]
   invoices Invoice[]
+  sales    Sale[]      @relation("OrderSales")
 }
 
 model OrderItem {
@@ -356,16 +368,36 @@ model OrderItem {
 }
 
 model Invoice {
-  id        String   @id @default(cuid())
-  orderId   String
-  total     Float
-  paid      Boolean  @default(false)
-  currency  String   @default("NGN")
-  discount  Float?   @default(0)
-  tax       Float?   @default(0)
-  createdAt DateTime @default(now())
+  id      String @id @default(cuid())
+  orderId String
 
-  order Order @relation(fields: [orderId], references: [id])
+  total      Float
+  paidAmount Float  @default(0)
+  currency   String @default("NGN")
+  discount   Float? @default(0)
+  tax        Float? @default(0)
+
+  status InvoiceStatus @default(ISSUED)
+
+  issuedAt DateTime  @default(now())
+  paidAt   DateTime?
+  closedAt DateTime?
+  voidedAt DateTime?
+
+  paidById String?
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @default(now()) @updatedAt
+  deletedAt DateTime?
+
+  order  Order                @relation(fields: [orderId], references: [id])
+  paidBy AuthorizedPersonnel? @relation("InvoicePaidBy", fields: [paidById], references: [id])
+  sales  Sale[]
+
+  @@index([orderId])
+  @@index([status])
+  @@index([paidAt])
+  @@index([issuedAt])
 }
 
 ////////////////////////////////////
@@ -377,6 +409,8 @@ model Sale {
   organizationId  String
   branchProductId String
   productId       String
+  orderId         String? // optional, if sale is tied to an order
+  invoiceId       String? // optional, if sale is tied to an invoice
   quantity        Int
   total           Float
   currency        String   @default("NGN")
@@ -384,20 +418,23 @@ model Sale {
 
   attendantId String?
   customerId  String?
-  paymentType String?
-  discount    Float? @default(0)
-  tax         Float? @default(0)
+  paymentType String? // CASH, CARD, BANK_TRANSFER, etc
+  discount    Float?  @default(0)
+  tax         Float?  @default(0)
 
-  organization  Organization  @relation(fields: [organizationId], references: [id])
-  branchProduct BranchProduct @relation("BranchProductSales", fields: [branchProductId], references: [id])
-  product       Product       @relation("ProductSales", fields: [productId], references: [id])
-
-  attendant AuthorizedPersonnel? @relation("AttendantSales", fields: [attendantId], references: [id])
-  customer  Customer?            @relation("CustomerSales", fields: [customerId], references: [id])
+  organization  Organization         @relation(fields: [organizationId], references: [id])
+  branchProduct BranchProduct        @relation("BranchProductSales", fields: [branchProductId], references: [id])
+  product       Product              @relation("ProductSales", fields: [productId], references: [id])
+  attendant     AuthorizedPersonnel? @relation("AttendantSales", fields: [attendantId], references: [id])
+  customer      Customer?            @relation("CustomerSales", fields: [customerId], references: [id])
+  order         Order?               @relation("OrderSales", fields: [orderId], references: [id])
+  invoice       Invoice?             @relation(fields: [invoiceId], references: [id])
 
   @@index([organizationId])
   @@index([branchProductId])
   @@index([productId])
+  @@index([orderId])
+  @@index([invoiceId])
   @@index([createdAt])
 }
 

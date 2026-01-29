@@ -1,4 +1,14 @@
 import type { Role } from "@prisma/client";
+import type { Branch } from "./domain";
+import type { Organization } from "./organization";
+import type { Order } from "./order";
+import type { ActivityLog } from "./activityLog";
+import type { Notification } from "./notification";
+import type { StockMovement } from "./stockMovement";
+import type { Account } from "./account";
+import type { Session } from "./session";
+import type { Sale } from "./sale";
+import type { Invoice } from "./invoice";
 
 /* ---------------------------------------------
  * Authorized Personnel
@@ -22,7 +32,23 @@ export interface AuthorizedPersonnel {
   createdAt: string;
   updatedAt: string;
 
+  /* ---------------------------------------------
+   * Relations
+   * ------------------------------------------- */
   branchAssignments: BranchAssignment[];
+  organization: Organization;
+  branch?: Branch | null;
+
+  orders: Order[];
+  activityLogs: ActivityLog[];
+  notifications: Notification[];
+  stockMoves: StockMovement[];
+  accounts: Account[];
+  sessions: Session[];
+  ownedOrganizations: Organization[];
+
+  salesAttended: Sale[];
+  invoicesPaid: Invoice[];
 }
 
 /* ---------------------------------------------
@@ -33,4 +59,10 @@ export interface BranchAssignment {
   personnelId: string;
   branchId: string;
   role: Role;
+
+  /* ---------------------------------------------
+   * Relations
+   * ------------------------------------------- */
+  personnel: AuthorizedPersonnel;
+  branch: Branch;
 }

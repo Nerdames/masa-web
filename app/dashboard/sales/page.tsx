@@ -264,13 +264,15 @@ export default function SalesPage() {
       {/* ================= Sales Table ================= */}
       <div className="flex-1 overflow-x-auto">
         <table className="w-full text-sm border-separate border-spacing-y-3 min-w-[900px]">
-          <thead className="bg-gray-50 text-xs uppercase text-gray-500 sticky top-0 z-20">
+          <thead className="bg-gray-50 text-xs uppercase text-gray-500 sticky top-0 z-10">
             <tr>
               <th className="w-10 p-2">
                 <input
                   type="checkbox"
                   checked={isAllSelected}
-                  ref={el => el && (el.indeterminate = isIndeterminate)}
+                  ref={el => {
+                    if (el) el.indeterminate = isIndeterminate;
+                  }}
                   onChange={toggleSelectAll}
                 />
               </th>

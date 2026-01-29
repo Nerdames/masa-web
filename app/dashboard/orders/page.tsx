@@ -238,7 +238,9 @@ export default function OrdersPage() {
                 <input
                   type="checkbox"
                   checked={isAllSelected}
-                  ref={el => el && (el.indeterminate = isIndeterminate)}
+                  ref={el => {
+                    if (el) el.indeterminate = isIndeterminate;
+                  }}
                   onChange={toggleSelectAll}
                 />
               </th>

@@ -14,11 +14,13 @@ export interface OrderItem {
   price: number;
   total: number;
 
-  // New Prisma fields
+  // Optional fields from Prisma
   discount?: number | null;
   tax?: number | null;
 
-  // Relations
+  /* ---------------------------------------------
+   * Relations
+   * ------------------------------------------- */
   order: Order;
   branchProduct: BranchProduct;
   product: Product;
