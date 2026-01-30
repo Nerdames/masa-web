@@ -15,14 +15,14 @@ export type SummaryCard = {
 
 interface SummaryProps {
   cardsData: SummaryCard[];
+  loading?: boolean; // <-- new prop to show skeletons
 }
 
-export default function Summary({ cardsData }: SummaryProps) {
+export default function Summary({ cardsData, loading = false }: SummaryProps) {
   const [showSummary, setShowSummary] = useState(true);
   const [showCardModal, setShowCardModal] = useState(false);
   const [isReorderMode, setIsReorderMode] = useState(false);
 
-  // Cards state
   const [cards, setCards] = useState<SummaryCard[]>(cardsData);
 
   // ======================= Visible Cards =======================
@@ -78,6 +78,20 @@ export default function Summary({ cardsData }: SummaryProps) {
       if (prev.length >= 3) return prev;
       return [...prev, id];
     });
+  };
+
+  // ======================= Skeleton Loader =======================
+  const renderSkeletons = () => {
+    const skeletonCount = 3; // show 3 skeleton cards
+    return Array.from({ length: skeletonCount }).map((_, i) => (
+      <div
+        key={i}
+        className="relative p-4 bg-white rounded-xl border border-slate-200 shadow-sm animate-pulse"
+      >
+        <div className="h-4 bg-slate-200 rounded w-3/4 mb-2"></div>
+        <div className="h-6 bg-slate-300 rounded w-1/2"></div>
+      </div>
+    ));
   };
 
   return (
@@ -140,7 +154,7 @@ export default function Summary({ cardsData }: SummaryProps) {
         )}
       </div>
 
-      {/* ================= Cards ================= */}
+      {/* ================= Cards or Skeletons ================= */}
       {showSummary && (
         <DragDropContext onDragEnd={onDragEnd}>
           <Droppable droppableId="summary" direction="horizontal">
@@ -150,41 +164,43 @@ export default function Summary({ cardsData }: SummaryProps) {
                 {...provided.droppableProps}
                 className="grid grid-cols-1 md:grid-cols-3 gap-4"
               >
-                {cards
-                  .filter(card => visibleCardIds.includes(card.id))
-                  .map((card, index) => (
-                    <Draggable
-                      key={card.id}
-                      draggableId={card.id}
-                      index={index}
-                      isDragDisabled={!isReorderMode}
-                    >
-                      {(provided) => (
-                        <div
-                          ref={provided.innerRef}
-                          {...provided.draggableProps}
-                          className={`relative p-4 bg-white rounded-xl border border-slate-200 shadow-sm transition hover:bg-gray-50
-                            ${isReorderMode ? "ring-1 ring-blue-200" : ""}`}
+                {loading
+                  ? renderSkeletons()
+                  : cards
+                      .filter(card => visibleCardIds.includes(card.id))
+                      .map((card, index) => (
+                        <Draggable
+                          key={card.id}
+                          draggableId={card.id}
+                          index={index}
+                          isDragDisabled={!isReorderMode}
                         >
-                          {isReorderMode && (
+                          {(provided) => (
                             <div
-                              {...provided.dragHandleProps}
-                              className="absolute top-3 right-3 text-gray-400 cursor-grab"
+                              ref={provided.innerRef}
+                              {...provided.draggableProps}
+                              className={`relative p-4 bg-white rounded-xl border border-slate-200 shadow-sm transition hover:bg-gray-50
+                                ${isReorderMode ? "ring-1 ring-blue-200" : ""}`}
                             >
-                              <i className="bx bx-move" />
+                              {isReorderMode && (
+                                <div
+                                  {...provided.dragHandleProps}
+                                  className="absolute top-3 right-3 text-gray-400 cursor-grab"
+                                >
+                                  <i className="bx bx-move" />
+                                </div>
+                              )}
+
+                              <div>
+                                <div className="text-sm text-slate-500">{card.title}</div>
+                                <div className={`text-xl font-bold mt-1 ${card.color ?? "text-slate-900"}`}>
+                                  {card.value}
+                                </div>
+                              </div>
                             </div>
                           )}
-
-                          <div>
-                            <div className="text-sm text-slate-500">{card.title}</div>
-                            <div className={`text-xl font-bold mt-1 ${card.color ?? "text-slate-900"}`}>
-                              {card.value}
-                            </div>
-                          </div>
-                        </div>
-                      )}
-                    </Draggable>
-                  ))}
+                        </Draggable>
+                      ))}
                 {provided.placeholder}
               </div>
             )}
