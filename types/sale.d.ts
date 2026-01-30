@@ -4,9 +4,11 @@ import type { AuthorizedPersonnel } from "./personnel";
 import type { Order } from "./order";
 import type { Invoice } from "./invoice";
 import type { Organization } from "./organization";
+import type { PaymentMethod } from "./enums";
 
 /* ---------------------------------------------
  * Sale
+ * Mirrors Prisma Sale model
  * ------------------------------------------- */
 export interface Sale {
   id: string;
@@ -16,23 +18,26 @@ export interface Sale {
   orderId?: string | null;
   invoiceId?: string | null;
   quantity: number;
+  unitPrice: number;
   total: number;
   currency: string;
-  createdAt: string;
+  status: "PENDING" | "COMPLETED" | "CANCELLED";
+  createdAt: Date;
 
-  // Optional fields
+  // Optional fields from Prisma
   attendantId?: string | null;
   customerId?: string | null;
-  paymentType?: "CASH" | "TRANSFER" | "OTHER" | null;
   discount?: number | null;
   tax?: number | null;
 
+  paymentType?: PaymentMethod | null;
+
   /* ---------------------------------------------
-   * Relations
+   * Relations (optional)
    * ------------------------------------------- */
-  organization: Organization;
-  branchProduct: BranchProduct;
-  product: Product;
+  organization?: Organization;
+  branchProduct?: BranchProduct;
+  product?: Product;
 
   attendant?: AuthorizedPersonnel | null;
   customer?: Customer | null;

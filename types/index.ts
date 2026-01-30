@@ -1,4 +1,6 @@
-// Barrel file for frontend-safe types
+// ======================================================
+// Barrel file — MASA Types (frontend-safe)
+// ======================================================
 
 // -------------------- Enums --------------------
 export type {
@@ -6,7 +8,10 @@ export type {
   CustomerType,
   OrderStatus,
   StockMovementType,
-  ProductTag,
+  InvoiceStatus,
+  SaleStatus,
+  PaymentMethod,
+  PaymentStatus,
   NotificationType
 } from "./enums";
 
@@ -26,14 +31,13 @@ export type {
 export type {
   Product,               // catalog product (org-scoped)
   BranchProduct,         // branch-product entity
-  InventoryProduct,      // ✅ inventory DTO used by UI
-  BranchProductsQuery,
-  ProductsResponse       // ✅ inventory API response
+  InventoryProduct,      // inventory DTO for UI
+  BranchProductsQuery,   // API query params
+  ProductsResponse       // inventory API response
 } from "./product";
 
 // -------------------- Orders --------------------
-export type { Order } from "./order";
-export type { OrderItem } from "./orderItem";
+export type { Order, OrderItem } from "./order";
 export type { Invoice } from "./invoice";
 
 // -------------------- Customers --------------------
@@ -42,7 +46,7 @@ export type { Customer } from "./customer";
 // -------------------- Personnel --------------------
 export type { AuthorizedPersonnel, BranchAssignment } from "./personnel";
 
-// -------------------- Stock movements --------------------
+// -------------------- Stock Movements --------------------
 export type { StockMovement } from "./stockMovement";
 
 // -------------------- Notifications --------------------
@@ -50,6 +54,10 @@ export type { Notification } from "./notifications";
 
 // -------------------- Sales --------------------
 export type { Sale } from "./sale";
+
+// -------------------- Payments / Receipts --------------------
+export type { Payment } from "./payment";
+export type { Receipt } from "./receipt";
 
 // -------------------- Auth / NextAuth --------------------
 export type { Account, Session, VerificationToken } from "./auth";

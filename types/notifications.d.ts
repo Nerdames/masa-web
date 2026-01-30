@@ -2,6 +2,7 @@ import type { NotificationType } from "./enums";
 
 /* ---------------------------------------------
  * Notification
+ * Mirrors Prisma Notification model
  * ------------------------------------------- */
 export interface Notification {
   id: string;
@@ -17,9 +18,9 @@ export interface Notification {
 
   /**
    * Prisma: Json?
-   * Stores an array of personnelIds who have read the notification
+   * Stores personnelIds who have read the notification
    */
   readBy?: string[] | null;
 
-  createdAt: string;
+  createdAt: Date;
 }

@@ -1,5 +1,3 @@
-import type { ProductTag } from "./enums";
-
 /* ======================================================
  * BASE ENTITIES (Schema-aligned, non-relational)
  * ==================================================== */
@@ -10,8 +8,8 @@ export interface Organization {
   active: boolean;
   ownerId?: string | null;
 
-  createdAt: string;
-  updatedAt: string;
+  createdAt: Date;
+  updatedAt: Date;
 }
 
 export interface Branch {
@@ -21,10 +19,10 @@ export interface Branch {
   name: string;
   location?: string | null;
   active: boolean;
-  deletedAt?: string | null;
+  deletedAt?: Date | null;
 
-  createdAt: string;
-  updatedAt: string;
+  createdAt: Date;
+  updatedAt: Date;
 }
 
 export interface Category {
@@ -34,7 +32,8 @@ export interface Category {
   name: string;
   description?: string | null;
 
-  createdAt: string;
+  createdAt: Date;
+  updatedAt: Date;
 }
 
 export interface Supplier {
@@ -46,8 +45,8 @@ export interface Supplier {
   phone?: string | null;
   address?: string | null;
 
-  createdAt: string;
-  updatedAt: string;
+  createdAt: Date;
+  updatedAt: Date;
 }
 
 /* ======================================================
@@ -55,6 +54,7 @@ export interface Supplier {
  * ==================================================== */
 
 export interface ProductBreakdownItem {
+  productId: string;
   name: string;
   quantity: number;
   total: number;
@@ -71,13 +71,19 @@ export interface CustomerOrderSummary {
   totalSpent: number;
   currency: string;
 
-  lastOrderAt?: string | null;
+  lastOrderAt?: Date | null;
 
-  /**
-   * Mirrors Prisma Json?
-   * Stored as key-value pairs (productId → breakdown)
-   */
   productBreakdown?: Record<string, ProductBreakdownItem> | null;
+
+  createdAt: Date;
+  updatedAt: Date;
+
+  /* ---------------------------------------------
+   * Relations (optional — Prisma include-based)
+   * ------------------------------------------- */
+  organization?: Organization;
+  branch?: Branch;
+  customer?: Customer;
 }
 
 /* ======================================================
@@ -91,7 +97,12 @@ export interface CustomerGroup {
   name: string;
   description?: string | null;
 
-  createdAt: string;
+  createdAt: Date;
+  updatedAt: Date;
+
+  /* Relations */
+  organization?: Organization;
+  customers?: Customer[];
 }
 
 export interface CustomerTag {
@@ -100,5 +111,9 @@ export interface CustomerTag {
   customerId: string;
 
   name: string;
-  createdAt: string;
+  createdAt: Date;
+
+  /* Relations */
+  organization?: Organization;
+  customer?: Customer;
 }

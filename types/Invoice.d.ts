@@ -1,35 +1,47 @@
 import type { Order } from "./order";
 import type { AuthorizedPersonnel } from "./personnel";
+import type { Branch, Organization } from "./domain";
+import type { Customer } from "./customer";
 import type { InvoiceStatus } from "./enums";
+import type { Payment } from "./payment";
+import type { Sale } from "./sale";
+import type { Receipt } from "./receipt";
 
 /* ---------------------------------------------
  * Invoice
+ * Mirrors Prisma Invoice model
  * ------------------------------------------- */
 export interface Invoice {
   id: string;
+  organizationId: string;
+  branchId: string;
   orderId: string;
+  issuedById: string;
+  customerId?: string | null;
 
   total: number;
-  paidAmount: number;
+  paidAmount: number;   // Prisma Float @default(0)
+  balance: number;
   currency: string;
-  discount?: number | null;
-  tax?: number | null;
   status: InvoiceStatus;
+  deletedAt?: Date | null;
 
-  issuedAt: string;
-  paidAt?: string | null;
-  closedAt?: string | null;
-  voidedAt?: string | null;
-  deletedAt?: string | null;
+  issuedAt: Date;
+  dueDate?: Date | null;
 
-  paidById?: string | null;
-
-  createdAt: string;
-  updatedAt: string;
+  createdAt: Date;
+  updatedAt: Date;
 
   /* ---------------------------------------------
-   * Relations
+   * Relations (optional — Prisma include-based)
    * ------------------------------------------- */
-  order: Order;
-  paidBy?: AuthorizedPersonnel | null;
+  order?: Order;
+  issuedBy?: AuthorizedPersonnel;
+  customer?: Customer | null;
+  organization?: Organization;
+  branch?: Branch;
+
+  payments?: Payment[];
+  sales?: Sale[];
+  receipts?: Receipt[];
 }

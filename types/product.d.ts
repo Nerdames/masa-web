@@ -1,5 +1,5 @@
 import type { Category, Supplier } from "./domain";
-import type { ProductTag } from "./enums";
+import type { StockMovementType } from "@prisma/client";
 
 /* ---------------------------------------------
  * BranchProduct (Branch-scoped inventory entity)
@@ -13,7 +13,6 @@ export interface BranchProduct {
 
   stock: number;
   reorderLevel: number;
-  tag: ProductTag;
 
   sellingPrice: number;
   costPrice?: number | null;
@@ -21,26 +20,26 @@ export interface BranchProduct {
   safetyStock?: number | null;
   unit?: string | null;
 
-  lastSoldAt?: string | null;
-  lastRestockedAt?: string | null;
+  lastSoldAt?: Date | null;
+  lastRestockedAt?: Date | null;
 
   supplierId?: string | null;
   supplier?: Supplier | null;
 
-  // Aggregates
+  // Aggregates (derived / optional)
   pendingOrders?: number;
   totalSold?: number;
   salesVelocity?: number;
   stockCoverageDays?: number;
 
   stockMoves?: {
-    type: "IN" | "OUT" | "ADJUST" | "TRANSFER";
+    type: StockMovementType;
     quantity: number;
-    createdAt: string;
+    createdAt: Date;
   }[];
 
-  createdAt: string;
-  updatedAt?: string;
+  createdAt: Date;
+  updatedAt?: Date;
 }
 
 /* ---------------------------------------------
@@ -60,18 +59,18 @@ export interface Product {
   costPrice: number;
   currency: string;
 
-  deletedAt?: string | null;
-  createdAt: string;
-  updatedAt: string;
+  deletedAt?: Date | null;
+  createdAt: Date;
+  updatedAt: Date;
 
   // Relations
   category?: Category | null;
-  branches?: BranchProduct[]; // optional outside Prisma contexts
+  branches?: BranchProduct[];
 }
 
 /* ---------------------------------------------
  * InventoryProduct (API DTO used by UI)
- * THIS is what your inventory page consumes
+ * Flattened view for frontend
  * ------------------------------------------- */
 export interface InventoryProduct {
   id: string;
@@ -82,10 +81,9 @@ export interface InventoryProduct {
 
   category?: Category | null;
 
-  // Branch-scoped fields (flattened)
+  // Branch-scoped fields
   stock: number;
   sellingPrice: number;
-  tag: ProductTag;
   unit: string;
 
   pendingOrders: number;
@@ -97,33 +95,32 @@ export interface InventoryProduct {
     name: string;
   } | null;
 
-  lastSoldAt?: string | null;
-  lastRestockedAt?: string | null;
+  lastSoldAt?: Date | null;
+  lastRestockedAt?: Date | null;
 
   stockMoves: {
-    type: "IN" | "OUT" | "ADJUST" | "TRANSFER";
+    type: StockMovementType;
     quantity: number;
-    createdAt: string;
+    createdAt: Date;
   }[];
 
-  createdAt: string;
-  updatedAt: string;
+  createdAt: Date;
+  updatedAt: Date;
 }
 
 /* ---------------------------------------------
- * API Query Params
+ * API query params for Inventory
  * ------------------------------------------- */
 export interface BranchProductsQuery {
   page?: string;
   pageSize?: string;
   search?: string;
-  tag?: "ALL" | ProductTag;
+  tag?: "ALL" | string;
   sort?: "az" | "newest" | "";
 }
 
 /* ---------------------------------------------
- * API Response (Inventory endpoint)
- * Matches exactly what server returns
+ * API response from Inventory endpoint
  * ------------------------------------------- */
 export interface ProductsResponse {
   data: InventoryProduct[];

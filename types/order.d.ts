@@ -1,44 +1,65 @@
-import type { OrderItem } from "./orderItem";
-import type { Invoice } from "./invoice";
+// types/order.d.ts
+
+import type { Branch } from "./domain";
 import type { Customer } from "./customer";
 import type { AuthorizedPersonnel } from "./personnel";
-import type { Branch } from "./domain";
-import type { Sale } from "./sale"; // <-- imported Sale
-import type { OrderStatus } from "./enums";
+import type { Invoice } from "./invoice";
+
+/* ---------------------------------------------
+ * OrderItem
+ * Mirrors Prisma OrderItem model
+ * ------------------------------------------- */
+export interface OrderItem {
+  id: string;
+  orderId: string;
+  branchProductId: string;
+  productId: string;
+
+  quantity: number;   // Prisma Int
+  unitPrice: number;  // Prisma Float
+  total: number;      // Prisma Float (snapshot)
+
+  discount?: number | null; // Prisma Float? @default(0)
+  tax?: number | null;      // Prisma Float? @default(0)
+
+  /* ---------------------------------------------
+   * Relations (optional — Prisma include-based)
+   * ------------------------------------------- */
+  order?: Order;
+  branchProduct?: unknown; // optional, define BranchProduct type if needed
+  product?: unknown;       // optional, define Product type if needed
+}
 
 /* ---------------------------------------------
  * Order
+ * Mirrors Prisma Order model
  * ------------------------------------------- */
 export interface Order {
   id: string;
   organizationId: string;
   branchId: string;
-  personnelId: string;
+  salespersonId: string;
   customerId?: string | null;
 
   total: number;
-  paidAmount: number;
-  balance: number;
   currency: string;
-  status: OrderStatus;
+  status: string; // import OrderStatus from enums if strict typing is needed
 
-  dueDate?: string | null;        // optional due date
-  paymentTerms?: string | null;   // optional payment terms
-  notes?: string | null;          // optional notes
+  notes?: string | null;
+  expiresAt?: Date | null;
+  deletedAt?: Date | null;
 
-  deletedAt?: string | null;
-  createdAt: string;
-  updatedAt: string;
+  createdAt: Date;
+  updatedAt: Date;
 
   /* ---------------------------------------------
-   * Relations
+   * Relations (optional — Prisma include-based)
    * ------------------------------------------- */
-  items: OrderItem[];
-  invoices: Invoice[];
+  items?: OrderItem[];
+  invoice?: Invoice | null;
 
+  organization?: unknown;           // frontend usually omits this
+  branch?: Branch;
+  salesperson?: AuthorizedPersonnel;
   customer?: Customer | null;
-  personnel: AuthorizedPersonnel;
-  branch: Branch;
-
-  sales: Sale[]; // fully typed
 }

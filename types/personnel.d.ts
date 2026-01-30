@@ -12,6 +12,7 @@ import type { Invoice } from "./invoice";
 
 /* ---------------------------------------------
  * Authorized Personnel
+ * Mirrors Prisma AuthorizedPersonnel model
  * ------------------------------------------- */
 export interface AuthorizedPersonnel {
   id: string;
@@ -23,36 +24,39 @@ export interface AuthorizedPersonnel {
   staffCode?: string | null;
   disabled: boolean;
 
-  deletedAt?: string | null;
-  lastLogin?: string | null;
+  deletedAt?: Date | null;
+  lastLogin?: Date | null;
 
   organizationId: string;
   branchId?: string | null;
 
-  createdAt: string;
-  updatedAt: string;
+  isOrgOwner: boolean;
+
+  createdAt: Date;
+  updatedAt: Date;
 
   /* ---------------------------------------------
-   * Relations
+   * Relations (optional — Prisma include-based)
    * ------------------------------------------- */
-  branchAssignments: BranchAssignment[];
-  organization: Organization;
+  branchAssignments?: BranchAssignment[];
+  organization?: Organization;
   branch?: Branch | null;
 
-  orders: Order[];
-  activityLogs: ActivityLog[];
-  notifications: Notification[];
-  stockMoves: StockMovement[];
-  accounts: Account[];
-  sessions: Session[];
-  ownedOrganizations: Organization[];
+  orders?: Order[];
+  activityLogs?: ActivityLog[];
+  notifications?: Notification[];
+  stockMoves?: StockMovement[];
+  accounts?: Account[];
+  sessions?: Session[];
+  ownedOrganizations?: Organization[];
 
-  salesAttended: Sale[];
-  invoicesPaid: Invoice[];
+  salesAttended?: Sale[];
+  invoicesPaid?: Invoice[];
 }
 
 /* ---------------------------------------------
  * Branch Assignment
+ * Mirrors Prisma BranchAssignment model
  * ------------------------------------------- */
 export interface BranchAssignment {
   id: string;
@@ -61,8 +65,8 @@ export interface BranchAssignment {
   role: Role;
 
   /* ---------------------------------------------
-   * Relations
+   * Relations (optional — Prisma include-based)
    * ------------------------------------------- */
-  personnel: AuthorizedPersonnel;
-  branch: Branch;
+  personnel?: AuthorizedPersonnel;
+  branch?: Branch;
 }

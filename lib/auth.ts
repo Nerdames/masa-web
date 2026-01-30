@@ -5,13 +5,14 @@ import prisma from "./prisma";
 import { Role } from "@/types/enums";
 
 /* ------------------------------------------
- * Module augmentation
+ * Module augmentation for NextAuth
  * ------------------------------------------ */
 declare module "next-auth" {
   interface Session {
     user: {
       id?: string;
       role?: Role;
+      isOrgOwner?: boolean;
       organizationId?: string;
       organizationName?: string | null;
       branchId?: string | null;
@@ -22,6 +23,7 @@ declare module "next-auth" {
 
   interface User extends DefaultUser {
     role: Role;
+    isOrgOwner: boolean;
     organizationId: string;
     organizationName?: string | null;
     branchId?: string | null;
@@ -34,6 +36,7 @@ declare module "next-auth/jwt" {
   interface JWT {
     id?: string;
     role?: Role;
+    isOrgOwner?: boolean;
     organizationId?: string;
     organizationName?: string | null;
     branchId?: string | null;
@@ -53,23 +56,12 @@ export const authOptions: NextAuthOptions = {
   providers: [
     CredentialsProvider({
       name: "Credentials",
-
       credentials: {
         email: { label: "Email", type: "email" },
         password: { label: "Password", type: "password" },
       },
 
-      async authorize(credentials): Promise<{
-        id: string;
-        name: string | null;
-        email: string;
-        role: Role;
-        organizationId: string;
-        organizationName: string | null;
-        branchId: string | null;
-        branchName: string | null;
-        lastLogin: string;
-      } | null> {
+      async authorize(credentials) {
         if (!credentials?.email || !credentials?.password) return null;
 
         const personnel = await prisma.authorizedPersonnel.findFirst({
@@ -90,34 +82,49 @@ export const authOptions: NextAuthOptions = {
         const isValid = await bcrypt.compare(credentials.password, personnel.password);
         if (!isValid) return null;
 
+        // ----------------------------
         // Determine effective role
+        // ----------------------------
         let effectiveRole: Role | null = null;
 
-        if (personnel.branchId) {
+        // Org owners are always ADMIN
+        if (personnel.isOrgOwner) {
+          effectiveRole = "ADMIN";
+        }
+
+        // Check branch assignment if no org-owner role
+        if (!effectiveRole && personnel.branchId) {
           const assignment = personnel.branchAssignments.find(
             (ba) => ba.branchId === personnel.branchId
           );
           if (assignment) effectiveRole = assignment.role;
         }
 
+        // Fallback to first branch assignment
         if (!effectiveRole && personnel.branchAssignments.length > 0) {
           effectiveRole = personnel.branchAssignments[0].role;
         }
 
-        if (!effectiveRole) return null;
+        if (!effectiveRole) return null; // Cannot login without a role
 
+        // ----------------------------
+        // Update last login
+        // ----------------------------
         const now = new Date();
-
         await prisma.authorizedPersonnel.update({
           where: { id: personnel.id },
           data: { lastLogin: now },
         });
 
+        // ----------------------------
+        // Return NextAuth user object
+        // ----------------------------
         return {
           id: personnel.id,
           name: personnel.name,
           email: personnel.email,
-          role: effectiveRole,
+          role: effectiveRole,            // ✅ Role
+          isOrgOwner: personnel.isOrgOwner, // ✅ boolean
           organizationId: personnel.organizationId,
           organizationName: personnel.organization?.name ?? null,
           branchId: personnel.branchId ?? null,
@@ -138,6 +145,7 @@ export const authOptions: NextAuthOptions = {
       if (user) {
         token.id = user.id;
         token.role = user.role;
+        token.isOrgOwner = user.isOrgOwner;
         token.organizationId = user.organizationId;
         token.organizationName = user.organizationName ?? null;
         token.branchId = user.branchId ?? null;
@@ -151,7 +159,8 @@ export const authOptions: NextAuthOptions = {
       if (token?.id && token?.role) {
         session.user.id = token.id;
         session.user.role = token.role;
-        session.user.organizationId = token.organizationId!;
+        session.user.isOrgOwner = token.isOrgOwner ?? false;
+        session.user.organizationId = token.organizationId ?? "";
         session.user.organizationName = token.organizationName ?? null;
         session.user.branchId = token.branchId ?? null;
         session.user.branchName = token.branchName ?? null;
