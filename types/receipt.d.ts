@@ -1,3 +1,13 @@
+// types/receipt.d.ts
+
+import type { Sale } from "./sale";
+import type { Invoice } from "./invoice";
+import type { AuthorizedPersonnel } from "./personnel";
+import type { Branch } from "./domain";
+import type { BranchProduct } from "./product";
+import type { Organization } from "./organization";
+import type { PaymentMethod } from "./enums";
+
 /* ---------------------------------------------
  * Receipt
  * Mirrors Prisma Receipt model
@@ -16,7 +26,7 @@ export interface Receipt {
   createdAt: Date;
 
   /* ---------------------------------------------
-   * Relations (optional – Prisma include-based)
+   * Relations (optional — Prisma include-based)
    * ------------------------------------------- */
   sale?: Sale;
   invoice?: Invoice;

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useMemo } from "react";
+import { useState, useMemo, useCallback } from "react";
 import React from "react";
 import useSWR from "swr";
 import { useDebounce } from "@/app/hooks/useDebounce";
@@ -18,20 +18,21 @@ export interface Sale {
   quantity: number;
   total: number;
   currency: string;
-  buyer?: string;
-  attendant?: string;
-  paymentType?: "CASH" | "TRANSFER" | "OTHER";
-  status?: "PENDING" | "PROCESSING" | "COMPLETED" | "CANCELLED" | "RETURNED";
+  status?: "PENDING" | "COMPLETED" | "CANCELLED";
   createdAt: string;
+  customerName?: string;
+  cashierName?: string;
+  paymentMethods?: ("CASH" | "CARD" | "BANK_TRANSFER" | "MOBILE_MONEY" | "POS")[];
 }
 
 // ---------------- Fetcher ----------------
-const fetcher = (url: string) => fetch(url, { credentials: "include" }).then(res => res.json());
+const fetcher = (url: string) =>
+  fetch(url, { credentials: "include" }).then((res) => res.json());
 
 // ---------------- Skeleton Row ----------------
 const SkeletonRow = () => (
   <tr className="animate-pulse bg-white shadow-sm rounded-lg">
-    {Array.from({ length: 7 }).map((_, i) => (
+    {Array.from({ length: 8 }).map((_, i) => (
       <td key={i} className="p-3">
         <div className="h-4 bg-gray-200 rounded w-full" />
       </td>
@@ -47,7 +48,10 @@ export default function SalesPage() {
   // ----- State -----
   const [page, setPage] = useState(1);
   const [search, setSearch] = useState("");
-  const [paymentFilter, setPaymentFilter] = useState<"ALL" | "CASH" | "TRANSFER" | "OTHER">("ALL");
+  const [paymentFilter, setPaymentFilter] = useState<
+    "ALL" | "CASH" | "CARD" | "BANK_TRANSFER" | "MOBILE_MONEY" | "POS"
+  >("ALL");
+  const [statusFilter, setStatusFilter] = useState<"ALL" | "PENDING" | "COMPLETED" | "CANCELLED">("ALL");
   const [targetDate, setTargetDate] = useState("");
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false);
@@ -61,24 +65,48 @@ export default function SalesPage() {
     params.set("page", String(page));
     params.set("pageSize", "10");
     if (debouncedSearch) params.set("search", debouncedSearch);
-    if (paymentFilter !== "ALL") params.set("paymentType", paymentFilter);
     if (targetDate) params.set("date", targetDate);
+    if (paymentFilter !== "ALL") params.set("paymentMethod", paymentFilter);
+    if (statusFilter !== "ALL") params.set("status", statusFilter);
     return params.toString();
-  }, [page, debouncedSearch, paymentFilter, targetDate]);
+  }, [page, debouncedSearch, paymentFilter, statusFilter, targetDate]);
 
-  const { data, isLoading, mutate } = useSWR<{ sales: Sale[]; total: number }>(
+  // ----- Fetch Sales -----
+  const { data, error, isLoading, mutate } = useSWR<{ sales: Sale[]; total: number }>(
     `/api/dashboard/sales?${query}`,
     fetcher,
     { keepPreviousData: true }
   );
 
-  const sales = data?.sales ?? [];
+  // ----- Handle Error -----
+  if (error) {
+    toast.addToast({ type: "error", message: "Failed to fetch sales" });
+  }
+
+  const sales: Sale[] = useMemo(
+    () =>
+      data?.sales.map((s) => ({
+        id: s.id,
+        productId: s.productId,
+        productName: s.productName ?? undefined,
+        quantity: s.quantity,
+        total: s.total,
+        currency: s.currency,
+        status: s.status,
+        createdAt: s.createdAt,
+        customerName: s.customerName ?? undefined,
+        cashierName: s.cashierName ?? undefined,
+        paymentMethods: s.paymentMethods,
+      })) ?? [],
+    [data]
+  );
+
   const total = data?.total ?? 0;
   const pageCount = Math.max(1, Math.ceil(total / 10));
 
   // ----- Summary Cards -----
-  const pendingCount = sales.filter(s => s.status === "PENDING").length;
-  const completedCount = sales.filter(s => s.status === "COMPLETED").length;
+  const pendingCount = sales.filter((s) => s.status === "PENDING").length;
+  const completedCount = sales.filter((s) => s.status === "COMPLETED").length;
 
   const summaryCards: SummaryCard[] = [
     { id: "totalSales", title: "Total Sales", value: total, filter: "ALL" },
@@ -87,52 +115,59 @@ export default function SalesPage() {
       title: "Pending Sales",
       value: pendingCount,
       filter: "PENDING",
-      color: pendingCount === 0 ? "text-green-600" : pendingCount <= 5 ? "text-amber-600" : "text-red-600",
+      color:
+        pendingCount === 0 ? "text-green-600" : pendingCount <= 5 ? "text-amber-600" : "text-red-600",
     },
-    { id: "completedSales", title: "Completed Sales", value: completedCount, filter: "COMPLETED", color: "text-green-600" },
+    {
+      id: "completedSales",
+      title: "Completed Sales",
+      value: completedCount,
+      filter: "COMPLETED",
+      color: "text-green-600",
+    },
   ];
 
-  // ----- Selectable -----
-  const selectableIds = useMemo(
-    () => sales.filter(s => s.status !== "CANCELLED" && s.status !== "RETURNED").map(s => s.id),
-    [sales]
+  // ----- Selectable Sales -----
+  const selectableIds = useMemo(() => sales.filter((s) => s.status !== "CANCELLED").map((s) => s.id), [sales]);
+
+  const toggleSelect = useCallback(
+    (id: string) => {
+      setSelectedIds((prev) => {
+        const next = new Set(prev);
+        next.has(id) ? next.delete(id) : next.add(id);
+        return next;
+      });
+    },
+    [setSelectedIds]
   );
 
-  const toggleSelect = (id: string) => {
-    const sale = sales.find(s => s.id === id);
-    if (!sale || sale.status === "CANCELLED" || sale.status === "RETURNED") return;
-    setSelectedIds(prev => {
-      const next = new Set(prev);
-      next.has(id) ? next.delete(id) : next.add(id);
-      return next;
-    });
-  };
-
-  const toggleSelectAll = () => {
-    const allSelected = selectableIds.every(id => selectedIds.has(id));
+  const toggleSelectAll = useCallback(() => {
+    const allSelected = selectableIds.every((id) => selectedIds.has(id));
     setSelectedIds(allSelected ? new Set() : new Set(selectableIds));
-  };
+  }, [selectableIds, selectedIds]);
 
-  const isAllSelected = selectableIds.length > 0 && selectableIds.every(id => selectedIds.has(id));
+  const isAllSelected = selectableIds.length > 0 && selectableIds.every((id) => selectedIds.has(id));
   const isIndeterminate = selectedIds.size > 0 && !isAllSelected;
 
   // ----- Status Class -----
-  const statusClass = (status?: Sale["status"]) => {
+  const statusClass = useCallback((status?: Sale["status"]) => {
     switch (status) {
-      case "COMPLETED": return "text-green-700";
-      case "PENDING": return "text-yellow-700";
-      case "PROCESSING": return "text-blue-700";
-      case "CANCELLED": return "text-red-700";
-      case "RETURNED": return "text-purple-700";
-      default: return "text-gray-700";
+      case "COMPLETED":
+        return "text-green-700";
+      case "PENDING":
+        return "text-yellow-700";
+      case "CANCELLED":
+        return "text-red-700";
+      default:
+        return "text-gray-700";
     }
-  };
+  }, []);
 
-  // ----- Actions -----
-  const bulkDelete = async () => {
-    const idsToDelete = [...selectedIds].filter(id => {
-      const s = sales.find(sale => sale.id === id);
-      return s && s.status !== "CANCELLED" && s.status !== "RETURNED";
+  // ----- Bulk Delete -----
+  const bulkDelete = useCallback(async () => {
+    const idsToDelete = [...selectedIds].filter((id) => {
+      const s = sales.find((sale) => sale.id === id);
+      return s && s.status !== "CANCELLED";
     });
 
     if (!idsToDelete.length) {
@@ -143,32 +178,35 @@ export default function SalesPage() {
     }
 
     try {
-      await Promise.all(idsToDelete.map(id => fetch(`/api/dashboard/sales/${id}`, { method: "DELETE" })));
+      await Promise.all(idsToDelete.map((id) => fetch(`/api/dashboard/sales/${id}`, { method: "DELETE" })));
       toast.addToast({ type: "success", message: `${idsToDelete.length} sales deleted` });
-      setSelectedIds(prev => new Set([...prev].filter(id => !idsToDelete.includes(id))));
+      setSelectedIds((prev) => new Set([...prev].filter((id) => !idsToDelete.includes(id))));
       setBulkDeleteOpen(false);
       mutate();
     } catch {
       toast.addToast({ type: "error", message: "Bulk delete failed" });
     }
-  };
+  }, [selectedIds, sales, toast, mutate]);
 
-  const handleRefresh = async () => {
+  const handleRefresh = useCallback(async () => {
     setRefreshing(true);
     await mutate();
     setTimeout(() => setRefreshing(false), 300);
-  };
+  }, [mutate]);
 
-  // ----- Group Sales By Day -----
+  // ----- Group Sales By Day (Descending: Today → Yesterday → Older) -----
   const groupedSales = useMemo(() => {
     const today = new Date();
     const yesterday = new Date();
     yesterday.setDate(today.getDate() - 1);
 
-    const groups: Record<string, Sale[]> = { Today: [], Yesterday: [], Older: [] };
+    const groups: Record<string, Sale[]> = { Today: [], Yesterday: [] };
+    const olderGroups: Record<string, Sale[]> = {};
 
-    sales.forEach(sale => {
+    sales.forEach((sale) => {
       const saleDate = new Date(sale.createdAt);
+      const dateKey = saleDate.toISOString().split("T")[0]; // YYYY-MM-DD
+
       if (
         saleDate.getFullYear() === today.getFullYear() &&
         saleDate.getMonth() === today.getMonth() &&
@@ -182,11 +220,20 @@ export default function SalesPage() {
       ) {
         groups["Yesterday"].push(sale);
       } else {
-        groups["Older"].push(sale);
+        if (!olderGroups[dateKey]) olderGroups[dateKey] = [];
+        olderGroups[dateKey].push(sale);
       }
     });
 
-    return groups;
+    // Sort older dates descending
+    const sortedOlderGroups = Object.keys(olderGroups)
+      .sort((a, b) => (a > b ? -1 : 1))
+      .reduce((acc, key) => {
+        acc[key] = olderGroups[key];
+        return acc;
+      }, {} as Record<string, Sale[]>);
+
+    return { ...groups, ...sortedOlderGroups };
   }, [sales]);
 
   return (
@@ -195,141 +242,167 @@ export default function SalesPage() {
       <Summary cardsData={summaryCards} />
 
       {/* ================= Top Bar ================= */}
-    <div className="sticky top-0 z-20 bg-white p-3 flex flex-wrap items-center gap-2 shadow-sm">
-      <input
-        type="text"
-        value={search}
-        onChange={e => setSearch(e.target.value)}
-        placeholder="Search product or customer"
-        className="border rounded-lg p-2 text-sm min-w-[250px]"
-      />
-
-      {/* Date Filter */}
-      <div className="flex items-center gap-2 border rounded-lg px-3 py-2 cursor-pointer bg-white h-10">
-        <i className="bx bx-calendar text-gray-500" />
+      <div className="sticky top-0 z-20 bg-white p-3 flex flex-wrap items-center gap-2 shadow-sm">
         <input
-          type="date"
-          value={targetDate}
-          onChange={e => setTargetDate(e.target.value)}
-          className="text-sm outline-none"
+          type="text"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder="Search product or customer"
+          className="border rounded-lg p-2 text-sm min-w-[250px]"
+          aria-label="Search product or customer"
         />
+
+        {/* Date Filter */}
+        <div className="flex items-center gap-2 border rounded-lg px-3 py-2 cursor-pointer bg-white h-10">
+          <i className="bx bx-calendar text-gray-500" />
+          <input
+            type="date"
+            value={targetDate}
+            onChange={(e) => setTargetDate(e.target.value)}
+            className="text-sm outline-none"
+            aria-label="Filter by date"
+          />
+        </div>
+
+        <button
+          onClick={handleRefresh}
+          className={`w-10 h-10 rounded-full bg-gray-100 flex items-center justify-center ${refreshing ? "animate-spin" : ""}`}
+          aria-label="Refresh sales"
+        >
+          <i className="bx bx-refresh text-lg" />
+        </button>
+
+        {selectedIds.size > 0 && (
+          <button
+            onClick={() => setBulkDeleteOpen(true)}
+            className="w-10 h-10 rounded-full bg-red-100 flex items-center justify-center"
+            aria-label="Delete selected sales"
+          >
+            <i className="bx bx-trash-alt text-red-600 text-lg" />
+          </button>
+        )}
+
+        <div className="ml-auto flex gap-2 items-center">
+          {/* Payment Type Filter */}
+          <DropdownMenu.Root>
+            <DropdownMenu.Trigger className="bg-gray-100 px-3 rounded-full h-10 flex items-center justify-center text-sm">
+              Payment: {paymentFilter}
+            </DropdownMenu.Trigger>
+            <DropdownMenu.Content className="bg-white shadow rounded-md py-1 min-w-[140px]">
+              {(["ALL", "CASH", "CARD", "BANK_TRANSFER", "MOBILE_MONEY", "POS"] as const).map((pt) => (
+                <DropdownMenu.Item key={pt} className="px-4 py-2 cursor-pointer hover:bg-gray-100" onSelect={() => setPaymentFilter(pt)}>
+                  {pt}
+                </DropdownMenu.Item>
+              ))}
+            </DropdownMenu.Content>
+          </DropdownMenu.Root>
+
+          {/* Status Filter */}
+          <DropdownMenu.Root>
+            <DropdownMenu.Trigger className="bg-gray-100 px-3 rounded-full h-10 flex items-center justify-center text-sm">
+              Status: {statusFilter}
+            </DropdownMenu.Trigger>
+            <DropdownMenu.Content className="bg-white shadow rounded-md py-1 min-w-[120px]">
+              {(["ALL", "PENDING", "COMPLETED", "CANCELLED"] as const).map((status) => (
+                <DropdownMenu.Item key={status} className="px-4 py-2 cursor-pointer hover:bg-gray-100" onSelect={() => setStatusFilter(status)}>
+                  {status}
+                </DropdownMenu.Item>
+              ))}
+            </DropdownMenu.Content>
+          </DropdownMenu.Root>
+
+          {/* Add Sale Button */}
+          <button
+            onClick={() => router.push("/dashboard/sales/add")}
+            className="w-10 h-10 rounded-full bg-green-100 flex items-center justify-center"
+            aria-label="Add new sale"
+          >
+            <i className="bx bx-plus text-green-600 text-lg" />
+          </button>
+        </div>
       </div>
 
-      <button
-        onClick={handleRefresh}
-        className={`w-10 h-10 rounded-full bg-gray-100 flex items-center justify-center ${refreshing ? "animate-spin" : ""}`}
-      >
-        <i className="bx bx-refresh text-lg" />
-      </button>
-
-      {selectedIds.size > 0 && (
-        <button
-          onClick={() => setBulkDeleteOpen(true)}
-          className="w-10 h-10 rounded-full bg-red-100 flex items-center justify-center"
-        >
-          <i className="bx bx-trash-alt text-red-600 text-lg" />
-        </button>
-      )}
-
-      <div className="ml-auto flex gap-2 items-center">
-        {/* Payment Type Filter */}
-        <DropdownMenu.Root>
-          <DropdownMenu.Trigger className="bg-gray-100 px-3 rounded-full h-10 flex items-center justify-center text-sm">
-            Payment: {paymentFilter}
-          </DropdownMenu.Trigger>
-          <DropdownMenu.Content className="bg-white shadow rounded-md py-1 min-w-[140px]">
-            {(["ALL", "CASH", "TRANSFER", "OTHER"] as const).map(pt => (
-              <DropdownMenu.Item
-                key={pt}
-                className="px-4 py-2 cursor-pointer hover:bg-gray-100"
-                onSelect={() => setPaymentFilter(pt)}
-              >
-                {pt}
-              </DropdownMenu.Item>
-            ))}
-          </DropdownMenu.Content>
-        </DropdownMenu.Root>
-
-        {/* Add Sale Button */}
-        <button
-          onClick={() => router.push("/dashboard/sales/add")}
-          className="w-10 h-10 rounded-full bg-green-100 flex items-center justify-center"
-        >
-          <i className="bx bx-plus text-green-600 text-lg" />
-        </button>
-      </div>
-    </div>
-
-
-      {/* ================= Sales Table ================= */}
+      {/* Table */}
       <div className="flex-1 overflow-x-auto">
-        <table className="w-full text-sm border-separate border-spacing-y-3 min-w-[900px]">
-          <thead className="bg-gray-50 text-xs uppercase text-gray-500 sticky top-0 z-10">
+        <table className="w-full text-sm table-fixed border-separate border-spacing-y-3">
+          <thead className="text-xs bg-gray-100 uppercase text-gray-500 text-center">
             <tr>
-              <th className="w-10 p-2">
+              <th className="w-10 p-3">
                 <input
                   type="checkbox"
                   checked={isAllSelected}
-                  ref={el => {
-                    if (el) el.indeterminate = isIndeterminate;
-                  }}
+                  ref={el => { if (el) el.indeterminate = isIndeterminate; }}
                   onChange={toggleSelectAll}
                 />
               </th>
-              <th className="sticky left-0 bg-gray-50 p-2 z-30">Product</th>
-              <th className="p-2">Status</th>
-              <th className="p-2 text-right">Quantity</th>
-              <th className="p-2 text-right">Total</th>
-              <th className="p-2 text-right">Currency</th>
-              <th className="p-2">Created At</th>
+              <th className="p-4 w-[200px]">Product</th>
+              <th className="p-4">Customer</th>
+              <th className="p-4 text-center">Quantity</th>
+              <th className="p-4 text-center">Total</th>
+              <th className="p-4">Currency</th>
+              <th className="p-4">Payment</th>
+              <th className="p-4">Status</th>
             </tr>
           </thead>
+
           <tbody>
             {isLoading && Array.from({ length: 8 }).map((_, i) => <SkeletonRow key={i} />)}
 
             {!isLoading &&
-              Object.entries(groupedSales).map(([groupName, groupSales]) => (
-                <React.Fragment key={groupName}>
-                  {groupSales.length > 0 && (
-                    <tr>
-                      <td colSpan={7} className="bg-gray-100 px-3 py-1 font-semibold text-gray-600">
-                        {groupName}
+              Object.entries(groupedSales).map(([group, groupSales]) => {
+                if (groupSales.length === 0) return null;
+                return (
+                  <React.Fragment key={group}>
+                    {/* Group Separator */}
+                    <tr className="bg-gray-100 text-gray-600 text-sm font-semibold">
+                      <td colSpan={8} className="p-2 text-left">
+                        {group === "Today" || group === "Yesterday"
+                          ? group
+                          : new Date(group).toLocaleDateString()}
                       </td>
                     </tr>
-                  )}
-                  {groupSales.map(sale => {
-                    const isDisabled = sale.status === "CANCELLED" || sale.status === "RETURNED";
-                    const created = new Date(sale.createdAt);
-                    return (
-                      <tr
-                        key={sale.id}
-                        className={`bg-white shadow-sm rounded-lg hover:bg-gray-50 transition ${
-                          isDisabled ? "opacity-60 cursor-not-allowed" : "cursor-pointer"
-                        }`}
-                        onClick={() => !isDisabled && router.push(`/dashboard/sales/${sale.id}`)}
-                      >
-                        <td className="p-3">
-                          <input
-                            type="checkbox"
-                            checked={selectedIds.has(sale.id)}
-                            disabled={isDisabled}
-                            onChange={e => { e.stopPropagation(); toggleSelect(sale.id); }}
-                          />
-                        </td>
-                        <td className="p-3 sticky left-0 bg-white z-20">{sale.productName ?? "N/A"}</td>
-                        <td className={`p-3 px-2 py-1 text-xs font-semibold ${statusClass(sale.status)}`}>{sale.status}</td>
-                        <td className="p-3 text-right">{sale.quantity}</td>
-                        <td className="p-3 text-right">{sale.total.toFixed(2)}</td>
-                        <td className="p-3 text-right">{sale.currency}</td>
-                        <td className="p-3 text-left">
-                          <div className="text-sm">{created.toLocaleDateString()}</div>
-                          <div className="text-xs text-gray-500">{created.toLocaleTimeString()}</div>
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </React.Fragment>
-              ))}
+
+                    {/* Sales Rows */}
+                    {groupSales.map((s) => {
+                      const isCancelled = s.status === "CANCELLED";
+                      const isSelected = selectedIds.has(s.id);
+                      return (
+                        <tr
+                          key={s.id}
+                          className={`
+                            bg-white rounded-xl shadow-sm transition
+                            ${isCancelled ? "opacity-60 cursor-not-allowed" : "cursor-pointer hover:bg-green-50 hover:text-green-700"}
+                            ${isSelected ? "bg-green-100 text-green-700" : ""}
+                          `}
+                          onClick={(e) => {
+                            if ((e.target as HTMLElement).tagName !== "INPUT" && !isCancelled) {
+                              router.push(`/dashboard/sales/${s.id}`);
+                            }
+                          }}
+                        >
+                          <td className="p-4 text-center">
+                            <input
+                              type="checkbox"
+                              checked={isSelected}
+                              disabled={isCancelled}
+                              onClick={(e) => e.stopPropagation()}
+                              onChange={() => toggleSelect(s.id)}
+                              className="accent-blue-600"
+                            />
+                          </td>
+                          <td className="p-4 text-center font-medium">{s.productName ?? "-"}</td>
+                          <td className="p-4 text-center">{s.customerName ?? "-"}</td>
+                          <td className="p-4 text-center">{s.quantity}</td>
+                          <td className="p-4 text-center">{s.total.toFixed(2)}</td>
+                          <td className="p-4 text-center">{s.currency}</td>
+                          <td className="p-4 text-center">{s.paymentMethods?.join(", ") ?? "-"}</td>
+                          <td className={`p-4 text-center font-semibold ${statusClass(s.status)}`}>{s.status}</td>
+                        </tr>
+                      );
+                    })}
+                  </React.Fragment>
+                );
+              })}
           </tbody>
         </table>
       </div>
@@ -338,11 +411,23 @@ export default function SalesPage() {
       <div className="flex justify-between items-center text-xs">
         <span>Total Sales: {total}</span>
         <div className="flex gap-2 items-center">
-          <button disabled={page <= 1} onClick={() => setPage(p => p - 1)} className="px-2 py-1 border rounded hover:bg-gray-50 disabled:opacity-40">
+          <button
+            disabled={page <= 1}
+            onClick={() => setPage((p) => p - 1)}
+            className="px-2 py-1 border rounded hover:bg-gray-50 disabled:opacity-40"
+            aria-label="Previous page"
+          >
             Prev
           </button>
-          <span>{page} / {pageCount}</span>
-          <button disabled={page >= pageCount} onClick={() => setPage(p => p + 1)} className="px-2 py-1 border rounded hover:bg-gray-50 disabled:opacity-40">
+          <span>
+            {page} / {pageCount}
+          </span>
+          <button
+            disabled={page >= pageCount}
+            onClick={() => setPage((p) => p + 1)}
+            className="px-2 py-1 border rounded hover:bg-gray-50 disabled:opacity-40"
+            aria-label="Next page"
+          >
             Next
           </button>
         </div>

@@ -1,3 +1,5 @@
+// types/invoice.d.ts
+
 import type { Order } from "./order";
 import type { AuthorizedPersonnel } from "./personnel";
 import type { Branch, Organization } from "./domain";
@@ -20,7 +22,7 @@ export interface Invoice {
   customerId?: string | null;
 
   total: number;
-  paidAmount: number;   // Prisma Float @default(0)
+  paidAmount: number;
   balance: number;
   currency: string;
   status: InvoiceStatus;
