@@ -11,6 +11,7 @@ import { useRouter } from "next/navigation";
 
 import type { InventoryProduct, ProductsResponse } from "@/types";
 
+
 /* ================= Types ================= */
 type SortOrder = "az" | "newest" | "";
 
@@ -148,7 +149,7 @@ export default function InventoryPage() {
   return (
     <div className="flex flex-col space-y-4 min-h-[calc(100vh-4rem)] p-4">
       {/* Summary */}
-      <Summary cardsData={summaryCards} onOrderChange={handleSummaryOrderChange} />
+      <Summary cardsData={summaryCards} />
 
       {/* Top Bar */}
       <div className="sticky top-0 z-40 bg-white p-3 flex flex-wrap items-center gap-2 shadow-sm">
