@@ -1,12 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getToken } from "next-auth/jwt";
-import { Prisma } from "@prisma/client";
 import prisma from "@/lib/prisma";
+import { Prisma } from "@prisma/client";
 import { OrderListQuerySchema } from "@/lib/validators/order";
 import { zodErrorResponse } from "@/lib/zodError";
 
 const secret = process.env.NEXTAUTH_SECRET as string;
-
 const ACCESS_DENIED = { type: "error", message: "Access Denied" };
 
 export async function GET(req: NextRequest) {
@@ -18,8 +17,6 @@ export async function GET(req: NextRequest) {
     }
 
     const searchParams = Object.fromEntries(new URL(req.url).searchParams);
-
-    // Parse query using Zod
     const parsedQuery = OrderListQuerySchema.parse(searchParams);
     const { page, pageSize, search, status, date } = parsedQuery;
 
@@ -29,30 +26,26 @@ export async function GET(req: NextRequest) {
     const where: Prisma.OrderWhereInput = {
       organizationId: token.organizationId,
       deletedAt: null,
-      ...(status ? { status } : {}),
+      ...(status && (status as string) !== "ALL" ? { status } : {}),
       ...(search
         ? {
             OR: [
               { id: { contains: search, mode: "insensitive" } },
-              {
-                customer: {
-                  name: { contains: search, mode: "insensitive" },
-                },
-              },
+              { customer: { name: { contains: search, mode: "insensitive" } } },
             ],
           }
         : {}),
       ...(date
         ? {
             createdAt: {
-              gte: new Date(date), // from start of selected day
-              lt: new Date(new Date(date).getTime() + 24 * 60 * 60 * 1000), // until end of day
+              gte: new Date(date),
+              lt: new Date(new Date(date).getTime() + 24 * 60 * 60 * 1000),
             },
           }
         : {}),
     };
 
-    // Fetch orders & total count in parallel
+    // Fetch orders + total count
     const [orders, total] = await Promise.all([
       prisma.order.findMany({
         where,
@@ -61,26 +54,54 @@ export async function GET(req: NextRequest) {
         orderBy: { createdAt: "desc" },
         include: {
           customer: { select: { name: true } },
-          items: { select: { id: true } },
-          invoices: { select: { id: true, paid: true } },
+          salesperson: { select: { name: true } },
+          items: {
+            select: {
+              id: true,
+              quantity: true,
+              unitPrice: true,
+              total: true,
+              discount: true,
+              tax: true,
+              product: { select: { name: true } },
+            },
+          },
+          invoice: {
+            select: { id: true, total: true, paidAmount: true, balance: true, status: true },
+          },
         },
       }),
       prisma.order.count({ where }),
     ]);
 
-    // Map orders to frontend-friendly format
-    const formattedOrders = orders.map(order => ({
+    // Map to frontend format
+    const formattedOrders = orders.map((order) => ({
       id: order.id,
-      customerId: order.customer?.name ?? null,
+      customer: order.customer ? { name: order.customer.name } : null,
+      salesperson: order.salesperson ? { name: order.salesperson.name } : null,
       total: order.total,
-      paidAmount: order.paidAmount,
-      balance: order.balance,
       currency: order.currency,
       status: order.status,
-      createdAt: order.createdAt,
-      updatedAt: order.updatedAt,
-      items: order.items,
-      invoices: order.invoices,
+      createdAt: order.createdAt.toISOString(),
+      updatedAt: order.updatedAt.toISOString(),
+      items: order.items.map((item) => ({
+        id: item.id,
+        product: item.product ? { name: item.product.name } : null,
+        quantity: item.quantity,
+        unitPrice: item.unitPrice,
+        total: item.total,
+        discount: item.discount,
+        tax: item.tax,
+      })),
+      invoice: order.invoice
+        ? {
+            id: order.invoice.id,
+            total: order.invoice.total,
+            paidAmount: order.invoice.paidAmount,
+            balance: order.invoice.balance,
+            status: order.invoice.status,
+          }
+        : null,
     }));
 
     return NextResponse.json({ orders: formattedOrders, total });

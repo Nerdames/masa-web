@@ -12,33 +12,55 @@ export async function DELETE(
   try {
     const token = await getToken({ req, secret });
 
-    if (
-      !token?.organizationId ||
-      !["DEV", "ADMIN"].includes(token.role as string)
-    ) {
+    if (!token?.organizationId || !["DEV", "ADMIN"].includes(token.role as string)) {
       return NextResponse.json(ACCESS_DENIED, { status: 403 });
     }
 
-    const order = await prisma.order.findFirst({
-      where: {
-        id: params.id,
-        organizationId: token.organizationId,
-        deletedAt: null,
+    // Fetch order with its invoice & payments
+    const order = await prisma.order.findUnique({
+      where: { id: params.id },
+      select: {
+        status: true,
+        organizationId: true,
+        deletedAt: true,
+        invoice: {
+          select: {
+            id: true,
+            payments: { select: { id: true } },
+          },
+        },
       },
-      select: { status: true },
     });
 
-    if (!order) {
+    if (!order || order.organizationId !== token.organizationId || order.deletedAt) {
       return NextResponse.json({ error: "Order not found" }, { status: 404 });
     }
 
-    if (order.status === "CANCELLED" || order.status === "RETURNED") {
+    const cancellableStatuses = ["DRAFT", "SUBMITTED"];
+    if (!cancellableStatuses.includes(order.status as string)) {
       return NextResponse.json(
-        { error: "Order cannot be deleted" },
+        { error: "Order cannot be deleted due to its status" },
         { status: 400 }
       );
     }
 
+    // Prevent deletion if order has an invoice
+    if (order.invoice) {
+      // Prevent deletion if invoice has payments
+      if (order.invoice.payments.length > 0) {
+        return NextResponse.json(
+          { error: "Order cannot be deleted because invoice has payments" },
+          { status: 400 }
+        );
+      }
+
+      return NextResponse.json(
+        { error: "Order cannot be deleted because it has an invoice" },
+        { status: 400 }
+      );
+    }
+
+    // Soft delete
     await prisma.order.update({
       where: { id: params.id },
       data: { deletedAt: new Date() },
