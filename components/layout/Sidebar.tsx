@@ -1,10 +1,9 @@
+/* eslint-disable react-hooks/immutability */
 "use client";
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import React, { useState, useEffect, useMemo, useCallback } from "react";
-import { useSession, signOut } from "next-auth/react";
-import ConfirmModal from "@/components/modal/ConfirmModal";
+import React, { useState, useEffect, useMemo, useCallback, ReactNode } from "react";
 import { Tooltip } from "@/components/feedback/Tooltip";
 
 // ---------------- Types ----------------
@@ -13,68 +12,34 @@ export interface SidebarItem {
   name: string;
   href: string;
   icon: string;
-  mode: "dashboard" | "settings";
   children?: SidebarItem[];
 }
 
+// ---------------- Navigation Items ----------------
+const SIDEBAR_ITEMS: SidebarItem[] = [
+  { key: "overview", name: "Overview", href: "/dashboard", icon: "bx-home" },
+  { key: "orders", name: "Orders", href: "/dashboard/orders", icon: "bx-cart" },
+  { key: "sales", name: "Sales", href: "/dashboard/sales", icon: "bx-chart" },
+  { key: "invoices", name: "Invoices", href: "/dashboard/invoices", icon: "bx-file" },
+  { key: "inventory", name: "Inventory", href: "/dashboard/inventory", icon: "bx-box" },
+  { key: "customers", name: "Customers", href: "/dashboard/customers", icon: "bx-user" },
+  { key: "notifications", name: "Notifications", href: "/dashboard/notifications", icon: "bx-bell" },
+  { key: "settings", name: "Settings", href: "/dashboard/settings", icon: "bx-cog" },
+];
+
+// ------------------ Sidebar ------------------
 interface SidebarProps {
   open: boolean;
   onClose: () => void;
-  items: SidebarItem[];
-  active: string;
-  onClick: (item: SidebarItem) => void;
 }
 
-// ------------------ Skeleton ------------------
-interface SidebarSkeletonProps {
-  collapsed: boolean;
-  navCount: number;
-}
-
-const SidebarSkeleton: React.FC<SidebarSkeletonProps> = ({ collapsed, navCount }) => (
-  <div className="flex flex-col h-full animate-pulse">
-    <div className="flex items-center h-12 px-4 border-b border-gray-200 bg-white">
-      <div className="flex items-center gap-2">
-        <div className="h-6 w-6 bg-gray-200 rounded" />
-        {!collapsed && <div className="h-4 w-20 bg-gray-200 rounded" />}
-      </div>
-    </div>
-
-    {!collapsed && (
-      <div className="sticky top-12 z-30 bg-white px-4 pt-4 pb-2">
-        <div className="h-3 w-12 bg-gray-200 rounded" />
-      </div>
-    )}
-
-    <nav className="flex-1 flex flex-col py-3 space-y-2 px-2">
-      {Array.from({ length: navCount }).map((_, idx) => (
-        <div key={idx} className="flex items-center gap-3 px-2 py-3">
-          <div className="h-6 w-6 bg-gray-200 rounded" />
-          {!collapsed && <div className="h-4 w-20 bg-gray-200 rounded" />}
-        </div>
-      ))}
-    </nav>
-
-    <div className="border-t px-4 py-4 bg-white">
-      <div className="flex items-center gap-3">
-        <div className="h-6 w-6 bg-gray-200 rounded" />
-        {!collapsed && <div className="h-4 w-20 bg-gray-200 rounded" />}
-      </div>
-    </div>
-  </div>
-);
-
-// ------------------ Sidebar ------------------
-function Sidebar({ open, onClose, items, onClick }: SidebarProps) {
-  const pathname = usePathname() ?? "/";
-  const { status } = useSession();
+function Sidebar({ open, onClose }: SidebarProps) {
+  const pathname = usePathname() ?? "/dashboard";
 
   const [collapsed, setCollapsed] = useState<boolean>(() => {
     if (typeof window === "undefined") return false;
     return localStorage.getItem("sidebar-collapsed") === "true";
   });
-  const [confirmOpen, setConfirmOpen] = useState(false);
-  const [signingOut, setSigningOut] = useState(false);
 
   // Persist collapsed state
   useEffect(() => {
@@ -91,7 +56,7 @@ function Sidebar({ open, onClose, items, onClick }: SidebarProps) {
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [open, onClose]);
 
-  // -------- ACTIVE STATE PRECOMPUTATION (FIXED) --------
+  // -------- Active Item --------
   const activeKeys = useMemo(() => {
     let longestMatchLength = 0;
     let matchedKey: string | null = null;
@@ -99,31 +64,19 @@ function Sidebar({ open, onClose, items, onClick }: SidebarProps) {
     const walk = (item: SidebarItem) => {
       const match = pathname === item.href || pathname.startsWith(item.href + "/");
       if (match && item.href.length > longestMatchLength) {
-        // pick the most specific (longest) href
         longestMatchLength = item.href.length;
         matchedKey = item.key;
       }
       item.children?.forEach(walk);
     };
 
-    items.forEach(walk);
+    SIDEBAR_ITEMS.forEach(walk);
     return matchedKey ? new Set([matchedKey]) : new Set<string>();
-  }, [items, pathname]);
+  }, [pathname]);
 
-  // -------- STABLE HANDLERS --------
-  const handleSignOut = useCallback(async () => {
-    setConfirmOpen(false);
-    setSigningOut(true);
-    try {
-      await signOut({ callbackUrl: "/" });
-    } finally {
-      setSigningOut(false);
-    }
-  }, []);
-
-  // -------- MEMOIZED RENDER --------
+  // -------- Render Item --------
   const renderItem = useCallback(
-    (item: SidebarItem, level = 0) => {
+    (item: SidebarItem, level = 0): ReactNode => {
       const activeItem = activeKeys.has(item.key);
       const padding = level * 12;
 
@@ -131,7 +84,6 @@ function Sidebar({ open, onClose, items, onClick }: SidebarProps) {
         <Link
           key={item.key}
           href={item.href}
-          onClick={() => onClick(item)}
           role="menuitem"
           aria-current={activeItem ? "page" : undefined}
           className={`flex items-center gap-3 px-4 py-3 rounded-md text-sm font-medium transition-all
@@ -150,21 +102,11 @@ function Sidebar({ open, onClose, items, onClick }: SidebarProps) {
         </div>
       );
     },
-    [activeKeys, collapsed, onClick]
+    [activeKeys, collapsed]
   );
 
   return (
     <>
-      <ConfirmModal
-        open={confirmOpen}
-        title="Confirm Sign Out"
-        message="Are you sure you want to sign out?"
-        confirmLabel="Sign Out"
-        destructive
-        onClose={() => setConfirmOpen(false)}
-        onConfirm={handleSignOut}
-      />
-
       {open && (
         <div
           className="fixed inset-0 bg-black/40 z-30 lg:hidden"
@@ -180,52 +122,33 @@ function Sidebar({ open, onClose, items, onClick }: SidebarProps) {
           ${collapsed ? "w-20" : "w-64"}
           ${open ? "translate-x-0" : "-translate-x-64 lg:translate-x-0"}`}
       >
-        {status === "loading" ? (
-          <SidebarSkeleton collapsed={collapsed} navCount={items.length} />
-        ) : (
-          <>
-            {/* Header */}
-            <div className="flex items-center h-12 px-4 border-b border-gray-200">
-              <div className="flex items-center gap-2">
-                <i className="bx bx-bar-chart-alt-2 text-3xl w-6" />
-                {!collapsed && <span className="text-lg font-semibold">MASA</span>}
-              </div>
-              <div className="ml-auto">
-                <button
-                  onClick={() => setCollapsed(v => !v)}
-                  aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
-                  aria-expanded={!collapsed}
-                  className="p-1 rounded hover:bg-gray-100 transition"
-                >
-                  <i
-                    className={`bx text-2xl ${
-                      collapsed ? "bx-chevron-right" : "bx-chevron-left"
-                    }`}
-                  />
-                </button>
-              </div>
-            </div>
+        {/* Header */}
+        <div className="flex items-center h-12 px-4 border-b border-gray-200">
+          <div className="flex items-center gap-2">
+            <i className="bx bx-bar-chart-alt-2 text-3xl w-6" />
+            {!collapsed && <span className="text-lg font-semibold">MASA</span>}
+          </div>
 
-            {/* Menu */}
-            <nav role="menu" className="flex-1 flex flex-col py-3 space-y-2">
-              {items.map(item => renderItem(item))}
-            </nav>
+          <div className="ml-auto">
+            <button
+              onClick={() => setCollapsed(v => !v)}
+              aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+              aria-expanded={!collapsed}
+              className="p-1 rounded hover:bg-gray-100 transition"
+            >
+              <i
+                className={`bx text-2xl ${
+                  collapsed ? "bx-chevron-right" : "bx-chevron-left"
+                }`}
+              />
+            </button>
+          </div>
+        </div>
 
-            {/* Sign Out */}
-            <div className="border-t px-4 py-4 bg-white">
-              <button
-                onClick={() => setConfirmOpen(true)}
-                disabled={signingOut}
-                className="flex items-center gap-3 text-gray-700 hover:text-black transition"
-              >
-                <i className="bx bx-log-out text-xl w-6" />
-                {!collapsed && (
-                  <span>{signingOut ? "Signing out..." : "Sign out"}</span>
-                )}
-              </button>
-            </div>
-          </>
-        )}
+        {/* Navigation */}
+        <nav role="menu" className="flex-1 flex flex-col py-3 space-y-2">
+          {SIDEBAR_ITEMS.map(item => renderItem(item))}
+        </nav>
       </aside>
     </>
   );
