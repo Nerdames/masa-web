@@ -86,15 +86,16 @@ function Sidebar({ open, onClose }: SidebarProps) {
           href={item.href}
           role="menuitem"
           aria-current={activeItem ? "page" : undefined}
-          className={`flex items-center gap-3 px-4 py-3 rounded-md text-sm font-medium transition-all
+          className={`flex items-center gap-3 px-3 py-3 rounded-md text-sm font-medium transition-all
             ${activeItem ? "bg-black text-white" : "text-gray-700 hover:bg-gray-100"}`}
-          style={{ paddingLeft: `${padding + 16}px` }}
+          style={{ paddingLeft: `${padding + 8}px` }}
         >
           <i className={`bx ${item.icon} text-xl w-6`} />
           {!collapsed && <span>{item.name}</span>}
         </Link>
       );
 
+      // Wrap with Tooltip only when collapsed
       return (
         <div key={item.key} className="pl-2 pr-4 z-9999">
           {collapsed ? <Tooltip content={item.name}>{link}</Tooltip> : link}
@@ -107,6 +108,7 @@ function Sidebar({ open, onClose }: SidebarProps) {
 
   return (
     <>
+      {/* Overlay for mobile */}
       {open && (
         <div
           className="fixed inset-0 bg-black/40 z-30 lg:hidden"
@@ -117,31 +119,34 @@ function Sidebar({ open, onClose }: SidebarProps) {
       <aside
         role="navigation"
         aria-label="Main navigation"
-        className={`fixed lg:static z-40 top-0 left-0 h-full bg-white border-r border-gray-200 shadow-sm
+        className={`fixed lg:static z-999 top-0 left-0 h-full bg-white border-r border-gray-200 shadow-sm
           flex flex-col transition-all duration-300
-          ${collapsed ? "w-20" : "w-64"}
-          ${open ? "translate-x-0" : "-translate-x-64 lg:translate-x-0"}`}
+          ${collapsed ? "w-16" : "w-52"}
+          ${open ? "translate-x-0" : "-translate-x-52 lg:translate-x-0"}`}
       >
         {/* Header */}
-        <div className="flex items-center h-12 px-4 border-b border-gray-200">
-          <div className="flex items-center gap-2">
+        <div className="flex items-center h-12 pl-2 border-b border-gray-200">
+          <div className="flex items-center gap-3">
             <i className="bx bx-bar-chart-alt-2 text-3xl w-6" />
             {!collapsed && <span className="text-lg font-semibold">MASA</span>}
           </div>
 
           <div className="ml-auto">
-            <button
-              onClick={() => setCollapsed(v => !v)}
-              aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
-              aria-expanded={!collapsed}
-              className="p-1 rounded hover:bg-gray-100 transition"
-            >
-              <i
-                className={`bx text-2xl ${
-                  collapsed ? "bx-chevron-right" : "bx-chevron-left"
-                }`}
-              />
-            </button>
+            {/* Tooltip for Collapse/Expand button */}
+            <Tooltip content={collapsed ? "Expand sidebar" : "Collapse sidebar"}>
+              <button
+                onClick={() => setCollapsed(v => !v)}
+                aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+                aria-expanded={!collapsed}
+                className="flex items-center justify-center rounded-full p-1 hover:bg-gray-100 transition"
+              >
+                <i
+                  className={`bx text-2xl ${
+                    collapsed ? "bx-chevron-right" : "bx-chevron-left"
+                  }`}
+                />
+              </button>
+            </Tooltip>
           </div>
         </div>
 
