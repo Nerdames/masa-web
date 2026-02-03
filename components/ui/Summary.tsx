@@ -250,53 +250,65 @@ export default function Summary({ cardsData, loading = false, onTimeFilterChange
       />
 
       <div className="space-y-4">
-        {/* Header */}
-        <div className="flex justify-between items-center">
-          <span className="text-lg font-semibold">Summary</span>
+      {/* Header */}
+      <div className="flex justify-between items-center">
+        <span className="text-lg font-semibold">Summary</span>
 
-          <div className="flex gap-2 items-center">
-            {showTimeFilter &&
-              (["D","W","M","Y"] as const).map(f => (
-                <button
-                  key={f}
-                  onClick={() => setTimeFilter(f)}
-                  className={`w-10 h-10 rounded-lg font-bold transition ${
-                    timeFilter === f ? "bg-black text-white" : "bg-white text-black border border-slate-300"
-                  }`}
-                >
-                  {f}
-                </button>
-              ))
-            }
-
-            <DropdownMenu.Root>
-              <DropdownMenu.Trigger asChild>
-                <button className="w-10 h-10 rounded-full bg-gray-100 flex items-center justify-center hover:bg-gray-200">
-                  <i className="bx bx-dots-vertical-rounded text-lg" />
-                </button>
-              </DropdownMenu.Trigger>
-              <DropdownMenu.Content
-                align="end"
-                sideOffset={8}
-                className="z-50 min-w-[160px] rounded-md border border-slate-200 bg-white py-1 shadow-md"
+        <div className="flex gap-2 items-center">
+          {showTimeFilter &&
+            (["D","W","M","Y"] as const).map(f => (
+              <button
+                key={f}
+                onClick={() => setTimeFilter(f)}
+                className={`w-10 h-10 rounded-lg font-bold transition ${
+                  timeFilter === f ? "bg-black text-white" : "bg-white text-black border border-slate-300"
+                }`}
               >
-                <DropdownMenu.Item
-                  onSelect={() => setIsReorderMode(true)}
-                  className="px-4 py-2 text-sm flex items-center gap-2 cursor-pointer hover:bg-gray-100"
-                >
-                  <i className="bx bx-move" /> Reorder
-                </DropdownMenu.Item>
+                {f}
+              </button>
+            ))
+          }
 
-                <DropdownMenu.Item
-                  onSelect={() => setShowCardModal(true)}
-                  className="px-4 py-2 text-sm flex items-center gap-2 cursor-pointer hover:bg-gray-100"
-                >
-                  <i className="bx bx-layout" /> Edit Layout
-                </DropdownMenu.Item>
-              </DropdownMenu.Content>
-            </DropdownMenu.Root>
-          </div>
+          <DropdownMenu.Root>
+            <DropdownMenu.Trigger asChild>
+              <button className="w-10 h-10 rounded-full bg-gray-100 flex items-center justify-center hover:bg-gray-200">
+                <i className="bx bx-dots-vertical-rounded text-lg" />
+              </button>
+            </DropdownMenu.Trigger>
+            <DropdownMenu.Content
+              align="end"
+              sideOffset={8}
+              className="z-50 min-w-[160px] rounded-md border border-slate-200 bg-white py-1 shadow-md"
+            >
+              <DropdownMenu.Item
+                onSelect={() => setIsReorderMode(true)}
+                className="px-4 py-2 text-sm flex items-center gap-2 cursor-pointer hover:bg-gray-100"
+              >
+                <i className="bx bx-move" /> Reorder
+              </DropdownMenu.Item>
+
+              <DropdownMenu.Item
+                onSelect={() => setShowCardModal(true)}
+                className="px-4 py-2 text-sm flex items-center gap-2 cursor-pointer hover:bg-gray-100"
+              >
+                <i className="bx bx-layout" /> Edit Layout
+              </DropdownMenu.Item>
+            </DropdownMenu.Content>
+          </DropdownMenu.Root>
+
+          {/* Done button for Reorder Mode */}
+          {isReorderMode && (
+            <button
+              onClick={() => setIsReorderMode(false)}
+              className="w-10 h-10 rounded-full bg-blue-100 flex items-center justify-center hover:bg-blue-200 transition"
+              title="Done"
+            >
+              <i className="bx bx-check text-blue-600 text-xl" />
+            </button>
+          )}
         </div>
+      </div>
+
 
         {/* Cards */}
         <DragDropContext onDragEnd={onDragEnd}>
