@@ -252,7 +252,7 @@ export default function Summary({ cardsData, loading = false, onTimeFilterChange
       <div className="space-y-4">
       {/* Header */}
       <div className="flex justify-between items-center">
-        <span className="text-lg font-semibold">Summary</span>
+        <span className="text-lg font-semibold">Overview</span>
 
         <div className="flex gap-2 items-center">
           {showTimeFilter &&
@@ -260,7 +260,7 @@ export default function Summary({ cardsData, loading = false, onTimeFilterChange
               <button
                 key={f}
                 onClick={() => setTimeFilter(f)}
-                className={`w-10 h-10 rounded-lg font-bold transition ${
+                className={`w-8 h-8 rounded-lg font-bold transition ${
                   timeFilter === f ? "bg-black text-white" : "bg-white text-black border border-slate-300"
                 }`}
               >
