@@ -3,10 +3,19 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import React, { useState, useEffect, useMemo, useCallback, ReactNode } from "react";
+import React, {
+  useState,
+  useEffect,
+  useMemo,
+  useCallback,
+  ReactNode,
+} from "react";
+import { motion, AnimatePresence } from "framer-motion";
 import { Tooltip } from "@/components/feedback/Tooltip";
 
-// ---------------- Types ----------------
+/* ---------------------------------------------
+ * Types
+ * --------------------------------------------*/
 export interface SidebarItem {
   key: string;
   name: string;
@@ -15,9 +24,11 @@ export interface SidebarItem {
   children?: SidebarItem[];
 }
 
-// ---------------- Navigation Items ----------------
+/* ---------------------------------------------
+ * Navigation Items
+ * --------------------------------------------*/
 const SIDEBAR_ITEMS: SidebarItem[] = [
-  { key: "overview", name: "Overview", href: "/dashboard", icon: "bx-home" },
+  { key: "overview", name: "Overview", href: "/dashboard", icon: "bx-grid-alt" },
   { key: "orders", name: "Orders", href: "/dashboard/orders", icon: "bx-cart" },
   { key: "sales", name: "Sales", href: "/dashboard/sales", icon: "bx-chart" },
   { key: "invoices", name: "Invoices", href: "/dashboard/invoices", icon: "bx-file" },
@@ -27,7 +38,73 @@ const SIDEBAR_ITEMS: SidebarItem[] = [
   { key: "settings", name: "Settings", href: "/dashboard/settings", icon: "bx-cog" },
 ];
 
-// ------------------ Sidebar ------------------
+/* ---------------------------------------------
+ * Motion Tokens (match Tailwind sizes)
+ * --------------------------------------------*/
+const SIDEBAR_MOTION = {
+  expanded: {
+    width: 208, // w-52
+    transition: { type: "spring", stiffness: 260, damping: 30 },
+  },
+  collapsed: {
+    width: 64, // w-16
+    transition: { type: "spring", stiffness: 260, damping: 30 },
+  },
+};
+
+/* ---------------------------------------------
+ * Sidebar Item
+ * --------------------------------------------*/
+interface ItemProps {
+  item: SidebarItem;
+  active: boolean;
+  collapsed: boolean;
+}
+
+const SidebarItemLink = React.memo(function SidebarItemLink({
+  item,
+  active,
+  collapsed,
+}: ItemProps) {
+  const link = (
+    <Link
+      href={item.href}
+      role="menuitem"
+      aria-current={active ? "page" : undefined}
+      className={`relative flex items-center rounded-md px-3 py-3 text-sm font-medium
+        transition-colors
+        ${collapsed ? "justify-center" : "gap-3"}
+        ${
+          active
+            ? "bg-black text-white"
+            : "text-gray-700 hover:bg-gray-100"
+        }
+      `}
+    >
+      <i aria-hidden className={`bx ${item.icon} text-xl w-6`} />
+
+      <AnimatePresence initial={false}>
+        {!collapsed && (
+          <motion.span
+            initial={{ opacity: 0, x: -6 }}
+            animate={{ opacity: 1, x: 0 }}
+            exit={{ opacity: 0, x: -6 }}
+            transition={{ duration: 0.15 }}
+            className="truncate"
+          >
+            {item.name}
+          </motion.span>
+        )}
+      </AnimatePresence>
+    </Link>
+  );
+
+  return collapsed ? <Tooltip content={item.name}>{link}</Tooltip> : link;
+});
+
+/* ---------------------------------------------
+ * Sidebar
+ * --------------------------------------------*/
 interface SidebarProps {
   open: boolean;
   onClose: () => void;
@@ -35,115 +112,115 @@ interface SidebarProps {
 
 function Sidebar({ open, onClose }: SidebarProps) {
   const pathname = usePathname() ?? "/dashboard";
+  const [collapsed, setCollapsed] = useState(false);
 
-  const [collapsed, setCollapsed] = useState<boolean>(() => {
-    if (typeof window === "undefined") return false;
-    return localStorage.getItem("sidebar-collapsed") === "true";
-  });
+  /* ---------- Hydrate persisted state ---------- */
+  useEffect(() => {
+    const saved = localStorage.getItem("sidebar-collapsed");
+    if (saved) setCollapsed(saved === "true");
+  }, []);
 
-  // Persist collapsed state
   useEffect(() => {
     localStorage.setItem("sidebar-collapsed", String(collapsed));
   }, [collapsed]);
 
-  // ESC to close sidebar on mobile
+  /* ---------- ESC to close (mobile) ---------- */
   useEffect(() => {
     if (!open) return;
-    const handleKeyDown = (e: KeyboardEvent) => {
+    const handler = (e: KeyboardEvent) => {
       if (e.key === "Escape") onClose();
     };
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
   }, [open, onClose]);
 
-  // -------- Active Item --------
+  /* ---------- Active Route ---------- */
   const activeKeys = useMemo(() => {
-    let longestMatchLength = 0;
-    let matchedKey: string | null = null;
+    let longest = 0;
+    let key: string | null = null;
 
     const walk = (item: SidebarItem) => {
-      const match = pathname === item.href || pathname.startsWith(item.href + "/");
-      if (match && item.href.length > longestMatchLength) {
-        longestMatchLength = item.href.length;
-        matchedKey = item.key;
+      const match =
+        pathname === item.href ||
+        pathname.startsWith(item.href + "/");
+
+      if (match && item.href.length > longest) {
+        longest = item.href.length;
+        key = item.key;
       }
       item.children?.forEach(walk);
     };
 
     SIDEBAR_ITEMS.forEach(walk);
-    return matchedKey ? new Set([matchedKey]) : new Set<string>();
+    return key ? new Set([key]) : new Set<string>();
   }, [pathname]);
 
-  // -------- Render Item --------
   const renderItem = useCallback(
-    (item: SidebarItem, level = 0): ReactNode => {
-      const activeItem = activeKeys.has(item.key);
-      const padding = level * 12;
-
-      const link = (
-        <Link
-          key={item.key}
-          href={item.href}
-          role="menuitem"
-          aria-current={activeItem ? "page" : undefined}
-          className={`flex items-center gap-3 px-3 py-3 rounded-md text-sm font-medium transition-all
-            ${activeItem ? "bg-black text-white" : "text-gray-700 hover:bg-gray-100"}`}
-          style={{ paddingLeft: `${padding + 8}px` }}
-        >
-          <i className={`bx ${item.icon} text-xl w-6`} />
-          {!collapsed && <span>{item.name}</span>}
-        </Link>
-      );
-
-      // Wrap with Tooltip only when collapsed
-      return (
-        <div key={item.key} className="pl-2 pr-4 z-9999">
-          {collapsed ? <Tooltip content={item.name}>{link}</Tooltip> : link}
-          {item.children?.map(child => renderItem(child, level + 1))}
-        </div>
-      );
-    },
+    (item: SidebarItem): ReactNode => (
+      <SidebarItemLink
+        key={item.key}
+        item={item}
+        active={activeKeys.has(item.key)}
+        collapsed={collapsed}
+      />
+    ),
     [activeKeys, collapsed]
   );
 
   return (
     <>
-      {/* Overlay for mobile */}
+      {/* Mobile overlay */}
       {open && (
         <div
-          className="fixed inset-0 bg-black/40 z-30 lg:hidden"
+          className="fixed inset-0 z-30 bg-black/40 lg:hidden"
           onClick={onClose}
         />
       )}
 
-      <aside
+      {/* Sidebar */}
+      <motion.aside
         role="navigation"
         aria-label="Main navigation"
-        className={`fixed lg:static z-999 top-0 left-0 h-full bg-white border-r border-gray-200 shadow-sm
-          flex flex-col transition-all duration-300
-          ${collapsed ? "w-16" : "w-52"}
-          ${open ? "translate-x-0" : "-translate-x-52 lg:translate-x-0"}`}
+        initial={false}
+        animate={collapsed ? "collapsed" : "expanded"}
+        variants={SIDEBAR_MOTION}
+        className={`
+          fixed lg:static top-0 left-0 z-40 h-full
+          bg-white border-r border-gray-200 shadow-sm
+          flex flex-col
+          ${open ? "translate-x-0" : "-translate-x-full lg:translate-x-0"}
+        `}
       >
         {/* Header */}
-        <div className="flex items-center h-12 pl-2 border-b border-gray-200">
+        <div className="flex items-center h-12 border-b border-gray-200 px-2">
           <div className="flex items-center gap-3">
-            <i className="bx bx-bar-chart-alt-2 text-3xl w-6" />
-            {!collapsed && <span className="text-lg font-semibold">MASA</span>}
+            <i className="bx bx-network-chart text-3xl w-6" />
+            <AnimatePresence initial={false}>
+              {!collapsed && (
+                <motion.span
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  exit={{ opacity: 0 }}
+                  className="text-lg font-semibold"
+                >
+                  MASA
+                </motion.span>
+              )}
+            </AnimatePresence>
           </div>
 
           <div className="ml-auto">
-            {/* Tooltip for Collapse/Expand button */}
             <Tooltip content={collapsed ? "Expand sidebar" : "Collapse sidebar"}>
               <button
                 onClick={() => setCollapsed(v => !v)}
-                aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
                 aria-expanded={!collapsed}
-                className="flex items-center justify-center rounded-full p-1 hover:bg-gray-100 transition"
+                className="rounded-full p-1 hover:bg-gray-100 transition"
               >
-                <i
-                  className={`bx text-2xl ${
-                    collapsed ? "bx-chevron-right" : "bx-chevron-left"
-                  }`}
+                <motion.i
+                  aria-hidden
+                  className="bx bx-chevron-left text-2xl"
+                  animate={{ rotate: collapsed ? 180 : 0 }}
+                  transition={{ duration: 0.2 }}
                 />
               </button>
             </Tooltip>
@@ -151,10 +228,10 @@ function Sidebar({ open, onClose }: SidebarProps) {
         </div>
 
         {/* Navigation */}
-        <nav role="menu" className="flex-1 flex flex-col py-3 space-y-2">
-          {SIDEBAR_ITEMS.map(item => renderItem(item))}
+        <nav role="menu" className="flex-1 flex flex-col py-3 space-y-2 px-2">
+          {SIDEBAR_ITEMS.map(renderItem)}
         </nav>
-      </aside>
+      </motion.aside>
     </>
   );
 }
