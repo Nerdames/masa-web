@@ -39,17 +39,11 @@ const SIDEBAR_ITEMS: SidebarItem[] = [
 ];
 
 /* ---------------------------------------------
- * Motion Tokens (match Tailwind sizes)
+ * Motion Tokens
  * --------------------------------------------*/
 const SIDEBAR_MOTION = {
-  expanded: {
-    width: 208, // w-52
-    transition: { type: "spring", stiffness: 260, damping: 30 },
-  },
-  collapsed: {
-    width: 64, // w-16
-    transition: { type: "spring", stiffness: 260, damping: 30 },
-  },
+  expanded: { width: 208 },
+  collapsed: { width: 64 },
 };
 
 /* ---------------------------------------------
@@ -71,26 +65,38 @@ const SidebarItemLink = React.memo(function SidebarItemLink({
       href={item.href}
       role="menuitem"
       aria-current={active ? "page" : undefined}
-      className={`relative flex items-center rounded-md px-3 py-3 text-sm font-medium
-        transition-colors
-        ${collapsed ? "justify-center" : "gap-3"}
-        ${
-          active
-            ? "bg-black text-white"
-            : "text-gray-700 hover:bg-gray-100"
-        }
+      className={`
+        relative flex items-center rounded-md
+        ${collapsed ? "h-10 w-10 justify-center mx-auto" : "px-3 py-2.5 gap-3"}
+        text-sm font-medium transition-colors
+        ${active ? "text-white" : "text-gray-700 hover:bg-gray-100"}
       `}
     >
-      <i aria-hidden className={`bx ${item.icon} text-xl w-6`} />
+      {/* Shared active indicator */}
+      {active && (
+        <motion.span
+          layoutId="sidebar-active-indicator"
+          className="absolute inset-0 rounded-md bg-black"
+          transition={{ type: "spring", stiffness: 500, damping: 40 }}
+        />
+      )}
 
+      {/* Icon */}
+      <i
+        aria-hidden
+        className={`bx ${item.icon} text-xl relative z-10`}
+      />
+
+      {/* Label */}
       <AnimatePresence initial={false}>
         {!collapsed && (
           <motion.span
+            key="label"
             initial={{ opacity: 0, x: -6 }}
             animate={{ opacity: 1, x: 0 }}
             exit={{ opacity: 0, x: -6 }}
             transition={{ duration: 0.15 }}
-            className="truncate"
+            className="relative z-10 truncate"
           >
             {item.name}
           </motion.span>
@@ -117,14 +123,14 @@ function Sidebar({ open, onClose }: SidebarProps) {
   /* ---------- Hydrate persisted state ---------- */
   useEffect(() => {
     const saved = localStorage.getItem("sidebar-collapsed");
-    if (saved) setCollapsed(saved === "true");
+    if (saved !== null) setCollapsed(saved === "true");
   }, []);
 
   useEffect(() => {
     localStorage.setItem("sidebar-collapsed", String(collapsed));
   }, [collapsed]);
 
-  /* ---------- ESC to close (mobile) ---------- */
+  /* ---------- ESC close (mobile) ---------- */
   useEffect(() => {
     if (!open) return;
     const handler = (e: KeyboardEvent) => {
@@ -134,12 +140,12 @@ function Sidebar({ open, onClose }: SidebarProps) {
     return () => window.removeEventListener("keydown", handler);
   }, [open, onClose]);
 
-  /* ---------- Active Route ---------- */
+  /* ---------- Active route ---------- */
   const activeKeys = useMemo(() => {
     let longest = 0;
     let key: string | null = null;
 
-    const walk = (item: SidebarItem) => {
+    for (const item of SIDEBAR_ITEMS) {
       const match =
         pathname === item.href ||
         pathname.startsWith(item.href + "/");
@@ -148,10 +154,8 @@ function Sidebar({ open, onClose }: SidebarProps) {
         longest = item.href.length;
         key = item.key;
       }
-      item.children?.forEach(walk);
-    };
+    }
 
-    SIDEBAR_ITEMS.forEach(walk);
     return key ? new Set([key]) : new Set<string>();
   }, [pathname]);
 
@@ -184,6 +188,7 @@ function Sidebar({ open, onClose }: SidebarProps) {
         initial={false}
         animate={collapsed ? "collapsed" : "expanded"}
         variants={SIDEBAR_MOTION}
+        transition={{ type: "spring", stiffness: 260, damping: 30 }}
         className={`
           fixed lg:static top-0 left-0 z-40 h-full
           bg-white border-r border-gray-200 shadow-sm
@@ -193,34 +198,31 @@ function Sidebar({ open, onClose }: SidebarProps) {
       >
         {/* Header */}
         <div className="flex items-center h-12 border-b border-gray-200 px-2">
-          <div className="flex items-center gap-3">
-            <i className="bx bx-network-chart text-3xl w-6" />
-            <AnimatePresence initial={false}>
-              {!collapsed && (
-                <motion.span
-                  initial={{ opacity: 0 }}
-                  animate={{ opacity: 1 }}
-                  exit={{ opacity: 0 }}
-                  className="text-lg font-semibold"
-                >
-                  MASA
-                </motion.span>
-              )}
-            </AnimatePresence>
-          </div>
+          <i className="bx bx-network-chart text-3xl" />
+
+          <AnimatePresence initial={false}>
+            {!collapsed && (
+              <motion.span
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                className="ml-2 text-lg font-semibold"
+              >
+                MASA
+              </motion.span>
+            )}
+          </AnimatePresence>
 
           <div className="ml-auto">
             <Tooltip content={collapsed ? "Expand sidebar" : "Collapse sidebar"}>
               <button
                 onClick={() => setCollapsed(v => !v)}
                 aria-expanded={!collapsed}
-                className="rounded-full p-1 hover:bg-gray-100 transition"
+                className="rounded-full p-1 hover:bg-gray-100"
               >
                 <motion.i
-                  aria-hidden
-                  className="bx bx-chevron-left text-2xl"
+                  className="bx bx-chevron-left text-xl"
                   animate={{ rotate: collapsed ? 180 : 0 }}
-                  transition={{ duration: 0.2 }}
                 />
               </button>
             </Tooltip>
@@ -228,7 +230,12 @@ function Sidebar({ open, onClose }: SidebarProps) {
         </div>
 
         {/* Navigation */}
-        <nav role="menu" className="flex-1 flex flex-col py-3 space-y-2 px-2">
+        <nav
+          role="menu"
+          className={`flex-1 flex flex-col py-3 ${
+            collapsed ? "space-y-3" : "space-y-3 px-2"
+          }`}
+        >
           {SIDEBAR_ITEMS.map(renderItem)}
         </nav>
       </motion.aside>
