@@ -107,7 +107,7 @@ export default function DashboardHome() {
 
       {/* ================= Top Products ================= */}
       <div className="bg-white border border-gray-200 rounded-xl p-4 shadow-sm">
-        <h3 className="text-lg font-semibold mb-3">Top Products</h3>
+        <h3 className="text-lg font-semibold mb-3">Top Products</h3>2
 
         {loadingProducts || productData.length === 0 ? (
           <p className="text-gray-400 text-center py-10">

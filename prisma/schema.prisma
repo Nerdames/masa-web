@@ -32,10 +32,12 @@ enum CustomerType {
 enum OrderStatus {
   DRAFT
   SUBMITTED
+  FULFILLED
   CANCELLED
 }
 
 enum InvoiceStatus {
+  DRAFT
   ISSUED
   PARTIALLY_PAID
   PAID
@@ -72,9 +74,22 @@ enum NotificationType {
 }
 
 enum SaleStatus {
-  PENDING
   COMPLETED
   CANCELLED
+}
+
+enum PreferenceScope {
+  USER
+  BRANCH
+  ORGANIZATION
+}
+
+enum PreferenceCategory {
+  UI
+  LAYOUT
+  TABLE
+  NOTIFICATION
+  SYSTEM
 }
 
 ////////////////////////////////////
@@ -103,6 +118,7 @@ model Organization {
   customerGroups    CustomerGroup[]
   customerSummaries CustomerOrderSummary[]
   receipts          Receipt[]
+  preferences       Preference[]
 
   categories Category[]
   suppliers  Supplier[]
@@ -137,6 +153,7 @@ model Branch {
   branchAssignments BranchAssignment[]     @relation("BranchAssignments")
   customerSummaries CustomerOrderSummary[]
   receipts          Receipt[]
+  preferences       Preference[]
 
   @@index([organizationId])
 }
@@ -167,7 +184,7 @@ model AuthorizedPersonnel {
   branch       Branch?      @relation(fields: [branchId], references: [id])
 
   branchAssignments  BranchAssignment[]
-  orders             Order[]            @relation("SalespersonOrders", fields: [], references: [])
+  orders             Order[]            @relation("SalespersonOrders")
   invoicesIssued     Invoice[]          @relation("IssuedInvoices")
   invoicesPaid       Payment[]          @relation("InvoicePaidBy")
   salesAttended      Sale[]             @relation("AttendantSales")
@@ -178,6 +195,7 @@ model AuthorizedPersonnel {
   sessions           Session[]
   ownedOrganizations Organization[]     @relation("OrgOwner")
   receipts           Receipt[]
+  preferences        Preference[]
 }
 
 model BranchAssignment {
@@ -363,13 +381,16 @@ model Order {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  items   OrderItem[]
-  invoice Invoice?
+  items      OrderItem[]
+  invoice    Invoice?
+  invoicedAt DateTime?
 
   organization Organization        @relation(fields: [organizationId], references: [id])
   branch       Branch              @relation(fields: [branchId], references: [id])
   salesperson  AuthorizedPersonnel @relation("SalespersonOrders", fields: [salespersonId], references: [id])
   customer     Customer?           @relation(fields: [customerId], references: [id])
+
+  @@index([organizationId, branchId, status])
 }
 
 model OrderItem {
@@ -402,15 +423,19 @@ model Invoice {
   issuedById String
   customerId String?
 
+  subtotal   Float?
   total      Float
+  discount   Float?        @default(0)
+  tax        Float?        @default(0)
   paidAmount Float         @default(0)
   balance    Float
   currency   String        @default("NGN")
-  status     InvoiceStatus @default(ISSUED)
+  status     InvoiceStatus @default(DRAFT)
   deletedAt  DateTime?
 
   issuedAt DateTime  @default(now())
   dueDate  DateTime?
+  lockedAt DateTime?
 
   payments Payment[]
   sales    Sale[]
@@ -421,6 +446,10 @@ model Invoice {
   order        Order               @relation(fields: [orderId], references: [id])
   issuedBy     AuthorizedPersonnel @relation("IssuedInvoices", fields: [issuedById], references: [id])
   customer     Customer?           @relation(fields: [customerId], references: [id])
+  checkHash    String?
+
+  @@index([organizationId, branchId, status])
+  @@index([issuedAt])
 }
 
 model Payment {
@@ -440,8 +469,13 @@ model Payment {
   invoice Invoice             @relation(fields: [invoiceId], references: [id])
   cashier AuthorizedPersonnel @relation("InvoicePaidBy", fields: [cashierId], references: [id])
 
+  // One-to-one optional relation with Receipt
+  receipt Receipt?
+
   @@index([invoiceId])
   @@index([method])
+  @@index([status])
+  @@index([receivedAt])
 }
 
 model Sale {
@@ -456,13 +490,14 @@ model Sale {
   unitPrice Float
   total     Float
   currency  String     @default("NGN")
-  status    SaleStatus @default(PENDING)
+  status    SaleStatus @default(COMPLETED)
   deletedAt DateTime?
 
   cashierId  String
   customerId String?
 
   createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt @default(now())
 
   organization  Organization        @relation(fields: [organizationId], references: [id])
   invoice       Invoice             @relation(fields: [invoiceId], references: [id])
@@ -472,6 +507,10 @@ model Sale {
   customer      Customer?           @relation("CustomerSales", fields: [customerId], references: [id])
   branch        Branch              @relation(fields: [branchId], references: [id])
   receipts      Receipt[]
+
+  @@index([invoiceId])
+  @@index([organizationId, branchId])
+  @@index([createdAt])
 }
 
 model Receipt {
@@ -487,12 +526,18 @@ model Receipt {
   currency        String        @default("NGN")
   createdAt       DateTime      @default(now())
 
+  paymentId String? @unique
+
   sale          Sale                @relation(fields: [saleId], references: [id])
   cashier       AuthorizedPersonnel @relation(fields: [cashierId], references: [id])
   branch        Branch              @relation(fields: [branchId], references: [id])
   branchProduct BranchProduct       @relation(fields: [branchProductId], references: [id])
   organization  Organization        @relation(fields: [organizationId], references: [id])
   invoice       Invoice             @relation(fields: [invoiceId], references: [id])
+  payment       Payment?            @relation(fields: [paymentId], references: [id])
+
+  @@index([invoiceId])
+  @@index([paymentId])
 }
 
 ////////////////////////////////////
@@ -636,4 +681,31 @@ model VerificationToken {
   expires    DateTime
 
   @@unique([identifier, token])
+}
+
+model Preference {
+  id             String  @id @default(cuid())
+  organizationId String
+  branchId       String?
+  personnelId    String?
+
+  scope    PreferenceScope
+  category PreferenceCategory
+
+  key   String
+  value Json
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  organization Organization         @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  branch       Branch?              @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  personnel    AuthorizedPersonnel? @relation(fields: [personnelId], references: [id], onDelete: Cascade)
+
+  @@unique([scope, key, organizationId, branchId, personnelId])
+  @@index([organizationId])
+  @@index([branchId])
+  @@index([personnelId])
+  @@index([scope])
+  @@index([category])
 }
