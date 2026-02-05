@@ -1,53 +1,50 @@
 // app/dashboard/settings/page.tsx
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect } from "react";
 import { useRouter, usePathname } from "next/navigation";
 import { useSession } from "next-auth/react";
 import AccessDenied from "@/components/feedback/AccessDenied";
+
+const ALLOWED_ROLES = new Set(["DEV", "ADMIN"]);
 
 export default function SettingsPageRedirect() {
   const router = useRouter();
   const pathname = usePathname();
   const { data: session, status } = useSession();
-  const [authorized, setAuthorized] = useState(false);
-  const [redirecting, setRedirecting] = useState(false);
+
+  const role = session?.user?.role;
+  const authorized = role && ALLOWED_ROLES.has(role);
 
   useEffect(() => {
-    if (status !== "loading") {
-      const rolesAllowed = ["DEV", "ADMIN"]; // adjust as needed
-      const userRole = session?.user?.role;
-
-      if (!userRole || !rolesAllowed.includes(userRole)) {
-        setAuthorized(false);
-        return;
-      }
-
-      setAuthorized(true);
-
-      // Redirect to default panel if at root
-      if (pathname === "/dashboard/settings") {
-        setRedirecting(true);
-        router.replace("/dashboard/settings/general");
-      }
+    if (status === "authenticated" && authorized && pathname === "/dashboard/settings") {
+      router.replace("/dashboard/settings/general");
     }
-  }, [status, session, pathname, router]);
+  }, [status, authorized, pathname, router]);
 
-  // -----------------------------
-  // Fallback / Loading UI
-  // -----------------------------
   if (status === "loading") {
-    return <div className="p-6 text-gray-600">Verifying permissions...</div>;
+    return (
+      <div className="flex min-h-[70vh] items-center justify-center px-4 text-sm text-gray-500">
+        Verifying access…
+      </div>
+    );
   }
 
   if (!authorized) {
-    return <AccessDenied />;
+    return (
+      <div className="flex min-h-[70vh] items-center justify-center px-4">
+        <AccessDenied />
+      </div>
+    );
   }
 
-  if (redirecting) {
-    return <div className="p-6 text-gray-600">Redirecting to your settings panel...</div>;
+  if (pathname === "/dashboard/settings") {
+    return (
+      <div className="flex min-h-[70vh] items-center justify-center px-4 text-sm text-gray-500">
+        Redirecting…
+      </div>
+    );
   }
 
-  // Should never reach here
   return null;
 }

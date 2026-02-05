@@ -1,224 +1,299 @@
 "use client";
 
-import React, { useState } from "react";
-import { SwitchField } from "@/components/shared/SwitchField";
+import React, { useEffect, useState } from "react";
+import { useSession } from "next-auth/react";
+import { useSearchParams, useRouter } from "next/navigation";
+import AccessDenied from "@/components/feedback/AccessDenied";
 
-/* ===============================
-   SCHEMA-ALIGNED TYPES
-   =============================== */
+type PreferenceScope = "USER" | "BRANCH" | "ORGANIZATION";
+type PreferenceValue = string | number | boolean | Record<string, unknown>;
+type Role = "DEV" | "ADMIN" | "MANAGER" | "USER";
 
-interface OrganizationSettings {
+interface Preference {
   id: string;
-  name: string;
-  active: boolean;
+  key: string;
+  value: PreferenceValue;
+  target?: string;
+  scope: PreferenceScope;
 }
 
-interface BranchSettings {
-  id: string;
-  name: string;
-  location?: string;
-  active: boolean;
+interface HubSetting {
+  key: string;
+  label: string;
+  description?: string;
+  type: "switch" | "text" | "select" | "number";
+  options?: string[];
+  target?: string;
+  category?: string;
 }
 
-/* ===============================
-   COMPONENT
-   =============================== */
+// ---------------------------- HUB SETTINGS ----------------------------
+const HUB_SETTINGS: HubSetting[] = [
+  { key: "currency", label: "Currency", type: "select", options: ["NGN", "USD", "EUR"], description: "Default currency for display" },
+  { key: "language", label: "Language", type: "select", options: ["en", "fr", "es"], description: "Preferred UI language" },
+  { key: "dark_mode", label: "Dark mode", type: "switch", description: "Use a dark color theme" },
+  { key: "summary_cards_visible", label: "Show summary cards", type: "switch", target: "dashboard", category: "UI" },
+  { key: "inventory_show_cost", label: "Show cost prices", type: "switch", target: "inventory", category: "TABLE" },
+  { key: "table_row_density", label: "Row density", type: "select", options: ["compact", "normal", "spacious"], target: "tables", category: "TABLE" },
+  { key: "sales_summary_visible", label: "Show sales summary", type: "switch", target: "sales", category: "UI" },
+  { key: "notifications_enabled", label: "Enable notifications", type: "switch", target: "notifications", category: "NOTIFICATION" },
+];
 
-export default function GeneralSettingsPage(): JSX.Element {
-  const [organization, setOrganization] = useState<OrganizationSettings>({
-    id: "org_123",
-    name: "MASA Inc.",
-    active: true,
-  });
+// ---------------------------- SCOPE LOGIC ----------------------------
+const resolveDefaultScope = (role: Role): PreferenceScope => {
+  switch (role) {
+    case "DEV":
+    case "ADMIN":
+      return "ORGANIZATION";
+    case "MANAGER":
+      return "BRANCH";
+    default:
+      return "USER";
+  }
+};
 
-  const [branch, setBranch] = useState<BranchSettings>({
-    id: "branch_123",
-    name: "Main Branch",
-    location: "Lagos",
-    active: true,
-  });
+const allowedScopes = (role: Role): PreferenceScope[] => {
+  switch (role) {
+    case "DEV":
+    case "ADMIN":
+      return ["USER", "BRANCH", "ORGANIZATION"];
+    case "MANAGER":
+      return ["USER", "BRANCH"];
+    default:
+      return ["USER"];
+  }
+};
 
-  const [isSaving, setIsSaving] = useState(false);
+// ---------------------------- COMPONENT ----------------------------
+export default function PreferencesPage() {
+  const { data: session, status } = useSession();
+  const params = useSearchParams();
+  const router = useRouter();
 
-  const updateOrganization = <K extends keyof OrganizationSettings>(
-    key: K,
-    value: OrganizationSettings[K]
-  ) => setOrganization(prev => ({ ...prev, [key]: value }));
+  const [currentScope, setCurrentScope] = useState<PreferenceScope | null>(null);
+  const [preferences, setPreferences] = useState<Preference[]>([]);
+  const [savingKey, setSavingKey] = useState<string | null>(null);
 
-  const updateBranch = <K extends keyof BranchSettings>(
-    key: K,
-    value: BranchSettings[K]
-  ) => setBranch(prev => ({ ...prev, [key]: value }));
+  if (status === "loading") {
+    return (
+      <div className="flex min-h-[70vh] items-center justify-center text-sm text-gray-500">
+        Verifying access…
+      </div>
+    );
+  }
 
-  const handleOrganizationActiveToggle = async (next: boolean) => {
-    const previous = organization.active;
-    updateOrganization("active", next);
-    setIsSaving(true);
+  if (!session?.user?.role) {
+    return <AccessDenied />;
+  }
 
-    try {
-      const res = await fetch("/api/organization", {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ active: next }),
-      });
-      if (!res.ok) throw new Error("Failed to update organization");
+  const role = session.user.role as Role;
 
-      fetch("/api/activity-log", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          action: "ORGANIZATION_STATUS_CHANGED",
-          meta: JSON.stringify({ from: previous, to: next }),
-        }),
-      }).catch(console.error);
-    } catch (error) {
-      updateOrganization("active", previous);
-      console.error(error);
-      alert("Failed to update organization status");
-    } finally {
-      setIsSaving(false);
+  // Initialize scope from URL query or default
+  useEffect(() => {
+    const queryScope = params.get("scope") as PreferenceScope;
+    if (queryScope && allowedScopes(role).includes(queryScope)) {
+      setCurrentScope(queryScope);
+    } else {
+      const defaultScope = resolveDefaultScope(role);
+      setCurrentScope(defaultScope);
+      router.replace(`/dashboard/settings/general?scope=${defaultScope}`);
     }
+  }, [params, role, router]);
+
+  // Fetch preferences when scope changes
+  useEffect(() => {
+    if (!session?.user || !currentScope) return;
+    fetch(`/api/preferences/effective?scope=${currentScope}`)
+      .then(res => res.json())
+      .then((data: Preference[]) => setPreferences(data))
+      .catch(console.error);
+  }, [session?.user, currentScope]);
+
+  const handleScopeChange = (newScope: PreferenceScope) => {
+    setCurrentScope(newScope);
+    router.replace(`/dashboard/settings/general?scope=${newScope}`);
   };
 
-  const handleBranchActiveToggle = async (next: boolean) => {
-    const previous = branch.active;
-    updateBranch("active", next);
-    setIsSaving(true);
+  const getPref = (key: string, target?: string) =>
+    preferences.find(p => p.key === key && p.target === (target ?? null));
 
-    try {
-      const res = await fetch("/api/branch", {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ active: next }),
-      });
-      if (!res.ok) throw new Error("Failed to update branch");
+  const handleChange = async (setting: HubSetting, value: PreferenceValue) => {
+    if (!currentScope) return;
+    setSavingKey(setting.key);
 
-      fetch("/api/activity-log", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          action: "BRANCH_STATUS_CHANGED",
-          meta: JSON.stringify({ branchId: branch.id, from: previous, to: next }),
-        }),
-      }).catch(console.error);
-    } catch (error) {
-      updateBranch("active", previous);
-      console.error(error);
-      alert("Failed to update branch status");
-    } finally {
-      setIsSaving(false);
-    }
+    setPreferences(prev =>
+      prev.map(p => (p.key === setting.key && p.target === setting.target ? { ...p, value } : p))
+    );
+
+    await fetch("/api/preferences", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ key: setting.key, value, target: setting.target ?? null, scope: currentScope }),
+    });
+
+    setSavingKey(null);
   };
 
-  /* ===============================
-     UI
-     =============================== */
+  const handleReset = async (setting: HubSetting) => {
+    if (!currentScope) return;
+    await fetch("/api/preferences", {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ key: setting.key, target: setting.target ?? null, scope: currentScope }),
+    });
+
+    const refreshed = await fetch(`/api/preferences/effective?scope=${currentScope}`).then(r => r.json());
+    setPreferences(refreshed);
+  };
+
+  const groupedSettings: Record<string, HubSetting[]> = HUB_SETTINGS.reduce((acc, s) => {
+    const section = s.target ?? "general";
+    acc[section] ||= [];
+    acc[section].push(s);
+    return acc;
+  }, {} as Record<string, HubSetting[]>);
+
+  if (!currentScope) return null; // Wait for scope initialization
 
   return (
-    <div className="max-w-3xl mx-auto space-y-10">
-      <h1 className="text-2xl font-bold">General Settings</h1>
-
-      <form
-        onSubmit={e => {
-          e.preventDefault();
-          console.log("Organization:", organization);
-          console.log("Branch:", branch);
-          alert("Settings saved (mock)");
-        }}
-        className="space-y-10"
-      >
-        {/* =========================
-            ORGANIZATION SETTINGS
-           ========================= */}
-        <section className="space-y-4">
-          <h2 className="text-lg font-semibold">Organization</h2>
-
-          <div>
-            <label className="block text-sm font-medium mb-1">
-              Organization Name
-            </label>
-            <input
-              type="text"
-              value={organization.name}
-              onChange={e => updateOrganization("name", e.target.value)}
-              className="w-full border rounded px-3 py-2"
-              disabled={isSaving}
-            />
+    <div className="space-y-10">
+      {/* Header */}
+      <header>
+        {/* Scope Selector */}
+        {allowedScopes(role).length > 1 && (
+          <div className="mt-2">
+            <label className="text-sm text-gray-700 mr-2">Select Scope:</label>
+            <select
+              value={currentScope}
+              onChange={e => handleScopeChange(e.target.value as PreferenceScope)}
+              className="rounded-md border px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+            >
+              {allowedScopes(role).map(s => (
+                <option key={s} value={s}>
+                  {s.charAt(0) + s.slice(1).toLowerCase()}
+                </option>
+              ))}
+            </select>
           </div>
+        )}
+        <p className="mt-1 text-sm text-gray-500">
+          Role: <strong>{role}</strong> | Editing Scope: <strong>{currentScope}</strong>
+        </p>
 
-          {/* Tooltip wrapper */}
-          <div className="relative group inline-block">
-            <SwitchField
-              label="Organization Active"
-              description="Toggle to activate or deactivate the organization"
-              checked={organization.active}
-              disabled={isSaving}
-              onChange={handleOrganizationActiveToggle}
-            />
-            {/* Tooltip */}
-            <div className="absolute left-0 bottom-full mb-2 hidden group-hover:block w-max max-w-xs bg-gray-700 text-white text-xs px-2 py-1 rounded shadow-lg z-10">
-              Activating will allow users to access organization resources.
-            </div>
-          </div>
-        </section>
 
-        {/* =========================
-            BRANCH SETTINGS
-           ========================= */}
-        <section className="space-y-4">
-          <h2 className="text-lg font-semibold">Branch</h2>
+      </header>
 
-          <div>
-            <label className="block text-sm font-medium mb-1">Branch Name</label>
-            <input
-              type="text"
-              value={branch.name}
-              onChange={e => updateBranch("name", e.target.value)}
-              className="w-full border rounded px-3 py-2"
-              disabled={isSaving}
-            />
-          </div>
+      {/* Preferences Sections */}
+      {Object.entries(groupedSettings).map(([section, settings]) => (
+        <section key={section} className="border-t pt-6">
+          <h2 className="mb-4 text-sm font-semibold uppercase tracking-wide text-gray-500">
+            {section === "general" ? "General" : section.replace("_", " ")}
+          </h2>
 
-          <div>
-            <label className="block text-sm font-medium mb-1">Location</label>
-            <input
-              type="text"
-              value={branch.location ?? ""}
-              onChange={e => updateBranch("location", e.target.value)}
-              className="w-full border rounded px-3 py-2"
-              disabled={isSaving}
-            />
-          </div>
+          <div className="divide-y rounded-md border bg-white">
+            {settings.map(setting => {
+              const pref = getPref(setting.key, setting.target);
+              const inherited = pref && pref.scope !== currentScope;
+              const canReset = pref?.scope === currentScope;
 
-          {/* Tooltip wrapper */}
-          <div className="relative group inline-block">
-            <SwitchField
-              label="Branch Active"
-              description="Toggle to activate or deactivate this branch"
-              checked={branch.active}
-              disabled={isSaving}
-              onChange={handleBranchActiveToggle}
-            />
-            {/* Tooltip */}
-            <div className="absolute left-0 bottom-full mb-2 hidden group-hover:block w-max max-w-xs bg-gray-700 text-white text-xs px-2 py-1 rounded shadow-lg z-10">
-              Activating allows branch users to manage stock and orders.
-            </div>
+              return (
+                <div key={setting.key} className="flex items-start justify-between gap-6 px-4 py-4">
+                  <div className="max-w-md">
+                    <div className="text-sm font-medium text-gray-900">{setting.label}</div>
+                    {setting.description && <p className="mt-1 text-sm text-gray-500">{setting.description}</p>}
+                    {inherited && <p className="mt-1 text-xs text-gray-400">Inherited from {pref.scope.toLowerCase()}</p>}
+                  </div>
+
+                  <div className="flex items-center gap-4 min-w-[180px]">
+                    {renderControl(setting, pref?.value, inherited || savingKey === setting.key, handleChange)}
+                    {canReset && (
+                      <button onClick={() => handleReset(setting)} className="text-xs text-gray-500 hover:text-gray-900">
+                        Reset
+                      </button>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
           </div>
         </section>
-
-        {/* =========================
-            SAVE BUTTON
-           ========================= */}
-        <div className="pt-4">
-          <button
-            type="submit"
-            className="px-4 py-2 rounded bg-gray-900 text-white hover:bg-gray-800 disabled:opacity-50 disabled:cursor-not-allowed"
-            disabled={isSaving}
-          >
-            Save Settings
-          </button>
-        </div>
-      </form>
+      ))}
     </div>
+  );
+}
+
+// ---------------------------- CONTROL RENDERER ----------------------------
+function renderControl(
+  setting: HubSetting,
+  value: PreferenceValue | undefined,
+  disabled: boolean,
+  onChange: (setting: HubSetting, value: PreferenceValue) => void
+) {
+  switch (setting.type) {
+    case "switch":
+      return <SmartSwitch checked={!!value} disabled={disabled} onChange={v => onChange(setting, v)} />;
+    case "text":
+      return (
+        <input
+          type="text"
+          value={(value as string) ?? ""}
+          disabled={disabled}
+          onChange={e => onChange(setting, e.target.value)}
+          className="w-full rounded-md border px-3 py-2 text-sm"
+        />
+      );
+    case "number":
+      return (
+        <input
+          type="number"
+          value={(value as number) ?? 0}
+          disabled={disabled}
+          onChange={e => onChange(setting, Number(e.target.value))}
+          className="w-full rounded-md border px-3 py-2 text-sm"
+        />
+      );
+    case "select":
+      return (
+        <select
+          value={(value as string) ?? ""}
+          disabled={disabled}
+          onChange={e => onChange(setting, e.target.value)}
+          className="w-full rounded-md border bg-white px-3 py-2 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+        >
+          {setting.options?.map(opt => (
+            <option key={opt} value={opt}>
+              {opt}
+            </option>
+          ))}
+        </select>
+      );
+    default:
+      return null;
+  }
+}
+
+// ---------------------------- SMART SWITCH ----------------------------
+interface SmartSwitchProps {
+  checked: boolean;
+  disabled?: boolean;
+  onChange: (value: boolean) => void;
+}
+
+function SmartSwitch({ checked, disabled, onChange }: SmartSwitchProps) {
+  return (
+    <button
+      type="button"
+      disabled={disabled}
+      onClick={() => onChange(!checked)}
+      className={`relative inline-flex h-6 w-12 items-center rounded-full transition-colors duration-200 focus:outline-none ${
+        checked ? "bg-blue-600" : "bg-gray-300"
+      } ${disabled ? "opacity-50 cursor-not-allowed" : "cursor-pointer"}`}
+    >
+      <span
+        className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform duration-200 ${
+          checked ? "translate-x-6" : "translate-x-1"
+        }`}
+      />
+    </button>
   );
 }

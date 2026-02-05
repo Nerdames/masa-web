@@ -691,9 +691,9 @@ model Preference {
 
   scope    PreferenceScope
   category PreferenceCategory
-
-  key   String
-  value Json
+  key      String
+  value    Json
+  target   String?   // <-- NEW optional column for page/component/feature
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -702,10 +702,12 @@ model Preference {
   branch       Branch?              @relation(fields: [branchId], references: [id], onDelete: Cascade)
   personnel    AuthorizedPersonnel? @relation(fields: [personnelId], references: [id], onDelete: Cascade)
 
-  @@unique([scope, key, organizationId, branchId, personnelId])
+  @@unique([scope, key, organizationId, branchId, personnelId, target])
   @@index([organizationId])
   @@index([branchId])
   @@index([personnelId])
   @@index([scope])
   @@index([category])
+  @@index([target])
 }
+
