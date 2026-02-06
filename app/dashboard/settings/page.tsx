@@ -1,4 +1,3 @@
-// app/dashboard/settings/page.tsx
 "use client";
 
 import { useEffect } from "react";
@@ -14,13 +13,14 @@ export default function SettingsPageRedirect() {
   const { data: session, status } = useSession();
 
   const role = session?.user?.role;
-  const authorized = role && ALLOWED_ROLES.has(role);
+  const authorized = role ? ALLOWED_ROLES.has(role) : false;
+  const isSettingsRoot = pathname === "/dashboard/settings";
 
   useEffect(() => {
-    if (status === "authenticated" && authorized && pathname === "/dashboard/settings") {
+    if (status === "authenticated" && authorized && isSettingsRoot) {
       router.replace("/dashboard/settings/general");
     }
-  }, [status, authorized, pathname, router]);
+  }, [status, authorized, isSettingsRoot, router]);
 
   if (status === "loading") {
     return (
@@ -38,7 +38,7 @@ export default function SettingsPageRedirect() {
     );
   }
 
-  if (pathname === "/dashboard/settings") {
+  if (isSettingsRoot) {
     return (
       <div className="flex min-h-[70vh] items-center justify-center px-4 text-sm text-gray-500">
         Redirecting…

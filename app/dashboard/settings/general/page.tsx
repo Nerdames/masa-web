@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useState, useCallback } from "react";
 import { useSession } from "next-auth/react";
 import { useSearchParams, useRouter } from "next/navigation";
 import AccessDenied from "@/components/feedback/AccessDenied";
@@ -40,29 +40,12 @@ const HUB_SETTINGS: HubSetting[] = [
 ];
 
 // ---------------------------- SCOPE LOGIC ----------------------------
-const resolveDefaultScope = (role: Role): PreferenceScope => {
-  switch (role) {
-    case "DEV":
-    case "ADMIN":
-      return "ORGANIZATION";
-    case "MANAGER":
-      return "BRANCH";
-    default:
-      return "USER";
-  }
-};
+const resolveDefaultScope = (role: Role): PreferenceScope =>
+  role === "DEV" || role === "ADMIN" ? "ORGANIZATION" : role === "MANAGER" ? "BRANCH" : "USER";
 
-const allowedScopes = (role: Role): PreferenceScope[] => {
-  switch (role) {
-    case "DEV":
-    case "ADMIN":
-      return ["USER", "BRANCH", "ORGANIZATION"];
-    case "MANAGER":
-      return ["USER", "BRANCH"];
-    default:
-      return ["USER"];
-  }
-};
+const allowedScopes = (role: Role): PreferenceScope[] =>
+  role === "DEV" || role === "ADMIN" ? ["USER", "BRANCH", "ORGANIZATION"] :
+  role === "MANAGER" ? ["USER", "BRANCH"] : ["USER"];
 
 // ---------------------------- COMPONENT ----------------------------
 export default function PreferencesPage() {
@@ -74,48 +57,52 @@ export default function PreferencesPage() {
   const [preferences, setPreferences] = useState<Preference[]>([]);
   const [savingKey, setSavingKey] = useState<string | null>(null);
 
-  if (status === "loading") {
-    return (
-      <div className="flex min-h-[70vh] items-center justify-center text-sm text-gray-500">
-        Verifying access…
-      </div>
-    );
-  }
+  const role = session?.user?.role as Role | undefined;
 
-  if (!session?.user?.role) {
-    return <AccessDenied />;
-  }
-
-  const role = session.user.role as Role;
-
-  // Initialize scope from URL query or default
+  // ------------------ SCOPE INITIALIZATION ------------------
   useEffect(() => {
-    const queryScope = params.get("scope") as PreferenceScope;
-    if (queryScope && allowedScopes(role).includes(queryScope)) {
-      setCurrentScope(queryScope);
-    } else {
-      const defaultScope = resolveDefaultScope(role);
-      setCurrentScope(defaultScope);
-      router.replace(`/dashboard/settings/general?scope=${defaultScope}`);
-    }
+    if (!role) return; // still safe inside useEffect
+    const queryScope = params.get("scope") as PreferenceScope | null;
+    const scope = queryScope && allowedScopes(role).includes(queryScope)
+      ? queryScope
+      : resolveDefaultScope(role);
+
+    setCurrentScope(scope);
+    if (!queryScope) router.replace(`/dashboard/settings/general?scope=${scope}`);
   }, [params, role, router]);
 
-  // Fetch preferences when scope changes
+  // ------------------ FETCH PREFERENCES ------------------
+  const fetchPreferences = useCallback(async (scope: PreferenceScope) => {
+    try {
+      const res = await fetch(`/api/preferences/effective?scope=${scope}`);
+      const data: Preference[] = await res.json();
+      setPreferences(data);
+    } catch (err) {
+      console.error(err);
+    }
+  }, []);
+
   useEffect(() => {
-    if (!session?.user || !currentScope) return;
-    fetch(`/api/preferences/effective?scope=${currentScope}`)
-      .then(res => res.json())
-      .then((data: Preference[]) => setPreferences(data))
-      .catch(console.error);
-  }, [session?.user, currentScope]);
+    if (!currentScope) return;
+    fetchPreferences(currentScope);
+  }, [currentScope, fetchPreferences]);
+
+  // ------------------ CONDITIONAL RENDERING ------------------
+  if (status === "loading") return <CenteredMessage>Verifying access…</CenteredMessage>;
+  if (!role) return <AccessDenied />;
+  if (!currentScope) return null; // still waiting for initialization
+
+  // rest of your component JSX...
+
+
+  // ------------------ HELPERS ------------------
+  const getPref = (key: string, target?: string) =>
+    preferences.find(p => p.key === key && p.target === (target ?? null));
 
   const handleScopeChange = (newScope: PreferenceScope) => {
     setCurrentScope(newScope);
     router.replace(`/dashboard/settings/general?scope=${newScope}`);
   };
-
-  const getPref = (key: string, target?: string) =>
-    preferences.find(p => p.key === key && p.target === (target ?? null));
 
   const handleChange = async (setting: HubSetting, value: PreferenceValue) => {
     if (!currentScope) return;
@@ -141,46 +128,33 @@ export default function PreferencesPage() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ key: setting.key, target: setting.target ?? null, scope: currentScope }),
     });
-
-    const refreshed = await fetch(`/api/preferences/effective?scope=${currentScope}`).then(r => r.json());
-    setPreferences(refreshed);
+    fetchPreferences(currentScope);
   };
 
-  const groupedSettings: Record<string, HubSetting[]> = HUB_SETTINGS.reduce((acc, s) => {
+  // ------------------ GROUP SETTINGS ------------------
+  const groupedSettings = HUB_SETTINGS.reduce((acc, s) => {
     const section = s.target ?? "general";
     acc[section] ||= [];
     acc[section].push(s);
     return acc;
   }, {} as Record<string, HubSetting[]>);
 
-  if (!currentScope) return null; // Wait for scope initialization
+  if (!currentScope) return null;
 
   return (
     <div className="space-y-10">
       {/* Header */}
       <header>
-        {/* Scope Selector */}
         {allowedScopes(role).length > 1 && (
-          <div className="mt-2">
-            <label className="text-sm text-gray-700 mr-2">Select Scope:</label>
-            <select
-              value={currentScope}
-              onChange={e => handleScopeChange(e.target.value as PreferenceScope)}
-              className="rounded-md border px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-            >
-              {allowedScopes(role).map(s => (
-                <option key={s} value={s}>
-                  {s.charAt(0) + s.slice(1).toLowerCase()}
-                </option>
-              ))}
-            </select>
-          </div>
+          <ScopeSelector
+            role={role}
+            currentScope={currentScope}
+            onChange={handleScopeChange}
+          />
         )}
         <p className="mt-1 text-sm text-gray-500">
           Role: <strong>{role}</strong> | Editing Scope: <strong>{currentScope}</strong>
         </p>
-
-
       </header>
 
       {/* Preferences Sections */}
@@ -222,7 +196,35 @@ export default function PreferencesPage() {
   );
 }
 
-// ---------------------------- CONTROL RENDERER ----------------------------
+// ------------------ SCOPE SELECTOR ------------------
+function ScopeSelector({
+  role,
+  currentScope,
+  onChange,
+}: {
+  role: Role;
+  currentScope: PreferenceScope;
+  onChange: (scope: PreferenceScope) => void;
+}) {
+  return (
+    <div className="mt-2">
+      <label className="text-sm text-gray-700 mr-2">Select Scope:</label>
+      <select
+        value={currentScope}
+        onChange={e => onChange(e.target.value as PreferenceScope)}
+        className="rounded-md border px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+      >
+        {allowedScopes(role).map(s => (
+          <option key={s} value={s}>
+            {s.charAt(0) + s.slice(1).toLowerCase()}
+          </option>
+        ))}
+      </select>
+    </div>
+  );
+}
+
+// ------------------ CONTROL RENDERER ------------------
 function renderControl(
   setting: HubSetting,
   value: PreferenceValue | undefined,
@@ -272,7 +274,7 @@ function renderControl(
   }
 }
 
-// ---------------------------- SMART SWITCH ----------------------------
+// ------------------ SMART SWITCH ------------------
 interface SmartSwitchProps {
   checked: boolean;
   disabled?: boolean;
@@ -295,5 +297,14 @@ function SmartSwitch({ checked, disabled, onChange }: SmartSwitchProps) {
         }`}
       />
     </button>
+  );
+}
+
+// ------------------ CENTERED MESSAGE ------------------
+function CenteredMessage({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="flex min-h-[70vh] items-center justify-center text-sm text-gray-500">
+      {children}
+    </div>
   );
 }

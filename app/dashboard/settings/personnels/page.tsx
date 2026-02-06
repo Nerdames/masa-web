@@ -1,77 +1,48 @@
 "use client";
 
 import { useState, useMemo } from "react";
-import { useSession } from "next-auth/react";
 import useSWR from "swr";
-import { useDebounce } from "@/app/hooks/useDebounce";
+import { useDebounce } from "@/hooks/useDebounce";
 import { useToast } from "@/components/feedback/ToastProvider";
 import ConfirmModal from "@/components/modal/ConfirmModal";
-import { Tooltip } from "@/components/feedback/Tooltip";
-import AccessDenied from "@/components/feedback/AccessDenied";
-import { useRouter } from "next/navigation";
-import { DragDropContext, Droppable, Draggable, DropResult } from "@hello-pangea/dnd";
-import type {
-  AuthorizedPersonnel,
-  BranchAssignment,
-  Role,
-} from "@prisma/client";
+import Summary, { SummaryCard } from "@/components/ui/Summary";
 
-/* ---------------- TYPES ---------------- */
-type PersonnelWithRoles = AuthorizedPersonnel & {
-  branchAssignments: Pick<BranchAssignment, "role">[];
-};
+import type { AuthorizedPersonnel, Role } from "@prisma/client";
 
-interface PersonnelResponse {
-  data: PersonnelWithRoles[];
-  total: number;
-  page: number;
-  pageSize: number;
-  activeCount: number;
-}
-
-/* ---------------- FETCHER ---------------- */
+/* ================= Fetcher ================= */
 const fetcher = (url: string) =>
-  fetch(url, { credentials: "include" }).then(res => {
-    if (!res.ok) throw new Error("Unauthorized");
-    return res.json();
-  });
+  fetch(url, { credentials: "include" }).then(res => res.json());
 
-/* ---------------- SKELETON ---------------- */
+/* ================= Skeleton ================= */
 const SkeletonRow = () => (
-  <tr className="animate-pulse h-16">
+  <tr className="animate-pulse">
     {Array.from({ length: 6 }).map((_, i) => (
-      <td key={i} className="p-3">
-        <div className="h-4 bg-gray-200 rounded w-full" />
+      <td key={i} className="p-4">
+        <div className="h-4 w-full bg-gray-200 rounded" />
       </td>
     ))}
   </tr>
 );
 
-/* ---------------- PAGE ---------------- */
-export default function PersonnelPage() {
-  const { data: session, status } = useSession();
+type PersonnelRow = AuthorizedPersonnel & {
+  branch?: { name: string };
+  organization?: { name: string };
+  roles?: Role[];
+};
+
+export default function PersonnelsPage() {
   const toast = useToast();
-  const router = useRouter();
 
-  /* ---------------- AUTH ---------------- */
-  if (status === "loading") return null;
-
-  const isAuthorized =
-    session?.user?.role === "DEV" ||
-    (session?.user?.role === "ADMIN" && session?.user?.isOrgOwner);
-
-  if (!isAuthorized) return <AccessDenied />;
-
-  /* ---------------- STATE ---------------- */
   const [page, setPage] = useState(1);
   const [search, setSearch] = useState("");
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
-  const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false);
-  const [showSummary, setShowSummary] = useState(true);
+
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const [confirmMessage, setConfirmMessage] = useState("");
+  const [confirmAction, setConfirmAction] = useState<() => Promise<void>>(async () => {});
 
   const debouncedSearch = useDebounce(search, 400);
 
-  /* ---------------- QUERY ---------------- */
   const query = useMemo(() => {
     const params = new URLSearchParams();
     params.set("page", String(page));
@@ -80,29 +51,35 @@ export default function PersonnelPage() {
     return params.toString();
   }, [page, debouncedSearch]);
 
-  /* ---------------- SWR ---------------- */
-  const { data, isLoading, mutate } = useSWR<PersonnelResponse>(
-    `/api/dashboard/personnel?${query}`,
+  const { data, isLoading, mutate } = useSWR(
+    `/api/personnels?${query}`,
     fetcher,
     { keepPreviousData: true }
   );
 
-  const personnel = data?.data ?? [];
+  const personnels: PersonnelRow[] = data?.data ?? [];
   const total = data?.total ?? 0;
-  const activeCount = data?.activeCount ?? 0;
-  const inactiveCount = total - activeCount;
-  const pageCount = Math.max(1, Math.ceil(total / 10));
+  const pageSize = data?.pageSize ?? 10;
+  const pageCount = Math.max(1, Math.ceil(total / pageSize));
 
-  /* ---------------- HELPERS ---------------- */
-  const isActive = (p: PersonnelWithRoles) => !p.disabled && !p.deletedAt;
+  /* ================= Summary ================= */
+  const summaryCards: SummaryCard[] = [
+    { id: "total", title: "Total Staff", value: total },
+    {
+      id: "active",
+      title: "Active",
+      value: personnels.filter(p => !p.disabled && !p.deletedAt).length,
+      color: "text-green-600",
+    },
+    {
+      id: "disabled",
+      title: "Disabled",
+      value: personnels.filter(p => p.disabled).length,
+      color: "text-red-600",
+    },
+  ];
 
-  const resolveRole = (p: PersonnelWithRoles): Role | "—" => {
-    if (p.branchAssignments.some(b => b.role === "DEV")) return "DEV";
-    if (p.id === session?.user?.id && session?.user?.isOrgOwner) return "ADMIN";
-    return p.branchAssignments[0]?.role ?? "—";
-  };
-
-  /* ---------------- SELECTION ---------------- */
+  /* ================= Selection ================= */
   const toggleSelect = (id: string) => {
     setSelectedIds(prev => {
       const next = new Set(prev);
@@ -112,201 +89,181 @@ export default function PersonnelPage() {
   };
 
   const toggleSelectAll = () => {
-    if (selectedIds.size === personnel.length) {
-      setSelectedIds(new Set());
-    } else {
-      setSelectedIds(new Set(personnel.map(p => p.id)));
-    }
+    const all = personnels.every(p => selectedIds.has(p.id));
+    setSelectedIds(all ? new Set() : new Set(personnels.map(p => p.id)));
   };
 
-  const isAllSelected = personnel.length > 0 && personnel.every(p => selectedIds.has(p.id));
+  const isAllSelected = personnels.length > 0 && personnels.every(p => selectedIds.has(p.id));
   const isIndeterminate = selectedIds.size > 0 && !isAllSelected;
 
-  /* ---------------- BULK DELETE ---------------- */
-  const bulkDelete = async () => {
-    try {
-      await Promise.all(
-        [...selectedIds].map(id =>
-          fetch(`/api/dashboard/personnel/${id}`, {
-            method: "DELETE",
-          })
-        )
-      );
-      toast.addToast({ type: "success", message: "Personnel deleted" });
-      setSelectedIds(new Set());
-      setBulkDeleteOpen(false);
-      mutate();
-    } catch {
-      toast.addToast({ type: "error", message: "Bulk delete failed" });
-    }
+  /* ================= Actions ================= */
+  const toggleDisabled = (p: AuthorizedPersonnel) => {
+    setConfirmMessage(
+      `${p.disabled ? "Enable" : "Disable"} account for ${p.name ?? p.email}?`
+    );
+    setConfirmAction(() => async () => {
+      try {
+        const res = await fetch(`/api/personnels/${p.id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ disabled: !p.disabled }),
+        });
+        if (!res.ok) throw new Error();
+        toast.addToast({ type: "success", message: "Personnel updated" });
+        mutate();
+      } catch {
+        toast.addToast({ type: "error", message: "Update failed" });
+      } finally {
+        setConfirmOpen(false);
+      }
+    });
+    setConfirmOpen(true);
   };
 
-  /* ---------------- SUMMARY CARDS ---------------- */
-  const initialCards = [
-    { id: "total", label: "Total Personnel", value: total },
-    { id: "active", label: "Active", value: activeCount },
-    { id: "inactive", label: "Inactive", value: inactiveCount },
-  ];
-  const [cards, setCards] = useState(initialCards);
-
-  const onDragEnd = (result: DropResult) => {
-    if (!result.destination) return;
-    const reordered = Array.from(cards);
-    const [removed] = reordered.splice(result.source.index, 1);
-    reordered.splice(result.destination.index, 0, removed);
-    setCards(reordered);
+  const bulkDisable = () => {
+    setConfirmMessage(`Disable ${selectedIds.size} selected personnel?`);
+    setConfirmAction(() => async () => {
+      try {
+        await Promise.all(
+          [...selectedIds].map(id =>
+            fetch(`/api/personnels/${id}`, {
+              method: "PATCH",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ disabled: true }),
+            })
+          )
+        );
+        toast.addToast({ type: "success", message: "Personnel disabled" });
+        setSelectedIds(new Set());
+        mutate();
+      } catch {
+        toast.addToast({ type: "error", message: "Bulk action failed" });
+      } finally {
+        setConfirmOpen(false);
+      }
+    });
+    setConfirmOpen(true);
   };
 
+  /* ================= Render ================= */
   return (
     <div className="flex flex-col space-y-4 min-h-[calc(100vh-4rem)] p-4">
-      {/* ================= SHOW/HIDE SUMMARY ================= */}
-      <button
-        className="self-start text-xs text-blue-600 hover:underline"
-        onClick={() => setShowSummary(prev => !prev)}
-      >
-        {showSummary ? "Hide Summary" : "Show Summary"}
-      </button>
+      {/* Summary */}
+      <Summary cardsData={summaryCards} />
 
-      {showSummary && (
-        <DragDropContext onDragEnd={onDragEnd}>
-          <Droppable droppableId="summary-cards" direction="horizontal">
-            {(provided) => (
-              <div
-                ref={provided.innerRef}
-                {...provided.droppableProps}
-                className="grid grid-cols-1 md:grid-cols-3 gap-4"
-              >
-                {cards.map((card, index) => (
-                  <Draggable key={card.id} draggableId={card.id} index={index}>
-                    {(provided) => (
-                      <div
-                        ref={provided.innerRef}
-                        {...provided.draggableProps}
-                        {...provided.dragHandleProps}
-                        className="p-4 bg-white rounded shadow cursor-move hover:bg-gray-50"
-                        onClick={() => {
-                          if (card.id === "active") {
-                            setPage(1);
-                            // Example: filter active personnel
-                          }
-                          if (card.id === "inactive") {
-                            setPage(1);
-                            // Example: filter inactive personnel
-                          }
-                        }}
-                      >
-                        <span className="text-gray-500 text-sm">{card.label}</span>
-                        <span className="text-2xl font-bold">{card.value}</span>
-                      </div>
-                    )}
-                  </Draggable>
-                ))}
-                {provided.placeholder}
-              </div>
-            )}
-          </Droppable>
-        </DragDropContext>
-      )}
-
-      {/* ================= TOP BAR ================= */}
-      <div className="flex flex-wrap items-center gap-2 p-2 bg-white rounded shadow">
+      {/* Top Bar */}
+      <div className="sticky top-0 z-40 bg-white p-3 flex items-center gap-2 shadow-sm">
         <input
           type="text"
-          placeholder="Search personnel..."
+          placeholder="Search personnel"
           value={search}
           onChange={e => setSearch(e.target.value)}
-          className="border border-gray-300 rounded-md px-3 py-2 text-sm min-w-[280px]"
+          className="border rounded-lg p-2 text-sm h-10 min-w-[300px]"
         />
 
-        <Tooltip content="Refresh">
-          <button
-            onClick={() => mutate()}
-            className="flex px-3 py-3 bg-gray-100 rounded-full hover:bg-gray-200"
-          >
-            <i className="bx bx-refresh text-lg" />
-          </button>
-        </Tooltip>
+        <button
+          onClick={() => mutate()}
+          className="w-10 h-10 rounded-full bg-gray-100 flex items-center justify-center"
+        >
+          <i className="bx bx-refresh text-lg" />
+        </button>
 
         {selectedIds.size > 0 && (
-          <Tooltip content="Delete Selected">
-            <button
-              onClick={() => setBulkDeleteOpen(true)}
-              className="flex px-3 py-3 bg-gray-100 rounded-full hover:bg-gray-200"
-            >
-              <i className="bx bx-trash text-red-600 text-lg" />
-            </button>
-          </Tooltip>
+          <button
+            onClick={bulkDisable}
+            className="w-10 h-10 rounded-full bg-gray-100 flex items-center justify-center"
+          >
+            <i className="bx bx-block text-red-600 text-lg" />
+          </button>
         )}
-
-        <div className="ml-auto">
-          <Tooltip content="Add Personnel">
-            <button
-              onClick={() => router.push("/dashboard/personnel/add")}
-              className="flex px-3 py-3 bg-gray-100 rounded-full hover:bg-gray-200"
-            >
-              <i className="bx bx-plus text-blue-600 text-lg" />
-            </button>
-          </Tooltip>
-        </div>
       </div>
 
-      {/* ================= TABLE ================= */}
-      <div className="flex-1 overflow-x-auto rounded-md border shadow-sm">
-        <table className="w-full text-sm">
-          <thead className="bg-gray-50 text-gray-600 uppercase text-xs">
+      {/* Table */}
+      <div className="flex-1 overflow-x-auto">
+        <table className="w-full text-sm table-fixed border-separate border-spacing-y-3">
+          <thead className="text-xs bg-gray-100 uppercase text-gray-500 text-center">
             <tr>
-              <th className="p-3">
+              <th className="w-10 p-3">
                 <input
                   type="checkbox"
                   checked={isAllSelected}
-                  ref={el => { if (el) el.indeterminate = isIndeterminate; }}
+                  ref={el => {
+                    if (el) el.indeterminate = isIndeterminate;
+                  }}
                   onChange={toggleSelectAll}
                 />
               </th>
-              <th className="p-3 text-left">Name</th>
-              <th className="p-3 text-left">Email</th>
-              <th className="p-3 text-left">Role</th>
-              <th className="p-3 text-left">Status</th>
-              <th className="p-3 text-right">Action</th>
+              <th className="p-4">Name</th>
+              <th className="p-4">Email</th>
+              <th className="p-4">Branch</th>
+              <th className="p-4">Role</th>
+              <th className="p-4">Status</th>
             </tr>
           </thead>
 
-          <tbody className="divide-y">
-            {isLoading
-              ? Array.from({ length: 8 }).map((_, i) => <SkeletonRow key={i} />)
-              : personnel.map(p => (
-                  <tr key={p.id} className="hover:bg-gray-50">
-                    <td className="p-3">
+          <tbody>
+            {isLoading && Array.from({ length: 8 }).map((_, i) => <SkeletonRow key={i} />)}
+
+            {!isLoading &&
+              personnels.map(p => {
+                const selected = selectedIds.has(p.id);
+
+                return (
+                  <tr
+                    key={p.id}
+                    className={`
+                      bg-white rounded-xl shadow-sm transition
+                      hover:bg-blue-50
+                      ${selected ? "bg-blue-100" : ""}
+                    `}
+                  >
+                    <td className="p-4 text-center">
                       <input
                         type="checkbox"
-                        checked={selectedIds.has(p.id)}
+                        checked={selected}
+                        onClick={e => e.stopPropagation()}
                         onChange={() => toggleSelect(p.id)}
                       />
                     </td>
-                    <td className="p-3 font-medium">{p.name ?? "—"}</td>
-                    <td className="p-3">{p.email}</td>
-                    <td className="p-3">{resolveRole(p)}</td>
-                    <td className="p-3">
-                      <span className={isActive(p) ? "text-green-600" : "text-gray-500"}>
-                        {isActive(p) ? "Active" : "Inactive"}
+
+                    <td className="p-4 text-center font-medium">
+                      {p.name ?? "—"}
+                    </td>
+
+                    <td className="p-4 text-center text-xs">
+                      {p.email}
+                    </td>
+
+                    <td className="p-4 text-center">
+                      {p.branch?.name ?? "—"}
+                    </td>
+
+                    <td className="p-4 text-center text-xs">
+                      {p.roles?.join(", ") ?? "—"}
+                    </td>
+
+                    <td className="p-4 text-center">
+                      <span
+                        onClick={() => toggleDisabled(p)}
+                        className={`
+                          px-3 py-1 rounded-full text-xs font-semibold cursor-pointer
+                          ${p.disabled
+                            ? "bg-red-100 text-red-700"
+                            : "bg-green-100 text-green-700"}
+                        `}
+                      >
+                        {p.disabled ? "Disabled" : "Active"}
                       </span>
                     </td>
-                    <td className="p-3 text-right">
-                      <button
-                        onClick={() => router.push(`/dashboard/personnel/edit/${p.id}`)}
-                        className="text-blue-600 hover:underline text-xs"
-                      >
-                        Edit
-                      </button>
-                    </td>
                   </tr>
-                ))}
+                );
+              })}
           </tbody>
         </table>
       </div>
 
-      {/* ================= PAGINATION ================= */}
-      <div className="flex justify-between text-xs">
+      {/* Pagination */}
+      <div className="flex justify-between items-center text-xs">
         <span>Total: {total}</span>
         <div className="flex gap-2 items-center">
           <button disabled={page <= 1} onClick={() => setPage(p => p - 1)}>Prev</button>
@@ -315,17 +272,15 @@ export default function PersonnelPage() {
         </div>
       </div>
 
-      {/* ================= CONFIRM ================= */}
-      {bulkDeleteOpen && (
-        <ConfirmModal
-          open
-          title="Delete Personnel"
-          message={`Delete ${selectedIds.size} selected personnel?`}
-          destructive
-          onClose={() => setBulkDeleteOpen(false)}
-          onConfirm={bulkDelete}
-        />
-      )}
+      {/* Confirm */}
+      <ConfirmModal
+        open={confirmOpen}
+        title="Confirm Action"
+        message={confirmMessage}
+        destructive
+        onClose={() => setConfirmOpen(false)}
+        onConfirm={confirmAction}
+      />
     </div>
   );
 }

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useMemo } from "react";
+import { useState, useMemo, useCallback } from "react";
 import useSWR from "swr";
 import { useDebounce } from "@/app/hooks/useDebounce";
 import { useToast } from "@/components/feedback/ToastProvider";
@@ -70,15 +70,16 @@ export default function InvoicePage() {
   /* ---------- State ---------- */
   const [page, setPage] = useState(1);
   const [search, setSearch] = useState("");
-  const [paidFilter, setPaidFilter] =
-    useState<"ALL" | "PAID" | "UNPAID">("ALL");
+  const [paidFilter, setPaidFilter] = useState<"ALL" | "PAID" | "UNPAID">(
+    "ALL"
+  );
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [bulkMarkPaidOpen, setBulkMarkPaidOpen] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
 
   const debouncedSearch = useDebounce(search, 400);
 
-  /* ---------- Query ---------- */
+  /* ---------- Query String ---------- */
   const query = useMemo(() => {
     const params = new URLSearchParams();
     params.set("page", String(page));
@@ -92,55 +93,19 @@ export default function InvoicePage() {
     return params.toString();
   }, [page, debouncedSearch, paidFilter]);
 
+  /* ---------- Fetch Data ---------- */
   const { data, isLoading, mutate } = useSWR<InvoicesResponse>(
     `/api/dashboard/invoices?${query}`,
     fetcher,
     { keepPreviousData: true }
   );
 
-  /* ---------- Stable derived data ---------- */
-  const invoices = useMemo(
-    () => data?.invoices ?? [],
-    [data?.invoices]
-  );
-
+  /* ---------- Derived Data ---------- */
+  const invoices = useMemo(() => data?.invoices ?? [], [data?.invoices]);
   const total = data?.total ?? 0;
   const pageCount = Math.max(1, Math.ceil(total / 10));
 
-  /* ================= Summary ================= */
-
-  const summaryCards: SummaryCard[] = [
-    {
-      id: "total",
-      title: "Total Invoices",
-      value: total,
-      filter: "ALL",
-    },
-    {
-      id: "paid",
-      title: "Paid",
-      value: invoices.filter(i => i.paid).length,
-      filter: "PAID",
-      color: "text-green-600",
-    },
-    {
-      id: "unpaid",
-      title: "Unpaid",
-      value: invoices.filter(i => !i.paid).length,
-      filter: "UNPAID",
-      color: "text-red-600",
-    },
-    {
-      id: "revenue",
-      title: "Revenue",
-      value: data?.totalRevenue ?? 0,
-      filter: "ALL",
-      isCurrency: true,
-    },
-  ];
-
-  /* ================= Selection ================= */
-
+  // Selection helpers
   const selectableIds = useMemo(
     () =>
       invoices
@@ -149,31 +114,38 @@ export default function InvoicePage() {
     [invoices]
   );
 
-  const toggleSelect = (id: string) => {
-    setSelectedIds(prev => {
-      const next = new Set(prev);
-      next.has(id) ? next.delete(id) : next.add(id);
-      return next;
-    });
-  };
-
-  const toggleSelectAll = () => {
-    const allSelected = selectableIds.every(id => selectedIds.has(id));
-    setSelectedIds(allSelected ? new Set() : new Set(selectableIds));
-  };
-
   const isAllSelected =
     selectableIds.length > 0 &&
     selectableIds.every(id => selectedIds.has(id));
 
-  const isIndeterminate =
-    selectedIds.size > 0 && !isAllSelected;
+  const isIndeterminate = selectedIds.size > 0 && !isAllSelected;
 
-  /* ================= Actions ================= */
+  /* ---------- Callbacks ---------- */
+  const toggleSelect = useCallback(
+    (id: string) => {
+      setSelectedIds(prev => {
+        const next = new Set(prev);
+        next.has(id) ? next.delete(id) : next.add(id);
+        return next;
+      });
+    },
+    [setSelectedIds]
+  );
 
-  const bulkMarkPaid = async () => {
+  const toggleSelectAll = useCallback(() => {
+    setSelectedIds(prev =>
+      isAllSelected ? new Set() : new Set(selectableIds)
+    );
+  }, [isAllSelected, selectableIds]);
+
+  const handleRefresh = useCallback(async () => {
+    setRefreshing(true);
+    await mutate();
+    setRefreshing(false);
+  }, [mutate]);
+
+  const bulkMarkPaid = useCallback(async () => {
     try {
-      // Updated API route
       await fetch("/api/dashboard/invoices/mark-paid", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
@@ -194,13 +166,44 @@ export default function InvoicePage() {
         message: "Failed to update invoices",
       });
     }
-  };
+  }, [selectedIds, toast, mutate]);
 
-  const handleRefresh = async () => {
-    setRefreshing(true);
-    await mutate();
-    setTimeout(() => setRefreshing(false), 300);
-  };
+  /* ---------- Memoized Counts for Summary ---------- */
+  const paidCount = useMemo(() => invoices.filter(i => i.paid).length, [
+    invoices,
+  ]);
+  const unpaidCount = useMemo(() => invoices.length - paidCount, [
+    invoices,
+    paidCount,
+  ]);
+
+  const summaryCards: SummaryCard[] = useMemo(
+    () => [
+      { id: "total", title: "Total Invoices", value: total, filter: "ALL" },
+      {
+        id: "paid",
+        title: "Paid",
+        value: paidCount,
+        filter: "PAID",
+        color: "text-green-600",
+      },
+      {
+        id: "unpaid",
+        title: "Unpaid",
+        value: unpaidCount,
+        filter: "UNPAID",
+        color: "text-red-600",
+      },
+      {
+        id: "revenue",
+        title: "Revenue",
+        value: data?.totalRevenue ?? 0,
+        filter: "ALL",
+        isCurrency: true,
+      },
+    ],
+    [total, paidCount, unpaidCount, data?.totalRevenue]
+  );
 
   /* ================= Render ================= */
 
@@ -271,9 +274,7 @@ export default function InvoicePage() {
                   onChange={toggleSelectAll}
                 />
               </th>
-              <th className="sticky left-0 bg-gray-50 p-2 z-30">
-                Invoice
-              </th>
+              <th className="sticky left-0 bg-gray-50 p-2 z-30">Invoice</th>
               <th className="p-2">Customer</th>
               <th className="p-2 text-right">Total</th>
               <th className="p-2">Paid</th>
@@ -283,63 +284,58 @@ export default function InvoicePage() {
           </thead>
 
           <tbody>
-            {isLoading &&
-              Array.from({ length: 8 }).map((_, i) => (
-                <SkeletonRow key={i} />
-              ))}
+            {isLoading
+              ? Array.from({ length: 8 }).map((_, i) => (
+                  <SkeletonRow key={i} />
+                ))
+              : invoices.map(inv => {
+                  const disabled = inv.paid || inv.order.status === "CANCELLED";
 
-            {!isLoading &&
-              invoices.map(inv => {
-                const disabled =
-                  inv.paid || inv.order.status === "CANCELLED";
-
-                return (
-                  <tr
-                    key={inv.id}
-                    className={`bg-white shadow-sm rounded-lg hover:bg-gray-50 ${
-                      disabled
-                        ? "opacity-60 cursor-not-allowed"
-                        : "cursor-pointer"
-                    }`}
-                    onClick={() =>
-                      !disabled &&
-                      router.push(`/dashboard/invoices/${inv.id}`)
-                    }
-                  >
-                    <td className="p-3">
-                      <input
-                        type="checkbox"
-                        disabled={disabled}
-                        checked={selectedIds.has(inv.id)}
-                        onClick={e => e.stopPropagation()}
-                        onChange={() => toggleSelect(inv.id)}
-                      />
-                    </td>
-                    <td className="p-3 sticky left-0 bg-white font-mono text-xs z-20">
-                      #{inv.id.slice(-6)}
-                    </td>
-                    <td className="p-3">
-                      {inv.order.customer?.name ?? "Walk-in"}
-                    </td>
-                    <td className="p-3 text-right">
-                      ₦{inv.total.toLocaleString()}
-                    </td>
-                    <td
-                      className={`p-3 font-semibold ${
-                        inv.paid
-                          ? "text-green-700"
-                          : "text-red-700"
+                  return (
+                    <tr
+                      key={inv.id}
+                      className={`bg-white shadow-sm rounded-lg hover:bg-gray-50 ${
+                        disabled
+                          ? "opacity-60 cursor-not-allowed"
+                          : "cursor-pointer"
                       }`}
+                      onClick={() =>
+                        !disabled &&
+                        router.push(`/dashboard/invoices/${inv.id}`)
+                      }
                     >
-                      {inv.paid ? "Paid" : "Unpaid"}
-                    </td>
-                    <td className="p-3">{inv.order.status}</td>
-                    <td className="p-3">
-                      {new Date(inv.createdAt).toLocaleDateString()}
-                    </td>
-                  </tr>
-                );
-              })}
+                      <td className="p-3">
+                        <input
+                          type="checkbox"
+                          disabled={disabled}
+                          checked={selectedIds.has(inv.id)}
+                          onClick={e => e.stopPropagation()}
+                          onChange={() => toggleSelect(inv.id)}
+                        />
+                      </td>
+                      <td className="p-3 sticky left-0 bg-white font-mono text-xs z-20">
+                        #{inv.id.slice(-6)}
+                      </td>
+                      <td className="p-3">
+                        {inv.order.customer?.name ?? "Walk-in"}
+                      </td>
+                      <td className="p-3 text-right">
+                        ₦{inv.total.toLocaleString()}
+                      </td>
+                      <td
+                        className={`p-3 font-semibold ${
+                          inv.paid ? "text-green-700" : "text-red-700"
+                        }`}
+                      >
+                        {inv.paid ? "Paid" : "Unpaid"}
+                      </td>
+                      <td className="p-3">{inv.order.status}</td>
+                      <td className="p-3">
+                        {new Date(inv.createdAt).toLocaleDateString()}
+                      </td>
+                    </tr>
+                  );
+                })}
           </tbody>
         </table>
       </div>
@@ -348,10 +344,7 @@ export default function InvoicePage() {
       <div className="flex justify-between items-center text-xs">
         <span>Total: {total}</span>
         <div className="flex gap-2 items-center">
-          <button
-            disabled={page <= 1}
-            onClick={() => setPage(p => p - 1)}
-          >
+          <button disabled={page <= 1} onClick={() => setPage(p => p - 1)}>
             Prev
           </button>
           <span>
@@ -366,7 +359,7 @@ export default function InvoicePage() {
         </div>
       </div>
 
-      {bulkMarkPaidOpen && (
+      {bulkMarkPaidOpen && selectedIds.size > 0 && (
         <ConfirmModal
           open
           title="Mark invoices as paid"

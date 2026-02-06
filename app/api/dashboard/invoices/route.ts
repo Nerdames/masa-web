@@ -1,4 +1,3 @@
-//api/dashboard/invoices
 import { NextRequest, NextResponse } from "next/server";
 import { getToken } from "next-auth/jwt";
 import prisma from "@/lib/prisma";
@@ -8,9 +7,6 @@ const secret = process.env.NEXTAUTH_SECRET as string;
 
 export async function GET(req: NextRequest) {
   try {
-    // -----------------------
-    // Authenticate user
-    // -----------------------
     const token = await getToken({ req, secret });
     if (!token?.organizationId) {
       return NextResponse.json({ error: "Access Denied" }, { status: 403 });
@@ -18,90 +14,47 @@ export async function GET(req: NextRequest) {
 
     const { searchParams } = new URL(req.url);
 
-    // -----------------------
-    // MODE 1: Fetch by orderId
-    // -----------------------
-    const orderId = searchParams.get("orderId");
-    if (orderId) {
-      const invoices = await prisma.invoice.findMany({
-        where: {
-          orderId,
-          order: {
-            organizationId: token.organizationId,
-            deletedAt: null,
-          },
-        },
-        include: {
-          order: { include: { customer: true } },
-        },
-        orderBy: { createdAt: "desc" },
-      });
-
-      return NextResponse.json({ invoices: invoices.map(formatInvoice) });
-    }
-
-    // -----------------------
-    // MODE 2: Dashboard invoices
-    // -----------------------
     const page = Number(searchParams.get("page") ?? 1);
     const pageSize = Number(searchParams.get("pageSize") ?? 10);
-    const search = searchParams.get("search");
+    const search = searchParams.get("search")?.trim();
     const paidParam = searchParams.get("paid");
-
-    if (Number.isNaN(page) || Number.isNaN(pageSize)) {
-      return NextResponse.json(
-        { error: "Invalid pagination parameters" },
-        { status: 400 }
-      );
-    }
-
     const paid = paidParam === null ? undefined : paidParam === "true";
 
-    // -----------------------
-    // Prisma-compatible where clause
-    // -----------------------
-    const where = {
+    if (Number.isNaN(page) || Number.isNaN(pageSize)) {
+      return NextResponse.json({ error: "Invalid pagination parameters" }, { status: 400 });
+    }
+
+    // Build where clause
+    const where: any = {
       ...(paid !== undefined ? { paid } : {}),
-      order: {
-        organizationId: token.organizationId,
-        deletedAt: null,
-        ...(search
-          ? {
-              OR: [
-                { id: { contains: search, mode: "insensitive" } },
-                { customer: { is: { name: { contains: search, mode: "insensitive" } } } },
-              ],
-            }
-          : {}),
-      },
+      order: { organizationId: token.organizationId, deletedAt: null },
     };
 
-    // -----------------------
-    // Fetch invoices, count, and sums
-    // -----------------------
-    const [invoices, total, revenue] = await Promise.all([
+    if (search) {
+      // Only filter by invoice id or customer name if search exists
+      where.OR = [
+        { id: { contains: search, mode: "insensitive" } },
+        { order: { customer: { is: { name: { contains: search, mode: "insensitive" } } } } },
+      ];
+    }
+
+    // Fetch invoices
+    const [invoices, total, totalRevenue, unpaidTotal] = await Promise.all([
       prisma.invoice.findMany({
         where,
-        include: {
-          order: { include: { customer: true } },
-        },
+        include: { order: { include: { customer: true } } },
         skip: (page - 1) * pageSize,
         take: pageSize,
         orderBy: { createdAt: "desc" },
-      }) as Promise<
-        (PrismaInvoice & { order: PrismaOrder & { customer: PrismaCustomer | null } })[]
-      >,
+      }),
       prisma.invoice.count({ where }),
       prisma.invoice.aggregate({
-        where: {
-          paid: true,
-          order: { organizationId: token.organizationId, deletedAt: null },
-        },
-        _sum: {
-          total: true,
-          discount: true,
-          tax: true,
-        },
+        where: { paid: true, order: { organizationId: token.organizationId, deletedAt: null } },
+        _sum: { total: true },
+      }),
+      prisma.invoice.aggregate({
+        where: { paid: false, order: { organizationId: token.organizationId, deletedAt: null } },
+        _sum: { total: true },
       }),
     ]);
 
@@ -110,9 +63,8 @@ export async function GET(req: NextRequest) {
       total,
       page,
       pageSize,
-      totalRevenue: revenue._sum.total ?? 0,
-      totalDiscount: revenue._sum.discount ?? 0,
-      totalTax: revenue._sum.tax ?? 0,
+      totalRevenue: totalRevenue._sum.total ?? 0,
+      unpaidTotal: unpaidTotal._sum.total ?? 0,
     });
   } catch (error) {
     console.error("GET /dashboard/invoices error:", error);
@@ -120,46 +72,28 @@ export async function GET(req: NextRequest) {
   }
 }
 
-/**
- * Format Prisma Invoice object to a frontend-friendly structure
- */
+// Format invoice to frontend schema
 function formatInvoice(
   inv: PrismaInvoice & { order: PrismaOrder & { customer: PrismaCustomer | null } }
 ) {
   return {
     id: inv.id,
-    orderId: inv.orderId,
     total: inv.total,
     paid: inv.paid,
     currency: inv.currency,
-    discount: inv.discount ?? null,
-    tax: inv.tax ?? null,
     createdAt: inv.createdAt.toISOString(),
     order: {
       id: inv.order.id,
-      organizationId: inv.order.organizationId,
-      branchId: inv.order.branchId,
-      personnelId: inv.order.personnelId,
-      customerId: inv.order.customerId,
-      total: inv.order.total,
-      paidAmount: inv.order.paidAmount,
-      balance: inv.order.balance,
-      currency: inv.order.currency,
       status: inv.order.status,
-      dueDate: inv.order.dueDate?.toISOString() ?? null,
-      paymentTerms: inv.order.paymentTerms ?? null,
-      notes: inv.order.notes ?? null,
-      deletedAt: inv.order.deletedAt?.toISOString() ?? null,
-      createdAt: inv.order.createdAt.toISOString(),
-      updatedAt: inv.order.updatedAt.toISOString(),
+      balance: inv.order.balance,
+      dueDate: inv.order.dueDate?.toISOString() ?? undefined,
       customer: inv.order.customer
         ? {
-            id: inv.order.customer.id,
             name: inv.order.customer.name,
-            email: inv.order.customer.email ?? null,
-            phone: inv.order.customer.phone ?? null,
+            email: inv.order.customer.email ?? undefined,
+            phone: inv.order.customer.phone ?? undefined,
           }
-        : null,
+        : undefined,
     },
   };
 }
