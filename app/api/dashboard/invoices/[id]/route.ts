@@ -1,76 +1,52 @@
-import { NextRequest, NextResponse } from "next/server";
-import { getToken } from "next-auth/jwt";
-import prisma from "@/lib/prisma";
-import { OrderStatus } from "@prisma/client";
+import { NextRequest, NextResponse } from "next/server"
+import { InvoiceStatus } from "@prisma/client"
+import prisma from "@/lib/prisma"
 
-const secret = process.env.NEXTAUTH_SECRET as string;
+export async function GET(
+  _req: NextRequest,
+  { params }: { params: { id: string } }
+) {
+  const invoice = await prisma.invoice.findUnique({
+    where: { id: params.id },
+    include: {
+      customer: true,
+      branch: true,
+      issuedBy: true,
+      payments: true,
+      receipts: true,
+      sales: {
+        include: {
+          product: true
+        }
+      }
+    }
+  })
 
-interface PatchBody {
-  ids: string[];
+  if (!invoice) {
+    return NextResponse.json({ error: "Invoice not found" }, { status: 404 })
+  }
+
+  return NextResponse.json(invoice)
 }
 
-export async function PATCH(req: NextRequest) {
-  try {
-    // -----------------------
-    // Authenticate user
-    // -----------------------
-    const token = await getToken({ req, secret });
-    if (!token?.organizationId) {
-      return NextResponse.json({ error: "Access denied" }, { status: 403 });
-    }
 
-    // -----------------------
-    // Parse request body
-    // -----------------------
-    const body: PatchBody = await req.json();
-    if (!Array.isArray(body.ids) || body.ids.length === 0) {
-      return NextResponse.json({ error: "Invalid ids" }, { status: 400 });
-    }
 
-    // -----------------------
-    // Fetch invoices and their orders
-    // -----------------------
-    const invoices = await prisma.invoice.findMany({
-      where: {
-        id: { in: body.ids },
-        order: { organizationId: token.organizationId },
-      },
-      include: { order: true },
-    });
-
-    if (invoices.length === 0) {
-      return NextResponse.json({ error: "No invoices found" }, { status: 404 });
-    }
-
-    // -----------------------
-    // Use a transaction for atomic updates
-    // -----------------------
-    await prisma.$transaction(async (tx) => {
-      // 1️⃣ Mark invoices as paid
-      await tx.invoice.updateMany({
-        where: { id: { in: body.ids } },
-        data: { paid: true },
-      });
-
-      // 2️⃣ Update associated orders
-      // Ensure each order is updated only once
-      const ordersToUpdate = invoices.map((inv) => inv.order);
-
-      for (const order of ordersToUpdate) {
-        await tx.order.update({
-          where: { id: order.id },
-          data: {
-            paidAmount: order.total,
-            balance: 0,
-            status: OrderStatus.COMPLETED,
-          },
-        });
-      }
-    });
-
-    return NextResponse.json({ success: true });
-  } catch (error) {
-    console.error("PATCH /invoices error:", error);
-    return NextResponse.json({ error: "Failed to update invoices" }, { status: 500 });
+export async function PATCH(
+  req: NextRequest,
+  { params }: { params: { id: string } }
+) {
+  const body = (await req.json()) as {
+    void?: boolean
+    lock?: boolean
   }
+
+  const invoice = await prisma.invoice.update({
+    where: { id: params.id },
+    data: {
+      status: body.void ? InvoiceStatus.VOIDED : undefined,
+      lockedAt: body.lock ? new Date() : undefined
+    }
+  })
+
+  return NextResponse.json(invoice)
 }

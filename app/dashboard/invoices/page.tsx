@@ -1,59 +1,45 @@
 "use client";
 
 import { useState, useMemo, useCallback } from "react";
+import React from "react";
 import useSWR from "swr";
 import { useDebounce } from "@/app/hooks/useDebounce";
 import { useToast } from "@/components/feedback/ToastProvider";
 import ConfirmModal from "@/components/modal/ConfirmModal";
-import Summary, { SummaryCard } from "@/components/ui/Summary";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { useRouter } from "next/navigation";
+import Summary, { SummaryCard } from "@/components/ui/Summary";
 
 /* ================= Types ================= */
 
-type OrderStatus =
-  | "PENDING"
-  | "PROCESSING"
-  | "COMPLETED"
-  | "CANCELLED"
-  | "RETURNED";
+type InvoiceStatus =
+  | "DRAFT"
+  | "ISSUED"
+  | "PARTIALLY_PAID"
+  | "PAID"
+  | "VOIDED";
 
 interface Invoice {
   id: string;
   total: number;
-  paid: boolean;
+  paidAmount: number;
+  balance: number;
+  status: InvoiceStatus;
   currency: string;
-  createdAt: string;
-  order: {
-    id: string;
-    status: OrderStatus;
-    dueDate?: string;
-    balance: number;
-    customer?: {
-      name: string;
-      email?: string;
-      phone?: string;
-    };
-  };
-}
-
-interface InvoicesResponse {
-  invoices: Invoice[];
-  total: number;
-  totalRevenue: number;
-  unpaidTotal: number;
+  issuedAt: string;
+  customerName?: string;
 }
 
 /* ================= Fetcher ================= */
 
 const fetcher = (url: string) =>
-  fetch(url, { credentials: "include" }).then(res => res.json());
+  fetch(url, { credentials: "include" }).then((res) => res.json());
 
 /* ================= Skeleton ================= */
 
 const SkeletonRow = () => (
   <tr className="animate-pulse bg-white shadow-sm rounded-lg">
-    {Array.from({ length: 7 }).map((_, i) => (
+    {Array.from({ length: 6 }).map((_, i) => (
       <td key={i} className="p-3">
         <div className="h-4 bg-gray-200 rounded w-full" />
       </td>
@@ -70,80 +56,84 @@ export default function InvoicePage() {
   /* ---------- State ---------- */
   const [page, setPage] = useState(1);
   const [search, setSearch] = useState("");
-  const [paidFilter, setPaidFilter] = useState<"ALL" | "PAID" | "UNPAID">(
+  const [statusFilter, setStatusFilter] = useState<"ALL" | "PAID" | "UNPAID">(
     "ALL"
   );
+  const [targetDate, setTargetDate] = useState("");
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [bulkMarkPaidOpen, setBulkMarkPaidOpen] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
 
   const debouncedSearch = useDebounce(search, 400);
 
-  /* ---------- Query String ---------- */
+  /* ---------- Query ---------- */
   const query = useMemo(() => {
     const params = new URLSearchParams();
     params.set("page", String(page));
-    params.set("pageSize", "10");
+    params.set("limit", "10");
 
     if (debouncedSearch) params.set("search", debouncedSearch);
-    if (paidFilter !== "ALL") {
-      params.set("paid", paidFilter === "PAID" ? "true" : "false");
-    }
+    if (targetDate) params.set("date", targetDate);
+
+    if (statusFilter === "PAID") params.set("status", "PAID");
+    if (statusFilter === "UNPAID") params.set("status", "UNPAID"); // backend should interpret as ISSUED | PARTIALLY_PAID
 
     return params.toString();
-  }, [page, debouncedSearch, paidFilter]);
+  }, [page, debouncedSearch, targetDate, statusFilter]);
 
-  /* ---------- Fetch Data ---------- */
-  const { data, isLoading, mutate } = useSWR<InvoicesResponse>(
-    `/api/dashboard/invoices?${query}`,
-    fetcher,
-    { keepPreviousData: true }
-  );
+  /* ---------- Fetch ---------- */
+  const { data, isLoading, mutate, error } = useSWR<{
+    data: Invoice[];
+    total: number;
+  }>(`/api/dashboard/invoices?${query}`, fetcher, {
+    keepPreviousData: true,
+  });
 
-  /* ---------- Derived Data ---------- */
-  const invoices = useMemo(() => data?.invoices ?? [], [data?.invoices]);
+  if (error) {
+    toast.addToast({ type: "error", message: "Failed to fetch invoices" });
+  }
+
+  const invoices = data?.data ?? [];
   const total = data?.total ?? 0;
   const pageCount = Math.max(1, Math.ceil(total / 10));
 
-  // Selection helpers
+  /* ---------- Summary ---------- */
+  const paidCount = invoices.filter((i) => i.status === "PAID").length;
+  const unpaidCount = invoices.filter((i) => i.status !== "PAID").length;
+
+  const summaryCards: SummaryCard[] = [
+    { id: "total", title: "Total Invoices", value: total, filter: "ALL" },
+    { id: "paid", title: "Paid", value: paidCount, filter: "PAID", color: "text-green-600" },
+    { id: "unpaid", title: "Unpaid", value: unpaidCount, filter: "UNPAID", color: unpaidCount === 0 ? "text-green-600" : "text-red-600" },
+  ];
+
+  /* ---------- Selection ---------- */
   const selectableIds = useMemo(
     () =>
       invoices
-        .filter(i => !i.paid && i.order.status !== "CANCELLED")
-        .map(i => i.id),
+        .filter((i) => i.status !== "PAID" && i.status !== "VOIDED")
+        .map((i) => i.id),
     [invoices]
   );
 
   const isAllSelected =
-    selectableIds.length > 0 &&
-    selectableIds.every(id => selectedIds.has(id));
+    selectableIds.length > 0 && selectableIds.every((id) => selectedIds.has(id));
 
   const isIndeterminate = selectedIds.size > 0 && !isAllSelected;
 
-  /* ---------- Callbacks ---------- */
-  const toggleSelect = useCallback(
-    (id: string) => {
-      setSelectedIds(prev => {
-        const next = new Set(prev);
-        next.has(id) ? next.delete(id) : next.add(id);
-        return next;
-      });
-    },
-    [setSelectedIds]
-  );
+  const toggleSelect = useCallback((id: string) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
+  }, []);
 
   const toggleSelectAll = useCallback(() => {
-    setSelectedIds(prev =>
-      isAllSelected ? new Set() : new Set(selectableIds)
-    );
+    setSelectedIds(isAllSelected ? new Set() : new Set(selectableIds));
   }, [isAllSelected, selectableIds]);
 
-  const handleRefresh = useCallback(async () => {
-    setRefreshing(true);
-    await mutate();
-    setRefreshing(false);
-  }, [mutate]);
-
+  /* ---------- Bulk Mark Paid ---------- */
   const bulkMarkPaid = useCallback(async () => {
     try {
       await fetch("/api/dashboard/invoices/mark-paid", {
@@ -152,61 +142,54 @@ export default function InvoicePage() {
         body: JSON.stringify({ ids: [...selectedIds] }),
       });
 
-      toast.addToast({
-        type: "success",
-        message: "Invoices marked as paid",
-      });
-
+      toast.addToast({ type: "success", message: "Invoices marked as paid" });
       setSelectedIds(new Set());
       setBulkMarkPaidOpen(false);
       mutate();
     } catch {
-      toast.addToast({
-        type: "error",
-        message: "Failed to update invoices",
-      });
+      toast.addToast({ type: "error", message: "Failed to mark invoices as paid" });
     }
   }, [selectedIds, toast, mutate]);
 
-  /* ---------- Memoized Counts for Summary ---------- */
-  const paidCount = useMemo(() => invoices.filter(i => i.paid).length, [
-    invoices,
-  ]);
-  const unpaidCount = useMemo(() => invoices.length - paidCount, [
-    invoices,
-    paidCount,
-  ]);
+  const handleRefresh = useCallback(async () => {
+    setRefreshing(true);
+    await mutate();
+    setTimeout(() => setRefreshing(false), 300);
+  }, [mutate]);
 
-  const summaryCards: SummaryCard[] = useMemo(
-    () => [
-      { id: "total", title: "Total Invoices", value: total, filter: "ALL" },
-      {
-        id: "paid",
-        title: "Paid",
-        value: paidCount,
-        filter: "PAID",
-        color: "text-green-600",
-      },
-      {
-        id: "unpaid",
-        title: "Unpaid",
-        value: unpaidCount,
-        filter: "UNPAID",
-        color: "text-red-600",
-      },
-      {
-        id: "revenue",
-        title: "Revenue",
-        value: data?.totalRevenue ?? 0,
-        filter: "ALL",
-        isCurrency: true,
-      },
-    ],
-    [total, paidCount, unpaidCount, data?.totalRevenue]
-  );
+  /* ---------- Group by Day ---------- */
+  const groupedInvoices = useMemo(() => {
+    const today = new Date();
+    const yesterday = new Date();
+    yesterday.setDate(today.getDate() - 1);
+
+    const groups: Record<string, Invoice[]> = { Today: [], Yesterday: [] };
+    const older: Record<string, Invoice[]> = {};
+
+    invoices.forEach((inv) => {
+      const d = new Date(inv.issuedAt);
+      const key = d.toISOString().split("T")[0];
+
+      if (d.toDateString() === today.toDateString()) groups.Today.push(inv);
+      else if (d.toDateString() === yesterday.toDateString()) groups.Yesterday.push(inv);
+      else {
+        if (!older[key]) older[key] = [];
+        older[key].push(inv);
+      }
+    });
+
+    return {
+      ...groups,
+      ...Object.keys(older)
+        .sort((a, b) => (a > b ? -1 : 1))
+        .reduce((acc, k) => {
+          acc[k] = older[k];
+          return acc;
+        }, {} as Record<string, Invoice[]>),
+    };
+  }, [invoices]);
 
   /* ================= Render ================= */
-
   return (
     <div className="flex flex-col space-y-4 min-h-[calc(100vh-4rem)] p-4">
       <Summary cardsData={summaryCards} />
@@ -214,12 +197,21 @@ export default function InvoicePage() {
       {/* Top Bar */}
       <div className="sticky top-0 z-20 bg-white p-3 flex flex-wrap items-center gap-2 shadow-sm">
         <input
-          type="text"
-          placeholder="Search invoice or customer"
           value={search}
-          onChange={e => setSearch(e.target.value)}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder="Search invoice or customer"
           className="border rounded-lg p-2 text-sm min-w-[250px]"
         />
+
+        <div className="flex items-center gap-2 border rounded-lg px-3 py-2 h-10">
+          <i className="bx bx-calendar text-gray-500" />
+          <input
+            type="date"
+            value={targetDate}
+            onChange={(e) => setTargetDate(e.target.value)}
+            className="text-sm outline-none"
+          />
+        </div>
 
         <button
           onClick={handleRefresh}
@@ -241,17 +233,17 @@ export default function InvoicePage() {
 
         <div className="ml-auto">
           <DropdownMenu.Root>
-            <DropdownMenu.Trigger className="bg-gray-100 px-3 rounded-full h-10 flex items-center text-sm">
-              Status: {paidFilter}
+            <DropdownMenu.Trigger className="bg-gray-100 px-3 rounded-full h-10 text-sm">
+              Status: {statusFilter}
             </DropdownMenu.Trigger>
-            <DropdownMenu.Content className="bg-white shadow rounded-md py-1 min-w-[120px]">
-              {(["ALL", "PAID", "UNPAID"] as const).map(p => (
+            <DropdownMenu.Content className="bg-white shadow rounded-md py-1">
+              {(["ALL", "PAID", "UNPAID"] as const).map((s) => (
                 <DropdownMenu.Item
-                  key={p}
-                  onSelect={() => setPaidFilter(p)}
+                  key={s}
+                  onSelect={() => setStatusFilter(s)}
                   className="px-4 py-2 hover:bg-gray-100 cursor-pointer"
                 >
-                  {p}
+                  {s}
                 </DropdownMenu.Item>
               ))}
             </DropdownMenu.Content>
@@ -261,105 +253,114 @@ export default function InvoicePage() {
 
       {/* Table */}
       <div className="flex-1 overflow-x-auto">
-        <table className="w-full text-sm border-separate border-spacing-y-3 min-w-[900px]">
-          <thead className="bg-gray-50 text-xs uppercase text-gray-500 sticky top-0 z-10">
+        <table className="w-full text-sm table-fixed border-separate border-spacing-y-3">
+          <thead className="text-xs bg-gray-100 uppercase text-gray-500 text-center">
             <tr>
-              <th className="w-10 p-2">
+              <th className="w-10 p-3">
                 <input
                   type="checkbox"
                   checked={isAllSelected}
-                  ref={el => {
+                  ref={(el) => {
                     if (el) el.indeterminate = isIndeterminate;
                   }}
                   onChange={toggleSelectAll}
                 />
               </th>
-              <th className="sticky left-0 bg-gray-50 p-2 z-30">Invoice</th>
-              <th className="p-2">Customer</th>
-              <th className="p-2 text-right">Total</th>
-              <th className="p-2">Paid</th>
-              <th className="p-2">Status</th>
-              <th className="p-2">Created</th>
+              <th className="p-4">Invoice</th>
+              <th className="p-4">Customer</th>
+              <th className="p-4">Total</th>
+              <th className="p-4">Balance</th>
+              <th className="p-4">Status</th>
             </tr>
           </thead>
 
           <tbody>
-            {isLoading
-              ? Array.from({ length: 8 }).map((_, i) => (
-                  <SkeletonRow key={i} />
-                ))
-              : invoices.map(inv => {
-                  const disabled = inv.paid || inv.order.status === "CANCELLED";
+            {isLoading &&
+              Array.from({ length: 8 }).map((_, i) => <SkeletonRow key={i} />)}
 
-                  return (
-                    <tr
-                      key={inv.id}
-                      className={`bg-white shadow-sm rounded-lg hover:bg-gray-50 ${
-                        disabled
-                          ? "opacity-60 cursor-not-allowed"
-                          : "cursor-pointer"
-                      }`}
-                      onClick={() =>
-                        !disabled &&
-                        router.push(`/dashboard/invoices/${inv.id}`)
-                      }
-                    >
-                      <td className="p-3">
-                        <input
-                          type="checkbox"
-                          disabled={disabled}
-                          checked={selectedIds.has(inv.id)}
-                          onClick={e => e.stopPropagation()}
-                          onChange={() => toggleSelect(inv.id)}
-                        />
-                      </td>
-                      <td className="p-3 sticky left-0 bg-white font-mono text-xs z-20">
-                        #{inv.id.slice(-6)}
-                      </td>
-                      <td className="p-3">
-                        {inv.order.customer?.name ?? "Walk-in"}
-                      </td>
-                      <td className="p-3 text-right">
-                        ₦{inv.total.toLocaleString()}
-                      </td>
-                      <td
-                        className={`p-3 font-semibold ${
-                          inv.paid ? "text-green-700" : "text-red-700"
-                        }`}
-                      >
-                        {inv.paid ? "Paid" : "Unpaid"}
-                      </td>
-                      <td className="p-3">{inv.order.status}</td>
-                      <td className="p-3">
-                        {new Date(inv.createdAt).toLocaleDateString()}
+            {!isLoading &&
+              Object.entries(groupedInvoices).map(([group, items]) => {
+                if (!items.length) return null;
+
+                return (
+                  <React.Fragment key={group}>
+                    <tr className="bg-gray-100 font-semibold">
+                      <td colSpan={6} className="p-2 text-left">
+                        {group === "Today" || group === "Yesterday"
+                          ? group
+                          : new Date(group).toLocaleDateString()}
                       </td>
                     </tr>
-                  );
-                })}
+
+                    {items.map((inv) => {
+                      const disabled = inv.status === "VOIDED";
+                      const selected = selectedIds.has(inv.id);
+
+                      return (
+                        <tr
+                          key={inv.id}
+                          className={`
+                            bg-white rounded-xl shadow-sm transition
+                            ${disabled
+                              ? "opacity-60 cursor-not-allowed"
+                              : "cursor-pointer hover:bg-green-50 hover:text-green-700"}
+                            ${selected ? "bg-green-100 text-green-700" : ""}
+                          `}
+                          onClick={(e) => {
+                            if ((e.target as HTMLElement).tagName !== "INPUT" && !disabled) {
+                              router.push(`/dashboard/invoices/${inv.id}`);
+                            }
+                          }}
+                        >
+                          <td className="p-4 text-center">
+                            <input
+                              type="checkbox"
+                              checked={selected}
+                              disabled={disabled}
+                              onClick={(e) => e.stopPropagation()}
+                              onChange={() => toggleSelect(inv.id)}
+                            />
+                          </td>
+                          <td className="p-4 text-center font-mono">
+                            #{inv.id.slice(-6)}
+                          </td>
+                          <td className="p-4 text-center">{inv.customerName ?? "Walk-in"}</td>
+                          <td className="p-4 text-center">₦{inv.total.toLocaleString()}</td>
+                          <td className="p-4 text-center">₦{Math.max(inv.balance, 0).toLocaleString()}</td>
+                          <td
+                            className={`p-4 text-center font-semibold ${
+                              inv.status === "PAID" ? "text-green-700" : "text-red-700"
+                            }`}
+                          >
+                            {inv.status}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </React.Fragment>
+                );
+              })}
           </tbody>
         </table>
       </div>
 
       {/* Pagination */}
       <div className="flex justify-between items-center text-xs">
-        <span>Total: {total}</span>
-        <div className="flex gap-2 items-center">
-          <button disabled={page <= 1} onClick={() => setPage(p => p - 1)}>
+        <span>Total Invoices: {total}</span>
+        <div className="flex gap-2">
+          <button disabled={page <= 1} onClick={() => setPage((p) => p - 1)}>
             Prev
           </button>
           <span>
             {page} / {pageCount}
           </span>
-          <button
-            disabled={page >= pageCount}
-            onClick={() => setPage(p => p + 1)}
-          >
+          <button disabled={page >= pageCount} onClick={() => setPage((p) => p + 1)}>
             Next
           </button>
         </div>
       </div>
 
-      {bulkMarkPaidOpen && selectedIds.size > 0 && (
+      {bulkMarkPaidOpen && (
         <ConfirmModal
           open
           title="Mark invoices as paid"
