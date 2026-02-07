@@ -47,7 +47,7 @@ export default function SettingsLayout({ children }: { children: ReactNode }) {
   const pathname = usePathname();
   const { data: session } = useSession();
 
-  const caps = useMemo(() => {
+  const caps = useMemo<Capabilities>(() => {
     const roles = session?.user?.roles ?? [];
     return {
       isDev: roles.includes("DEV"),
@@ -57,7 +57,10 @@ export default function SettingsLayout({ children }: { children: ReactNode }) {
     };
   }, [session]);
 
-  const visibleNav = useMemo(() => SETTINGS_NAV.filter(item => item.visible(caps)), [caps]);
+  const visibleNav = useMemo(
+    () => SETTINGS_NAV.filter(item => item.visible(caps)),
+    [caps]
+  );
 
   const renderNavItem = (item: NavItem) => {
     const active = pathname.startsWith(item.href);
@@ -79,23 +82,25 @@ export default function SettingsLayout({ children }: { children: ReactNode }) {
   };
 
   return (
-    <div className="min-h-screen bg-gray-50">
-      <div className="mx-auto flex max-w-7xl">
+    // 🔒 Lock viewport scroll here
+    <div className="h-screen overflow-hidden bg-gray-50">
+      <div className="mx-auto flex h-full max-w-7xl">
         {/* Sidebar */}
-        <aside className="hidden w-52 shrink-0 border-r bg-white md:block">
+        <aside className="hidden h-full w-52 shrink-0 border-r bg-white md:flex md:flex-col">
           <div className="px-6 py-5">
             <h1 className="text-base font-semibold text-gray-900">Settings</h1>
             <p className="mt-1 text-xs text-gray-500">
               Manage account, organization & branch configuration
             </p>
           </div>
-          <nav className="px-3 pb-6">
+
+          <nav className="flex-1 px-3 pb-6">
             <ul className="space-y-1">{visibleNav.map(renderNavItem)}</ul>
           </nav>
         </aside>
 
-        {/* Main Content */}
-        <main className="flex-1 px-4 py-6 sm:px-6 lg:px-10">
+        {/* Main Content (ONLY scrollable area) */}
+        <main className="flex-1 overflow-y-auto px-4 py-6 sm:px-6 lg:px-10">
           <div className="mx-auto max-w-5xl">{children}</div>
         </main>
       </div>
