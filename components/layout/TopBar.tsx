@@ -65,7 +65,7 @@ export default function TopBar() {
     [role]
   );
 
-  const dashboardTitle = useMemo(() => `Dashboard · ${orgName}`, [orgName]);
+  const dashboardTitle = useMemo(() => `Dashboard : ${orgName}`, [orgName]);
 
   // ---------------- Loading / guard ----------------
   if (status === "loading") return <TopBarSkeleton />;
