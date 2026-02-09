@@ -78,7 +78,7 @@ export default function TopBar() {
 
   return (
     <>
-      <header className="w-full h-12 flex items-center px-4 py-2 border-b border-gray-200 bg-white">
+      <header className="w-full h-12 flex items-center px-4 py-2 border-b border-gray-200 bg-white z-1000">
         {/* Dashboard Title */}
         <span className="text-lg font-semibold tracking-wide">{dashboardTitle}</span>
 
@@ -106,7 +106,7 @@ export default function TopBar() {
             <DropdownMenu.Content
               align="end"
               sideOffset={6}
-              className="bg-white border border-gray-200 rounded shadow-lg w-56 p-2 z-50"
+              className="bg-white border border-gray-200 rounded shadow-lg w-42 p-2 z-50"
             >
               {/* Organization / Branch / Role */}
               <div className="px-2 py-2 border-b mb-2 text-sm space-y-1">

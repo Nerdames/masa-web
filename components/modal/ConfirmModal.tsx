@@ -1,7 +1,7 @@
 "use client";
 
 import * as Dialog from "@radix-ui/react-dialog";
-import { motion, AnimatePresence } from "framer-motion";
+import { motion, AnimatePresence, Variants } from "framer-motion";
 import { useEffect, useRef } from "react";
 
 interface ConfirmModalProps {
@@ -17,6 +17,16 @@ interface ConfirmModalProps {
   onConfirm: () => Promise<void> | void;
 }
 
+const overlayVariants: Variants = {
+  hidden: { opacity: 0 },
+  visible: { opacity: 0.25 },
+};
+
+const contentVariants: Variants = {
+  hidden: { opacity: 0, scale: 0.95 },
+  visible: { opacity: 1, scale: 1 },
+};
+
 export default function ConfirmModal({
   open,
   title,
@@ -31,10 +41,30 @@ export default function ConfirmModal({
 }: ConfirmModalProps) {
   const confirmBtnRef = useRef<HTMLButtonElement>(null);
 
-  /* Auto-focus confirm button when modal opens */
   useEffect(() => {
-    if (open) setTimeout(() => confirmBtnRef.current?.focus(), 100);
+    if (open) requestAnimationFrame(() => confirmBtnRef.current?.focus());
   }, [open]);
+
+  const renderTitle = () =>
+    loading ? (
+      <div className="h-5 w-40 bg-gray-200 rounded-full animate-pulse mb-2" />
+    ) : (
+      <Dialog.Title className="text-base font-semibold text-neutral-900">{title}</Dialog.Title>
+    );
+
+  const renderMessage = () =>
+    loading ? (
+      <div className="mt-2 space-y-1">
+        <div className="h-2.5 w-full bg-gray-200 rounded-full animate-pulse" />
+        <div className="h-2.5 w-5/6 bg-gray-200 rounded-full animate-pulse" />
+      </div>
+    ) : (
+      message && (
+        <Dialog.Description className="text-sm text-neutral-600 mt-1.5 leading-relaxed">
+          {message}
+        </Dialog.Description>
+      )
+    );
 
   return (
     <Dialog.Root open={open} onOpenChange={(val) => !loading && !val && onClose()}>
@@ -44,9 +74,11 @@ export default function ConfirmModal({
             {/* Overlay */}
             <Dialog.Overlay asChild forceMount>
               <motion.div
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 0.45 }}
-                exit={{ opacity: 0 }}
+                initial="hidden"
+                animate="visible"
+                exit="hidden"
+                variants={overlayVariants}
+                transition={{ duration: 0.2 }}
                 className="fixed inset-0 bg-black z-[9998]"
               />
             </Dialog.Overlay>
@@ -54,41 +86,30 @@ export default function ConfirmModal({
             {/* Content */}
             <Dialog.Content asChild forceMount>
               <motion.div
-                initial={{ opacity: 0, scale: 0.92 }}
-                animate={{ opacity: 1, scale: 1 }}
-                exit={{ opacity: 0, scale: 0.92 }}
-                transition={{ duration: 0.2 }}
-                className="fixed z-[9999] top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 bg-white rounded-2xl border border-neutral-200 shadow-xl w-full max-w-md mx-4 p-6 focus:outline-none"
+                initial="hidden"
+                animate="visible"
+                exit="hidden"
+                variants={contentVariants}
+                transition={{ duration: 0.25 }}
+                className="fixed z-[9999] top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2
+                           bg-white rounded-2xl border border-neutral-200 shadow-[0_8px_20px_rgba(0,0,0,0.08)]
+                           w-full max-w-sm mx-4 p-5 focus:outline-none"
               >
-                {/* Title */}
-                {loading ? (
-                  <div className="h-6 w-48 bg-gray-200 rounded animate-pulse mb-2" />
-                ) : (
-                  <Dialog.Title className="text-lg font-semibold text-neutral-900">
-                    {title}
-                  </Dialog.Title>
-                )}
+                {renderTitle()}
+                {renderMessage()}
 
-                {/* Message */}
-                {loading ? (
-                  <div className="mt-2 space-y-2">
-                    <div className="h-3 w-full bg-gray-200 rounded animate-pulse" />
-                    <div className="h-3 w-5/6 bg-gray-200 rounded animate-pulse" />
-                  </div>
-                ) : (
-                  message && <Dialog.Description className="text-sm text-neutral-600 mt-2">{message}</Dialog.Description>
-                )}
-
-                {/* Custom content */}
-                {!loading && children && <div className="mt-4">{children}</div>}
+                {/* Custom children */}
+                {!loading && children && <div className="mt-3">{children}</div>}
 
                 {/* Actions */}
-                <div className="mt-6 flex justify-end gap-3">
+                <div className="mt-4 flex justify-end gap-2.5">
                   <Dialog.Close asChild>
                     <button
                       onClick={onClose}
                       disabled={loading}
-                      className="h-11 px-4 rounded-xl border border-neutral-300 bg-white text-neutral-900 hover:bg-neutral-100 transition disabled:opacity-50"
+                      className="h-8 px-3 rounded-lg border border-neutral-300 bg-white text-neutral-900
+                                 hover:bg-neutral-50 focus:ring-2 focus:ring-offset-2 focus:ring-black
+                                 transition disabled:opacity-50 text-sm"
                     >
                       {cancelLabel}
                     </button>
@@ -98,9 +119,9 @@ export default function ConfirmModal({
                     ref={confirmBtnRef}
                     onClick={onConfirm}
                     disabled={loading}
-                    className={`h-11 px-6 rounded-xl text-white transition disabled:opacity-50 ${
-                      destructive ? "bg-red-600 hover:bg-red-700" : "bg-black hover:bg-neutral-800"
-                    }`}
+                    className={`h-8 px-4 rounded-lg text-white transition text-sm disabled:opacity-50
+                      ${destructive ? "bg-red-600 hover:bg-red-700" : "bg-black hover:bg-neutral-800"}
+                      focus:ring-2 focus:ring-offset-2 focus:ring-black`}
                   >
                     {loading ? "Please wait…" : confirmLabel}
                   </button>

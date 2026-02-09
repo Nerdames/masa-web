@@ -5,17 +5,17 @@ import { JSX } from "react";
 
 export default function Home(): JSX.Element {
   return (
-    <main className="flex flex-col min-h-screen bg-white text-black">
+    <main className="flex flex-col min-h-screen bg-babyBlue text-ebony">
       {/* Centered hero section */}
       <section className="flex flex-1 flex-col items-center justify-center px-6 text-center space-y-6">
         {/* Logo + brand */}
         <div className="flex items-center gap-3">
-          <i className="bx bx-dashboard text-6xl"></i>
-          <span className="text-5xl font-extrabold tracking-wide">MASA</span>
+          <i className="bx bx-dashboard text-6xl text-forest"></i>
+          <span className="text-5xl font-extrabold tracking-wide text-forest">MASA</span>
         </div>
 
         {/* Tagline */}
-        <p className="text-lg text-gray-600 max-w-xl">
+        <p className="text-lg text-ebony/70 max-w-xl">
           Integrated Management, Sales & Administration
         </p>
 
@@ -23,7 +23,7 @@ export default function Home(): JSX.Element {
         <div className="flex gap-6">
           <Link
             href="/auth/signin"
-            className="flex items-center gap-2 px-6 py-3 rounded-md border border-gray-400 text-gray-700 hover:bg-[#F2F2F3] transition-all duration-300"
+            className="flex items-center gap-2 px-6 py-3 rounded-md border border-forest text-forest hover:bg-green transition-all duration-300"
           >
             <i className="bx bx-log-in text-xl"></i>
             Sign In
@@ -32,7 +32,7 @@ export default function Home(): JSX.Element {
       </section>
 
       {/* Footer */}
-      <footer className="text-center text-sm text-gray-500 py-4">
+      <footer className="text-center text-sm text-ebony/70 py-4">
         © {new Date().getFullYear()} MASA. All rights reserved.
       </footer>
     </main>

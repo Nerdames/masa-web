@@ -13,17 +13,18 @@ export default function DashboardRootLayout({ children }: Props) {
 
   return (
     <div className="flex h-screen bg-white">
-      <Sidebar
-        open={sidebarOpen}
-        onClose={() => setSidebarOpen(false)}
-      />
+      {/* Sidebar */}
+      <Sidebar open={sidebarOpen} onClose={() => setSidebarOpen(false)} />
 
+      {/* Main Content */}
       <div className="flex flex-1 flex-col overflow-hidden">
+        {/* TopBar for large screens */}
         <div className="hidden lg:flex">
           <TopBar />
         </div>
 
-        <div className="flex justify-end px-3 py-2 border-b lg:hidden">
+        {/* TopBar button for small screens */}
+        <div className="flex justify-end border-b lg:hidden">
           <button
             onClick={() => setSidebarOpen(true)}
             className="p-2 rounded-md border hover:bg-gray-100"
@@ -32,7 +33,8 @@ export default function DashboardRootLayout({ children }: Props) {
           </button>
         </div>
 
-        <main className="flex-1 overflow-y-auto p-4 md:p-6">
+        {/* Main content area (no padding!) */}
+        <main className="flex-1 overflow-y-auto">
           {children}
         </main>
       </div>
