@@ -10,8 +10,9 @@ import {
 import { motion, AnimatePresence } from "framer-motion";
 import { OrderTab } from "./OrderTab";
 
-const ACTIVE_COLOR = "#00A63E";
-const DRAG_BG_COLOR = "#00A63E";
+const ACTIVE_BG = "#ffffff";
+const INACTIVE_BG = "#f3f3f3";
+const HOVER_BG = "#e8e8e8";
 
 /* ---------------------------------------------
  * Types
@@ -36,7 +37,7 @@ const clamp = (v: number, min: number, max: number) =>
   Math.min(Math.max(v, min), max);
 
 /* ---------------------------------------------
- * Context Menu Components
+ * Context Menu
  * ------------------------------------------- */
 function Separator() {
   return <div className="my-1 h-px bg-[#e5e5e5]" />;
@@ -55,10 +56,10 @@ function MenuItem({
     <div
       onClick={!disabled ? onClick : undefined}
       className={[
-        "px-3 py-2 select-none text-[13px]",
+        "px-3 py-2 select-none text-[13px] cursor-pointer",
         disabled
           ? "text-[#aaa] cursor-not-allowed"
-          : "cursor-pointer hover:bg-[#f3f3f3]",
+          : "hover:bg-[#f3f3f3]",
       ].join(" ")}
     >
       {label}
@@ -84,7 +85,6 @@ function TabContextMenu({
   const ref = useRef<HTMLDivElement>(null);
   const [size, setSize] = useState({ w: 0, h: 0 });
 
-  /* Measure menu dynamically */
   useLayoutEffect(() => {
     if (!ref.current) return;
     const r = ref.current.getBoundingClientRect();
@@ -160,10 +160,12 @@ export default function OrdersTabBar({
   maxTabWidth = 160,
 }: Props) {
   const [containerWidth, setContainerWidth] = useState(1200);
-  const [menu, setMenu] = useState<{ tab: OrderTab; x: number; y: number } | null>(null);
-  const [draggingTabId, setDraggingTabId] = useState<string | null>(null);
+  const [menu, setMenu] = useState<{
+    tab: OrderTab;
+    x: number;
+    y: number;
+  } | null>(null);
 
-  /* Update container width on resize */
   useEffect(() => {
     const updateWidth = () => {
       const el = document.getElementById("orders-tab-bar");
@@ -179,57 +181,35 @@ export default function OrdersTabBar({
     Math.min(maxTabWidth, Math.floor(containerWidth / tabs.length))
   );
 
-  const rightTabsCount = menu
-    ? Math.max(0, tabs.length - tabs.findIndex((t) => t.id === menu.tab.id) - 1)
-    : 0;
-
-  const handleMenuAction = (action: ContextMenuAction) => {
-    if (!menu) return;
-    const index = tabs.findIndex((t) => t.id === menu.tab.id);
-
-    switch (action) {
-      case "new":
-        createNewOrderTab();
-        break;
-      case "close":
-        requestCloseTab(menu.tab);
-        break;
-      case "close-right":
-        tabs.slice(index + 1).filter((t) => !t.pinned).forEach(requestCloseTab);
-        break;
-      case "close-all":
-        tabs.filter((t) => !t.pinned).forEach(requestCloseTab);
-        break;
-    }
-
-    setMenu(null);
-  };
-
   return (
     <div
       id="orders-tab-bar"
       className="sticky top-0 z-50 bg-[#f3f3f3] border-b border-[#e5e5e5]"
     >
-      <DragDropContext
-        onDragEnd={(result) => {
-          setDraggingTabId(null);
-          onDragEnd(result);
-          if (result.destination) setActiveTabId(result.draggableId);
-        }}
-      >
+      <DragDropContext onDragEnd={onDragEnd}>
         <Droppable droppableId="tabs" direction="horizontal">
           {(p) => (
-            <motion.div ref={p.innerRef} {...p.droppableProps} className="flex h-[34px]" layout>
-              <AnimatePresence initial={false}>
-                {tabs.map((tab, index) => {
-                  const active = tab.id === activeTabId;
-                  const isDragging = draggingTabId === tab.id;
-
-                  return (
-                    <Draggable key={tab.id} draggableId={tab.id} index={index} isDragDisabled={tab.pinned}>
+            <div className="relative flex-1 overflow-hidden">
+              <motion.div
+                ref={p.innerRef}
+                {...p.droppableProps}
+                className="flex h-[34px]"
+                layout
+              >
+                <AnimatePresence initial={false}>
+                  {tabs.map((tab, index) => (
+                    <Draggable
+                      key={tab.id}
+                      draggableId={tab.id}
+                      index={index}
+                      isDragDisabled={tab.pinned}
+                    >
                       {(d, snapshot) => {
-                        if (snapshot.isDragging && draggingTabId !== tab.id) {
-                          setDraggingTabId(tab.id);
+                        const isActive = tab.id === activeTabId;
+
+                        // Make tab active immediately on drag
+                        if (snapshot.isDragging && !isActive) {
+                          setActiveTabId(tab.id);
                         }
 
                         return (
@@ -238,71 +218,88 @@ export default function OrdersTabBar({
                             {...d.draggableProps}
                             {...d.dragHandleProps}
                             layout
-                            style={{ width: tabWidth, pointerEvents: snapshot.isDragging ? "none" : "auto" }}
                             onClick={() => setActiveTabId(tab.id)}
                             onContextMenu={(e) => {
                               e.preventDefault();
-                              e.stopPropagation(); // critical for DnD
+                              e.stopPropagation();
                               setMenu({ tab, x: e.clientX, y: e.clientY });
                             }}
                             initial={{ opacity: 0 }}
                             animate={{
-                              scale: snapshot.isDragging ? 1.05 : 1,
                               opacity: 1,
-                              backgroundColor: active || isDragging ? ACTIVE_COLOR : "#f3f3f3",
-                              color: active || isDragging ? "#fff" : "#555",
+                              width: tabWidth,
+                              y: isActive ? -1 : 0,
+                              backgroundColor: isActive ? ACTIVE_BG : INACTIVE_BG,
+                              color: isActive ? "#111" : "#555",
+                              boxShadow: snapshot.isDragging
+                                ? "0 4px 12px rgba(0,0,0,0.15)"
+                                : isActive
+                                ? "0 2px 6px rgba(0,0,0,0.12)"
+                                : "none",
                             }}
-                            exit={{ opacity: 0 }}
-                            transition={{ type: "spring", stiffness: 500, damping: 30 }}
-                            className="group relative h-[34px] px-2 flex items-center text-[13px] select-none border-r border-[#e5e5e5] truncate cursor-pointer"
+                            whileHover={
+                              isActive
+                                ? undefined
+                                : { y: -1, backgroundColor: HOVER_BG }
+                            }
+                            transition={{ type: "spring", stiffness: 380, damping: 30 }}
+                            className={[
+                              "group relative h-[34px] px-2 flex items-center",
+                              "text-[13px] select-none truncate cursor-pointer",
+                              isActive ? "rounded-t-lg z-10" : "z-0",
+                            ].join(" ")}
                           >
-                            <span className="mr-2 w-4 h-4 flex items-center justify-center">
+                            {/* Icon */}
+                            <span className="mr-2 w-4 h-4 flex items-center justify-center cursor-pointer">
                               <i className="bx bx-cart text-sm" />
                             </span>
 
-                            <span className="truncate flex-1">{tab.title}</span>
+                            {/* Title */}
+                            <span className="truncate flex-1 cursor-pointer">{tab.title}</span>
 
+                            {/* Close button */}
                             {!tab.pinned && (
                               <span
-                                className="ml-2 w-4 h-4 relative flex items-center justify-center"
+                                className="ml-2 w-4 h-4 flex items-center justify-center cursor-pointer"
                                 onClick={(e) => {
                                   e.stopPropagation();
                                   requestCloseTab(tab);
                                 }}
                               >
-                                {tab.dirty ? (
-                                  <>
-                                    <i
-                                      className={`bx bxs-circle absolute text-[8px] ${
-                                        active ? "text-white" : "text-[#555]"
-                                      } group-hover:opacity-0`}
-                                    />
-                                    <i className="bx bx-x absolute opacity-0 group-hover:opacity-100" />
-                                  </>
-                                ) : (
-                                  <i className="bx bx-x opacity-0 group-hover:opacity-100" />
-                                )}
+                                <i className="bx bx-x opacity-0 group-hover:opacity-100" />
                               </span>
+                            )}
+
+                            {/* Tab ↔ page connection */}
+                            {isActive && (
+                              <motion.div
+                                layoutId="tab-connection"
+                                className="absolute bottom-[-1px] left-0 right-0 h-[2px] bg-white"
+                              />
                             )}
                           </motion.div>
                         );
                       }}
                     </Draggable>
-                  );
-                })}
-              </AnimatePresence>
+                  ))}
+                </AnimatePresence>
 
-              <motion.div
-                onClick={createNewOrderTab}
-                className="h-[34px] w-[36px] flex items-center justify-center cursor-pointer text-[#555] hover:bg-[#eaeaea] rounded"
-                whileHover={{ scale: 1.1 }}
-                whileTap={{ scale: 0.95 }}
-              >
-                <i className="bx bx-plus text-lg" />
+                {p.placeholder}
+
+                {/* New tab button */}
+                <motion.div
+                  onClick={createNewOrderTab}
+                  className="h-[34px] w-[36px] flex items-center justify-center cursor-pointer text-[#555] hover:bg-[#eaeaea]"
+                  whileHover={{ scale: 1.1 }}
+                  whileTap={{ scale: 0.95 }}
+                >
+                  <i className="bx bx-plus text-lg" />
+                </motion.div>
               </motion.div>
 
-              {p.placeholder}
-            </motion.div>
+              {/* Overflow fade */}
+              <div className="pointer-events-none absolute right-0 top-0 h-full w-8 bg-gradient-to-l from-[#f3f3f3] to-transparent" />
+            </div>
           )}
         </Droppable>
       </DragDropContext>
@@ -312,8 +309,8 @@ export default function OrdersTabBar({
           x={menu.x}
           y={menu.y}
           tab={menu.tab}
-          hasRightTabs={rightTabsCount > 0}
-          onAction={handleMenuAction}
+          hasRightTabs={true}
+          onAction={() => setMenu(null)}
           onClose={() => setMenu(null)}
         />
       )}

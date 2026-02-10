@@ -38,73 +38,69 @@ export default function OrdersWorkspace({
   branchId,
   personnelId,
 }: Props) {
-  // ----------------------------
-  // STATE
-  // ----------------------------
-  const [tabs, setTabs] = useState<OrderTab[]>([]); // all open tabs
-  const [activeTabId, setActiveTabId] = useState("orderlist"); // currently active tab
-  const [toast, setToast] = useState<string | null>(null); // toast messages
+  /* ----------------------------
+     INITIAL STATE WITH PINNED TAB
+  ---------------------------- */
+  const initialTabs: OrderTab[] = [{ id: "orderlist", title: "Orders", type: "LIST", pinned: true }];
 
-  // ----------------------------
-  // LOAD TABS FROM LOCAL STORAGE
-  // ----------------------------
+  const [tabs, setTabs] = useState<OrderTab[]>(initialTabs);
+  const [activeTabId, setActiveTabId] = useState("orderlist");
+  const [toast, setToast] = useState<string | null>(null);
+
+  /* ----------------------------
+     LOAD TABS FROM LOCAL STORAGE
+  ---------------------------- */
   useEffect(() => {
     const raw = localStorage.getItem(storageKey(organizationId, branchId, personnelId));
     if (raw) {
       try {
         const parsed: OrderTab[] = JSON.parse(raw);
+        const mergedTabs = [
+          ...initialTabs,
+          ...parsed.filter((t) => t.id !== "orderlist"),
+        ];
+        setTabs(mergedTabs);
 
-        // Ensure the pinned "Orders" tab is present
-        setTabs(
-          parsed.some((t) => t.id === "orderlist")
-            ? parsed
-            : [{ id: "orderlist", title: "Orders", type: "LIST", pinned: true }, ...parsed]
-        );
-        return;
+        if (!mergedTabs.find((t) => t.id === activeTabId)) {
+          setActiveTabId("orderlist");
+        }
       } catch (err) {
         console.warn("Failed to parse stored tabs:", err);
       }
     }
-
-    // Default to only the pinned "Orders" tab if nothing in storage
-    setTabs([{ id: "orderlist", title: "Orders", type: "LIST", pinned: true }]);
   }, [organizationId, branchId, personnelId]);
 
-  // ----------------------------
-  // SAVE TABS TO LOCAL STORAGE
-  // ----------------------------
+  /* ----------------------------
+     SAVE TABS TO LOCAL STORAGE
+  ---------------------------- */
   useEffect(() => {
     localStorage.setItem(
       storageKey(organizationId, branchId, personnelId),
       JSON.stringify(tabs)
     );
-    // Every time tabs change, they are saved
   }, [tabs, organizationId, branchId, personnelId]);
 
-  // ----------------------------
-  // TOAST
-  // ----------------------------
+  /* ----------------------------
+     TOAST
+  ---------------------------- */
   const showToast = (message: string) => {
     setToast(message);
     setTimeout(() => setToast(null), 2500);
   };
 
-  // ----------------------------
-  // TAB ACTIONS
-  // ----------------------------
+  /* ----------------------------
+     TAB ACTIONS
+  ---------------------------- */
   const openOrderTab = useCallback(
     (order: { id: string; reference: string; status: OrderStatus }) => {
       setTabs((prev) => {
-        // If tab already exists, just activate it
         if (prev.find((t) => t.id === order.id)) return prev;
 
-        // Prevent exceeding max tabs
         if (prev.length >= MAX_TABS) {
           showToast("Maximum tabs reached");
           return prev;
         }
 
-        // Add new order detail tab
         return [
           ...prev,
           {
@@ -136,21 +132,20 @@ export default function OrdersWorkspace({
 
   const closeTab = (tab: OrderTab) => {
     setTabs((prev) => prev.filter((t) => t.id !== tab.id));
-
-    // If closing the active tab, default back to the main "Orders" list
     if (activeTabId === tab.id) setActiveTabId("orderlist");
   };
 
   const requestCloseTab = (tab: OrderTab) => {
-    if (tab.pinned) return; // pinned tabs cannot be closed
-    closeTab(tab); // immediate close, no confirmation needed
+    if (tab.pinned) return;
+    closeTab(tab);
   };
 
-  // ----------------------------
-  // DRAG & DROP REORDERING
-  // ----------------------------
+  /* ----------------------------
+     DRAG & DROP REORDERING
+  ---------------------------- */
   const onDragEnd = (result: DropResult) => {
-    if (!result.destination || result.source.index === 0 || result.destination.index === 0) return;
+    if (!result.destination) return;
+    if (result.source.index === 0 || result.destination.index === 0) return;
 
     const reordered = [...tabs];
     const [moved] = reordered.splice(result.source.index, 1);
@@ -158,11 +153,11 @@ export default function OrdersWorkspace({
     setTabs(reordered);
   };
 
-  // ----------------------------
-  // ACTIVE PANEL
-  // ----------------------------
+  /* ----------------------------
+     ACTIVE PANEL
+  ---------------------------- */
   const ActivePanel = useMemo(() => {
-    const tab = tabs.find((t) => t.id === activeTabId);
+    const tab = tabs.find((t) => t.id === activeTabId) ?? tabs[0];
     if (!tab) return null;
 
     if (tab.type === "LIST")
@@ -182,9 +177,9 @@ export default function OrdersWorkspace({
     );
   }, [tabs, activeTabId, openOrderTab, createNewOrderTab]);
 
-  // ----------------------------
-  // RENDER
-  // ----------------------------
+  /* ----------------------------
+     RENDER
+  ---------------------------- */
   return (
     <div className="flex flex-col h-full bg-white overflow-hidden">
       <OrdersTabBar
