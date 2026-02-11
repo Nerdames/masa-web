@@ -36,7 +36,7 @@ const SIDEBAR_ITEMS: SidebarItem[] = [
   { key: "sales", name: "Sales", href: "/dashboard/sales", icon: "bx-chart" },
   { key: "invoices", name: "Invoices", href: "/dashboard/invoices", icon: "bx-file" },
   { key: "inventory", name: "Inventory", href: "/dashboard/inventory", icon: "bx-box" },
-  { key: "customers", name: "Customers", href: "/dashboard/customers", icon: "bx-user" },
+  { key: "customers", name: "Customers", href: "/dashboard/customers", icon: "bx-group" },
   { key: "notifications", name: "Notifications", href: "/dashboard/notifications", icon: "bx-bell" },
 ];
 
@@ -49,7 +49,7 @@ const SIDEBAR_MOTION = {
 };
 
 /* ---------------------------------------------
- * Sidebar Item with smooth label transition
+ * Sidebar Item
  * --------------------------------------------*/
 interface ItemProps {
   item: SidebarItem;
@@ -67,13 +67,13 @@ const SidebarItemLink = React.memo(function SidebarItemLink({
       href={item.href}
       role="menuitem"
       aria-current={active ? "page" : undefined}
-      className={`relative flex items-center rounded-md overflow-hidden
+      className={`
+        relative flex items-center rounded-md
         ${collapsed ? "h-10 w-10 justify-center mx-auto" : "px-3 py-2.5 gap-3"}
         text-sm font-medium transition-colors
         ${active ? "text-white" : "text-gray-700 hover:bg-gray-100"}
       `}
     >
-      {/* Active indicator */}
       {active && (
         <motion.span
           layoutId="sidebar-active-indicator"
@@ -81,19 +81,15 @@ const SidebarItemLink = React.memo(function SidebarItemLink({
           transition={{ type: "spring", stiffness: 500, damping: 40 }}
         />
       )}
-
-      {/* Icon */}
       <i aria-hidden className={`bx ${item.icon} text-xl relative z-10`} />
-
-      {/* Label with smooth fade + slide */}
       <AnimatePresence initial={false}>
         {!collapsed && (
           <motion.span
             key="label"
-            initial={{ opacity: 0, x: -8 }}
+            initial={{ opacity: 0, x: -6 }}
             animate={{ opacity: 1, x: 0 }}
-            exit={{ opacity: 0, x: -8 }}
-            transition={{ duration: 0.2 }}
+            exit={{ opacity: 0, x: -6 }}
+            transition={{ duration: 0.15 }}
             className="relative z-10 truncate"
           >
             {item.name}
@@ -130,10 +126,14 @@ const DropdownMenu = ({
   parentWidth: number;
   containerRef: React.RefObject<HTMLDivElement>;
 }) => {
+  // Close dropdown on outside click
   useEffect(() => {
     if (!show) return;
+
     const handleClickOutside = (e: MouseEvent) => {
-      if (!containerRef.current?.contains(e.target as Node)) setShow(false);
+      if (!containerRef.current?.contains(e.target as Node)) {
+        setShow(false);
+      }
     };
     document.addEventListener("mousedown", handleClickOutside);
     return () => document.removeEventListener("mousedown", handleClickOutside);
@@ -143,9 +143,9 @@ const DropdownMenu = ({
     <AnimatePresence>
       {show && (
         <motion.div
-          initial={{ opacity: 0, y: 8 }}
-          animate={{ opacity: 1, y: 0 }}
-          exit={{ opacity: 0, y: 8 }}
+          initial={{ opacity: 0, x: -20 }}
+          animate={{ opacity: 1, x: 0 }}
+          exit={{ opacity: 0, x: -20 }}
           transition={{ type: "spring", stiffness: 300, damping: 30 }}
           className="absolute bottom-0 mb-14 w-52 bg-white border border-gray-200 rounded shadow-lg z-50"
           style={{ left: parentWidth }}
@@ -173,7 +173,7 @@ const DropdownMenu = ({
 };
 
 /* ---------------------------------------------
- * Sidebar Component
+ * Sidebar
  * --------------------------------------------*/
 interface SidebarProps {
   open: boolean;
@@ -217,6 +217,7 @@ function Sidebar({ open, onClose }: SidebarProps) {
   const activeKeys = useMemo(() => {
     let longest = 0;
     let key: string | null = null;
+
     for (const item of SIDEBAR_ITEMS) {
       const match = pathname === item.href || pathname.startsWith(item.href + "/");
       if (match && item.href.length > longest) {
@@ -224,6 +225,7 @@ function Sidebar({ open, onClose }: SidebarProps) {
         key = item.key;
       }
     }
+
     return key ? new Set([key]) : new Set<string>();
   }, [pathname]);
 
@@ -266,8 +268,7 @@ function Sidebar({ open, onClose }: SidebarProps) {
   ];
 
   const manageMenu: MenuItem[] = [
-    { label: "Personnel", icon: "bx-user", action: () => (window.location.href = "/dashboard/personnel") },
-    { label: "Roles", icon: "bx-shield", action: () => (window.location.href = "/dashboard/roles") },
+    { label: "Personnel & Role", icon: "bx-user", action: () => (window.location.href = "/dashboard/personnel") },
     { label: "Branches", icon: "bx-git-branch", action: () => (window.location.href = "/dashboard/branches") },
     { label: "Organizations", icon: "bx-buildings", action: () => (window.location.href = "/dashboard/organizations") },
     { label: "Settings", icon: "bx-cog", action: () => (window.location.href = "/dashboard/settings") },
@@ -282,12 +283,20 @@ function Sidebar({ open, onClose }: SidebarProps) {
   );
 
   const sidebarWidth = collapsed ? 64 : 208;
-  const handleBottomClick = (setMenu: React.Dispatch<React.SetStateAction<boolean>>) => setMenu(prev => !prev);
+
+  const handleBottomClick = (setMenu: React.Dispatch<React.SetStateAction<boolean>>) => {
+    setMenu(prev => !prev);
+  };
 
   return (
     <>
       {/* Mobile overlay */}
-      {open && <div className="fixed inset-0 z-30 bg-black/40 lg:hidden" onClick={onClose} />}
+      {open && (
+        <div
+          className="fixed inset-0 z-30 bg-black/40 lg:hidden"
+          onClick={onClose}
+        />
+      )}
 
       {/* Sidebar */}
       <motion.aside
@@ -297,41 +306,71 @@ function Sidebar({ open, onClose }: SidebarProps) {
         animate={collapsed ? "collapsed" : "expanded"}
         variants={SIDEBAR_MOTION}
         transition={{ type: "spring", stiffness: 260, damping: 30 }}
-        className={`fixed lg:static top-0 left-0 z-40 h-full bg-white border-r border-gray-200 shadow-sm flex flex-col justify-between
+        className={`fixed lg:static top-0 left-0 z-40 h-full
+          bg-white border-r border-gray-200 shadow-sm
+          flex flex-col justify-between
           ${open ? "translate-x-0" : "-translate-x-full lg:translate-x-0"}
         `}
       >
         {/* Header */}
-        <div className={`flex items-center h-12 border-b border-gray-200 px-3 ${collapsed ? "justify-center" : "justify-start"}`}>
+        <div
+          className={`flex items-center h-12 border-b border-gray-200 px-3 ${
+            collapsed ? "justify-center" : "justify-start"
+          }`}
+        >
           <i className="bx bx-network-chart text-xl text-gray-500" />
           {!collapsed && (
             <AnimatePresence initial={false}>
-              <motion.span initial={{ opacity: 0, x: -4 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -4 }} className="ml-3 text-sm font-medium text-gray-500">
+              <motion.span
+                initial={{ opacity: 0, x: -4 }}
+                animate={{ opacity: 1, x: 0 }}
+                exit={{ opacity: 0, x: -4 }}
+                className="ml-3 text-sm font-medium text-gray-500"
+              >
                 Dashboard
               </motion.span>
             </AnimatePresence>
           )}
         </div>
 
-        {/* Collapse/Expand button */}
-        <Tooltip content={collapsed ? "Expand sidebar" : "Collapse sidebar"}>
-          <button
-            onClick={() => setCollapsed(v => !v)}
-            aria-expanded={!collapsed}
-            className="absolute top-2 -right-3 w-6 h-6 flex items-center justify-center bg-white border border-gray-200 rounded-full shadow hover:bg-gray-100 transition-all z-50"
-          >
-            <AnimatePresence initial={false} mode="wait">
-              {collapsed ? (
-                <motion.i key="expand" className="bx bx-expand-horizontal text-gray-500 text-lg" initial={{ opacity: 0, y: -4 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: 4 }} transition={{ duration: 0.2 }} />
-              ) : (
-                <motion.i key="collapse" className="bx bx-collapse-horizontal text-gray-500 text-lg" initial={{ opacity: 0, y: 4 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -4 }} transition={{ duration: 0.2 }} />
-              )}
-            </AnimatePresence>
-          </button>
-        </Tooltip>
+{/* Collapse/Expand button with smooth icon transition */}
+<Tooltip content={collapsed ? "Expand sidebar" : "Collapse sidebar"}>
+  <button
+    onClick={() => setCollapsed(v => !v)}
+    aria-expanded={!collapsed}
+    className={`absolute top-2 -right-3 w-6 h-6 flex items-center justify-center 
+      bg-white border border-gray-200 rounded-full shadow hover:bg-gray-100 transition-all z-50`}
+  >
+    <AnimatePresence initial={false} mode="wait">
+      {collapsed ? (
+        <motion.i
+          key="expand"
+          className="bx bx-expand-horizontal text-gray-500 text-lg"
+          initial={{ opacity: 0, y: -4 }}
+          animate={{ opacity: 1, y: 0 }}
+          exit={{ opacity: 0, y: 4 }}
+          transition={{ duration: 0.2 }}
+        />
+      ) : (
+        <motion.i
+          key="collapse"
+          className="bx bx-collapse-horizontal text-gray-500 text-lg"
+          initial={{ opacity: 0, y: 4 }}
+          animate={{ opacity: 1, y: 0 }}
+          exit={{ opacity: 0, y: -4 }}
+          transition={{ duration: 0.2 }}
+        />
+      )}
+    </AnimatePresence>
+  </button>
+</Tooltip>
+
 
         {/* Navigation */}
-        <nav role="menu" className={`flex-1 flex flex-col py-3 ${collapsed ? "space-y-3" : "space-y-3 px-2"}`}>
+        <nav
+          role="menu"
+          className={`flex-1 flex flex-col py-3 ${collapsed ? "space-y-3" : "space-y-3 px-2"}`}
+        >
           {SIDEBAR_ITEMS.map(renderItem)}
         </nav>
 
@@ -340,24 +379,42 @@ function Sidebar({ open, onClose }: SidebarProps) {
           {user && (
             <div ref={accountRef} className="relative">
               <Tooltip content="Account" side="right" show={collapsed}>
-                <button onClick={() => handleBottomClick(setShowAccountMenu)} className="flex items-center h-10 w-full px-3 gap-3 rounded hover:bg-gray-100 transition-colors">
+                <button
+                  onClick={() => handleBottomClick(setShowAccountMenu)}
+                  className="flex items-center h-10 w-full px-3 gap-3 rounded hover:bg-gray-100 transition-colors"
+                >
                   <i className="bx bx-user text-xl" />
                   {!collapsed && <span className="ml-2 text-sm font-medium">Account</span>}
                 </button>
               </Tooltip>
-              <DropdownMenu items={accountMenu} show={showAccountMenu} setShow={setShowAccountMenu} parentWidth={sidebarWidth} containerRef={accountRef} />
+              <DropdownMenu
+                items={accountMenu}
+                show={showAccountMenu}
+                setShow={setShowAccountMenu}
+                parentWidth={sidebarWidth}
+                containerRef={accountRef}
+              />
             </div>
           )}
 
           {canAccessManage && (
             <div ref={manageRef} className="relative">
               <Tooltip content="Manage" side="right" show={collapsed}>
-                <button onClick={() => handleBottomClick(setShowManageMenu)} className="flex items-center h-10 w-full px-3 gap-3 rounded hover:bg-gray-100 transition-colors">
+                <button
+                  onClick={() => handleBottomClick(setShowManageMenu)}
+                  className="flex items-center h-10 w-full px-3 gap-3 rounded hover:bg-gray-100 transition-colors"
+                >
                   <i className="bx bx-cog text-xl" />
                   {!collapsed && <span className="ml-2 text-sm font-medium">Manage</span>}
                 </button>
               </Tooltip>
-              <DropdownMenu items={manageMenu} show={showManageMenu} setShow={setShowManageMenu} parentWidth={sidebarWidth} containerRef={manageRef} />
+              <DropdownMenu
+                items={manageMenu}
+                show={showManageMenu}
+                setShow={setShowManageMenu}
+                parentWidth={sidebarWidth}
+                containerRef={manageRef}
+              />
             </div>
           )}
         </div>

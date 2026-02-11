@@ -46,7 +46,7 @@ export default function TopBar({ notifications }: { notifications?: Notification
     <>
       <header className="w-full h-10 flex items-center px-3 border-b border-gray-200 bg-white">
         {/* Left: Logo + OrgName */}
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-shrink-0">
           <div className="w-6 h-6 bg-gray-900 text-white rounded flex items-center justify-center font-bold cursor-default text-xs">
             L
           </div>
@@ -56,106 +56,105 @@ export default function TopBar({ notifications }: { notifications?: Notification
         </div>
 
         {/* Center */}
-        <div className="flex-1 flex justify-center items-center gap-2 mx-6 min-w-0">
-          {/* Back */}
-          <Tooltip
-            position="bottom"
-            content={
-              <span className="flex items-center gap-1">
-                Go Back
-                <kbd className="ml-1 rounded bg-[#3c3c3c] px-1 text-[10px] font-mono">
-                  Alt+←
-                </kbd>
-              </span>
-            }
-          >
-            <span>
-              <button
-                disabled
-                className="px-2 py-1 rounded hover:bg-gray-100
-                           disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                ←
-              </button>
-            </span>
-          </Tooltip>
-
-          {/* Forward */}
-          <Tooltip
-            side="bottom"
-            content={
-              <span className="flex items-center gap-1">
-                Go Forward
-                <kbd className="ml-1 rounded bg-[#3c3c3c] px-1 text-[10px] font-mono">
-                  Alt+→
-                </kbd>
-              </span>
-            }
-          >
-            <span>
-              <button
-                disabled
-                className="px-2 py-1 rounded hover:bg-gray-100
-                           disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                →
-              </button>
-            </span>
-          </Tooltip>
-
-          <input
-            type="text"
-            placeholder="Search..."
-            className="flex-1 min-w-0 px-2 py-1 text-sm border border-gray-300 rounded
-                       focus:outline-none focus:ring-1 focus:ring-blue-500"
-          />
-
-          {/* Notifications */}
-          <DropdownMenu.Root>
-            <DropdownMenu.Trigger asChild>
-              <button className="relative p-1 rounded hover:bg-gray-100 ml-2">
-                <NotificationsButton />
-                {unreadCount > 0 && (
-                  <span className="absolute top-0 right-0 w-2 h-2 bg-red-500 rounded-full" />
-                )}
-              </button>
-            </DropdownMenu.Trigger>
-
-            <DropdownMenu.Content
-              align="end"
-              sideOffset={6}
-              className="bg-white border border-gray-200 rounded shadow-lg
-                         w-80 max-h-64 overflow-y-auto p-2 z-50"
+        <div className="flex-1 flex justify-center px-4 min-w-0">
+          <div className="flex items-center gap-2 w-full max-w-lg min-w-0">
+            {/* Back */}
+            <Tooltip
+              position="bottom"
+              content={
+                <span className="flex items-center gap-1">
+                  Go Back
+                  <kbd className="ml-1 rounded bg-[#3c3c3c] px-1 text-[10px] font-mono">
+                    Alt+←
+                  </kbd>
+                </span>
+              }
             >
-              <div className="flex justify-between items-center px-2 py-1 mb-2 border-b">
-                <span className="text-sm font-semibold">Notifications</span>
-                <button className="text-xs text-blue-500 hover:underline">
-                  Mark all read
+              <span>
+                <button
+                  disabled
+                  className="px-2 py-1 rounded hover:bg-gray-100 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  ←
                 </button>
-              </div>
+              </span>
+            </Tooltip>
 
-              {safeNotifications.length === 0 ? (
-                <div className="px-2 py-1 text-sm text-gray-500">
-                  No notifications
+            {/* Forward */}
+            <Tooltip
+              side="bottom"
+              content={
+                <span className="flex items-center gap-1">
+                  Go Forward
+                  <kbd className="ml-1 rounded bg-[#3c3c3c] px-1 text-[10px] font-mono">
+                    Alt+→
+                  </kbd>
+                </span>
+              }
+            >
+              <span>
+                <button
+                  disabled
+                  className="px-2 py-1 rounded hover:bg-gray-100 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  →
+                </button>
+              </span>
+            </Tooltip>
+
+            {/* Search */}
+            <input
+              type="text"
+              placeholder="Search..."
+              className="flex-1 min-w-0 px-2 py-1 text-sm border border-gray-300 rounded
+                         focus:outline-none focus:ring-1 focus:ring-blue-500"
+            />
+
+            {/* Notifications */}
+            <DropdownMenu.Root>
+              <DropdownMenu.Trigger asChild>
+                <button className="relative p-1 rounded hover:bg-gray-100 ml-2">
+                  <NotificationsButton />
+                  {unreadCount > 0 && (
+                    <span className="absolute top-0 right-0 w-2 h-2 bg-red-500 rounded-full" />
+                  )}
+                </button>
+              </DropdownMenu.Trigger>
+
+              <DropdownMenu.Content
+                align="end"
+                sideOffset={6}
+                className="bg-white border border-gray-200 rounded shadow-lg
+                           w-80 max-h-64 overflow-y-auto p-2 z-50"
+              >
+                <div className="flex justify-between items-center px-2 py-1 mb-2 border-b">
+                  <span className="text-sm font-semibold">Notifications</span>
+                  <button className="text-xs text-blue-500 hover:underline">
+                    Mark all read
+                  </button>
                 </div>
-              ) : (
-                safeNotifications.map((n) => (
-                  <DropdownMenu.Item
-                    key={n.id}
-                    className={`px-2 py-2 text-sm rounded hover:bg-gray-100 cursor-pointer ${
-                      !n.read ? "font-semibold" : "text-gray-600"
-                    }`}
-                  >
-                    {n.message}
-                  </DropdownMenu.Item>
-                ))
-              )}
-            </DropdownMenu.Content>
-          </DropdownMenu.Root>
+
+                {safeNotifications.length === 0 ? (
+                  <div className="px-2 py-1 text-sm text-gray-500">No notifications</div>
+                ) : (
+                  safeNotifications.map((n) => (
+                    <DropdownMenu.Item
+                      key={n.id}
+                      className={`px-2 py-2 text-sm rounded hover:bg-gray-100 cursor-pointer ${
+                        !n.read ? "font-semibold" : "text-gray-600"
+                      }`}
+                    >
+                      {n.message}
+                    </DropdownMenu.Item>
+                  ))
+                )}
+              </DropdownMenu.Content>
+            </DropdownMenu.Root>
+          </div>
         </div>
 
         {/* Right: Profile */}
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-shrink-0">
           <DropdownMenu.Root>
             <DropdownMenu.Trigger asChild>
               <button className="w-8 h-8 rounded-full bg-gray-900 text-white
@@ -168,8 +167,7 @@ export default function TopBar({ notifications }: { notifications?: Notification
             <DropdownMenu.Content
               align="end"
               sideOffset={6}
-              className="bg-white border border-gray-200 rounded
-                         shadow-lg w-48 p-2 z-50"
+              className="bg-white border border-gray-200 rounded shadow-lg w-48 p-2 z-50"
             >
               <div className="flex flex-col items-center gap-1 px-2 py-2 border-b mb-2">
                 <div className="w-10 h-10 rounded-full bg-gray-900 text-white
