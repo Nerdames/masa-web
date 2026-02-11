@@ -34,3 +34,33 @@ body {
 .animate-slide-down-fade {
   animation: slideDownFade 0.15s ease-out forwards;
 }
+
+/* ================================
+   GLOBAL SCROLLBAR STYLING
+================================= */
+
+/* Chrome, Edge, Safari */
+*::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+*::-webkit-scrollbar-track {
+  background: #f5f5f5; /* off-white */
+}
+
+*::-webkit-scrollbar-thumb {
+  background-color: #d6d6d6; /* soft gray */
+  border-radius: 8px;
+  border: 1px solid #f5f5f5;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background-color: #c2c2c2;
+}
+
+/* Firefox */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #d6d6d6 #f5f5f5;
+}

@@ -1,19 +1,29 @@
 "use client";
 
-import { ReactNode, useState } from "react";
+import React, { useState, ReactNode } from "react";
 import Sidebar from "@/components/layout/Sidebar";
 import TopBar from "@/components/layout/TopBar";
+import { FeatureWorkspace } from "@/components/layout/FeatureWorkspace";
+import { FeatureTab } from "@/components/layout/FeatureTabBar";
 
-interface Props {
-  children: ReactNode;
+interface Props<T extends FeatureTab = FeatureTab> {
+  children?: ReactNode;
+  workspaceTabs?: T[];
+  renderTabContent?: (tab: T) => ReactNode;
+  createNewTab?: () => T;
 }
 
-export default function DashboardRootLayout({ children }: Props) {
+export default function DashboardRootLayout<T extends FeatureTab = FeatureTab>({
+  children,
+  workspaceTabs,
+  renderTabContent,
+  createNewTab,
+}: Props<T>) {
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
   return (
     <div className="flex flex-col h-screen bg-gray-50">
-      {/* TopBar always full width */}
+      {/* TopBar */}
       <div className="flex-shrink-0">
         <TopBar />
       </div>
@@ -25,21 +35,17 @@ export default function DashboardRootLayout({ children }: Props) {
 
         {/* Main content */}
         <main className="flex-1 overflow-hidden bg-white mx-1">
-          {children}
+          {workspaceTabs && renderTabContent && createNewTab ? (
+            <FeatureWorkspace<T>
+              initialTabs={workspaceTabs}
+              renderTabContent={renderTabContent}
+              createNewTab={createNewTab}
+            />
+          ) : (
+            children
+          )}
         </main>
       </div>
-
-      {/* Mobile menu button (top-left, floats above Sidebar) */}
-      {!sidebarOpen && (
-        <div className="fixed top-2 left-2 lg:hidden z-50">
-          <button
-            onClick={() => setSidebarOpen(true)}
-            className="p-2 rounded-md hover:bg-gray-100 bg-white shadow"
-          >
-            <i className="bx bx-menu text-2xl" />
-          </button>
-        </div>
-      )}
     </div>
   );
 }
