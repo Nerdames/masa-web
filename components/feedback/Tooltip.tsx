@@ -1,56 +1,66 @@
 "use client";
 
-import * as RadixTooltip from "@radix-ui/react-tooltip";
+import * as TooltipPrimitive from "@radix-ui/react-tooltip";
 import { motion } from "framer-motion";
 import { ReactNode } from "react";
 
-interface TooltipProps {
-  content: string | ReactNode;
+interface Props {
   children: ReactNode;
-  className?: string;
+  content: ReactNode;
+  side?: "top" | "right" | "bottom" | "left";
   sideOffset?: number;
 }
 
-export const Tooltip: React.FC<TooltipProps> = ({
-  content,
+export function Tooltip({
   children,
-  className,
+  content,
+  side = "top",
   sideOffset = 6,
-}) => {
-  return (
-    <RadixTooltip.Provider delayDuration={150}>
-      <RadixTooltip.Root>
-        <RadixTooltip.Trigger asChild>{children}</RadixTooltip.Trigger>
+}: Props) {
+  // Direction-aware animation
+  const getAnimation = () => {
+    switch (side) {
+      case "top":
+        return { initial: { opacity: 0, y: 4 }, animate: { opacity: 1, y: 0 } };
+      case "bottom":
+        return { initial: { opacity: 0, y: -4 }, animate: { opacity: 1, y: 0 } };
+      case "left":
+        return { initial: { opacity: 0, x: 4 }, animate: { opacity: 1, x: 0 } };
+      case "right":
+        return { initial: { opacity: 0, x: -4 }, animate: { opacity: 1, x: 0 } };
+      default:
+        return { initial: { opacity: 0 }, animate: { opacity: 1 } };
+    }
+  };
 
-        <RadixTooltip.Portal>
-          <RadixTooltip.Content
-            side="top" // default side
-            align="center"
+  const animation = getAnimation();
+
+  return (
+    <TooltipPrimitive.Provider delayDuration={200}>
+      <TooltipPrimitive.Root>
+        <TooltipPrimitive.Trigger asChild>
+          {children}
+        </TooltipPrimitive.Trigger>
+
+        <TooltipPrimitive.Portal>
+          <TooltipPrimitive.Content
+            side={side}
             sideOffset={sideOffset}
-            collisionDetection
-            asChild
+            collisionPadding={8}
+            className="z-50"
           >
             <motion.div
-              initial={{ opacity: 0, y: 4 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: 2 }}
-              transition={{ duration: 0.15 }}
-              className={`
-                relative whitespace-nowrap rounded-md bg-black px-2.5 py-1 text-xs text-white shadow-lg
-                z-[9999]
-                data-[side='top']:-translate-y-1
-                data-[side='bottom']:translate-y-1
-                data-[side='left']:translate-x-1
-                data-[side='right']:-translate-x-1
-                ${className ?? ""}
-              `}
+              initial={animation.initial}
+              animate={animation.animate}
+              exit={{ opacity: 0 }}
+              transition={{ duration: 0.15, ease: "easeOut" }}
+              className="bg-black text-white text-xs px-2 py-1 rounded shadow"
             >
               {content}
-              <RadixTooltip.Arrow className="fill-black" width={6} height={6} />
             </motion.div>
-          </RadixTooltip.Content>
-        </RadixTooltip.Portal>
-      </RadixTooltip.Root>
-    </RadixTooltip.Provider>
+          </TooltipPrimitive.Content>
+        </TooltipPrimitive.Portal>
+      </TooltipPrimitive.Root>
+    </TooltipPrimitive.Provider>
   );
-};
+}

@@ -3,7 +3,8 @@
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { useRouter } from "next/navigation";
 import useSWR from "swr";
-import { useMemo, useState } from "react";
+import { useMemo, useState, useEffect } from "react";
+import { Tooltip } from "@/components/feedback/Tooltip";
 
 interface Notification {
   id: string;
@@ -12,13 +13,17 @@ interface Notification {
   message: string;
 }
 
+interface Props {
+  onUnreadChange?: (count: number) => void;
+}
+
 const fetcher = async (url: string): Promise<{ notifications: Notification[] }> => {
   const res = await fetch(url, { credentials: "include" });
   if (!res.ok) return { notifications: [] };
   return res.json();
 };
 
-export function NotificationsButton() {
+export function NotificationsButton({ onUnreadChange }: Props) {
   const router = useRouter();
   const { data, mutate, isValidating } = useSWR<{ notifications: Notification[] }>(
     "/api/notifications",
@@ -35,6 +40,13 @@ export function NotificationsButton() {
     [notifications]
   );
 
+  // Notify parent of unread count changes
+  useEffect(() => {
+    if (onUnreadChange) {
+      onUnreadChange(unreadCount);
+    }
+  }, [unreadCount, onUnreadChange]);
+
   // Show latest 10 notifications
   const latest = useMemo(() => notifications.slice(0, 10), [notifications]);
 
@@ -42,7 +54,6 @@ export function NotificationsButton() {
 
   // Mark a single notification as read
   const handleClick = async (notification: Notification) => {
-    // Optimistic UI
     mutate(
       { notifications: notifications.map((n) => (n.id === notification.id ? { ...n, read: true } : n)) },
       false
@@ -63,14 +74,13 @@ export function NotificationsButton() {
     mutate(); // Revalidate
   };
 
-  // Optimized “Mark All as Read” handler
+  // Mark all as read
   const handleMarkAllRead = async () => {
     const unreadIds = notifications.filter((n) => !n.read).map((n) => n.id);
     if (unreadIds.length === 0) return;
 
     setLoadingMarkAll(true);
 
-    // Optimistic UI
     mutate(
       { notifications: notifications.map((n) => ({ ...n, read: true })) },
       false
@@ -87,28 +97,39 @@ export function NotificationsButton() {
       console.error("Failed to mark all notifications as read", err);
     } finally {
       setLoadingMarkAll(false);
-      mutate(); // Revalidate
+      mutate();
     }
   };
 
   return (
     <DropdownMenu.Root>
-      <DropdownMenu.Trigger asChild>
-        <button className="relative w-8 h-8 rounded-full bg-gray-100 flex items-center justify-center hover:bg-gray-200 transition cursor-pointer">
-          <i className="bx bx-bell text-[18px] text-gray-800" />
-          <span
-            className={`absolute -top-0.5 -right-0.5 w-2 h-2 bg-red-500 rounded-full transform transition-all duration-300 ease-out
-              ${unreadCount === 0 ? "scale-0 opacity-0" : "scale-100 opacity-100 animate-pulse"}`}
-          />
-        </button>
-      </DropdownMenu.Trigger>
+      <Tooltip
+        side="bottom"
+        content={
+          unreadCount === 0
+            ? "No new notifications"
+            : unreadCount === 1
+            ? "1 unread notification"
+            : `${unreadCount} unread notifications`
+        }
+      >
+        <DropdownMenu.Trigger asChild>
+          <button className="relative w-8 h-8 rounded-full bg-gray-100 flex items-center justify-center hover:bg-gray-200 transition cursor-pointer">
+            <i className="bx bx-bell text-[18px] text-gray-800" />
+            <span
+              className={`absolute -top-0.5 -right-0.5 w-2 h-2 bg-red-500 rounded-full transform transition-all duration-300 ease-out
+                ${unreadCount === 0 ? "scale-0 opacity-0" : "scale-100 opacity-100 animate-pulse"}`}
+            />
+          </button>
+        </DropdownMenu.Trigger>
+      </Tooltip>
 
       <DropdownMenu.Content
         align="end"
         sideOffset={6}
         className="bg-white border border-gray-200 rounded shadow-lg w-80 z-50 flex flex-col max-h-96"
       >
-        {/* Header with refresh and mark all */}
+        {/* Header */}
         <div className="flex items-center justify-between px-3 py-2 border-b border-gray-200">
           <span className="text-xs font-medium text-gray-600">Notifications</span>
           <div className="flex gap-2 items-center">
@@ -124,9 +145,7 @@ export function NotificationsButton() {
               </button>
             )}
             <button
-              className={`text-gray-500 hover:text-gray-700 transition ${
-                isValidating ? "animate-spin" : ""
-              }`}
+              className={`text-gray-500 hover:text-gray-700 transition ${isValidating ? "animate-spin" : ""}`}
               onClick={() => mutate()}
             >
               <i className="bx bx-refresh text-[16px]" />
@@ -134,7 +153,7 @@ export function NotificationsButton() {
           </div>
         </div>
 
-        {/* Notification list */}
+        {/* Notifications list */}
         <div className="flex-1 overflow-y-auto">
           {latest.length === 0 ? (
             <div className="text-sm text-gray-500 px-3 py-2">No notifications</div>
@@ -155,7 +174,7 @@ export function NotificationsButton() {
           )}
         </div>
 
-        {/* View all at bottom */}
+        {/* View all */}
         <div className="border-t border-gray-200 mt-2">
           <DropdownMenu.Item asChild>
             <button
