@@ -14,9 +14,6 @@ const ACTIVE_BG = "#ffffff";
 const INACTIVE_BG = "#f3f3f3";
 const HOVER_BG = "#e8e8e8";
 
-/* ---------------------------------------------
- * Types
- * ------------------------------------------- */
 type Props = {
   tabs: OrderTab[];
   activeTabId: string;
@@ -30,15 +27,9 @@ type Props = {
 
 type ContextMenuAction = "new" | "close" | "close-right" | "close-all";
 
-/* ---------------------------------------------
- * Utils
- * ------------------------------------------- */
 const clamp = (v: number, min: number, max: number) =>
   Math.min(Math.max(v, min), max);
 
-/* ---------------------------------------------
- * Context Menu
- * ------------------------------------------- */
 function Separator() {
   return <div className="my-1 h-px bg-[#e5e5e5]" />;
 }
@@ -91,7 +82,6 @@ function TabContextMenu({
     setSize({ w: r.width, h: r.height });
   }, []);
 
-  /* Dismiss menu on click outside or Escape */
   useEffect(() => {
     const onMouseDown = (e: MouseEvent) => {
       if (ref.current && !ref.current.contains(e.target as Node)) onClose();
@@ -99,7 +89,6 @@ function TabContextMenu({
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === "Escape") onClose();
     };
-
     document.addEventListener("mousedown", onMouseDown);
     document.addEventListener("keydown", onKeyDown);
     return () => {
@@ -146,9 +135,6 @@ function TabContextMenu({
   );
 }
 
-/* ---------------------------------------------
- * OrdersTabBar
- * ------------------------------------------- */
 export default function OrdersTabBar({
   tabs,
   activeTabId,
@@ -181,6 +167,34 @@ export default function OrdersTabBar({
     Math.min(maxTabWidth, Math.floor(containerWidth / tabs.length))
   );
 
+  /* Handle context menu actions */
+  const handleMenuAction = (action: ContextMenuAction) => {
+    if (!menu) return;
+    const tab = menu.tab;
+
+    switch (action) {
+      case "new":
+        createNewOrderTab();
+        break;
+      case "close":
+        requestCloseTab(tab);
+        break;
+      case "close-right":
+        {
+          const index = tabs.findIndex((t) => t.id === tab.id);
+          tabs
+            .slice(index + 1)
+            .filter((t) => !t.pinned)
+            .forEach((t) => requestCloseTab(t));
+        }
+        break;
+      case "close-all":
+        tabs.filter((t) => !t.pinned).forEach((t) => requestCloseTab(t));
+        break;
+    }
+    setMenu(null);
+  };
+
   return (
     <div
       id="orders-tab-bar"
@@ -207,10 +221,11 @@ export default function OrdersTabBar({
                       {(d, snapshot) => {
                         const isActive = tab.id === activeTabId;
 
-                        // Make tab active immediately on drag
                         if (snapshot.isDragging && !isActive) {
                           setActiveTabId(tab.id);
                         }
+
+                        const hasRightTabs = index < tabs.length - 1;
 
                         return (
                           <motion.div
@@ -249,15 +264,12 @@ export default function OrdersTabBar({
                               isActive ? "rounded-t-lg z-10" : "z-0",
                             ].join(" ")}
                           >
-                            {/* Icon */}
                             <span className="mr-2 w-4 h-4 flex items-center justify-center cursor-pointer">
                               <i className="bx bx-cart text-sm" />
                             </span>
 
-                            {/* Title */}
                             <span className="truncate flex-1 cursor-pointer">{tab.title}</span>
 
-                            {/* Close button */}
                             {!tab.pinned && (
                               <span
                                 className="ml-2 w-4 h-4 flex items-center justify-center cursor-pointer"
@@ -270,7 +282,6 @@ export default function OrdersTabBar({
                               </span>
                             )}
 
-                            {/* Tab ↔ page connection */}
                             {isActive && (
                               <motion.div
                                 layoutId="tab-connection"
@@ -286,7 +297,6 @@ export default function OrdersTabBar({
 
                 {p.placeholder}
 
-                {/* New tab button */}
                 <motion.div
                   onClick={createNewOrderTab}
                   className="h-[34px] w-[36px] flex items-center justify-center cursor-pointer text-[#555] hover:bg-[#eaeaea]"
@@ -297,7 +307,6 @@ export default function OrdersTabBar({
                 </motion.div>
               </motion.div>
 
-              {/* Overflow fade */}
               <div className="pointer-events-none absolute right-0 top-0 h-full w-8 bg-gradient-to-l from-[#f3f3f3] to-transparent" />
             </div>
           )}
@@ -309,8 +318,10 @@ export default function OrdersTabBar({
           x={menu.x}
           y={menu.y}
           tab={menu.tab}
-          hasRightTabs={true}
-          onAction={() => setMenu(null)}
+          hasRightTabs={
+            tabs.findIndex((t) => t.id === menu.tab.id) < tabs.length - 1
+          }
+          onAction={handleMenuAction}
           onClose={() => setMenu(null)}
         />
       )}
