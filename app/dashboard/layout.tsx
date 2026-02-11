@@ -24,7 +24,7 @@ export default function DashboardRootLayout({ children }: Props) {
         <Sidebar open={sidebarOpen} onClose={() => setSidebarOpen(false)} />
 
         {/* Main content */}
-        <main className="flex-1 overflow-auto bg-white">
+        <main className="flex-1 overflow-hidden bg-white mx-1">
           {children}
         </main>
       </div>

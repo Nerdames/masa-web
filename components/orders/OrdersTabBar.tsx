@@ -184,7 +184,7 @@ export default function OrdersTabBar({
   return (
     <div
       id="orders-tab-bar"
-      className="sticky top-0 z-50 bg-[#f3f3f3] border-b border-[#e5e5e5]"
+      className="sticky top-0 z-20 bg-[#f5f5f5] border-b border-[#e5e5e5]"
     >
       <DragDropContext onDragEnd={onDragEnd}>
         <Droppable droppableId="tabs" direction="horizontal">

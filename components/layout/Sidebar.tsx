@@ -348,7 +348,7 @@ function Sidebar({ open, onClose }: SidebarProps) {
       >
         {/* Header */}
         <div
-          className={`flex items-center h-14  px-3 ${
+          className={`flex items-center h-12  px-3 ${
             collapsed ? "justify-center" : "justify-start"
           }`}
         >
