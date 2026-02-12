@@ -60,7 +60,7 @@ export async function GET(req: NextRequest) {
     ]);
 
     return NextResponse.json({
-      data: suppliers.map(s => ({
+      data: suppliers.map((s) => ({
         id: s.id,
         name: s.name,
         email: s.email,
@@ -95,12 +95,13 @@ export async function POST(req: NextRequest) {
 
     const body: {
       name?: string;
-      email?: string;
-      phone?: string;
-      address?: string;
+      email?: string | null;
+      phone?: string | null;
+      address?: string | null;
     } = await req.json();
 
-    if (!body.name?.trim()) {
+    const name = body.name?.trim();
+    if (!name) {
       return NextResponse.json(
         { error: "Supplier name is required" },
         { status: 400 }
@@ -109,11 +110,11 @@ export async function POST(req: NextRequest) {
 
     const supplier = await prisma.supplier.create({
       data: {
-        name: body.name.trim(),
+        organizationId: session.user.organizationId,
+        name,
         email: body.email ?? null,
         phone: body.phone ?? null,
         address: body.address ?? null,
-        organizationId: session.user.organizationId,
       },
     });
 
@@ -149,9 +150,9 @@ export async function PUT(req: NextRequest) {
     const body: {
       id?: string;
       name?: string;
-      email?: string;
-      phone?: string;
-      address?: string;
+      email?: string | null;
+      phone?: string | null;
+      address?: string | null;
     } = await req.json();
 
     if (!body.id) {
@@ -161,17 +162,31 @@ export async function PUT(req: NextRequest) {
       );
     }
 
-    const supplier = await prisma.supplier.update({
+    // Ensure supplier belongs to organization
+    const existing = await prisma.supplier.findFirst({
       where: {
         id: body.id,
         organizationId: session.user.organizationId,
       },
-      data: {
-        name: body.name,
-        email: body.email ?? null,
-        phone: body.phone ?? null,
-        address: body.address ?? null,
-      },
+    });
+
+    if (!existing) {
+      return NextResponse.json(
+        { error: "Supplier not found" },
+        { status: 404 }
+      );
+    }
+
+    const updateData: Prisma.SupplierUpdateInput = {
+      ...(body.name !== undefined && { name: body.name.trim() }),
+      ...(body.email !== undefined && { email: body.email }),
+      ...(body.phone !== undefined && { phone: body.phone }),
+      ...(body.address !== undefined && { address: body.address }),
+    };
+
+    const supplier = await prisma.supplier.update({
+      where: { id: body.id },
+      data: updateData,
     });
 
     return NextResponse.json(supplier);
@@ -179,8 +194,15 @@ export async function PUT(req: NextRequest) {
     if (error instanceof PrismaClientKnownRequestError) {
       if (error.code === "P2002") {
         return NextResponse.json(
-          { error: "Supplier name already exists in this organization" },
+          { error: "Supplier already exists in this organization" },
           { status: 409 }
+        );
+      }
+
+      if (error.code === "P2025") {
+        return NextResponse.json(
+          { error: "Supplier not found" },
+          { status: 404 }
         );
       }
     }
@@ -211,8 +233,27 @@ export async function DELETE(req: NextRequest) {
       );
     }
 
+    // Ensure supplier belongs to organization
+    const supplier = await prisma.supplier.findFirst({
+      where: {
+        id,
+        organizationId: session.user.organizationId,
+      },
+    });
+
+    if (!supplier) {
+      return NextResponse.json(
+        { error: "Supplier not found" },
+        { status: 404 }
+      );
+    }
+
+    // Prevent delete if linked to products
     const linkedProducts = await prisma.branchProduct.count({
-      where: { supplierId: id },
+      where: {
+        supplierId: id,
+        organizationId: session.user.organizationId,
+      },
     });
 
     if (linkedProducts > 0) {
@@ -223,10 +264,7 @@ export async function DELETE(req: NextRequest) {
     }
 
     await prisma.supplier.delete({
-      where: {
-        id,
-        organizationId: session.user.organizationId,
-      },
+      where: { id },
     });
 
     return NextResponse.json({ message: "Supplier deleted" });

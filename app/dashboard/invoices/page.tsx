@@ -1,7 +1,6 @@
 "use client";
 
-import { useState, useMemo, useCallback } from "react";
-import React from "react";
+import React, { useState, useMemo, useCallback, useEffect } from "react";
 import useSWR from "swr";
 import { useDebounce } from "@/app/hooks/useDebounce";
 import { useToast } from "@/components/feedback/ToastProvider";
@@ -12,12 +11,7 @@ import Summary, { SummaryCard } from "@/components/ui/Summary";
 
 /* ================= Types ================= */
 
-type InvoiceStatus =
-  | "DRAFT"
-  | "ISSUED"
-  | "PARTIALLY_PAID"
-  | "PAID"
-  | "VOIDED";
+type InvoiceStatus = "DRAFT" | "ISSUED" | "PARTIALLY_PAID" | "PAID" | "VOIDED";
 
 interface Invoice {
   id: string;
@@ -27,7 +21,7 @@ interface Invoice {
   status: InvoiceStatus;
   currency: string;
   issuedAt: string;
-  customerName?: string;
+  buyerName?: string; // updated from customerName
 }
 
 /* ================= Fetcher ================= */
@@ -56,9 +50,7 @@ export default function InvoicePage() {
   /* ---------- State ---------- */
   const [page, setPage] = useState(1);
   const [search, setSearch] = useState("");
-  const [statusFilter, setStatusFilter] = useState<"ALL" | "PAID" | "UNPAID">(
-    "ALL"
-  );
+  const [statusFilter, setStatusFilter] = useState<"ALL" | "PAID" | "UNPAID">("ALL");
   const [targetDate, setTargetDate] = useState("");
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [bulkMarkPaidOpen, setBulkMarkPaidOpen] = useState(false);
@@ -74,24 +66,22 @@ export default function InvoicePage() {
 
     if (debouncedSearch) params.set("search", debouncedSearch);
     if (targetDate) params.set("date", targetDate);
-
     if (statusFilter === "PAID") params.set("status", "PAID");
-    if (statusFilter === "UNPAID") params.set("status", "UNPAID"); // backend should interpret as ISSUED | PARTIALLY_PAID
+    if (statusFilter === "UNPAID") params.set("status", "UNPAID");
 
     return params.toString();
   }, [page, debouncedSearch, targetDate, statusFilter]);
 
   /* ---------- Fetch ---------- */
-  const { data, isLoading, mutate, error } = useSWR<{
-    data: Invoice[];
-    total: number;
-  }>(`/api/dashboard/invoices?${query}`, fetcher, {
-    keepPreviousData: true,
-  });
+  const { data, isLoading, mutate, error } = useSWR<{ data: Invoice[]; total: number }>(
+    `/api/dashboard/invoices?${query}`,
+    fetcher,
+    { keepPreviousData: true }
+  );
 
-  if (error) {
-    toast.addToast({ type: "error", message: "Failed to fetch invoices" });
-  }
+  useEffect(() => {
+    if (error) toast.addToast({ type: "error", message: "Failed to fetch invoices" });
+  }, [error, toast]);
 
   const invoices = data?.data ?? [];
   const total = data?.total ?? 0;
@@ -104,21 +94,22 @@ export default function InvoicePage() {
   const summaryCards: SummaryCard[] = [
     { id: "total", title: "Total Invoices", value: total, filter: "ALL" },
     { id: "paid", title: "Paid", value: paidCount, filter: "PAID", color: "text-green-600" },
-    { id: "unpaid", title: "Unpaid", value: unpaidCount, filter: "UNPAID", color: unpaidCount === 0 ? "text-green-600" : "text-red-600" },
+    {
+      id: "unpaid",
+      title: "Unpaid",
+      value: unpaidCount,
+      filter: "UNPAID",
+      color: unpaidCount === 0 ? "text-green-600" : "text-red-600",
+    },
   ];
 
   /* ---------- Selection ---------- */
   const selectableIds = useMemo(
-    () =>
-      invoices
-        .filter((i) => i.status !== "PAID" && i.status !== "VOIDED")
-        .map((i) => i.id),
+    () => invoices.filter((i) => i.status !== "PAID" && i.status !== "VOIDED").map((i) => i.id),
     [invoices]
   );
 
-  const isAllSelected =
-    selectableIds.length > 0 && selectableIds.every((id) => selectedIds.has(id));
-
+  const isAllSelected = selectableIds.length > 0 && selectableIds.every((id) => selectedIds.has(id));
   const isIndeterminate = selectedIds.size > 0 && !isAllSelected;
 
   const toggleSelect = useCallback((id: string) => {
@@ -136,11 +127,14 @@ export default function InvoicePage() {
   /* ---------- Bulk Mark Paid ---------- */
   const bulkMarkPaid = useCallback(async () => {
     try {
-      await fetch("/api/dashboard/invoices/mark-paid", {
+      if (selectedIds.size === 0) return;
+      const res = await fetch("/api/dashboard/invoices/mark-paid", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ ids: [...selectedIds] }),
       });
+
+      if (!res.ok) throw new Error("Failed to mark invoices as paid");
 
       toast.addToast({ type: "success", message: "Invoices marked as paid" });
       setSelectedIds(new Set());
@@ -159,20 +153,20 @@ export default function InvoicePage() {
 
   /* ---------- Group by Day ---------- */
   const groupedInvoices = useMemo(() => {
-    const today = new Date();
+    const todayStr = new Date().toDateString();
     const yesterday = new Date();
-    yesterday.setDate(today.getDate() - 1);
+    yesterday.setDate(yesterday.getDate() - 1);
+    const yestStr = yesterday.toDateString();
 
     const groups: Record<string, Invoice[]> = { Today: [], Yesterday: [] };
     const older: Record<string, Invoice[]> = {};
 
     invoices.forEach((inv) => {
-      const d = new Date(inv.issuedAt);
-      const key = d.toISOString().split("T")[0];
-
-      if (d.toDateString() === today.toDateString()) groups.Today.push(inv);
-      else if (d.toDateString() === yesterday.toDateString()) groups.Yesterday.push(inv);
+      const dateStr = new Date(inv.issuedAt).toDateString();
+      if (dateStr === todayStr) groups.Today.push(inv);
+      else if (dateStr === yestStr) groups.Yesterday.push(inv);
       else {
+        const key = new Date(inv.issuedAt).toISOString().split("T")[0];
         if (!older[key]) older[key] = [];
         older[key].push(inv);
       }
@@ -199,7 +193,7 @@ export default function InvoicePage() {
         <input
           value={search}
           onChange={(e) => setSearch(e.target.value)}
-          placeholder="Search invoice or customer"
+          placeholder="Search invoice or buyer"
           className="border rounded-lg p-2 text-sm min-w-[250px]"
         />
 
@@ -261,13 +255,13 @@ export default function InvoicePage() {
                   type="checkbox"
                   checked={isAllSelected}
                   ref={(el) => {
-                    if (el) el.indeterminate = isIndeterminate;
+                    if (el) el!.indeterminate = isIndeterminate;
                   }}
                   onChange={toggleSelectAll}
                 />
               </th>
               <th className="p-4">Invoice</th>
-              <th className="p-4">Customer</th>
+              <th className="p-4">Buyer</th> {/* Updated header */}
               <th className="p-4">Total</th>
               <th className="p-4">Balance</th>
               <th className="p-4">Status</th>
@@ -275,8 +269,7 @@ export default function InvoicePage() {
           </thead>
 
           <tbody>
-            {isLoading &&
-              Array.from({ length: 8 }).map((_, i) => <SkeletonRow key={i} />)}
+            {isLoading && Array.from({ length: 8 }).map((_, i) => <SkeletonRow key={i} />)}
 
             {!isLoading &&
               Object.entries(groupedInvoices).map(([group, items]) => {
@@ -301,9 +294,7 @@ export default function InvoicePage() {
                           key={inv.id}
                           className={`
                             bg-white rounded-xl shadow-sm transition
-                            ${disabled
-                              ? "opacity-60 cursor-not-allowed"
-                              : "cursor-pointer hover:bg-green-50 hover:text-green-700"}
+                            ${disabled ? "opacity-60 cursor-not-allowed" : "cursor-pointer hover:bg-green-50 hover:text-green-700"}
                             ${selected ? "bg-green-100 text-green-700" : ""}
                           `}
                           onClick={(e) => {
@@ -321,17 +312,11 @@ export default function InvoicePage() {
                               onChange={() => toggleSelect(inv.id)}
                             />
                           </td>
-                          <td className="p-4 text-center font-mono">
-                            #{inv.id.slice(-6)}
-                          </td>
-                          <td className="p-4 text-center">{inv.customerName ?? "Walk-in"}</td>
+                          <td className="p-4 text-center font-mono">#{inv.id.slice(-6)}</td>
+                          <td className="p-4 text-center">{inv.buyerName ?? "Walk-in"}</td> {/* Updated */}
                           <td className="p-4 text-center">₦{inv.total.toLocaleString()}</td>
                           <td className="p-4 text-center">₦{Math.max(inv.balance, 0).toLocaleString()}</td>
-                          <td
-                            className={`p-4 text-center font-semibold ${
-                              inv.status === "PAID" ? "text-green-700" : "text-red-700"
-                            }`}
-                          >
+                          <td className={`p-4 text-center font-semibold ${inv.status === "PAID" ? "text-green-700" : "text-red-700"}`}>
                             {inv.status}
                           </td>
                         </tr>
@@ -348,15 +333,9 @@ export default function InvoicePage() {
       <div className="flex justify-between items-center text-xs">
         <span>Total Invoices: {total}</span>
         <div className="flex gap-2">
-          <button disabled={page <= 1} onClick={() => setPage((p) => p - 1)}>
-            Prev
-          </button>
-          <span>
-            {page} / {pageCount}
-          </span>
-          <button disabled={page >= pageCount} onClick={() => setPage((p) => p + 1)}>
-            Next
-          </button>
+          <button disabled={page <= 1} onClick={() => setPage((p) => p - 1)}>Prev</button>
+          <span>{page} / {pageCount}</span>
+          <button disabled={page >= pageCount} onClick={() => setPage((p) => p + 1)}>Next</button>
         </div>
       </div>
 
