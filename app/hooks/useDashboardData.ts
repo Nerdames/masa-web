@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
-import type { ChartDataSales } from "@/components/dashboard/ChartSales";
-import type { ChartDataPayment } from "@/components/dashboard/ChartPayments";
-import type { ChartDataProduct } from "@/components/dashboard/ProductRow";
+import type { ChartDataSales } from "@/components/dashboard/SalesChart";
+import type { ChartDataPayment } from "@/components/dashboard/RecentOrders";
+import type { ChartDataProduct } from "@/components/dashboard/PopularItems";
 import type { Notification } from "@/components/dashboard/NotificationCard";
 
 /* ===============================
