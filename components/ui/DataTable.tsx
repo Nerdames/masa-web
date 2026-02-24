@@ -1,7 +1,7 @@
-"use client";
+import React, { useMemo } from "react";
+import { Tooltip } from "@/components/feedback/Tooltip";
 
-import React from "react";
-
+/* ================= Types ================= */
 export interface DataTableColumn<T> {
   key: string;
   header: React.ReactNode;
@@ -15,163 +15,181 @@ interface DataTableProps<T> {
   columns: DataTableColumn<T>[];
   loading?: boolean;
 
-  /* Selection */
-  selectable?: boolean;
-  selectedIds?: Set<string>;
-  getRowId?: (row: T) => string;
-  onToggleSelect?: (id: string) => void;
-  onToggleSelectAll?: () => void;
-  isAllSelected?: boolean;
-  isIndeterminate?: boolean;
+  getRowId?: (row: T, index: number) => string;
+  onRowClick?: (row: T) => string | void; // return URL to open in new tab
+  getRowClassName?: (row: T) => string;
 
-  /* Row click */
-  onRowClick?: (row: T) => void;
-
-  /* Skeleton */
-  skeletonRows?: number;
-
-  /* Empty state */
   emptyMessage?: string;
+
+  groupByDate?: boolean;
+  getRowDate?: (row: T) => string | Date;
+  tableWidth?: number;
 }
 
-export default function DataTable<T>({
+/* ================= Helpers ================= */
+function getAlignClass(align?: "left" | "center" | "right") {
+  switch (align) {
+    case "left":
+      return "text-left";
+    case "right":
+      return "text-right";
+    default:
+      return "text-center";
+  }
+}
+
+function normalizeDate(date: string | Date) {
+  const d = new Date(date);
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+}
+
+function formatDDMMYYYY(dateString: string) {
+  const d = new Date(dateString);
+  return `${String(d.getDate()).padStart(2, "0")}/${String(
+    d.getMonth() + 1
+  ).padStart(2, "0")}/${d.getFullYear()}`;
+}
+
+/* ================= Component ================= */
+function DataTable<T>({
   data,
   columns,
   loading = false,
-
-  selectable = false,
-  selectedIds,
   getRowId,
-  onToggleSelect,
-  onToggleSelectAll,
-  isAllSelected,
-  isIndeterminate,
-
   onRowClick,
-
-  skeletonRows = 8,
+  getRowClassName,
   emptyMessage = "No records found.",
+  groupByDate = false,
+  getRowDate,
+  tableWidth,
 }: DataTableProps<T>) {
+  /* ================= Grouping ================= */
+  const groupedData = useMemo(() => {
+    if (!groupByDate || !getRowDate) return { All: data };
+
+    const today = normalizeDate(new Date());
+    const yesterday = normalizeDate(new Date(Date.now() - 86400000));
+
+    const groups: Record<string, T[]> = { Today: [], Yesterday: [] };
+    const older: Record<string, T[]> = {};
+
+    data.forEach((row) => {
+      const rowTime = normalizeDate(getRowDate(row));
+      if (rowTime === today) groups.Today.push(row);
+      else if (rowTime === yesterday) groups.Yesterday.push(row);
+      else {
+        const d = new Date(rowTime);
+        const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(
+          2,
+          "0"
+        )}-${String(d.getDate()).padStart(2, "0")}`;
+        if (!older[key]) older[key] = [];
+        older[key].push(row);
+      }
+    });
+
+    const sortedOlderKeys = Object.keys(older).sort((a, b) => (a > b ? -1 : 1));
+    const sortedOlder: Record<string, T[]> = {};
+    sortedOlderKeys.forEach((k) => (sortedOlder[k] = older[k]));
+
+    return { ...groups, ...sortedOlder };
+  }, [data, groupByDate, getRowDate]);
+
+  /* ================= Column Width ================= */
+  const computeMaxWidth = (col: DataTableColumn<T>) => {
+    if (col.width) return col.width;
+    if (!tableWidth) return "150px";
+    return `${Math.floor(tableWidth / columns.length)}px`;
+  };
+
+  /* ================= Render ================= */
   return (
     <div className="flex-1 overflow-x-auto">
-      <table className="w-full text-sm table-fixed border-separate border-spacing-y-3">
-        <thead className="text-xs bg-gray-100 uppercase text-gray-500 text-center">
+      <table className="w-full text-sm table-fixed border-separate border-spacing-y-2">
+        <thead>
           <tr>
-            {selectable && (
-              <th className="w-10 p-3">
-                <input
-                  type="checkbox"
-                  checked={isAllSelected}
-                  ref={(el) => {
-                    if (el) el.indeterminate = Boolean(isIndeterminate);
-                  }}
-                  onChange={onToggleSelectAll}
-                  className="accent-blue-600"
-                />
-              </th>
-            )}
-
-            {columns.map((col) => (
+            {columns.map((col, i) => (
               <th
                 key={col.key}
-                className={`p-4 ${
-                  col.align === "left"
-                    ? "text-left"
-                    : col.align === "right"
-                    ? "text-right"
-                    : "text-center"
+                className={`px-4 py-4 font-medium bg-gray-50 ${getAlignClass(
+                  col.align
+                )} ${i === 0 ? "rounded-tl-xl" : ""} ${
+                  i === columns.length - 1 ? "rounded-tr-xl" : ""
                 }`}
-                style={{ width: col.width }}
+                style={{ width: computeMaxWidth(col) }}
               >
-                {col.header}
+                <Tooltip content={typeof col.header === "string" ? col.header : ""}>
+                  <div className="truncate max-w-full">{col.header}</div>
+                </Tooltip>
               </th>
             ))}
           </tr>
         </thead>
 
         <tbody>
-          {/* Loading Skeleton */}
-          {loading &&
-            Array.from({ length: skeletonRows }).map((_, i) => (
-              <tr key={i} className="animate-pulse">
-                {selectable && (
-                  <td className="p-4">
-                    <div className="h-4 w-4 bg-gray-200 rounded mx-auto" />
-                  </td>
-                )}
-                {columns.map((col) => (
-                  <td key={col.key} className="p-4">
-                    <div className="h-4 w-full bg-gray-200 rounded" />
-                  </td>
-                ))}
-              </tr>
-            ))}
-
-          {/* Empty State */}
-          {!loading && data.length === 0 && (
-            <tr>
-              <td
-                colSpan={columns.length + (selectable ? 1 : 0)}
-                className="p-6 text-center text-gray-400"
-              >
-                {emptyMessage}
-              </td>
-            </tr>
-          )}
-
-          {/* Rows */}
           {!loading &&
-            data.map((row) => {
-              const id = getRowId?.(row);
-              const isSelected = id && selectedIds?.has(id);
-
-              return (
-                <tr
-                  key={id}
-                  className={`
-                    bg-white rounded-xl shadow-sm transition
-                    ${
-                      isSelected
-                        ? "bg-green-100 text-green-700"
-                        : "hover:bg-green-50 hover:text-green-700"
-                    }
-                    ${onRowClick ? "cursor-pointer" : ""}
-                  `}
-                  onClick={() => onRowClick?.(row)}
-                >
-                  {selectable && id && (
+            Object.entries(groupedData).map(([group, rows]) => (
+              <React.Fragment key={group}>
+                {groupByDate && rows.length > 0 && (
+                  <tr>
                     <td
-                      className="p-4 text-center"
-                      onClick={(e) => e.stopPropagation()}
+                      colSpan={columns.length}
+                      className="px-4 py-1 text-xs font-semibold text-gray-400 uppercase text-center"
                     >
-                      <input
-                        type="checkbox"
-                        checked={isSelected}
-                        onChange={() => onToggleSelect?.(id)}
-                        className="accent-blue-600"
-                      />
+                      {group === "Today" || group === "Yesterday"
+                        ? group
+                        : formatDDMMYYYY(group)}
                     </td>
-                  )}
+                  </tr>
+                )}
 
-                  {columns.map((col) => (
-                    <td
-                      key={col.key}
-                      className={`p-4 ${
-                        col.align === "left"
-                          ? "text-left"
-                          : col.align === "right"
-                          ? "text-right"
-                          : "text-center"
-                      }`}
+                {rows.map((row, index) => {
+                  const key = getRowId ? getRowId(row, index) : JSON.stringify(row) + index;
+                  const rowClass = getRowClassName?.(row) ?? "";
+                  return (
+                    <tr
+                      key={key}
+                      className={`bg-white rounded-xl shadow-sm transition hover:bg-emerald-50 hover:-translate-y-0.5 cursor-pointer ${rowClass}`}
+                      onClick={() => {
+                        if (onRowClick) {
+                          const url = onRowClick(row);
+                          if (typeof url === "string") window.open(url, "_blank");
+                        }
+                      }}
                     >
-                      {col.render(row)}
-                    </td>
-                  ))}
-                </tr>
-              );
-            })}
+                      {columns.map((col) => {
+                        const cellContent = col.render(row);
+                        const tooltipText =
+                          typeof cellContent === "string" || typeof cellContent === "number"
+                            ? String(cellContent)
+                            : "";
+
+                        return (
+                          <td
+                            key={col.key}
+                            className={`px-4 py-4 ${getAlignClass(col.align)}`}
+                            style={{ maxWidth: computeMaxWidth(col) }}
+                          >
+                            <Tooltip content={tooltipText}>
+                              <div className="truncate max-w-full">{cellContent}</div>
+                            </Tooltip>
+                          </td>
+                        );
+                      })}
+                    </tr>
+                  );
+                })}
+              </React.Fragment>
+            ))}
         </tbody>
       </table>
+
+      {!loading &&
+        Object.values(groupedData).every((rows) => rows.length === 0) && (
+          <div className="p-4 text-center text-gray-500">{emptyMessage}</div>
+        )}
     </div>
   );
 }
+
+export default React.memo(DataTable) as typeof DataTable;

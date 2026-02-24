@@ -1,4 +1,4 @@
-import type { Category, Supplier } from "./domain";
+import type { Category, Vendor } from "./domain";
 import type { StockMovementType } from "@prisma/client";
 
 /* ---------------------------------------------
@@ -14,7 +14,7 @@ export interface BranchProduct {
   stock: number;
   reorderLevel: number;
 
-  sellingPrice: number;
+  sellingPrice?: number | null;
   costPrice?: number | null;
 
   safetyStock?: number | null;
@@ -23,8 +23,8 @@ export interface BranchProduct {
   lastSoldAt?: Date | null;
   lastRestockedAt?: Date | null;
 
-  supplierId?: string | null;
-  supplier?: Supplier | null;
+  vendorId?: string | null;
+  vendor?: Vendor | null;
 
   // Aggregates (derived / optional)
   pendingOrders?: number;
@@ -83,14 +83,14 @@ export interface InventoryProduct {
 
   // Branch-scoped fields
   stock: number;
-  sellingPrice: number;
-  unit: string;
+  sellingPrice?: number | null;
+  unit?: string | null;
 
-  pendingOrders: number;
-  totalSold: number;
-  salesVelocity: number;
+  pendingOrders?: number;
+  totalSold?: number;
+  salesVelocity?: number;
 
-  supplier?: {
+  vendor?: {
     id: string;
     name: string;
   } | null;

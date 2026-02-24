@@ -1,104 +1,242 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import type { InventoryProduct } from "@/types";
-import type { Supplier } from "@/types";
+import { useEffect, useMemo, useState } from "react";
+import type { BranchProduct, Vendor } from "@/types";
+import { useSession } from "next-auth/react";
 
 interface AddProductForm {
   name: string;
   sku: string;
-  price: number | "";
+  costPrice: number | "";
+  sellingPrice: number | "";
   stock: number | "";
-  supplierId?: string;
-  supplierName?: string;
+  unit: string;
+  vendorId?: string;
+  vendorName?: string;
 }
 
 interface QuickAddProduct {
   name: string;
   sku: string;
-  price: number | "";
+  costPrice: number | "";
+  sellingPrice: number | "";
   stock: number | "";
+  unit: string;
+}
+
+interface AddedProduct extends QuickAddProduct {
+  vendorName?: string;
 }
 
 export default function CreatePage() {
-  const [suppliers, setSuppliers] = useState<Supplier[]>([]);
-  const [products, setProducts] = useState<InventoryProduct[]>([]);
+  const { data: session } = useSession();
+
+  const [vendors, setVendors] = useState<Vendor[]>([]);
+  const [products, setProducts] = useState<BranchProduct[]>([]);
   const [quickAddRows, setQuickAddRows] = useState<QuickAddProduct[]>([]);
   const [activeTab, setActiveTab] = useState<"new" | "existing">("new");
   const [submitting, setSubmitting] = useState(false);
+  const [addedProducts, setAddedProducts] = useState<AddedProduct[]>([]);
+
+  const [vendorSearch, setVendorSearch] = useState("");
+  const [showVendorDropdown, setShowVendorDropdown] = useState(false);
+
+  const [showVendorModal, setShowVendorModal] = useState(false);
+  const [newVendorName, setNewVendorName] = useState("");
+  const [creatingVendor, setCreatingVendor] = useState(false);
 
   const [form, setForm] = useState<AddProductForm>({
     name: "",
     sku: "",
-    price: "",
+    costPrice: "",
+    sellingPrice: "",
     stock: "",
-    supplierId: "",
-    supplierName: "",
+    unit: "",
+    vendorId: "",
+    vendorName: "",
   });
 
-  // ------------------------------ FETCH SUPPLIERS ------------------------------
+  // -------------------- FETCH VENDORS --------------------
   useEffect(() => {
-    fetch("/api/suppliers")
-      .then(res => res.json())
-      .then(data => setSuppliers(data.suppliers ?? []))
+    if (!session) return;
+    fetch("/api/dashboard/products/add?vendorList=true")
+      .then((res) => res.json())
+      .then((data) => setVendors(data.vendors ?? []))
       .catch(console.error);
-  }, []);
+  }, [session]);
 
-  // ------------------------------ FETCH PRODUCTS BY SUPPLIER ------------------------------
+  // -------------------- FETCH PRODUCTS BY VENDOR --------------------
   useEffect(() => {
-    if (!form.supplierId) return;
-
-    fetch(`/api/dashboard/products?supplierId=${form.supplierId}`)
-      .then(res => res.json())
-      .then(data => setProducts(data.data ?? []))
+    if (!form.vendorId) return;
+    fetch(
+      `/api/dashboard/products?vendorId=${form.vendorId}${
+        session?.branchId ? `&branchId=${session.branchId}` : ""
+      }`
+    )
+      .then((res) => res.json())
+      .then((data) => setProducts(data.data ?? []))
       .catch(console.error);
-  }, [form.supplierId]);
+  }, [form.vendorId, session?.branchId]);
 
-  // ------------------------------ FORM HELPERS ------------------------------
+  // -------------------- FILTER VENDORS --------------------
+  const filteredVendors = useMemo(
+    () =>
+      vendors.filter((v) =>
+        v.name.toLowerCase().includes(vendorSearch.toLowerCase())
+      ),
+    [vendors, vendorSearch]
+  );
+
+  // -------------------- FORM HELPERS --------------------
   const updateField = <K extends keyof AddProductForm>(
     field: K,
     value: AddProductForm[K]
   ) => {
-    setForm(prev => ({ ...prev, [field]: value }));
+    setForm((prev) => ({ ...prev, [field]: value }));
   };
 
-  // ------------------------------ QUICK ADD HELPERS ------------------------------
+  // -------------------- QUICK ADD HELPERS --------------------
   const addQuickRow = () =>
-    setQuickAddRows(prev => [...prev, { name: "", sku: "", price: "", stock: "" }]);
+    setQuickAddRows((prev) => [
+      ...prev,
+      { name: "", sku: "", costPrice: "", sellingPrice: "", stock: "", unit: "" },
+    ]);
 
   const removeQuickRow = (index: number) =>
-    setQuickAddRows(prev => prev.filter((_, i) => i !== index));
+    setQuickAddRows((prev) => prev.filter((_, i) => i !== index));
 
   const updateQuickRow = (
     index: number,
     field: keyof QuickAddProduct,
     value: string | number
   ) => {
-    setQuickAddRows(prev => {
+    setQuickAddRows((prev) => {
       const copy = [...prev];
       copy[index] = { ...copy[index], [field]: value };
       return copy;
     });
   };
 
-  // ------------------------------ CREATE SINGLE PRODUCT ------------------------------
-  const handleCreateProduct = async () => {
-    setSubmitting(true);
+  // -------------------- ADD TO LIVE LIST --------------------
+  const addToLiveList = (product: AddedProduct) => {
+    setAddedProducts((prev) => [...prev, product]);
+  };
+
+  // -------------------- SKU AUTO-GENERATION --------------------
+  useEffect(() => {
+    if (!form.name || form.sku) return;
+    const abbreviation = form.name
+      .split(" ")
+      .map((w) => w[0]?.toUpperCase() || "")
+      .join("");
+    const randomNumber = Math.floor(Math.random() * 9000 + 1000);
+    updateField("sku", `${abbreviation}${randomNumber}`);
+  }, [form.name]);
+
+  // -------------------- DUPLICATE SKU CHECK --------------------
+  const isDuplicateSKU = (sku: string) => {
+    const skuUpper = sku.trim().toUpperCase();
+    if (addedProducts.some((p) => p.sku?.toUpperCase() === skuUpper)) return true;
+    if (
+      products.some((p) => (p.product?.sku ?? p.sku)?.toUpperCase() === skuUpper)
+    )
+      return true;
+    return false;
+  };
+
+  // -------------------- PREVENT DUPLICATE VENDOR --------------------
+  const vendorExists = (name: string) =>
+    vendors.some(
+      (v) => v.name.trim().toLowerCase() === name.trim().toLowerCase()
+    );
+
+  // -------------------- CREATE VENDOR --------------------
+  const handleCreateVendor = async () => {
+    if (!newVendorName.trim() || !session?.organizationId) return;
+    if (vendorExists(newVendorName)) {
+      alert("Vendor already exists.");
+      return;
+    }
+
     try {
-      await fetch("/api/products", {
+      setCreatingVendor(true);
+      const res = await fetch("/api/dashboard/products/add", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(form),
+        body: JSON.stringify({
+          action: "createVendor",
+          name: newVendorName,
+        }),
       });
+      if (!res.ok) throw new Error("Failed to create vendor");
+      const data = await res.json();
 
-      setForm({
+      setVendors((prev) => [...prev, data.vendor]);
+      setForm((prev) => ({
+        ...prev,
+        vendorId: data.vendor.id,
+        vendorName: data.vendor.name,
+      }));
+      setVendorSearch(data.vendor.name);
+      setShowVendorModal(false);
+      setNewVendorName("");
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setCreatingVendor(false);
+    }
+  };
+
+  // -------------------- CREATE SINGLE PRODUCT --------------------
+  const handleCreateProduct = async () => {
+    if (
+      !form.name ||
+      !form.sku ||
+      !form.vendorId ||
+      !session?.organizationId ||
+      !session?.branchId
+    )
+      return;
+
+    if (isDuplicateSKU(form.sku)) {
+      alert("Duplicate SKU detected! Please use a unique SKU.");
+      return;
+    }
+
+    setSubmitting(true);
+    try {
+      const res = await fetch("/api/dashboard/products/add", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "createProducts",
+          branchId: session.branchId,
+          organizationId: session.organizationId,
+          products: [
+            {
+              name: form.name,
+              sku: form.sku,
+              costPrice: form.costPrice || 0,
+              sellingPrice: form.sellingPrice || 0,
+              stock: form.stock || 0,
+              unit: form.unit,
+              vendorId: form.vendorId,
+              vendorName: form.vendorName,
+            },
+          ],
+        }),
+      });
+      if (!res.ok) throw new Error("Failed to create product");
+      addToLiveList({ ...form });
+      setForm((prev) => ({
+        ...prev,
         name: "",
         sku: "",
-        price: "",
+        costPrice: "",
+        sellingPrice: "",
         stock: "",
-        supplierId: form.supplierId,
-        supplierName: form.supplierName,
-      });
+        unit: "",
+      }));
     } catch (err) {
       console.error(err);
     } finally {
@@ -106,24 +244,40 @@ export default function CreatePage() {
     }
   };
 
-  // ------------------------------ BULK CREATE ------------------------------
+  // -------------------- BULK CREATE --------------------
   const handleSaveAll = async () => {
-    if (!form.supplierId && !form.supplierName) return;
+    if ((!form.vendorId && !form.vendorName) || !session?.organizationId || !session?.branchId)
+      return;
+    if (!quickAddRows.length) return;
+
+    const duplicateRows = quickAddRows.filter((row) => isDuplicateSKU(row.sku));
+    if (duplicateRows.length) {
+      alert(`Duplicate SKUs found: ${duplicateRows.map((r) => r.sku).join(", ")}`);
+      return;
+    }
 
     setSubmitting(true);
     try {
-      await Promise.all(
-        quickAddRows.map(row =>
-          fetch("/api/products", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              ...row,
-              supplierId: form.supplierId,
-              supplierName: form.supplierName,
-            }),
-          })
-        )
+      const res = await fetch("/api/dashboard/products/add", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "createProducts",
+          branchId: session.branchId,
+          organizationId: session.organizationId,
+          products: quickAddRows.map((row) => ({
+            ...row,
+            costPrice: row.costPrice || 0,
+            sellingPrice: row.sellingPrice || 0,
+            stock: row.stock || 0,
+            vendorId: form.vendorId,
+            vendorName: form.vendorName,
+          })),
+        }),
+      });
+      if (!res.ok) throw new Error("Failed to save products");
+      quickAddRows.forEach((row) =>
+        addToLiveList({ ...row, vendorName: form.vendorName })
       );
       setQuickAddRows([]);
     } catch (err) {
@@ -133,64 +287,77 @@ export default function CreatePage() {
     }
   };
 
-  // ------------------------------ GROUP PRODUCTS ------------------------------
-  const groupedProducts = products.reduce<Record<string, InventoryProduct[]>>(
-    (acc, p) => {
-      const key = p.supplier?.id ?? "unknown";
-      if (!acc[key]) acc[key] = [];
-      acc[key].push(p);
-      return acc;
-    },
-    {}
-  );
-
-  // ------------------------------ RENDER ------------------------------
+  // -------------------- RENDER --------------------
   return (
-    <div className="flex gap-6 p-6">
-      {/* LEFT */}
-      <div className="flex-1 bg-white border border-slate-200 rounded-2xl p-6">
-        {/* Supplier */}
-        <div className="mb-4 space-y-2">
-          <label className="text-sm font-semibold text-slate-700">Supplier</label>
+    <div className="flex gap-6 p-6 h-screen overflow-y-auto overflow-x-hidden">
 
-          <select
-            value={form.supplierId ?? ""}
-            onChange={e => {
-              const s = suppliers.find(x => x.id === e.target.value);
-              setForm(prev => ({
-                ...prev,
-                supplierId: s?.id,
-                supplierName: s?.name,
-              }));
-            }}
-            className="w-full h-12 px-4 border rounded-xl"
-          >
-            <option value="">Select Supplier</option>
-            {suppliers.map(s => (
-              <option key={s.id} value={s.id}>
-                {s.name}
-              </option>
-            ))}
-          </select>
+      {/* LEFT PANEL */}
+      <div className="flex-1 bg-white border border-slate-200 rounded-2xl p-6 flex flex-col gap-6">
 
+        {/* VENDOR SELECTION */}
+        <div className="space-y-2 relative">
+          <label className="text-sm font-semibold text-slate-700">Vendor</label>
+          <div className="flex gap-2">
+            <div className="relative flex-1">
+              <input
+                placeholder="Search vendor..."
+                value={vendorSearch}
+                onChange={(e) => {
+                  setVendorSearch(e.target.value);
+                  setShowVendorDropdown(true);
+                }}
+                onFocus={() => setShowVendorDropdown(true)}
+                className="w-full h-12 px-4 border rounded-xl"
+              />
+              {showVendorDropdown && (
+                <div className="absolute w-full bg-white border rounded-xl mt-1 shadow max-h-48 overflow-y-auto z-20">
+                  {filteredVendors.length ? (
+                    filteredVendors.map((v) => (
+                      <div
+                        key={v.id}
+                        onClick={() => {
+                          setForm((prev) => ({
+                            ...prev,
+                            vendorId: v.id,
+                            vendorName: v.name,
+                          }));
+                          setVendorSearch(v.name);
+                          setShowVendorDropdown(false);
+                        }}
+                        className="px-4 py-2 hover:bg-slate-100 cursor-pointer"
+                      >
+                        {v.name}
+                      </div>
+                    ))
+                  ) : (
+                    <div className="px-4 py-2 text-slate-400">No vendors found</div>
+                  )}
+                </div>
+              )}
+            </div>
+            <button
+              type="button"
+              onClick={() => setShowVendorModal(true)}
+              className="px-4 h-12 bg-slate-900 text-white rounded-xl"
+            >
+              + New
+            </button>
+          </div>
           <input
-            placeholder="Or add new supplier"
-            value={form.supplierName ?? ""}
-            onChange={e => updateField("supplierName", e.target.value)}
-            className="w-full h-12 px-4 border rounded-xl"
+            value={form.vendorName ?? ""}
+            readOnly
+            className="w-full h-12 px-4 border rounded-xl bg-slate-50"
           />
         </div>
 
-        {/* Tabs */}
-        <div className="flex gap-4 mb-4">
-          {(["new", "existing"] as const).map(tab => (
+        {/* TABS */}
+        <div className="flex gap-4">
+          {(["new", "existing"] as const).map((tab) => (
             <button
               key={tab}
               onClick={() => setActiveTab(tab)}
               className={`px-4 py-2 rounded-xl ${
-                activeTab === tab
-                  ? "bg-slate-900 text-white"
-                  : "bg-slate-200"
+                activeTab === tab ? "bg-slate-900 text-white" : "bg-slate-200"
               }`}
             >
               {tab === "new" ? "New Product" : "Existing Products"}
@@ -198,117 +365,178 @@ export default function CreatePage() {
           ))}
         </div>
 
+        {/* NEW PRODUCT FORM */}
         {activeTab === "new" && (
-          <>
-            {/* Single */}
-            <div className="grid sm:grid-cols-2 gap-3 mb-6">
+          <div className="flex flex-col gap-4">
+            <div className="grid sm:grid-cols-2 gap-3">
               <input
-                className="sm:col-span-2 h-12 px-4 border rounded-xl"
                 placeholder="Product Name"
                 value={form.name}
-                onChange={e => updateField("name", e.target.value)}
+                onChange={(e) => updateField("name", e.target.value)}
+                className="sm:col-span-2 h-12 px-4 border rounded-xl"
               />
               <input
-                className="h-12 px-4 border rounded-xl"
                 placeholder="SKU"
                 value={form.sku}
-                onChange={e => updateField("sku", e.target.value)}
+                onChange={(e) => updateField("sku", e.target.value)}
+                className="h-12 px-4 border rounded-xl"
               />
               <input
                 type="number"
-                className="h-12 px-4 border rounded-xl"
-                placeholder="Price"
-                value={form.price}
-                onChange={e =>
-                  updateField("price", e.target.value === "" ? "" : +e.target.value)
+                placeholder="Cost Price"
+                value={form.costPrice}
+                onChange={(e) =>
+                  updateField("costPrice", e.target.value === "" ? "" : +e.target.value)
                 }
+                className="h-12 px-4 border rounded-xl"
               />
               <input
                 type="number"
+                placeholder="Selling Price"
+                value={form.sellingPrice}
+                onChange={(e) =>
+                  updateField("sellingPrice", e.target.value === "" ? "" : +e.target.value)
+                }
                 className="h-12 px-4 border rounded-xl"
+              />
+              <input
+                type="number"
                 placeholder="Stock"
                 value={form.stock}
-                onChange={e =>
+                onChange={(e) =>
                   updateField("stock", e.target.value === "" ? "" : +e.target.value)
                 }
+                className="h-12 px-4 border rounded-xl"
+              />
+              <input
+                type="text"
+                placeholder="Unit"
+                value={form.unit}
+                onChange={(e) => updateField("unit", e.target.value)}
+                className="h-12 px-4 border rounded-xl"
               />
             </div>
-
-            <div className="flex justify-end mb-6">
+            <div className="flex justify-end">
               <button
-                disabled={submitting}
                 onClick={handleCreateProduct}
+                disabled={submitting}
                 className="px-5 h-12 bg-slate-900 text-white rounded-xl"
               >
                 {submitting ? "Saving..." : "Create Product"}
               </button>
             </div>
 
-            {/* Quick Add */}
-            <h4 className="font-semibold mb-3">Add Multiple Products</h4>
-
+            {/* QUICK ADD */}
+            <h4 className="font-semibold">Add Multiple Products</h4>
             {quickAddRows.map((row, i) => (
-              <div key={i} className="grid sm:grid-cols-5 gap-2 mb-2">
-                <input value={row.name} onChange={e => updateQuickRow(i, "name", e.target.value)} />
-                <input value={row.sku} onChange={e => updateQuickRow(i, "sku", e.target.value)} />
-                <input type="number" value={row.price} onChange={e => updateQuickRow(i, "price", +e.target.value)} />
-                <input type="number" value={row.stock} onChange={e => updateQuickRow(i, "stock", +e.target.value)} />
-                <button onClick={() => removeQuickRow(i)}>Remove</button>
+              <div key={i} className="grid sm:grid-cols-6 gap-2 items-center mb-2">
+                <input placeholder="Name" value={row.name} onChange={(e) => updateQuickRow(i, "name", e.target.value)} />
+                <input placeholder="SKU" value={row.sku} onChange={(e) => updateQuickRow(i, "sku", e.target.value)} />
+                <input type="number" placeholder="Cost Price" value={row.costPrice} onChange={(e) => updateQuickRow(i, "costPrice", e.target.value === "" ? "" : +e.target.value)} />
+                <input type="number" placeholder="Selling Price" value={row.sellingPrice} onChange={(e) => updateQuickRow(i, "sellingPrice", e.target.value === "" ? "" : +e.target.value)} />
+                <input type="number" placeholder="Stock" value={row.stock} onChange={(e) => updateQuickRow(i, "stock", e.target.value === "" ? "" : +e.target.value)} />
+                <input type="text" placeholder="Unit" value={row.unit} onChange={(e) => updateQuickRow(i, "unit", e.target.value)} />
+                <button type="button" onClick={() => removeQuickRow(i)} className="text-red-500">Remove</button>
               </div>
             ))}
-
-            <div className="flex gap-3 mt-3">
+            <div className="flex gap-3 mt-2">
               <button onClick={addQuickRow}>Add Row</button>
               <button onClick={handleSaveAll} disabled={submitting}>
                 {submitting ? "Saving..." : "Save All"}
               </button>
             </div>
-          </>
+          </div>
+        )}
+
+        {/* EXISTING PRODUCTS TAB */}
+        {activeTab === "existing" && (
+          <div className="overflow-y-auto">
+            <table className="w-full border border-slate-200 rounded-xl">
+              <thead className="bg-slate-100">
+                <tr>
+                  <th className="px-3 py-2 border-b">Name</th>
+                  <th className="px-3 py-2 border-b">SKU</th>
+                  <th className="px-3 py-2 border-b">Cost</th>
+                  <th className="px-3 py-2 border-b">Selling</th>
+                  <th className="px-3 py-2 border-b">Stock</th>
+                  <th className="px-3 py-2 border-b">Unit</th>
+                  <th className="px-3 py-2 border-b">Action</th>
+                </tr>
+              </thead>
+              <tbody>
+                {products.length ? products.map((p) => {
+                  const name = p.product?.name ?? p.name;
+                  const sku = p.product?.sku ?? p.sku;
+                  const costPrice = Number(p.costPrice ?? 0);
+                  const sellingPrice = Number(p.sellingPrice ?? 0);
+                  const stock = p.stock ?? 0;
+                  const unit = p.unit ?? "";
+                  return (
+                    <tr key={p.id} className="text-sm">
+                      <td className="px-3 py-2 border-b">{name}</td>
+                      <td className="px-3 py-2 border-b">{sku}</td>
+                      <td className="px-3 py-2 border-b">{costPrice}</td>
+                      <td className="px-3 py-2 border-b">{sellingPrice}</td>
+                      <td className="px-3 py-2 border-b">{stock}</td>
+                      <td className="px-3 py-2 border-b">{unit}</td>
+                      <td className="px-3 py-2 border-b">
+                        <button
+                          className="text-blue-600"
+                          onClick={() => addToLiveList({ name, sku, costPrice, sellingPrice, stock, unit, vendorName: p.vendor?.name ?? form.vendorName })}
+                        >
+                          Add
+                        </button>
+                      </td>
+                    </tr>
+                  )
+                }) : (
+                  <tr>
+                    <td colSpan={7} className="px-3 py-2 text-slate-500 text-center">No products found</td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
         )}
       </div>
 
-      {/* RIGHT */}
-      <aside className="w-full max-w-md bg-white border rounded-2xl p-6">
-        <h3 className="font-semibold mb-4">Products by Supplier</h3>
-
-        {Object.entries(groupedProducts).map(([supplierId, prods]) => (
-          <div key={supplierId} className="mb-4">
-            <div className="font-semibold mb-2">
-              {prods[0]?.supplier?.name ?? "Unknown Supplier"}
-            </div>
-
-            {prods.map(p => (
-              <div key={p.id} className="flex justify-between border-b py-2">
-                <div>
-                  <div>{p.name}</div>
-                  <div className="text-xs text-slate-500">{p.sku}</div>
-                  <div className="text-xs">Stock: {p.stock}</div>
-                </div>
-
-                <div className="text-right">
-                  <div>₦{p.sellingPrice.toFixed(2)}</div>
-                  <button
-                    onClick={() =>
-                      setForm({
-                        name: p.name,
-                        sku: p.sku,
-                        price: p.sellingPrice,
-                        stock: p.stock,
-                        supplierId: p.supplier?.id,
-                        supplierName: p.supplier?.name,
-                      })
-                    }
-                  >
-                    Add
-                  </button>
-                </div>
+      {/* RIGHT PANEL */}
+      <aside className="w-full max-w-md bg-white border rounded-2xl p-6 overflow-y-auto">
+        <h3 className="font-semibold mb-4">Live Added Products</h3>
+        {addedProducts.length ? (
+          <div className="space-y-2">
+            {addedProducts.map((p, i) => (
+              <div key={i} className="border p-2 rounded-xl">
+                <p className="font-semibold">{p.name}</p>
+                <p>SKU: {p.sku} | Vendor: {p.vendorName}</p>
+                <p>Stock: {p.stock} | Cost: {p.costPrice} | Selling: {p.sellingPrice}</p>
               </div>
             ))}
           </div>
-        ))}
-
-        {!products.length && <div className="text-slate-500">No products found</div>}
+        ) : <p className="text-slate-500">No products added yet.</p>}
       </aside>
+
+      {/* CREATE VENDOR MODAL */}
+      {showVendorModal && (
+        <div className="fixed inset-0 bg-black/30 flex items-center justify-center z-50">
+          <div className="bg-white p-6 rounded-2xl w-96">
+            <h3 className="font-semibold mb-4">Create New Vendor</h3>
+            <input
+              placeholder="Vendor Name"
+              value={newVendorName}
+              onChange={(e) => setNewVendorName(e.target.value)}
+              className="w-full h-12 px-4 border rounded-xl mb-4"
+            />
+            <div className="flex justify-end gap-2">
+              <button onClick={() => setShowVendorModal(false)} className="px-4 py-2 rounded-xl border">Cancel</button>
+              <button onClick={handleCreateVendor} disabled={creatingVendor} className="px-4 py-2 rounded-xl bg-slate-900 text-white">
+                {creatingVendor ? "Creating..." : "Create"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
     </div>
   );
 }

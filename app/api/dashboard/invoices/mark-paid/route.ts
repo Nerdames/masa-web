@@ -1,4 +1,3 @@
-// app/api/dashboard/mark-paid/route.ts
 import { NextRequest, NextResponse } from "next/server";
 import { getToken } from "next-auth/jwt";
 import prisma from "@/lib/prisma";
@@ -13,7 +12,7 @@ interface PatchBody {
 export async function PATCH(req: NextRequest) {
   try {
     // -----------------------
-    // Authenticate
+    // Authenticate user
     // -----------------------
     const token = await getToken({ req, secret });
 
@@ -22,16 +21,16 @@ export async function PATCH(req: NextRequest) {
     }
 
     // -----------------------
-    // Parse body
+    // Parse request body
     // -----------------------
     const body = (await req.json()) as PatchBody;
 
     if (!Array.isArray(body.ids) || body.ids.length === 0) {
-      return NextResponse.json({ error: "Invalid ids" }, { status: 400 });
+      return NextResponse.json({ error: "Invalid invoice IDs" }, { status: 400 });
     }
 
     // -----------------------
-    // Fetch invoices + orders
+    // Fetch invoices with their orders
     // -----------------------
     const invoices = await prisma.invoice.findMany({
       where: {
@@ -47,13 +46,13 @@ export async function PATCH(req: NextRequest) {
     }
 
     // -----------------------
-    // Transaction: mark paid + fulfill orders
+    // Transaction: mark invoices as paid & fulfill related orders
     // -----------------------
     await prisma.$transaction(async (tx) => {
-      const updatedOrders = new Set<string>();
+      const affectedOrders = new Set<string>();
 
       for (const invoice of invoices) {
-        // Skip invoices already fully paid
+        // Skip already paid invoices
         if (invoice.status === InvoiceStatus.PAID) continue;
 
         await tx.invoice.update({
@@ -61,21 +60,17 @@ export async function PATCH(req: NextRequest) {
           data: {
             paidAmount: invoice.total,
             balance: 0,
-            status: InvoiceStatus.PAID,
-            paidAt: new Date()
+            status: InvoiceStatus.PAID
           }
         });
 
-        if (invoice.orderId) updatedOrders.add(invoice.orderId);
+        if (invoice.orderId) affectedOrders.add(invoice.orderId);
       }
 
-      // Update only unique orders
-      for (const orderId of updatedOrders) {
+      // Fulfill only unique orders that are not yet fulfilled
+      for (const orderId of affectedOrders) {
         await tx.order.updateMany({
-          where: {
-            id: orderId,
-            status: { not: OrderStatus.FULFILLED }
-          },
+          where: { id: orderId, status: { not: OrderStatus.FULFILLED } },
           data: { status: OrderStatus.FULFILLED }
         });
       }
@@ -83,7 +78,7 @@ export async function PATCH(req: NextRequest) {
 
     return NextResponse.json({ success: true });
   } catch (error) {
-    console.error("PATCH /api/dashboard/mark-paid error:", error);
+    console.error("MARK PAID ERROR:", error);
     return NextResponse.json(
       { error: "Failed to mark invoices as paid" },
       { status: 500 }

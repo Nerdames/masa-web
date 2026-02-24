@@ -5,9 +5,10 @@ import useSWR from "swr";
 import { useDebounce } from "@/app/hooks/useDebounce";
 import { useToast } from "@/components/feedback/ToastProvider";
 import ConfirmModal from "@/components/modal/ConfirmModal";
-import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
-import { useRouter } from "next/navigation";
+import DataTableToolbar from "@/components/ui/DataTableToolbar";
+import DataTable, { DataTableColumn } from "@/components/ui/DataTable";
 import Summary, { SummaryCard } from "@/components/ui/Summary";
+import { useRouter } from "next/navigation";
 
 /* ================= Types ================= */
 
@@ -15,31 +16,24 @@ type InvoiceStatus = "DRAFT" | "ISSUED" | "PARTIALLY_PAID" | "PAID" | "VOIDED";
 
 interface Invoice {
   id: string;
+  subtotal?: number;
+  discount?: number;
+  tax?: number;
   total: number;
   paidAmount: number;
   balance: number;
   status: InvoiceStatus;
   currency: string;
   issuedAt: string;
-  buyerName?: string; // updated from customerName
+  dueDate?: string;
+  buyerName?: string;
+  issuedByName?: string;
 }
 
 /* ================= Fetcher ================= */
 
 const fetcher = (url: string) =>
   fetch(url, { credentials: "include" }).then((res) => res.json());
-
-/* ================= Skeleton ================= */
-
-const SkeletonRow = () => (
-  <tr className="animate-pulse bg-white shadow-sm rounded-lg">
-    {Array.from({ length: 6 }).map((_, i) => (
-      <td key={i} className="p-3">
-        <div className="h-4 bg-gray-200 rounded w-full" />
-      </td>
-    ))}
-  </tr>
-);
 
 /* ================= Page ================= */
 
@@ -50,7 +44,7 @@ export default function InvoicePage() {
   /* ---------- State ---------- */
   const [page, setPage] = useState(1);
   const [search, setSearch] = useState("");
-  const [statusFilter, setStatusFilter] = useState<"ALL" | "PAID" | "UNPAID">("ALL");
+  const [statusFilter, setStatusFilter] = useState<"ALL" | InvoiceStatus>("ALL");
   const [targetDate, setTargetDate] = useState("");
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [bulkMarkPaidOpen, setBulkMarkPaidOpen] = useState(false);
@@ -58,21 +52,17 @@ export default function InvoicePage() {
 
   const debouncedSearch = useDebounce(search, 400);
 
-  /* ---------- Query ---------- */
+  /* ---------- Query & Fetch ---------- */
   const query = useMemo(() => {
     const params = new URLSearchParams();
     params.set("page", String(page));
     params.set("limit", "10");
-
     if (debouncedSearch) params.set("search", debouncedSearch);
     if (targetDate) params.set("date", targetDate);
-    if (statusFilter === "PAID") params.set("status", "PAID");
-    if (statusFilter === "UNPAID") params.set("status", "UNPAID");
-
+    if (statusFilter !== "ALL") params.set("status", statusFilter);
     return params.toString();
   }, [page, debouncedSearch, targetDate, statusFilter]);
 
-  /* ---------- Fetch ---------- */
   const { data, isLoading, mutate, error } = useSWR<{ data: Invoice[]; total: number }>(
     `/api/dashboard/invoices?${query}`,
     fetcher,
@@ -103,12 +93,11 @@ export default function InvoicePage() {
     },
   ];
 
-  /* ---------- Selection ---------- */
+  /* ---------- Selection Helpers ---------- */
   const selectableIds = useMemo(
     () => invoices.filter((i) => i.status !== "PAID" && i.status !== "VOIDED").map((i) => i.id),
     [invoices]
   );
-
   const isAllSelected = selectableIds.length > 0 && selectableIds.every((id) => selectedIds.has(id));
   const isIndeterminate = selectedIds.size > 0 && !isAllSelected;
 
@@ -126,16 +115,14 @@ export default function InvoicePage() {
 
   /* ---------- Bulk Mark Paid ---------- */
   const bulkMarkPaid = useCallback(async () => {
+    if (selectedIds.size === 0) return;
     try {
-      if (selectedIds.size === 0) return;
       const res = await fetch("/api/dashboard/invoices/mark-paid", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ ids: [...selectedIds] }),
       });
-
-      if (!res.ok) throw new Error("Failed to mark invoices as paid");
-
+      if (!res.ok) throw new Error();
       toast.addToast({ type: "success", message: "Invoices marked as paid" });
       setSelectedIds(new Set());
       setBulkMarkPaidOpen(false);
@@ -151,185 +138,141 @@ export default function InvoicePage() {
     setTimeout(() => setRefreshing(false), 300);
   }, [mutate]);
 
-  /* ---------- Group by Day ---------- */
-  const groupedInvoices = useMemo(() => {
-    const todayStr = new Date().toDateString();
-    const yesterday = new Date();
-    yesterday.setDate(yesterday.getDate() - 1);
-    const yestStr = yesterday.toDateString();
+  /* ---------- Columns for DataTable ---------- */
+  const columns: DataTableColumn<Invoice>[] = useMemo(
+    () => [
+      {
+        key: "id",
+        header: "Invoice",
+        render: (row) => `#${row.id.slice(-6)}`,
+        align: "center",
+      },
+      {
+        key: "buyer",
+        header: "Buyer",
+        render: (row) => row.buyerName ?? "Walk-in",
+        align: "center",
+      },
+      {
+        key: "issuedBy",
+        header: "Issued By",
+        render: (row) => row.issuedByName ?? "-",
+        align: "center",
+      },
+      {
+        key: "subtotal",
+        header: "Subtotal",
+        render: (row) => `₦${row.subtotal?.toLocaleString() ?? "0"}`,
+        align: "center",
+      },
+      {
+        key: "tax",
+        header: "Tax",
+        render: (row) => `₦${row.tax?.toLocaleString() ?? "0"}`,
+        align: "center",
+      },
+      {
+        key: "discount",
+        header: "Discount",
+        render: (row) => `₦${row.discount?.toLocaleString() ?? "0"}`,
+        align: "center",
+      },
+      {
+        key: "total",
+        header: "Total",
+        render: (row) => `₦${row.total.toLocaleString()}`,
+        align: "center",
+      },
+      {
+        key: "paidAmount",
+        header: "Paid",
+        render: (row) => `₦${row.paidAmount.toLocaleString()}`,
+        align: "center",
+      },
+      {
+        key: "balance",
+        header: "Balance",
+        render: (row) => `₦${Math.max(row.balance, 0).toLocaleString()}`,
+        align: "center",
+      },
+      {
+        key: "status",
+        header: "Status",
+        render: (row) => row.status,
+        align: "center",
+      },
+      {
+        key: "dueDate",
+        header: "Due Date",
+        render: (row) =>
+          row.dueDate
+            ? new Date(row.dueDate).toLocaleDateString()
+            : "-",
+        align: "center",
+      },
+    ],
+    []
+  );
 
-    const groups: Record<string, Invoice[]> = { Today: [], Yesterday: [] };
-    const older: Record<string, Invoice[]> = {};
-
-    invoices.forEach((inv) => {
-      const dateStr = new Date(inv.issuedAt).toDateString();
-      if (dateStr === todayStr) groups.Today.push(inv);
-      else if (dateStr === yestStr) groups.Yesterday.push(inv);
-      else {
-        const key = new Date(inv.issuedAt).toISOString().split("T")[0];
-        if (!older[key]) older[key] = [];
-        older[key].push(inv);
-      }
-    });
-
-    return {
-      ...groups,
-      ...Object.keys(older)
-        .sort((a, b) => (a > b ? -1 : 1))
-        .reduce((acc, k) => {
-          acc[k] = older[k];
-          return acc;
-        }, {} as Record<string, Invoice[]>),
-    };
-  }, [invoices]);
+  /* ---------- Determine Overdue ---------- */
+  const isOverdue = useCallback((invoice: Invoice) => {
+    if (!invoice.dueDate) return false;
+    const today = new Date();
+    const due = new Date(invoice.dueDate);
+    return due < today && invoice.balance > 0;
+  }, []);
 
   /* ================= Render ================= */
   return (
     <div className="flex flex-col space-y-4 min-h-[calc(100vh-4rem)] p-4">
-      <Summary cardsData={summaryCards} />
+      {/* ===== Summary ===== */}
+      <Summary cardsData={summaryCards} loading={false} />
 
-      {/* Top Bar */}
-      <div className="sticky top-0 z-20 bg-white p-3 flex flex-wrap items-center gap-2 shadow-sm">
-        <input
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          placeholder="Search invoice or buyer"
-          className="border rounded-lg p-2 text-sm min-w-[250px]"
-        />
+      {/* ===== Toolbar ===== */}
+      <DataTableToolbar
+        search={search}
+        onSearchChange={setSearch}
+        onRefresh={handleRefresh}
+        refreshing={refreshing}
+        selectedCount={selectedIds.size}
+        onBulkAction={() => setBulkMarkPaidOpen(true)}
+        filters={[
+          {
+            label: "Status",
+            value: statusFilter,
+            defaultValue: "ALL",
+            options: [
+              { label: "All", value: "ALL" },
+              { label: "Draft", value: "DRAFT" },
+              { label: "Issued", value: "ISSUED" },
+              { label: "Partially Paid", value: "PARTIALLY_PAID" },
+              { label: "Paid", value: "PAID" },
+              { label: "Voided", value: "VOIDED" },
+            ],
+            onChange: setStatusFilter,
+          },
+        ]}
+      />
 
-        <div className="flex items-center gap-2 border rounded-lg px-3 py-2 h-10">
-          <i className="bx bx-calendar text-gray-500" />
-          <input
-            type="date"
-            value={targetDate}
-            onChange={(e) => setTargetDate(e.target.value)}
-            className="text-sm outline-none"
-          />
-        </div>
+      {/* ===== Data Table ===== */}
+      <DataTable
+        data={invoices}
+        columns={columns}
+        loading={isLoading}
+        selectable
+        selectedIds={selectedIds}
+        onToggleSelect={toggleSelect}
+        onToggleSelectAll={toggleSelectAll}
+        isAllSelected={isAllSelected}
+        isIndeterminate={isIndeterminate}
+        onRowClick={(row) => router.push(`/dashboard/invoices/${row.id}`)}
+        groupByDate
+        getRowDate={(row) => row.issuedAt}
+        highlightDate={targetDate || undefined}
+        rowClassName={(row) => isOverdue(row) ? "bg-red-100" : ""}
+      />
 
-        <button
-          onClick={handleRefresh}
-          className={`w-10 h-10 rounded-full bg-gray-100 flex items-center justify-center ${
-            refreshing ? "animate-spin" : ""
-          }`}
-        >
-          <i className="bx bx-refresh text-lg" />
-        </button>
-
-        {selectedIds.size > 0 && (
-          <button
-            onClick={() => setBulkMarkPaidOpen(true)}
-            className="w-10 h-10 rounded-full bg-green-100 flex items-center justify-center"
-          >
-            <i className="bx bx-check text-green-700 text-lg" />
-          </button>
-        )}
-
-        <div className="ml-auto">
-          <DropdownMenu.Root>
-            <DropdownMenu.Trigger className="bg-gray-100 px-3 rounded-full h-10 text-sm">
-              Status: {statusFilter}
-            </DropdownMenu.Trigger>
-            <DropdownMenu.Content className="bg-white shadow rounded-md py-1">
-              {(["ALL", "PAID", "UNPAID"] as const).map((s) => (
-                <DropdownMenu.Item
-                  key={s}
-                  onSelect={() => setStatusFilter(s)}
-                  className="px-4 py-2 hover:bg-gray-100 cursor-pointer"
-                >
-                  {s}
-                </DropdownMenu.Item>
-              ))}
-            </DropdownMenu.Content>
-          </DropdownMenu.Root>
-        </div>
-      </div>
-
-      {/* Table */}
-      <div className="flex-1 overflow-x-auto">
-        <table className="w-full text-sm table-fixed border-separate border-spacing-y-3">
-          <thead className="text-xs bg-gray-100 uppercase text-gray-500 text-center">
-            <tr>
-              <th className="w-10 p-3">
-                <input
-                  type="checkbox"
-                  checked={isAllSelected}
-                  ref={(el) => {
-                    if (el) el!.indeterminate = isIndeterminate;
-                  }}
-                  onChange={toggleSelectAll}
-                />
-              </th>
-              <th className="p-4">Invoice</th>
-              <th className="p-4">Buyer</th> {/* Updated header */}
-              <th className="p-4">Total</th>
-              <th className="p-4">Balance</th>
-              <th className="p-4">Status</th>
-            </tr>
-          </thead>
-
-          <tbody>
-            {isLoading && Array.from({ length: 8 }).map((_, i) => <SkeletonRow key={i} />)}
-
-            {!isLoading &&
-              Object.entries(groupedInvoices).map(([group, items]) => {
-                if (!items.length) return null;
-
-                return (
-                  <React.Fragment key={group}>
-                    <tr className="bg-gray-100 font-semibold">
-                      <td colSpan={6} className="p-2 text-left">
-                        {group === "Today" || group === "Yesterday"
-                          ? group
-                          : new Date(group).toLocaleDateString()}
-                      </td>
-                    </tr>
-
-                    {items.map((inv) => {
-                      const disabled = inv.status === "VOIDED";
-                      const selected = selectedIds.has(inv.id);
-
-                      return (
-                        <tr
-                          key={inv.id}
-                          className={`
-                            bg-white rounded-xl shadow-sm transition
-                            ${disabled ? "opacity-60 cursor-not-allowed" : "cursor-pointer hover:bg-green-50 hover:text-green-700"}
-                            ${selected ? "bg-green-100 text-green-700" : ""}
-                          `}
-                          onClick={(e) => {
-                            if ((e.target as HTMLElement).tagName !== "INPUT" && !disabled) {
-                              router.push(`/dashboard/invoices/${inv.id}`);
-                            }
-                          }}
-                        >
-                          <td className="p-4 text-center">
-                            <input
-                              type="checkbox"
-                              checked={selected}
-                              disabled={disabled}
-                              onClick={(e) => e.stopPropagation()}
-                              onChange={() => toggleSelect(inv.id)}
-                            />
-                          </td>
-                          <td className="p-4 text-center font-mono">#{inv.id.slice(-6)}</td>
-                          <td className="p-4 text-center">{inv.buyerName ?? "Walk-in"}</td> {/* Updated */}
-                          <td className="p-4 text-center">₦{inv.total.toLocaleString()}</td>
-                          <td className="p-4 text-center">₦{Math.max(inv.balance, 0).toLocaleString()}</td>
-                          <td className={`p-4 text-center font-semibold ${inv.status === "PAID" ? "text-green-700" : "text-red-700"}`}>
-                            {inv.status}
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </React.Fragment>
-                );
-              })}
-          </tbody>
-        </table>
-      </div>
-
-      {/* Pagination */}
+      {/* ===== Pagination ===== */}
       <div className="flex justify-between items-center text-xs">
         <span>Total Invoices: {total}</span>
         <div className="flex gap-2">
@@ -339,6 +282,7 @@ export default function InvoicePage() {
         </div>
       </div>
 
+      {/* ===== Confirm Modal ===== */}
       {bulkMarkPaidOpen && (
         <ConfirmModal
           open

@@ -17,7 +17,6 @@ export async function GET(req: NextRequest) {
     }
 
     const { searchParams } = req.nextUrl;
-
     const page = Math.max(Number(searchParams.get("page") ?? 1), 1);
     const limit = Math.max(Number(searchParams.get("limit") ?? 20), 1);
     const skip = (page - 1) * limit;
@@ -30,15 +29,8 @@ export async function GET(req: NextRequest) {
 
     if (statusParam === "PAID") statusFilter = [InvoiceStatus.PAID];
     else if (statusParam === "UNPAID")
-      statusFilter = [
-        InvoiceStatus.DRAFT,
-        InvoiceStatus.ISSUED,
-        InvoiceStatus.PARTIALLY_PAID,
-      ];
-    else if (
-      statusParam &&
-      Object.values(InvoiceStatus).includes(statusParam as InvoiceStatus)
-    ) {
+      statusFilter = [InvoiceStatus.DRAFT, InvoiceStatus.ISSUED, InvoiceStatus.PARTIALLY_PAID];
+    else if (statusParam && Object.values(InvoiceStatus).includes(statusParam as InvoiceStatus)) {
       statusFilter = [statusParam as InvoiceStatus];
     }
 
@@ -50,11 +42,7 @@ export async function GET(req: NextRequest) {
       ...(search && {
         OR: [
           { id: { contains: search } },
-          {
-            customer: {
-              name: { contains: search, mode: "insensitive" },
-            },
-          },
+          { customer: { name: { contains: search, mode: "insensitive" } } },
         ],
       }),
     };
@@ -66,7 +54,7 @@ export async function GET(req: NextRequest) {
         take: limit,
         orderBy: { issuedAt: "desc" },
         include: {
-          customer: true, // include customer relation
+          customer: true,
           branch: true,
           issuedBy: true,
         },
@@ -74,31 +62,23 @@ export async function GET(req: NextRequest) {
       prisma.invoice.count({ where }),
     ]);
 
-    // Map to include buyerName
     const mappedInvoices = invoices.map((inv) => ({
       ...inv,
       buyerName: inv.customer?.name ?? "Walk-in",
-      customer: undefined, // optional: remove the customer object
+      issuedByName: inv.issuedBy?.name ?? "-",
+      customer: undefined,
+      issuedBy: undefined,
     }));
 
     return NextResponse.json({
       data: mappedInvoices,
-      meta: {
-        page,
-        limit,
-        total,
-        totalPages: Math.ceil(total / limit),
-      },
+      meta: { page, limit, total, totalPages: Math.ceil(total / limit) },
     });
   } catch (error) {
     console.error("GET INVOICES ERROR:", error);
-    return NextResponse.json(
-      { error: "Failed to fetch invoices" },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: "Failed to fetch invoices" }, { status: 500 });
   }
 }
-
 
 // =====================================================
 // CREATE INVOICE FROM ORDER
@@ -106,63 +86,25 @@ export async function GET(req: NextRequest) {
 export async function POST(req: NextRequest) {
   try {
     const session = await getServerSession(authOptions);
+    if (!session?.user?.organizationId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
-    if (!session?.user?.organizationId) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
-
-    const body: {
-      orderId: string;
-      dueDate?: string;
-    } = await req.json();
-
-    if (!body.orderId) {
-      return NextResponse.json(
-        { error: "Order ID is required" },
-        { status: 400 }
-      );
-    }
+    const body: { orderId: string; dueDate?: string } = await req.json();
+    if (!body.orderId) return NextResponse.json({ error: "Order ID is required" }, { status: 400 });
 
     const order = await prisma.order.findFirst({
-      where: {
-        id: body.orderId,
-        organizationId: session.user.organizationId,
-      },
-      include: {
-        items: {
-          include: {
-            branchProduct: true,
-          },
-        },
-      },
+      where: { id: body.orderId, organizationId: session.user.organizationId },
+      include: { items: { include: { branchProduct: true } } },
     });
 
-    if (!order) {
-      return NextResponse.json(
-        { error: "Order not found" },
-        { status: 404 }
-      );
-    }
+    if (!order) return NextResponse.json({ error: "Order not found" }, { status: 404 });
+    if (order.status === "FULFILLED") return NextResponse.json({ error: "Order already invoiced" }, { status: 409 });
 
-    if (order.status === "FULFILLED") {
-      return NextResponse.json(
-        { error: "Order already invoiced" },
-        { status: 409 }
-      );
-    }
-
-    const subtotal = order.items.reduce<number>(
-      (sum, item) => sum + item.total,
-      0
-    );
+    const subtotal = order.items.reduce((sum, item) => sum + item.total, 0);
 
     const invoice = await prisma.$transaction(async (tx) => {
-      // Validate stock before deduction
       for (const item of order.items) {
         if (item.branchProduct.stock < item.quantity) {
-          throw new Error(
-            `Insufficient stock for product ${item.productId}`
-          );
+          throw new Error(`Insufficient stock for product ${item.productId}`);
         }
       }
 
@@ -183,7 +125,6 @@ export async function POST(req: NextRequest) {
       });
 
       for (const item of order.items) {
-        // Create sale record
         await tx.sale.create({
           data: {
             organizationId: order.organizationId,
@@ -199,17 +140,11 @@ export async function POST(req: NextRequest) {
           },
         });
 
-        // Deduct stock
         await tx.branchProduct.update({
           where: { id: item.branchProductId },
-          data: {
-            stock: {
-              decrement: item.quantity,
-            },
-          },
+          data: { stock: { decrement: item.quantity } },
         });
 
-        // Log stock movement
         await tx.stockMovement.create({
           data: {
             branchProductId: item.branchProductId,
@@ -224,36 +159,27 @@ export async function POST(req: NextRequest) {
 
       await tx.order.update({
         where: { id: order.id },
-        data: {
-          status: "FULFILLED",
-          invoicedAt: new Date(),
-        },
+        data: { status: "FULFILLED", invoicedAt: new Date() },
       });
 
       return created;
     });
 
-    return NextResponse.json(invoice, { status: 201 });
-  } catch (error) {
-    if (error instanceof PrismaClientKnownRequestError) {
-      console.error("PRISMA ERROR:", error);
-    }
+    const mappedInvoice = {
+      ...invoice,
+      buyerName: order.customer?.name ?? "Walk-in",
+      issuedByName: session.user.name ?? "-",
+    };
 
-    if (error instanceof Error) {
-      return NextResponse.json(
-        { error: error.message },
-        { status: 400 }
-      );
-    }
+    return NextResponse.json(mappedInvoice, { status: 201 });
+  } catch (error) {
+    if (error instanceof PrismaClientKnownRequestError) console.error("PRISMA ERROR:", error);
+    if (error instanceof Error) return NextResponse.json({ error: error.message }, { status: 400 });
 
     console.error("CREATE INVOICE ERROR:", error);
-    return NextResponse.json(
-      { error: "Failed to create invoice" },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: "Failed to create invoice" }, { status: 500 });
   }
 }
-
 
 // =====================================================
 // PUT: Update Invoice Status
@@ -261,56 +187,28 @@ export async function POST(req: NextRequest) {
 export async function PUT(req: NextRequest) {
   try {
     const session = await getServerSession(authOptions);
+    if (!session?.user?.organizationId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
-    if (!session?.user?.organizationId) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
-
-    const body: {
-      id?: string;
-      status?: InvoiceStatus;
-    } = await req.json();
-
-    if (!body.id || !body.status) {
-      return NextResponse.json(
-        { error: "Invoice ID and status are required" },
-        { status: 400 }
-      );
-    }
-
-    if (!Object.values(InvoiceStatus).includes(body.status)) {
-      return NextResponse.json(
-        { error: "Invalid invoice status" },
-        { status: 400 }
-      );
-    }
+    const body: { id?: string; status?: InvoiceStatus } = await req.json();
+    if (!body.id || !body.status) return NextResponse.json({ error: "Invoice ID and status are required" }, { status: 400 });
+    if (!Object.values(InvoiceStatus).includes(body.status)) return NextResponse.json({ error: "Invalid invoice status" }, { status: 400 });
 
     const invoice = await prisma.invoice.findFirst({
-      where: {
-        id: body.id,
-        organizationId: session.user.organizationId,
-        deletedAt: null,
-      },
+      where: { id: body.id, organizationId: session.user.organizationId, deletedAt: null },
+      include: { customer: true, issuedBy: true },
     });
 
-    if (!invoice) {
-      return NextResponse.json(
-        { error: "Invoice not found" },
-        { status: 404 }
-      );
-    }
+    if (!invoice) return NextResponse.json({ error: "Invoice not found" }, { status: 404 });
 
-    const updated = await prisma.invoice.update({
-      where: { id: body.id },
-      data: { status: body.status },
+    const updated = await prisma.invoice.update({ where: { id: body.id }, data: { status: body.status } });
+
+    return NextResponse.json({
+      ...updated,
+      buyerName: invoice.customer?.name ?? "Walk-in",
+      issuedByName: invoice.issuedBy?.name ?? "-",
     });
-
-    return NextResponse.json(updated);
   } catch (error) {
     console.error("UPDATE INVOICE STATUS ERROR:", error);
-    return NextResponse.json(
-      { error: "Failed to update invoice status" },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: "Failed to update invoice status" }, { status: 500 });
   }
 }

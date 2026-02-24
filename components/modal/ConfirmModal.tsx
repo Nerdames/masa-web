@@ -2,7 +2,7 @@
 
 import * as Dialog from "@radix-ui/react-dialog";
 import { motion, AnimatePresence, Variants } from "framer-motion";
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useCallback } from "react";
 
 interface ConfirmModalProps {
   open: boolean;
@@ -15,6 +15,10 @@ interface ConfirmModalProps {
   loading?: boolean;
   onClose: () => void;
   onConfirm: () => Promise<void> | void;
+  /** Optional focus on first element inside modal */
+  autoFocus?: boolean;
+  /** Optional className for custom styling */
+  className?: string;
 }
 
 const overlayVariants: Variants = {
@@ -38,18 +42,29 @@ export default function ConfirmModal({
   loading = false,
   onClose,
   onConfirm,
+  autoFocus = true,
+  className = "",
 }: ConfirmModalProps) {
   const confirmBtnRef = useRef<HTMLButtonElement>(null);
 
+  // Focus confirm button when modal opens
   useEffect(() => {
-    if (open) requestAnimationFrame(() => confirmBtnRef.current?.focus());
-  }, [open]);
+    if (open && autoFocus) {
+      requestAnimationFrame(() => confirmBtnRef.current?.focus());
+    }
+  }, [open, autoFocus]);
+
+  const handleClose = useCallback(() => {
+    if (!loading) onClose();
+  }, [loading, onClose]);
 
   const renderTitle = () =>
     loading ? (
       <div className="h-5 w-40 bg-gray-200 rounded-full animate-pulse mb-2" />
     ) : (
-      <Dialog.Title className="text-base font-semibold text-neutral-900">{title}</Dialog.Title>
+      <Dialog.Title className="text-base font-semibold text-neutral-900">
+        {title}
+      </Dialog.Title>
     );
 
   const renderMessage = () =>
@@ -83,7 +98,7 @@ export default function ConfirmModal({
               />
             </Dialog.Overlay>
 
-            {/* Content */}
+            {/* Modal Content */}
             <Dialog.Content asChild forceMount>
               <motion.div
                 initial="hidden"
@@ -91,9 +106,9 @@ export default function ConfirmModal({
                 exit="hidden"
                 variants={contentVariants}
                 transition={{ duration: 0.25 }}
-                className="fixed z-[9999] top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2
-                           bg-white rounded-2xl border border-neutral-200 shadow-[0_8px_20px_rgba(0,0,0,0.08)]
-                           w-full max-w-sm mx-4 p-5 focus:outline-none"
+                className={`fixed z-[9999] top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2
+                  bg-white rounded-2xl border border-neutral-200 shadow-[0_8px_20px_rgba(0,0,0,0.08)]
+                  w-full max-w-sm mx-4 p-5 focus:outline-none ${className}`}
               >
                 {renderTitle()}
                 {renderMessage()}
@@ -103,25 +118,30 @@ export default function ConfirmModal({
 
                 {/* Actions */}
                 <div className="mt-4 flex justify-end gap-2.5">
+                  {/* Cancel */}
                   <Dialog.Close asChild>
                     <button
-                      onClick={onClose}
+                      onClick={handleClose}
                       disabled={loading}
                       className="h-8 px-3 rounded-lg border border-neutral-300 bg-white text-neutral-900
-                                 hover:bg-neutral-50 focus:ring-2 focus:ring-offset-2 focus:ring-black
-                                 transition disabled:opacity-50 text-sm"
+                        hover:bg-neutral-50 focus:ring-2 focus:ring-offset-2 focus:ring-black
+                        transition disabled:opacity-50 text-sm"
                     >
                       {cancelLabel}
                     </button>
                   </Dialog.Close>
 
+                  {/* Confirm */}
                   <button
                     ref={confirmBtnRef}
                     onClick={onConfirm}
                     disabled={loading}
-                    className={`h-8 px-4 rounded-lg text-white transition text-sm disabled:opacity-50
-                      ${destructive ? "bg-red-600 hover:bg-red-700" : "bg-black hover:bg-neutral-800"}
-                      focus:ring-2 focus:ring-offset-2 focus:ring-black`}
+                    className={`h-8 px-4 rounded-lg transition text-sm disabled:opacity-50
+                      ${destructive
+                        ? "border border-red-200 bg-red-50 text-red-600 hover:bg-red-100"
+                        : "bg-black text-white hover:bg-neutral-800"}
+                      focus:ring-2 focus:ring-offset-2 focus:ring-black
+                      ${loading ? "animate-pulse" : ""}`}
                   >
                     {loading ? "Please wait…" : confirmLabel}
                   </button>

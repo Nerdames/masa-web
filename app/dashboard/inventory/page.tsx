@@ -1,38 +1,48 @@
 "use client";
 
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect, useCallback } from "react";
 import useSWR from "swr";
-import { useDebounce } from "@/hooks/useDebounce";
+import { useDebounce } from "@/app/hooks/useDebounce";
 import { useToast } from "@/components/feedback/ToastProvider";
-import ConfirmModal from "@/components/modal/ConfirmModal";
 import Summary, { SummaryCard } from "@/components/ui/Summary";
 import DataTableToolbar from "@/components/ui/DataTableToolbar";
 import DataTable, { DataTableColumn } from "@/components/ui/DataTable";
-import { useRouter } from "next/navigation";
 
-import type { InventoryProduct, ProductsResponse } from "@/types";
+import type { ProductsResponse, InventoryProduct } from "@/types";
+
+/* ================= ALL TAGS (STATIC) ================= */
+const ALL_TAGS: InventoryProduct["tag"][] = [
+  "LOW_STOCK",
+  "OUT_OF_STOCK",
+  "HOT",
+  "DISCONTINUED",
+];
 
 /* ================= Fetcher ================= */
-const fetcher = (url: string) =>
-  fetch(url, { credentials: "include" }).then(res => res.json() as Promise<ProductsResponse>);
+const fetcher = async (url: string): Promise<ProductsResponse> => {
+  const res = await fetch(url, { credentials: "include" });
+  if (!res.ok) throw new Error("Failed to fetch products");
+  return res.json();
+};
 
-/* ================= Types ================= */
-type SortOrder = "az" | "newest" | "";
+/* ================= Sort Type ================= */
+const SORT_VALUES = ["", "az", "newest"] as const;
+type SortOrder = (typeof SORT_VALUES)[number];
 
-/* ================= Component ================= */
 export default function InventoryPage() {
   const toast = useToast();
-  const router = useRouter();
 
   /* ---------------- State ---------------- */
   const [page, setPage] = useState(1);
   const [search, setSearch] = useState("");
-  const [sortOrder, setSortOrder] = useState<SortOrder>("");
-  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
-  const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false);
+  const [sortOrder, setSortOrder] = useState<SortOrder>("newest");
   const [refreshing, setRefreshing] = useState(false);
+  const [tagFilter, setTagFilter] = useState<string>("");
 
   const debouncedSearch = useDebounce(search, 400);
+
+  /* ---------------- Reset Page ---------------- */
+  useEffect(() => setPage(1), [debouncedSearch, sortOrder, tagFilter]);
 
   /* ---------------- Data Fetch ---------------- */
   const query = useMemo(() => {
@@ -50,138 +60,231 @@ export default function InventoryPage() {
     { keepPreviousData: true }
   );
 
-  const products: InventoryProduct[] = data?.data ?? [];
+  const products = data?.data ?? [];
   const total = data?.total ?? 0;
   const pageSize = data?.pageSize ?? 10;
   const pageCount = Math.max(1, Math.ceil(total / pageSize));
 
-  /* ---------------- Summary Cards ---------------- */
-  const defaultSummaryCards: SummaryCard[] = [
-    { id: "totalQuantity", title: "Total Quantity", value: data?.totalQuantity ?? 0 },
-    { id: "totalValue", title: "Total Value", value: data?.totalValue ?? 0 },
-    { id: "lowStock", title: "Low Stock", value: data?.lowStockCount ?? 0 },
-    { id: "outOfStock", title: "Out of Stock", value: data?.outOfStockCount ?? 0 },
-    { id: "discontinued", title: "Discontinued", value: data?.discontinuedCount ?? 0 },
-    { id: "hot", title: "Hot Products", value: data?.hotCount ?? 0 },
-    { id: "pendingOrders", title: "Pending Orders", value: data?.pendingOrders ?? 0 },
-  ];
+  /* ---------------- Computed Metrics & Tags ---------------- */
+  const computed = useMemo(() => {
+    let totalQuantity = 0;
+    let totalValue = 0;
+    let lowStockCount = 0;
+    let outOfStockCount = 0;
+    let hotCount = 0;
+    let discontinuedCount = 0;
 
-  /* ---------------- Selection ---------------- */
-  const selectableIds = useMemo(() => products.filter(p => p.stock > 0).map(p => p.id), [products]);
-  const toggleSelect = (id: string) => {
-    setSelectedIds(prev => {
-      const next = new Set(prev);
-      next.has(id) ? next.delete(id) : next.add(id);
-      return next;
+    const oneYearAgo = new Date();
+    oneYearAgo.setFullYear(oneYearAgo.getFullYear() - 1);
+
+    const enrichedProducts = products.map((p) => {
+      const stock = p.stock ?? 0;
+      const reorderLevel = p.reorderLevel ?? Infinity;
+      const lastRestocked = p.lastRestockedAt
+        ? new Date(p.lastRestockedAt)
+        : null;
+
+      totalQuantity += stock;
+      totalValue += stock * (p.sellingPrice ?? 0);
+
+      let tag: InventoryProduct["tag"];
+
+      if (!lastRestocked || lastRestocked < oneYearAgo) {
+        tag = "DISCONTINUED";
+        discontinuedCount++;
+      } else if (stock <= 0) {
+        tag = "OUT_OF_STOCK";
+        outOfStockCount++;
+      } else if (stock <= reorderLevel) {
+        tag = "LOW_STOCK";
+        lowStockCount++;
+      } else if (stock > reorderLevel * 2) {
+        tag = "HOT";
+        hotCount++;
+      } else {
+        tag = undefined as unknown as InventoryProduct["tag"];
+      }
+
+      return { ...p, tag };
     });
-  };
-  const toggleSelectAll = () => {
-    const allSelected = selectableIds.every(id => selectedIds.has(id));
-    setSelectedIds(allSelected ? new Set() : new Set(selectableIds));
-  };
-  const isAllSelected = selectableIds.length > 0 && selectableIds.every(id => selectedIds.has(id));
-  const isIndeterminate = selectedIds.size > 0 && !isAllSelected;
 
-  /* ---------------- Actions ---------------- */
-  const bulkDelete = async () => {
-    const ids = [...selectedIds];
-    if (!ids.length) return;
-    try {
-      const res = await fetch("/api/dashboard/products", {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ids }),
-      });
-      if (!res.ok) throw new Error();
-      toast.addToast({ type: "success", message: `${ids.length} products removed` });
-      setSelectedIds(new Set());
-      setBulkDeleteOpen(false);
-      mutate();
-    } catch {
-      toast.addToast({ type: "error", message: "Bulk delete failed" });
-    }
-  };
+    const filters = ALL_TAGS.map((tag) => ({
+      label: tag.replace("_", " "),
+      value: tag,
+    }));
 
+    return {
+      totalQuantity,
+      totalValue,
+      lowStockCount,
+      outOfStockCount,
+      hotCount,
+      discontinuedCount,
+      enrichedProducts,
+      filters,
+    };
+  }, [products]);
+
+  /* ---------------- Frontend Tag Filtering ---------------- */
+  const filteredProducts = useMemo(() => {
+    if (!tagFilter) return computed.enrichedProducts;
+    return computed.enrichedProducts.filter((p) => p.tag === tagFilter);
+  }, [computed.enrichedProducts, tagFilter]);
+
+  /* ---------------- CSV Export ---------------- */
+  const exportData = useMemo(
+    () =>
+      filteredProducts.map((p) => ({
+        Name: p.name,
+        SKU: p.sku,
+        Category: p.category?.name ?? "",
+        Price: p.sellingPrice
+          ? `₦${p.sellingPrice.toLocaleString()}`
+          : "₦0",
+        Stock: p.stock,
+        Supplier: p.vendor?.name ?? "",
+        Tag: p.tag,
+        "Last Restocked": p.lastRestockedAt ?? "",
+      })),
+    [filteredProducts]
+  );
+
+  /* ---------------- Summary Cards ---------------- */
+  const summaryCards: SummaryCard[] = useMemo(
+    () => [
+      { id: "totalQuantity", title: "Total Quantity", value: computed.totalQuantity },
+      {
+        id: "totalValue",
+        title: "Total Value",
+        value: computed.totalValue
+          ? `₦${computed.totalValue.toLocaleString()}`
+          : "₦0",
+      },
+      { id: "lowStock", title: "Low Stock", value: computed.lowStockCount },
+      { id: "outOfStock", title: "Out of Stock", value: computed.outOfStockCount },
+      { id: "hot", title: "Hot Products", value: computed.hotCount },
+      { id: "discontinued", title: "Discontinued", value: computed.discontinuedCount },
+      { id: "pendingOrders", title: "Pending Orders", value: data?.pendingOrders ?? 0 },
+    ],
+    [computed, data]
+  );
+
+  /* ---------------- Refresh ---------------- */
   const handleRefresh = async () => {
     setRefreshing(true);
     await mutate();
-    setTimeout(() => setRefreshing(false), 300);
+    setRefreshing(false);
   };
 
-  /* ---------------- Table Columns ---------------- */
-  const columns: DataTableColumn<InventoryProduct>[] = [
-    { key: "name", header: "Product", render: p => p.name, align: "left" },
-    { key: "sku", header: "SKU", render: p => p.sku, align: "center" },
-    { key: "category", header: "Category", render: p => p.category?.name ?? "-", align: "center" },
-    { key: "price", header: "Price", render: p => `₦${p.sellingPrice.toLocaleString()}`, align: "center" },
-    {
-      key: "stock",
-      header: "Stock",
-      render: p => (
-        <span className={p.stock === 0 ? "text-red-700" : p.stock < 5 ? "text-yellow-700" : ""}>
-          {p.stock}
-        </span>
-      ),
-      align: "center",
-    },
-    { key: "supplier", header: "Supplier", render: p => p.supplier?.name ?? "-", align: "center" },
-  ];
+  /* ---------------- Sort Options ---------------- */
+  const sortOptions = useMemo(
+    () => [
+      { value: "newest" as SortOrder, label: "Newest" },
+      { value: "az" as SortOrder, label: "Name (A → Z)" },
+    ],
+    []
+  );
+
+  /* ---------------- Columns ---------------- */
+  const columns: DataTableColumn<InventoryProduct>[] = useMemo(
+    () => [
+      { key: "name", header: "Product", render: (p) => p.name, align: "left" },
+      { key: "sku", header: "SKU", render: (p) => p.sku },
+      { key: "category", header: "Category", render: (p) => p.category?.name ?? "-" },
+      {
+        key: "sellingPrice",
+        header: "Price",
+        render: (p) => `₦${(p.sellingPrice ?? 0).toLocaleString()}`,
+      },
+      {
+        key: "stock",
+        header: "Stock",
+        render: (p) => {
+          const reorderLevel = p.reorderLevel ?? Infinity;
+          const stockClass =
+            p.stock === 0
+              ? "text-red-700"
+              : p.stock <= reorderLevel
+              ? "text-yellow-700"
+              : "";
+          return <span className={stockClass}>{p.stock}</span>;
+        },
+      },
+      { key: "vendor", header: "Supplier", render: (p) => p.vendor?.name ?? "-" },
+      {
+        key: "lastRestockedAt",
+        header: "Last Restocked",
+        render: (p) =>
+          p.lastRestockedAt
+            ? new Date(p.lastRestockedAt).toLocaleDateString()
+            : "-",
+      },
+    ],
+    []
+  );
+
+  const resolveRowId = useCallback(
+    (row: InventoryProduct, index: number) =>
+      row.branchProductId ?? `row-${index}`,
+    []
+  );
 
   return (
     <div className="flex flex-col space-y-4 min-h-[calc(100vh-4rem)] p-4">
-      {/* Summary */}
-      <Summary
-        cardsData={defaultSummaryCards}
-        pageKey="inventory-summary"
-        loading={isLoading}
-      />
+      <Summary cardsData={summaryCards} loading={isLoading} />
 
-      {/* Toolbar */}
-      <DataTableToolbar
+      <DataTableToolbar<InventoryProduct, SortOrder>
         search={search}
         onSearchChange={setSearch}
         onRefresh={handleRefresh}
         refreshing={refreshing}
-        selectedCount={selectedIds.size}
-        onBulkAction={() => setBulkDeleteOpen(true)}
-        onAdd={() => router.push("/dashboard/inventory/add")}
+        onAdd={() => window.open("/dashboard/inventory/add", "_blank")}
+        sortOrder={sortOrder}
+        onSortChange={setSortOrder}
+        sortOptions={sortOptions}
+        exportData={exportData}
+        exportFileName="inventory.csv"
+        filters={[
+          {
+            label: "Tag",
+            value: tagFilter as InventoryProduct["tag"],
+            defaultValue: "" as InventoryProduct["tag"],
+            options: computed.filters,
+            onChange: (val: string) => setTagFilter(val),
+          },
+        ]}
       />
 
-      {/* Data Table */}
       <DataTable
-        data={products}
+        data={filteredProducts}
         columns={columns}
-        selectable
-        selectedIds={selectedIds}
-        getRowId={p => p.id}
-        onToggleSelect={toggleSelect}
-        onToggleSelectAll={toggleSelectAll}
-        isAllSelected={isAllSelected}
-        isIndeterminate={isIndeterminate}
+        getRowId={resolveRowId}
         loading={isLoading}
+        onRowClick={(p) => `/dashboard/inventory/${p.branchProductId}`} // returns URL string
       />
 
-      {/* Pagination */}
-      <div className="flex justify-between items-center text-xs">
+      <div className="flex justify-between items-center text-xs pt-2">
         <span>Total: {total}</span>
-        <div className="flex gap-2 items-center">
-          <button disabled={page <= 1} onClick={() => setPage(p => p - 1)}>Prev</button>
-          <span>{page} / {pageCount}</span>
-          <button disabled={page >= pageCount} onClick={() => setPage(p => p + 1)}>Next</button>
+        <div className="flex gap-3 items-center">
+          <button
+            disabled={page <= 1}
+            onClick={() => setPage((p) => Math.max(1, p - 1))}
+            className="disabled:opacity-40"
+          >
+            Prev
+          </button>
+          <span>
+            {page} / {pageCount}
+          </span>
+          <button
+            disabled={page >= pageCount}
+            onClick={() => setPage((p) => Math.min(pageCount, p + 1))}
+            className="disabled:opacity-40"
+          >
+            Next
+          </button>
         </div>
       </div>
-
-      {/* Confirm Bulk Delete */}
-      {bulkDeleteOpen && (
-        <ConfirmModal
-          open
-          title="Delete Products"
-          message={`Remove ${selectedIds.size} selected products?`}
-          destructive
-          onClose={() => setBulkDeleteOpen(false)}
-          onConfirm={bulkDelete}
-        />
-      )}
     </div>
   );
 }

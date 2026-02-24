@@ -6,12 +6,17 @@ import { authOptions } from "@/lib/auth";
 
 export async function POST(req: NextRequest) {
   try {
+    // -----------------------
+    // Authenticate user
+    // -----------------------
     const session = await getServerSession(authOptions);
-
     if (!session?.user?.organizationId) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
+    // -----------------------
+    // Parse request
+    // -----------------------
     const { invoiceId, amount } = (await req.json()) as {
       invoiceId?: string;
       amount?: number;
@@ -24,6 +29,9 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    // -----------------------
+    // Fetch invoice
+    // -----------------------
     const invoice = await prisma.invoice.findFirst({
       where: {
         id: invoiceId,
@@ -53,21 +61,28 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const newBalance = invoice.balance - amount;
+    // -----------------------
+    // Transactional update
+    // -----------------------
+    const updatedInvoice = await prisma.$transaction(async (tx) => {
+      const paidAmount = invoice.paidAmount + amount;
+      const balance = invoice.total - paidAmount;
 
-    const updated = await prisma.invoice.update({
-      where: { id: invoiceId },
-      data: {
-        balance: newBalance,
-        status:
-          newBalance === 0
-            ? InvoiceStatus.PAID
-            : InvoiceStatus.PARTIALLY_PAID,
-        ...(newBalance === 0 && { paidAt: new Date() }),
-      },
+      return tx.invoice.update({
+        where: { id: invoiceId },
+        data: {
+          paidAmount,
+          balance,
+          status:
+            balance === 0
+              ? InvoiceStatus.PAID
+              : InvoiceStatus.PARTIALLY_PAID,
+          ...(balance === 0 && { paidAt: new Date() }),
+        },
+      });
     });
 
-    return NextResponse.json(updated);
+    return NextResponse.json(updatedInvoice);
   } catch (error) {
     console.error("PARTIAL PAYMENT ERROR:", error);
     return NextResponse.json(

@@ -26,7 +26,7 @@ enum Role {
 
 enum CustomerType {
   BUYER
-  SUPPLIER
+  PARTNER
 }
 
 enum OrderStatus {
@@ -121,7 +121,7 @@ model Organization {
   preferences       Preference[]
 
   categories Category[]
-  suppliers  Supplier[]
+  vendors  Vendor[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -165,7 +165,7 @@ model Branch {
 model AuthorizedPersonnel {
   id        String    @id @default(cuid())
   name      String?
-  email     String    @unique
+  email     String
   password  String
   staffCode String?   @unique
   disabled  Boolean   @default(false)
@@ -196,6 +196,8 @@ model AuthorizedPersonnel {
   ownedOrganizations Organization[]     @relation("OrgOwner")
   receipts           Receipt[]
   preferences        Preference[]
+
+  @@unique([organizationId, email])
 }
 
 model BranchAssignment {
@@ -277,11 +279,11 @@ model Product {
   id             String    @id @default(cuid())
   organizationId String
   name           String
-  sku            String    @unique
+  sku            String
   barcode        String?   @unique
   description    String?
   categoryId     String?
-  costPrice      Float
+  costPrice      Decimal @db.Decimal(18,2)
   currency       String    @default("NGN")
   deletedAt      DateTime?
   createdAt      DateTime  @default(now())
@@ -296,10 +298,11 @@ model Product {
 
   @@index([organizationId])
   @@index([categoryId])
+  @@unique([organizationId, sku])
 }
 
 model BranchProduct {
-  id             String @id @default(cuid())
+  id             String   @id @default(cuid())
   organizationId String
   branchId       String
   productId      String
@@ -310,14 +313,15 @@ model BranchProduct {
   lastRestockedAt DateTime?
   safetyStock     Int?      @default(0)
   unit            String?   @default("pcs")
-  sellingPrice    Float
-  supplierId      String?
-  costPrice       Float?
+  sellingPrice    Decimal?  @db.Decimal(18,2)
+  vendorId        String?
+  costPrice       Decimal?  @db.Decimal(18,2)
+  deletedAt       DateTime?
 
   organization Organization @relation(fields: [organizationId], references: [id])
   branch       Branch       @relation(fields: [branchId], references: [id])
   product      Product      @relation(fields: [productId], references: [id])
-  supplier     Supplier?    @relation(fields: [supplierId], references: [id])
+  vendor       Vendor?      @relation(fields: [vendorId], references: [id])
 
   orderItems OrderItem[]     @relation("BranchProductOrderItems")
   sales      Sale[]          @relation("BranchProductSales")
@@ -328,7 +332,8 @@ model BranchProduct {
   @@index([organizationId])
   @@index([branchId])
   @@index([productId])
-  @@index([supplierId])
+  @@index([vendorId])
+  @@index([deletedAt]) 
 }
 
 model Category {
@@ -344,20 +349,24 @@ model Category {
   @@index([organizationId])
 }
 
-model Supplier {
+model Vendor {
   id             String   @id @default(cuid())
   organizationId String
   name           String
   email          String?
   phone          String?
   address        String?
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @default(now()) @updatedAt
+  deletedAt      DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   organization   Organization    @relation(fields: [organizationId], references: [id])
   branchProducts BranchProduct[]
 
+  @@unique([organizationId, name])
   @@index([organizationId])
+  @@index([organizationId, deletedAt])
 }
 
 ////////////////////////////////////
@@ -371,7 +380,7 @@ model Order {
   salespersonId  String
   customerId     String?
 
-  total     Float
+  total     Decimal @db.Decimal(18,2)
   currency  String      @default("NGN")
   status    OrderStatus @default(DRAFT)
   notes     String?
@@ -391,6 +400,7 @@ model Order {
   customer     Customer?           @relation(fields: [customerId], references: [id])
 
   @@index([organizationId, branchId, status])
+  @@index([organizationId, deletedAt])
 }
 
 model OrderItem {
@@ -400,10 +410,10 @@ model OrderItem {
   productId       String
 
   quantity  Int
-  unitPrice Float
-  total     Float
-  discount  Float? @default(0)
-  tax       Float? @default(0)
+  unitPrice Decimal @db.Decimal(18,2)
+  total     Decimal @db.Decimal(18,2)
+  discount  Decimal? @default(0) @db.Decimal(18,2)
+  tax       Decimal? @default(0) @db.Decimal(18,2)
 
   order         Order         @relation(fields: [orderId], references: [id])
   branchProduct BranchProduct @relation("BranchProductOrderItems", fields: [branchProductId], references: [id])
@@ -423,12 +433,12 @@ model Invoice {
   issuedById String
   customerId String?
 
-  subtotal   Float?
-  total      Float
-  discount   Float?        @default(0)
-  tax        Float?        @default(0)
-  paidAmount Float         @default(0)
-  balance    Float
+  subtotal   Decimal? @db.Decimal(18,2)
+  total      Decimal? @db.Decimal(18,2)
+  discount   Decimal? @default(0) @db.Decimal(18,2)
+  tax        Decimal? @default(0) @db.Decimal(18,2)
+  paidAmount Decimal? @default(0) @db.Decimal(18,2)
+  balance    Decimal? @db.Decimal(18,2)
   currency   String        @default("NGN")
   status     InvoiceStatus @default(DRAFT)
   deletedAt  DateTime?
@@ -450,6 +460,7 @@ model Invoice {
 
   @@index([organizationId, branchId, status])
   @@index([issuedAt])
+  @@index([organizationId, deletedAt])
 }
 
 model Payment {
@@ -458,7 +469,7 @@ model Payment {
   cashierId String
 
   method    PaymentMethod
-  amount    Float
+  amount    Decimal @db.Decimal(18,2)
   currency  String        @default("NGN")
   status    PaymentStatus @default(COMPLETED)
   deletedAt DateTime?
@@ -487,8 +498,8 @@ model Sale {
   branchId        String
 
   quantity  Int
-  unitPrice Float
-  total     Float
+  unitPrice Decimal @db.Decimal(18,2)
+  total     Decimal @db.Decimal(18,2)
   currency  String     @default("NGN")
   status    SaleStatus @default(COMPLETED)
   deletedAt DateTime?
@@ -497,7 +508,7 @@ model Sale {
   customerId String?
 
   createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt @default(now())
+  updatedAt DateTime @updatedAt
 
   organization  Organization        @relation(fields: [organizationId], references: [id])
   invoice       Invoice             @relation(fields: [invoiceId], references: [id])
@@ -521,7 +532,7 @@ model Receipt {
   branchProductId String
   organizationId  String
   invoiceId       String
-  amount          Float
+  amount          Decimal @db.Decimal(18,2)
   paymentMethod   PaymentMethod
   currency        String        @default("NGN")
   createdAt       DateTime      @default(now())
@@ -625,7 +636,7 @@ model CustomerOrderSummary {
   customerId       String
   totalOrders      Int
   totalQuantity    Int
-  totalSpent       Float
+  totalSpent       Decimal @default(0) @db.Decimal(18,2)
   currency         String    @default("NGN")
   lastOrderAt      DateTime?
   productBreakdown Json?

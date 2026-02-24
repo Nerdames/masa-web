@@ -43,6 +43,9 @@ export type { Invoice } from "./invoice";
 // -------------------- Customers --------------------
 export type { Customer } from "./customer";
 
+// -------------------- Vendors --------------------
+export type { VendorBase, VendorAnalytics, VendorBranchProduct, VendorFull } from "./vendor";
+
 // -------------------- Personnel --------------------
 export type { AuthorizedPersonnel, BranchAssignment } from "./personnel";
 

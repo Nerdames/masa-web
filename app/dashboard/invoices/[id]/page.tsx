@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useCallback, useMemo } from "react";
 import { useParams, useRouter } from "next/navigation";
 import useSWR from "swr";
 import { useToast } from "@/components/feedback/ToastProvider";
@@ -19,7 +19,7 @@ interface Product {
 interface OrderItem {
   id: string;
   quantity: number;
-  price: number;
+  unitPrice: number;
   total: number;
   product: Product;
 }
@@ -36,9 +36,11 @@ interface Order {
 interface Invoice {
   id: string;
   total: number;
-  paid: boolean;
+  paidAmount: number;
+  balance: number;
+  status: "DRAFT" | "ISSUED" | "PARTIALLY_PAID" | "PAID" | "VOIDED";
   currency: string;
-  createdAt: string;
+  issuedAt: string;
   discount?: number | null;
   tax?: number | null;
   order: Order;
@@ -49,37 +51,47 @@ interface InvoiceResponse {
 }
 
 const fetcher = (url: string) =>
-  fetch(url, { credentials: "include" }).then(res => res.json());
+  fetch(url, { credentials: "include" }).then((res) => res.json());
 
 export default function InvoiceDetailPage() {
   const { id } = useParams<{ id: string }>();
   const router = useRouter();
   const toast = useToast();
+
+  /* ---------------- SWR ---------------- */
   const { data, isLoading, mutate } = useSWR<InvoiceResponse>(
     id ? `/api/dashboard/invoices/${id}` : null,
     fetcher
   );
 
+  /* ---------------- State ---------------- */
   const [markPaidOpen, setMarkPaidOpen] = useState(false);
-  const [isMarkingPaid, setIsMarkingPaid] = useState(false);
+  const [partialPaymentOpen, setPartialPaymentOpen] = useState(false);
+  const [partialAmount, setPartialAmount] = useState<number>(0);
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
-  if (isLoading) return <div className="p-6 animate-pulse">Loading invoice…</div>;
-  if (!data) return <div className="p-6">Invoice not found</div>;
+  /* ---------------- Derived ---------------- */
+  const invoice = data?.invoice;
 
-  const { invoice } = data;
+  const formatCurrency = useCallback(
+    (value: number) =>
+      `${invoice?.currency ?? "₦"} ${value.toLocaleString(undefined, {
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2,
+      })}`,
+    [invoice?.currency]
+  );
 
-  const formatCurrency = (value: number) =>
-    `₦${value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  /* ---------------- Mark Paid ---------------- */
+  const markPaid = useCallback(async () => {
+    if (!invoice || invoice.status === "PAID") return;
+    setIsSubmitting(true);
 
-  const markPaid = async () => {
-    if (!invoice) return;
-    setIsMarkingPaid(true);
-
-    // Optimistic UI update
     mutate(
-      prev => ({
-        invoice: { ...prev!.invoice, paid: true },
-      }),
+      (prev) =>
+        prev
+          ? { invoice: { ...prev.invoice, status: "PAID", balance: 0, paidAmount: prev.invoice.total } }
+          : prev,
       false
     );
 
@@ -89,19 +101,64 @@ export default function InvoiceDetailPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ ids: [invoice.id] }),
       });
-
-      if (!res.ok) throw new Error("Failed to mark as paid");
+      if (!res.ok) throw new Error();
 
       toast.addToast({ type: "success", message: "Invoice marked as paid" });
       setMarkPaidOpen(false);
       mutate(); // revalidate
     } catch {
-      mutate(); // rollback optimistic update
+      mutate(); // rollback
       toast.addToast({ type: "error", message: "Failed to mark invoice as paid" });
     } finally {
-      setIsMarkingPaid(false);
+      setIsSubmitting(false);
     }
-  };
+  }, [invoice, mutate, toast]);
+
+  /* ---------------- Partial Payment ---------------- */
+  const submitPartialPayment = useCallback(async () => {
+    if (!invoice || partialAmount <= 0 || partialAmount > invoice.balance) return;
+    setIsSubmitting(true);
+
+    // Optimistic update
+    const newBalance = invoice.balance - partialAmount;
+    mutate(
+      (prev) =>
+        prev
+          ? {
+              invoice: {
+                ...prev.invoice,
+                balance: newBalance,
+                paidAmount: prev.invoice.paidAmount + partialAmount,
+                status: newBalance === 0 ? "PAID" : "PARTIALLY_PAID",
+              },
+            }
+          : prev,
+      false
+    );
+
+    try {
+      const res = await fetch("/api/dashboard/invoices/partial-payment", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ invoiceId: invoice.id, amount: partialAmount }),
+      });
+      if (!res.ok) throw new Error();
+
+      toast.addToast({ type: "success", message: "Partial payment applied" });
+      setPartialPaymentOpen(false);
+      setPartialAmount(0);
+      mutate();
+    } catch {
+      mutate(); // rollback
+      toast.addToast({ type: "error", message: "Failed to apply partial payment" });
+    } finally {
+      setIsSubmitting(false);
+    }
+  }, [invoice, partialAmount, mutate, toast]);
+
+  /* ---------------- Render ---------------- */
+  if (isLoading) return <div className="p-6 animate-pulse">Loading invoice…</div>;
+  if (!invoice) return <div className="p-6">Invoice not found</div>;
 
   return (
     <div className="max-w-4xl mx-auto p-6 flex flex-col space-y-6">
@@ -109,89 +166,61 @@ export default function InvoiceDetailPage() {
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
         <h1 className="text-2xl font-semibold">Invoice #{invoice.id.slice(-6)}</h1>
         <div className="flex gap-2">
-          {!invoice.paid && (
-            <button
-              onClick={() => setMarkPaidOpen(true)}
-              className="flex items-center gap-1 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition disabled:opacity-50"
-              disabled={isMarkingPaid}
-            >
-              <i className={`bx bx-check text-lg ${isMarkingPaid ? "animate-spin" : ""}`}></i>
-              {isMarkingPaid ? "Marking..." : "Mark Paid"}
-            </button>
+          {invoice.status !== "PAID" && (
+            <>
+              <button
+                onClick={() => setMarkPaidOpen(true)}
+                disabled={isSubmitting}
+                className="flex items-center gap-1 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition disabled:opacity-50"
+              >
+                Mark Paid
+              </button>
+              <button
+                onClick={() => setPartialPaymentOpen(true)}
+                disabled={isSubmitting}
+                className="flex items-center gap-1 px-4 py-2 bg-yellow-600 text-white rounded-lg hover:bg-yellow-700 transition disabled:opacity-50"
+              >
+                Partial Payment
+              </button>
+            </>
           )}
           <a
             href={`/api/dashboard/invoices/${invoice.id}/pdf`}
-            download={`invoice-${invoice.id}.pdf`}
+            target="_blank"
+            rel="noopener noreferrer"
             className="flex items-center gap-1 px-4 py-2 bg-gray-100 text-gray-800 rounded-lg hover:bg-gray-200 transition"
           >
-            <i className="bx bx-download text-lg"></i>
             PDF
           </a>
         </div>
       </div>
 
-      {/* Customer info */}
-      <div className="bg-white shadow rounded-lg p-4">
-        <h2 className="font-medium text-gray-700 mb-1">Customer</h2>
-        <p className="text-gray-900">{invoice.order.customer?.name ?? "Walk-in"}</p>
-        {invoice.order.customer?.email && (
-          <p className="text-sm text-gray-500">{invoice.order.customer.email}</p>
-        )}
-        {invoice.order.customer?.phone && (
-          <p className="text-sm text-gray-500">{invoice.order.customer.phone}</p>
-        )}
-      </div>
-
-      {/* Items Table */}
-      <div className="bg-white shadow rounded-lg overflow-x-auto">
-        <table className="min-w-full divide-y divide-gray-200">
-          <thead className="bg-gray-50">
-            <tr>
-              <th className="px-4 py-2 text-left text-sm font-medium text-gray-700">Item</th>
-              <th className="px-4 py-2 text-center text-sm font-medium text-gray-700">Qty</th>
-              <th className="px-4 py-2 text-right text-sm font-medium text-gray-700">Price</th>
-              <th className="px-4 py-2 text-right text-sm font-medium text-gray-700">Total</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-gray-200">
-            {invoice.order.items.map(item => (
-              <tr key={item.id}>
-                <td className="px-4 py-2">{item.product.name}</td>
-                <td className="px-4 py-2 text-center">{item.quantity}</td>
-                <td className="px-4 py-2 text-right">{formatCurrency(item.price)}</td>
-                <td className="px-4 py-2 text-right font-semibold">{formatCurrency(item.total)}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-
-      {/* Totals */}
-      <div className="bg-white shadow rounded-lg p-4 flex flex-col items-end space-y-1">
-        {invoice.discount && <p>Discount: {formatCurrency(invoice.discount)}</p>}
-        {invoice.tax && <p>Tax: {formatCurrency(invoice.tax)}</p>}
-        <p className="font-semibold text-lg">Total: {formatCurrency(invoice.total)}</p>
-        <p className={invoice.paid ? "text-green-600 font-medium" : "text-red-600 font-medium"}>
-          {invoice.paid ? "Paid" : "Unpaid"}
-        </p>
-      </div>
-
-      {/* Back */}
-      <button
-        onClick={() => router.back()}
-        className="text-sm underline text-gray-600 hover:text-gray-900"
-      >
-        ← Back
-      </button>
-
-      {/* Confirm mark paid */}
+      {/* Confirm Mark Paid */}
       {markPaidOpen && (
         <ConfirmModal
           open
           title="Mark invoice as paid"
-          message={`Are you sure you want to mark this invoice as paid?`}
+          message="Are you sure you want to mark this invoice as paid?"
           onClose={() => setMarkPaidOpen(false)}
           onConfirm={markPaid}
+        />
+      )}
+
+      {/* Confirm Partial Payment */}
+      {partialPaymentOpen && (
+        <ConfirmModal
+          open
+          title="Partial Payment"
+          message={`Apply ₦${partialAmount.toLocaleString()} to this invoice?`}
+          onClose={() => setPartialPaymentOpen(false)}
+          onConfirm={submitPartialPayment}
+          input={{
+            type: "number",
+            value: partialAmount,
+            onChange: (e: React.ChangeEvent<HTMLInputElement>) =>
+              setPartialAmount(Number(e.target.value)),
+            placeholder: "Amount",
+          }}
         />
       )}
     </div>

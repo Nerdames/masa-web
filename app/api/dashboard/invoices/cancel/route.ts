@@ -4,6 +4,9 @@ import { InvoiceStatus, StockMovementType } from "@prisma/client";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 
+// =====================================================
+// POST: Cancel an invoice and restock its sales
+// =====================================================
 export async function POST(req: NextRequest) {
   try {
     const session = await getServerSession(authOptions);
@@ -15,10 +18,7 @@ export async function POST(req: NextRequest) {
     const { invoiceId } = (await req.json()) as { invoiceId?: string };
 
     if (!invoiceId) {
-      return NextResponse.json(
-        { error: "Invoice ID required" },
-        { status: 400 }
-      );
+      return NextResponse.json({ error: "Invoice ID required" }, { status: 400 });
     }
 
     const invoice = await prisma.invoice.findFirst({
@@ -28,35 +28,28 @@ export async function POST(req: NextRequest) {
         deletedAt: null,
       },
       include: {
-        sales: true,
+        sales: true, // include sales to restock products
       },
     });
 
     if (!invoice) {
-      return NextResponse.json(
-        { error: "Invoice not found" },
-        { status: 404 }
-      );
+      return NextResponse.json({ error: "Invoice not found" }, { status: 404 });
     }
 
-    if (invoice.status === InvoiceStatus.CANCELLED) {
-      return NextResponse.json(
-        { error: "Invoice already cancelled" },
-        { status: 409 }
-      );
+    if (invoice.status === InvoiceStatus.VOIDED || invoice.status === InvoiceStatus.CANCELLED) {
+      return NextResponse.json({ error: "Invoice already cancelled/voided" }, { status: 409 });
     }
 
+    // Transaction: restock and update invoice status
     await prisma.$transaction(async (tx) => {
       for (const sale of invoice.sales) {
+        // Increment stock
         await tx.branchProduct.update({
           where: { id: sale.branchProductId },
-          data: {
-            stock: {
-              increment: sale.quantity,
-            },
-          },
+          data: { stock: { increment: sale.quantity } },
         });
 
+        // Log stock movement
         await tx.stockMovement.create({
           data: {
             branchProductId: sale.branchProductId,
@@ -69,20 +62,16 @@ export async function POST(req: NextRequest) {
         });
       }
 
+      // Update invoice status to VOIDED
       await tx.invoice.update({
         where: { id: invoice.id },
-        data: {
-          status: InvoiceStatus.CANCELLED,
-        },
+        data: { status: InvoiceStatus.VOIDED },
       });
     });
 
     return NextResponse.json({ message: "Invoice cancelled successfully" });
   } catch (error) {
     console.error("CANCEL INVOICE ERROR:", error);
-    return NextResponse.json(
-      { error: "Failed to cancel invoice" },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: "Failed to cancel invoice" }, { status: 500 });
   }
 }

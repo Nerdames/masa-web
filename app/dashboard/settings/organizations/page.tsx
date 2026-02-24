@@ -2,7 +2,7 @@
 
 import { useState, useMemo, useEffect } from "react";
 import useSWR from "swr";
-import { useDebounce } from "@/hooks/useDebounce";
+import { useDebounce } from "@/app/hooks/core/useDebounce";
 import { useToast } from "@/components/feedback/ToastProvider";
 import ConfirmModal from "@/components/modal/ConfirmModal";
 import Summary, { SummaryCard } from "@/components/ui/Summary";

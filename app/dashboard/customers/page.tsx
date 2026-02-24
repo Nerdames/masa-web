@@ -1,144 +1,186 @@
 "use client";
 
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect, useCallback } from "react";
 import useSWR from "swr";
-import { useSession } from "next-auth/react";
 import { useDebounce } from "@/app/hooks/useDebounce";
 import { useToast } from "@/components/feedback/ToastProvider";
 import ConfirmModal from "@/components/modal/ConfirmModal";
 import Summary, { SummaryCard } from "@/components/ui/Summary";
-import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
+import DataTableToolbar from "@/components/ui/DataTableToolbar";
+import DataTable, { DataTableColumn } from "@/components/ui/DataTable";
 import { useRouter } from "next/navigation";
 
-import type { Customer, CustomerType } from "@/types";
-
-/* ================= Types ================= */
-type TypeFilter = "ALL" | CustomerType;
+import type { Customer } from "@/types/customer";
 
 /* ================= Fetcher ================= */
-const createFetcher =
-  (organizationId: string, branchId: string) => async (url: string) => {
-    const res = await fetch(
-      `${url}&organizationId=${organizationId}&branchId=${branchId}`,
-      { credentials: "include" }
-    );
-    if (!res.ok) throw new Error("Failed to fetch customers");
-    return res.json() as Promise<{ customers: Customer[]; total: number }>;
-  };
+const fetcher = async (url: string) => {
+  const res = await fetch(url, { credentials: "include" });
+  if (!res.ok) throw new Error("Failed to fetch customers");
+  return res.json() as Promise<{
+    summary: {
+      totalCustomers: number;
+      totalRevenue: number;
+      averageCustomerValue: number;
+      topCustomer: Customer | null;
+      highestSpendingCustomer: Customer | null;
+      mostFrequentCustomer: Customer | null;
+    };
+    customers: Customer[];
+    pagination: { total: number; page: number; totalPages: number; limit: number };
+  }>;
+};
 
-/* ================= Skeleton ================= */
-const SkeletonRow = () => (
-  <tr className="animate-pulse">
-    {Array.from({ length: 5 }).map((_, i) => (
-      <td key={i} className="p-4">
-        <div className="h-4 w-full bg-gray-200 rounded" />
-      </td>
-    ))}
-  </tr>
-);
+type StatusFilter = "all" | "regular" | "vip";
+
+/* ✅ Sort type */
+type CustomerSort =
+  | "newest"
+  | "oldest"
+  | "highest_spent"
+  | "lowest_spent";
 
 export default function CustomersPage() {
   const toast = useToast();
   const router = useRouter();
-  const { data: session } = useSession();
 
-  const organizationId = session?.user?.organizationId;
-  const branchId = session?.user?.branchId;
-
+  /* ---------------- State ---------------- */
   const [page, setPage] = useState(1);
   const [search, setSearch] = useState("");
-  const [typeFilter, setTypeFilter] = useState<TypeFilter>("ALL");
+  const [status, setStatus] = useState<StatusFilter>("all");
+  const [sortOrder, setSortOrder] = useState<CustomerSort>("newest"); // ✅ Added
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
 
   const debouncedSearch = useDebounce(search, 400);
 
-  /* ================= Query ================= */
+  /* ---------------- Reset Page / Selection ---------------- */
+  useEffect(() => setPage(1), [debouncedSearch, status, sortOrder]); // ✅ include sort
+  useEffect(() => setSelectedIds(new Set()), [page]);
+
+  /* ---------------- Data Fetch ---------------- */
   const query = useMemo(() => {
     const params = new URLSearchParams();
     params.set("page", String(page));
-    params.set("pageSize", "10");
+    params.set("limit", "10");
+
     if (debouncedSearch) params.set("search", debouncedSearch);
-    if (typeFilter !== "ALL") params.set("type", typeFilter);
+    if (status !== "all") params.set("status", status);
+    if (sortOrder) params.set("sort", sortOrder); // ✅ include sort
+
     return params.toString();
-  }, [page, debouncedSearch, typeFilter]);
+  }, [page, debouncedSearch, status, sortOrder]);
 
   const { data, isLoading, mutate } = useSWR(
-    organizationId && branchId
-      ? `/api/dashboard/customers?${query}`
-      : null,
-    organizationId && branchId
-      ? createFetcher(organizationId, branchId)
-      : null,
+    `/api/dashboard/customers?${query}`,
+    fetcher,
     { keepPreviousData: true }
   );
 
   const customers = data?.customers ?? [];
-  const total = data?.total ?? 0;
-  const pageCount = Math.max(1, Math.ceil(total / 10));
+  const total = data?.pagination?.total ?? 0;
+  const pageSize = data?.pagination?.limit ?? 10;
+  const pageCount = Math.max(1, Math.ceil(total / pageSize));
 
-  /* ================= Summary ================= */
-  const summaryCards: SummaryCard[] = useMemo(
-    () => [
-      { id: "total", title: "Total Customers", value: total, filter: "ALL" },
+  /* ---------------- Summary Cards ---------------- */
+  const summaryCards: SummaryCard[] = useMemo(() => {
+    if (!data?.summary) return [];
+    return [
+      { id: "totalCustomers", title: "Total Customers", value: data.summary.totalCustomers },
       {
-        id: "buyers",
-        title: "Buyers",
-        value: customers.filter(c => c.type === "BUYER").length,
-        filter: "BUYER",
-        color: "text-green-600",
+        id: "totalRevenue",
+        title: "Total Revenue",
+        value: `₦${data.summary.totalRevenue.toLocaleString()}`,
       },
       {
-        id: "suppliers",
-        title: "Suppliers",
-        value: customers.filter(c => c.type === "SUPPLIER").length,
-        filter: "SUPPLIER",
-        color: "text-green-600",
+        id: "averageValue",
+        title: "Avg Customer Value",
+        value: `₦${data.summary.averageCustomerValue.toLocaleString()}`,
+      },
+      {
+        id: "topCustomer",
+        title: "Top Customer",
+        value: data.summary.topCustomer?.name ?? "-",
+      },
+      {
+        id: "highestSpender",
+        title: "Highest Spender",
+        value: data.summary.highestSpendingCustomer?.name ?? "-",
+      },
+      {
+        id: "mostFrequent",
+        title: "Most Frequent",
+        value: data.summary.mostFrequentCustomer?.name ?? "-",
+      },
+    ];
+  }, [data]);
+
+  /* ---------------- Memoized Filters ---------------- */
+  const filters = useMemo(
+    () => [
+      {
+        label: "Status",
+        value: status,
+        defaultValue: "all" as StatusFilter,
+        options: [
+          { label: "All", value: "all" as StatusFilter },
+          { label: "Regular", value: "regular" as StatusFilter },
+          { label: "VIP", value: "vip" as StatusFilter },
+        ],
+        onChange: setStatus,
       },
     ],
-    [customers, total]
+    [status]
   );
 
-  /* ================= Selection ================= */
-  const selectableIds = useMemo(() => customers.map(c => c.id), [customers]);
+  /* ✅ Memoized Sort Options */
+  const sortOptions = useMemo(
+    () => [
+      { label: "Newest", value: "newest" as CustomerSort },
+      { label: "Oldest", value: "oldest" as CustomerSort },
+      { label: "Highest Spent", value: "highest_spent" as CustomerSort },
+      { label: "Lowest Spent", value: "lowest_spent" as CustomerSort },
+    ],
+    []
+  );
 
-  const toggleSelect = (id: string) => {
-    setSelectedIds(prev => {
+  /* ---------------- Selection ---------------- */
+  const toggleSelect = useCallback((id: string) => {
+    setSelectedIds((prev) => {
       const next = new Set(prev);
       next.has(id) ? next.delete(id) : next.add(id);
       return next;
     });
-  };
+  }, []);
 
-  const toggleSelectAll = () => {
-    const allSelected = selectableIds.every(id => selectedIds.has(id));
-    setSelectedIds(allSelected ? new Set() : new Set(selectableIds));
-  };
+  const toggleSelectAll = useCallback(() => {
+    setSelectedIds((prev) => {
+      const allSelected = customers.every((c) => prev.has(c.id));
+      return allSelected ? new Set() : new Set(customers.map((c) => c.id));
+    });
+  }, [customers]);
 
   const isAllSelected =
-    selectableIds.length > 0 &&
-    selectableIds.every(id => selectedIds.has(id));
-  const isIndeterminate = selectedIds.size > 0 && !isAllSelected;
+    customers.length > 0 && customers.every((c) => selectedIds.has(c.id));
 
-  /* ================= Bulk Delete ================= */
+  const isIndeterminate =
+    selectedIds.size > 0 && !isAllSelected;
+
+  /* ---------------- Bulk Delete ---------------- */
   const bulkDelete = async () => {
     const ids = [...selectedIds];
     if (!ids.length) return;
 
     try {
-      const res = await fetch("/api/dashboard/customers", {
-        method: "PATCH",
+      const res = await fetch(`/api/dashboard/customers`, {
+        method: "DELETE",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ ids }),
       });
+
       if (!res.ok) throw new Error();
 
-      toast.addToast({
-        type: "success",
-        message: `${ids.length} customers removed`,
-      });
-
+      toast.addToast({ type: "success", message: `${ids.length} customers removed` });
       setSelectedIds(new Set());
       setBulkDeleteOpen(false);
       mutate();
@@ -147,160 +189,69 @@ export default function CustomersPage() {
     }
   };
 
+  /* ---------------- Refresh ---------------- */
   const handleRefresh = async () => {
     setRefreshing(true);
     await mutate();
-    setTimeout(() => setRefreshing(false), 300);
+    setRefreshing(false);
   };
 
-  if (!session) {
-    return <div className="p-4 text-center text-gray-500">Loading...</div>;
-  }
+  /* ---------------- Columns ---------------- */
+  const columns: DataTableColumn<Customer>[] = useMemo(
+    () => [
+      { key: "name", header: "Name", render: (c) => c.name },
+      { key: "email", header: "Email", render: (c) => c.email ?? "-" },
+      { key: "phone", header: "Phone", render: (c) => c.phone ?? "-" },
+      { key: "type", header: "Type", render: (c) => c.type },
+      { key: "totalOrders", header: "Orders", render: (c) => c.totalOrders },
+      { key: "totalSpent", header: "Spent", render: (c) => `₦${c.totalSpent.toLocaleString()}` },
+      { key: "performanceScore", header: "Score", render: (c) => c.performanceScore },
+      { key: "segment", header: "Segment", render: (c) => c.segment },
+      {
+        key: "lastPurchaseAt",
+        header: "Last Purchase",
+        render: (c) =>
+          c.lastPurchaseAt
+            ? new Date(c.lastPurchaseAt).toLocaleDateString()
+            : "-",
+      },
+    ],
+    []
+  );
+
+  const resolveRowId = useCallback((row: Customer) => row.id, []);
 
   return (
     <div className="flex flex-col space-y-4 min-h-[calc(100vh-4rem)] p-4">
-      {/* Summary */}
-      <Summary cardsData={summaryCards} />
+      <Summary cardsData={summaryCards} loading={isLoading} />
 
-      {/* Top Bar */}
-      <div className="sticky top-0 z-40 bg-white p-3 flex flex-wrap items-center gap-2 shadow-sm">
-        <input
-          type="text"
-          placeholder="Search customers"
-          value={search}
-          onChange={e => setSearch(e.target.value)}
-          className="border rounded-lg p-2 text-sm h-10 min-w-[300px]"
-        />
+      <DataTableToolbar<Customer, CustomerSort, StatusFilter>
+        search={search}
+        onSearchChange={setSearch}
+        onRefresh={handleRefresh}
+        refreshing={refreshing}
+        filters={filters}
+        sortOrder={sortOrder}             
+        onSortChange={setSortOrder}      
+        sortOptions={sortOptions}         
+        selectedCount={selectedIds.size}
+        onBulkAction={() => setBulkDeleteOpen(true)}
+        onAdd={() => router.push("/dashboard/customers/add")}
+      />
 
-        <button
-          onClick={handleRefresh}
-          className={`w-10 h-10 rounded-full bg-gray-100 flex items-center justify-center ${
-            refreshing ? "animate-spin" : ""
-          }`}
-        >
-          <i className="bx bx-refresh text-lg" />
-        </button>
-
-        {selectedIds.size > 0 && (
-          <button
-            onClick={() => setBulkDeleteOpen(true)}
-            className="w-10 h-10 rounded-full bg-gray-100 flex items-center justify-center"
-          >
-            <i className="bx bx-trash-alt text-red-600 text-lg" />
-          </button>
-        )}
-
-        <div className="ml-auto">
-          <DropdownMenu.Root>
-            <DropdownMenu.Trigger className="bg-gray-100 px-3 rounded-full h-10 flex items-center text-sm">
-              <i className="bx bx-filter-alt mr-1" /> {typeFilter}
-            </DropdownMenu.Trigger>
-            <DropdownMenu.Content className="bg-white shadow rounded-md py-1 min-w-[120px]">
-              {(["ALL", "BUYER", "SUPPLIER"] as TypeFilter[]).map(t => (
-                <DropdownMenu.Item
-                  key={t}
-                  onSelect={() => setTypeFilter(t)}
-                  className="px-4 py-2 hover:bg-green-50 hover:text-green-700"
-                >
-                  {t}
-                </DropdownMenu.Item>
-              ))}
-            </DropdownMenu.Content>
-          </DropdownMenu.Root>
-        </div>
-      </div>
-
-      {/* Table */}
-      <div className="flex-1 overflow-x-auto">
-        <table className="w-full text-sm table-fixed border-separate border-spacing-y-3">
-          <thead className="text-xs bg-gray-100 uppercase text-gray-500 text-center">
-            <tr>
-              <th className="w-10 p-3">
-                <input
-                  type="checkbox"
-                  checked={isAllSelected}
-                  ref={el => { if (el) el.indeterminate = isIndeterminate; }}
-                  onChange={toggleSelectAll}
-                  className="accent-blue-600"
-                />
-              </th>
-              <th className="p-4">Name</th>
-              <th className="p-4">Type</th>
-              <th className="p-4">Contact</th>
-              <th className="p-4">Joined</th>
-            </tr>
-          </thead>
-
-          <tbody>
-            {isLoading &&
-              Array.from({ length: 8 }).map((_, i) => (
-                <SkeletonRow key={i} />
-              ))}
-
-            {!isLoading &&
-              customers.map(c => {
-                const isSelected = selectedIds.has(c.id);
-
-                return (
-                  <tr
-                    key={c.id}
-                    className={`
-                      bg-white rounded-xl shadow-sm transition cursor-pointer
-                      ${
-                        isSelected
-                          ? "bg-green-100 text-green-700"
-                          : "hover:bg-green-50 hover:text-green-700"
-                      }
-                    `}
-                    onClick={e => {
-                      if ((e.target as HTMLElement).tagName !== "INPUT") {
-                        router.push(`/dashboard/customers/${c.id}`);
-                      }
-                    }}
-                  >
-                    <td className="p-4 text-center">
-                      <input
-                        type="checkbox"
-                        checked={isSelected}
-                        onClick={e => e.stopPropagation()}
-                        onChange={() => toggleSelect(c.id)}
-                        className="accent-blue-600"
-                      />
-                    </td>
-                    <td className="p-4 font-medium text-center">{c.name}</td>
-                    <td className="p-4 capitalize text-center">
-                      {c.type.toLowerCase()}
-                    </td>
-                    <td className="p-4 text-xs text-center">
-                      {c.email ?? "-"}
-                      <br />
-                      {c.phone ?? "-"}
-                    </td>
-                    <td className="p-4 text-xs text-center">
-                      {new Date(c.createdAt).toLocaleDateString()}
-                    </td>
-                  </tr>
-                );
-              })}
-          </tbody>
-        </table>
-      </div>
-
-      {/* Pagination */}
-      <div className="flex justify-between items-center text-xs">
-        <span>Total: {total}</span>
-        <div className="flex gap-2 items-center">
-          <button disabled={page <= 1} onClick={() => setPage(p => p - 1)}>
-            Prev
-          </button>
-          <span>
-            {page} / {pageCount}
-          </span>
-          <button disabled={page >= pageCount} onClick={() => setPage(p => p + 1)}>
-            Next
-          </button>
-        </div>
-      </div>
+      <DataTable
+        data={customers}
+        columns={columns}
+        selectable
+        selectedIds={selectedIds}
+        getRowId={resolveRowId}
+        isAllSelected={isAllSelected}
+        isIndeterminate={isIndeterminate}
+        onToggleSelect={toggleSelect}
+        onToggleSelectAll={toggleSelectAll}
+        loading={isLoading}
+        onRowClick={(c) => router.push(`/dashboard/customers/${c.id}`)}
+      />
 
       {bulkDeleteOpen && (
         <ConfirmModal
