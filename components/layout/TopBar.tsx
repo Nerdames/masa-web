@@ -6,6 +6,7 @@ import ConfirmModal from "@/components/modal/ConfirmModal";
 import { NotificationsButton } from "@/components/shared/NotificationsButton";
 import { Tooltip } from "@/components/feedback/Tooltip";
 import { UserMenu } from "@/components/shared/UserMenu";
+import { getInitials } from "@/lib/getInitials";
 
 export default function TopBar() {
   const { data: session, status } = useSession({ required: false });
@@ -75,11 +76,33 @@ export default function TopBar() {
         <div className="flex items-center gap-2 flex-shrink-0">
           <Tooltip side="bottom" content="Profile">
             <div>
-              <UserMenu
-                name={user.name}
-                email={user.email}
-                onSignOut={() => setConfirmOpen(true)}
-              />
+<UserMenu
+  trigger={
+    <div
+      className="flex items-center gap-2 cursor-pointer rounded-full  py-0.5 pr-3
+                 bg-[#f5f5f5] hover:bg-[#1aacbc]/20 transition-colors"
+    >
+      {/* Avatar with 2-letter initials */}
+      <div
+        className="w-8 h-8 rounded-full bg-gray-900 text-white
+                   flex items-center justify-center font-semibold text-sm
+                   transition-colors group-hover:bg-[#1aacbc]"
+      >
+        {getInitials(user.name)}
+      </div>
+
+      {/* Name + Role (single-line, MASA accent role) */}
+      <div className="hidden sm:flex items-baseline gap-1">
+        <span className="text-sm font-medium truncate">{user.name}</span>
+        {user.role && (
+          <span className="text-xs text-[#1aacbc] truncate capitalize">
+            ({user.role})
+          </span>
+        )}
+      </div>
+    </div>
+  }
+/>
             </div>
           </Tooltip>
         </div>

@@ -5,7 +5,11 @@ import { motion } from "framer-motion";
 import { useRouter } from "next/navigation";
 import { useSession, signOut } from "next-auth/react";
 
-export function UserMenu() {
+interface UserMenuProps {
+  trigger?: React.ReactNode; // custom trigger
+}
+
+export function UserMenu({ trigger }: UserMenuProps) {
   const router = useRouter();
   const { data: session } = useSession();
   const user = session?.user;
@@ -19,7 +23,6 @@ export function UserMenu() {
   };
 
   if (!user) return null;
-
   const { name, email, organizationName, branchName, role } = user;
 
   const handleSignOut = async () => {
@@ -28,16 +31,18 @@ export function UserMenu() {
 
   return (
     <DropdownMenu.Root>
-      {/* Trigger: small circular avatar */}
+      {/* Trigger */}
       <DropdownMenu.Trigger asChild>
-        <button
-          aria-label="User menu"
-          className="w-8 h-8 rounded-full bg-gray-900 text-white
-                     flex items-center justify-center text-sm font-semibold
-                     hover:bg-gray-800 transition-colors"
-        >
-          {getInitials(name)}
-        </button>
+        {trigger ?? (
+          <button
+            aria-label="User menu"
+            className="w-8 h-8 rounded-full bg-gray-900 text-white
+                       flex items-center justify-center text-sm font-semibold
+                       hover:bg-gray-800 transition-colors"
+          >
+            {getInitials(name)}
+          </button>
+        )}
       </DropdownMenu.Trigger>
 
       <DropdownMenu.Portal>
@@ -59,7 +64,6 @@ export function UserMenu() {
                          hover:bg-gray-100 cursor-pointer transition-colors"
               onClick={() => router.push("/dashboard/profile")}
             >
-              {/* Avatar + Name/Email */}
               <div className="flex items-center gap-3 w-full">
                 <div
                   className="w-12 h-12 rounded-full bg-gray-900 text-white
@@ -68,27 +72,26 @@ export function UserMenu() {
                   {getInitials(name)}
                 </div>
                 <div className="flex flex-col truncate">
-                  <span className="text-sm font-medium truncate transition-colors">{name}</span>
-                  <span className="text-xs text-gray-500 truncate transition-colors">{email}</span>
+                  <span className="text-sm font-medium truncate">{name}</span>
+                  <span className="text-xs text-gray-500 truncate">{email}</span>
                 </div>
               </div>
 
-              {/* Org / Branch / Role with Boxicons */}
               <div className="mt-2 flex flex-col text-xs text-gray-500 space-y-1">
                 {organizationName && (
-                  <div className="flex items-center gap-1 transition-colors">
+                  <div className="flex items-center gap-1">
                     <i className="bx bx-building text-gray-400" />
                     <span className="truncate">{organizationName}</span>
                   </div>
                 )}
                 {branchName && (
-                  <div className="flex items-center gap-1 transition-colors">
+                  <div className="flex items-center gap-1">
                     <i className="bx bx-map text-gray-400" />
                     <span className="truncate">{branchName}</span>
                   </div>
                 )}
                 {role && (
-                  <div className="flex items-center gap-1 transition-colors">
+                  <div className="flex items-center gap-1">
                     <i className="bx bx-id-card text-gray-400" />
                     <span className="italic truncate">{role}</span>
                   </div>
@@ -101,7 +104,7 @@ export function UserMenu() {
             {/* Menu Actions */}
             <DropdownMenu.Item asChild>
               <button
-                className="w-full text-left px-4 py-2 text-sm rounded hover:bg-gray-100 flex items-center gap-2 transition-colors"
+                className="w-full text-left px-4 py-2 text-sm rounded hover:bg-gray-100 flex items-center gap-2"
                 onClick={() => router.push("/dashboard/profile")}
               >
                 <i className="bx bx-user text-[16px]" />
@@ -111,7 +114,7 @@ export function UserMenu() {
 
             <DropdownMenu.Item asChild>
               <button
-                className="w-full text-left px-4 py-2 text-sm rounded hover:bg-gray-100 flex items-center gap-2 transition-colors"
+                className="w-full text-left px-4 py-2 text-sm rounded hover:bg-gray-100 flex items-center gap-2"
                 onClick={() => router.push("/dashboard/settings")}
               >
                 <i className="bx bx-cog text-[16px]" />
@@ -124,7 +127,7 @@ export function UserMenu() {
             <DropdownMenu.Item asChild>
               <button
                 onClick={handleSignOut}
-                className="w-full text-left px-4 py-2 text-sm rounded hover:bg-red-50 text-red-600 flex items-center gap-2 transition-colors"
+                className="w-full text-left px-4 py-2 text-sm rounded hover:bg-red-50 text-red-600 flex items-center gap-2"
               >
                 <i className="bx bx-log-out text-[16px]" />
                 Sign Out

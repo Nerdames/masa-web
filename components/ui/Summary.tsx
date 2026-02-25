@@ -20,7 +20,8 @@ const SAVE_DEBOUNCE_MS = 600;
 
 const ROUTE_ICON_MAP: Record<string, { icon: string; color: string }> = {
   sales: { icon: "bx-chart", color: "bg-blue-100 text-blue-600" },
-  customers: { icon: "bx-user", color: "bg-pink-100 text-pink-600" },
+  customers: { icon: "bx-group", color: "bg-pink-100 text-pink-600" },
+  vendors: { icon: "bx-store", color: "bg-green-100 text-green-600" },
   invoices: { icon: "bx-receipt", color: "bg-purple-100 text-purple-600" },
   orders: { icon: "bx-cart", color: "bg-green-100 text-green-600" },
   inventory: { icon: "bx-box", color: "bg-yellow-100 text-yellow-600" },
@@ -112,11 +113,19 @@ export default function Summary({ cardsData, loading = false }: SummaryProps) {
 
     const fetchPrefs = async () => {
       try {
-        const res = await fetch(
-          `/api/preferences?organizationId=${organizationId}&branchId=${
-            branchId ?? ""
-          }&personnelId=${userId}&scope=USER&key=${PREF_KEY}&target=${pageKey}`
-        );
+        const params = new URLSearchParams({
+          organizationId,
+          personnelId: userId,
+          key: PREF_KEY,
+          target: pageKey,
+          category: "LAYOUT", // ✅ REQUIRED
+        });
+
+        if (branchId) {
+          params.append("branchId", branchId);
+        }
+
+        const res = await fetch(`/api/preferences?${params.toString()}`);
 
         if (!res.ok) throw new Error("Fetch failed");
 

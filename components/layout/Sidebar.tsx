@@ -36,8 +36,8 @@ const SIDEBAR_ITEMS: SidebarItem[] = [
   { key: "sales", name: "Sales", href: "/dashboard/sales", icon: "bx-chart" },
   { key: "invoices", name: "Invoices", href: "/dashboard/invoices", icon: "bx-file" },
   { key: "inventory", name: "Inventory", href: "/dashboard/inventory", icon: "bx-box" },
-  { key: "vendors", name: "Vendors", href: "/dashboard/vendors", icon: "bx-group" },
-  { key: "customers", name: "Customers", href: "/dashboard/customers", icon: "bx-user" },
+  { key: "vendors", name: "Vendors", href: "/dashboard/vendors", icon: "bx-store" },
+  { key: "customers", name: "Customers", href: "/dashboard/customers", icon: "bx-group" },
   { key: "notifications", name: "Notifications", href: "/dashboard/notifications", icon: "bx-bell" },
 ];
 

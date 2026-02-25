@@ -1,6 +1,9 @@
 // pages/api/preferences/route.ts
+
 import { NextRequest, NextResponse } from "next/server";
 import prisma from "@/lib/prisma";
+import { getServerSession } from "next-auth/next";
+import { authOptions } from "@/lib/auth";
 
 /* ---------------------------------- */
 /* TYPES / ENUMS */
@@ -19,9 +22,9 @@ interface PreferencePayload {
   personnelId?: string;
   scope: PreferenceScope;
   category: PreferenceCategory;
-  key: string;       // e.g., "summary"
-  target?: string;   // e.g., "summary-inventory-page"
-  value: unknown;    // JSON blob with all layout data
+  key: string;
+  target?: string;
+  value: unknown;
 }
 
 /* ---------------------------------- */
@@ -32,70 +35,125 @@ function normalizeId(id?: string | null): string | undefined {
   return id;
 }
 
-/* Helper to determine preference priority */
+/* Preference resolution priority
+   1 → USER + BRANCH
+   2 → USER (global)
+   3 → BRANCH
+   4 → ORGANIZATION
+*/
 function getPreferenceLevel(pref: {
   scope: PreferenceScope;
   personnelId?: string | null;
   branchId?: string | null;
 }): number {
-  if (pref.scope === "USER" && pref.personnelId && pref.branchId) return 1; // USER+BRANCH
-  if (pref.scope === "USER" && pref.personnelId) return 2; // USER global
-  if (pref.scope === "BRANCH" && pref.branchId) return 3; // BRANCH
-  return 4; // ORGANIZATION
+  if (pref.scope === "USER" && pref.personnelId && pref.branchId) return 1;
+  if (pref.scope === "USER" && pref.personnelId) return 2;
+  if (pref.scope === "BRANCH" && pref.branchId) return 3;
+  return 4;
 }
 
 /* ---------------------------------- */
-/* GET /api/preferences?organizationId=...&branchId=...&personnelId=...&key=...&target=... */
+/* GET /api/preferences */
 /* ---------------------------------- */
 export async function GET(req: NextRequest) {
   try {
     const url = new URL(req.url);
 
     const organizationId = normalizeId(url.searchParams.get("organizationId"));
-    const branchId = normalizeId(url.searchParams.get("branchId"));
-    const personnelId = normalizeId(url.searchParams.get("personnelId"));
+    const category = url.searchParams.get(
+      "category"
+    ) as PreferenceCategory | null;
     const key = url.searchParams.get("key");
+
+    let branchId = normalizeId(url.searchParams.get("branchId"));
+    let personnelId = normalizeId(url.searchParams.get("personnelId"));
     const target = normalizeId(url.searchParams.get("target"));
 
-    if (!organizationId || !key) {
+    if (!organizationId || !category || !key) {
       return NextResponse.json(
-        { success: false, error: "organizationId and key are required" },
+        {
+          success: false,
+          error: "organizationId, category and key are required",
+        },
         { status: 400 }
       );
     }
 
-    // Fetch all possible preferences for this key + target
+    // Session fallback
+    const session = await getServerSession(authOptions);
+    if (!personnelId && session?.user?.id) {
+      personnelId = session.user.id;
+    }
+    if (!branchId && session?.user?.branchId) {
+      branchId = session.user.branchId ?? undefined;
+    }
+
+    // Build scope resolution tree
+    const orConditions: Array<{
+      scope: PreferenceScope;
+      branchId: string | null;
+      personnelId: string | null;
+    }> = [
+      { scope: "ORGANIZATION", branchId: null, personnelId: null },
+    ];
+
+    if (branchId) {
+      orConditions.push({
+        scope: "BRANCH",
+        branchId,
+        personnelId: null,
+      });
+    }
+
+    if (personnelId) {
+      if (branchId) {
+        orConditions.push({
+          scope: "USER",
+          branchId,
+          personnelId,
+        });
+      }
+
+      orConditions.push({
+        scope: "USER",
+        branchId: null,
+        personnelId,
+      });
+    }
+
     const preferences = await prisma.preference.findMany({
       where: {
         organizationId,
+        category,
         key,
-        target,
-        OR: [
-          { scope: "USER", personnelId, branchId },
-          { scope: "USER", personnelId, branchId: null },
-          { scope: "BRANCH", branchId },
-          { scope: "ORGANIZATION" },
-        ],
+        target: target ?? null,
+        OR: orConditions,
       },
     });
 
     if (!preferences.length) {
-      return NextResponse.json({ success: true, preference: null });
+      return NextResponse.json({
+        success: true,
+        preference: null,
+      });
     }
 
-    // Resolve priority explicitly
-    let resolved = preferences[0];
-    let minLevel = getPreferenceLevel(resolved);
+    // Resolve highest-priority match
+    preferences.sort(
+      (a, b) => getPreferenceLevel(a) - getPreferenceLevel(b)
+    );
 
-    for (const pref of preferences) {
-      const level = getPreferenceLevel(pref);
-      if (level < minLevel) {
-        resolved = pref;
-        minLevel = level;
-      }
-    }
+    const resolved = preferences[0];
 
-    return NextResponse.json({ success: true, preference: resolved.value });
+    return NextResponse.json({
+      success: true,
+      preference: resolved.value,
+      meta: {
+        scope: resolved.scope,
+        branchId: resolved.branchId,
+        personnelId: resolved.personnelId,
+      },
+    });
   } catch (error) {
     console.error("Error fetching preferences:", error);
     return NextResponse.json(
@@ -111,13 +169,18 @@ export async function GET(req: NextRequest) {
 export async function POST(req: NextRequest) {
   try {
     const body: PreferencePayload = await req.json();
+    const session = await getServerSession(authOptions);
+
+    const sessionPersonnelId = session?.user?.id;
+    const sessionBranchId = session?.user?.branchId ?? undefined;
 
     const organizationId = normalizeId(body.organizationId);
-    const branchId = normalizeId(body.branchId);
-    const personnelId = normalizeId(body.personnelId);
+    let branchId = normalizeId(body.branchId) ?? sessionBranchId;
+    let personnelId = normalizeId(body.personnelId) ?? sessionPersonnelId;
+
     const { scope, category, key, target, value } = body;
 
-    // Validation
+    // Required fields
     if (!organizationId || !scope || !category || !key || value === undefined) {
       return NextResponse.json(
         {
@@ -129,11 +192,44 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Upsert single record per target
+    // Scope validations
+    if (scope === "ORGANIZATION" && (branchId || personnelId)) {
+      return NextResponse.json(
+        {
+          success: false,
+          error:
+            "ORGANIZATION scope cannot have branchId or personnelId",
+        },
+        { status: 400 }
+      );
+    }
+
+    if (scope === "BRANCH" && (!branchId || personnelId)) {
+      return NextResponse.json(
+        {
+          success: false,
+          error:
+            "BRANCH scope requires branchId and no personnelId",
+        },
+        { status: 400 }
+      );
+    }
+
+    if (scope === "USER" && !personnelId) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: "USER scope requires personnelId",
+        },
+        { status: 400 }
+      );
+    }
+
     const preference = await prisma.preference.upsert({
       where: {
-        scope_key_organizationId_branchId_personnelId_target: {
+        scope_category_key_organizationId_branchId_personnelId_target: {
           scope,
+          category,
           key,
           organizationId,
           branchId: branchId ?? null,
@@ -141,7 +237,9 @@ export async function POST(req: NextRequest) {
           target: target ?? null,
         },
       },
-      update: { value, updatedAt: new Date() },
+      update: {
+        value, // updatedAt auto-handled by Prisma
+      },
       create: {
         organizationId,
         branchId: branchId ?? null,
@@ -154,7 +252,10 @@ export async function POST(req: NextRequest) {
       },
     });
 
-    return NextResponse.json({ success: true, preference });
+    return NextResponse.json({
+      success: true,
+      preference,
+    });
   } catch (error) {
     console.error("Error saving preference:", error);
     return NextResponse.json(

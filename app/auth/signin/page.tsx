@@ -21,17 +21,16 @@ const SignInPage: React.FC = () => {
     try {
       const result = await signIn("credentials", {
         redirect: false,
-        email,
-        password,
+        email: email.trim(),
+        password: password.trim(),
       });
 
       if (result?.error) {
-        let message = "";
-        if (result.error === "CredentialsSignin") {
-          message = "Invalid email or password";
-        } else {
-          message = result.error;
-        }
+        // Normalize errors for security
+        const message =
+          result.error === "CredentialsSignin"
+            ? "Invalid email or password"
+            : "Login failed. Please try again.";
         addToast({ message, type: "error" });
       } else if (result?.ok) {
         addToast({ message: "Signed in successfully!", type: "success" });
@@ -66,6 +65,7 @@ const SignInPage: React.FC = () => {
               onChange={(e) => setEmail(e.target.value)}
               className="pl-10 pr-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-black w-full text-sm"
               required
+              autoFocus
             />
           </div>
 
@@ -83,6 +83,7 @@ const SignInPage: React.FC = () => {
             <button
               type="button"
               onClick={() => setShowPassword(!showPassword)}
+              aria-label={showPassword ? "Hide password" : "Show password"}
               className="absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-500 hover:text-gray-700"
             >
               <i className={showPassword ? "bx bx-show" : "bx bx-hide"}></i>

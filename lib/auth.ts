@@ -18,6 +18,7 @@ declare module "next-auth" {
       branchId?: string | null;
       branchName?: string | null;
       lastLogin?: string | null;
+      lastActivityAt?: string | null;
     } & DefaultSession["user"];
   }
 
@@ -29,6 +30,7 @@ declare module "next-auth" {
     branchId?: string | null;
     branchName?: string | null;
     lastLogin?: string | null;
+    lastActivityAt?: string | null;
   }
 }
 
@@ -42,16 +44,20 @@ declare module "next-auth/jwt" {
     branchId?: string | null;
     branchName?: string | null;
     lastLogin?: string | null;
+    lastActivityAt?: number; // store as timestamp (ms)
   }
 }
+
+/* ------------------------------------------
+ * Inactivity timeout configuration
+ * ------------------------------------------ */
+const INACTIVITY_TIMEOUT_MINUTES = 60; // 1 hour
 
 /* ------------------------------------------
  * NextAuth configuration
  * ------------------------------------------ */
 export const authOptions: NextAuthOptions = {
-  session: {
-    strategy: "jwt",
-  },
+  session: { strategy: "jwt" },
 
   providers: [
     CredentialsProvider({
@@ -60,7 +66,6 @@ export const authOptions: NextAuthOptions = {
         email: { label: "Email", type: "email" },
         password: { label: "Password", type: "password" },
       },
-
       async authorize(credentials) {
         if (!credentials?.email || !credentials?.password) return null;
 
@@ -87,12 +92,8 @@ export const authOptions: NextAuthOptions = {
         // ----------------------------
         let effectiveRole: Role | null = null;
 
-        // Org owners are always ADMIN
-        if (personnel.isOrgOwner) {
-          effectiveRole = "ADMIN";
-        }
+        if (personnel.isOrgOwner) effectiveRole = "ADMIN";
 
-        // Check branch assignment if no org-owner role
         if (!effectiveRole && personnel.branchId) {
           const assignment = personnel.branchAssignments.find(
             (ba) => ba.branchId === personnel.branchId
@@ -100,20 +101,19 @@ export const authOptions: NextAuthOptions = {
           if (assignment) effectiveRole = assignment.role;
         }
 
-        // Fallback to first branch assignment
-        if (!effectiveRole && personnel.branchAssignments.length > 0) {
+        if (!effectiveRole && personnel.branchAssignments.length > 0)
           effectiveRole = personnel.branchAssignments[0].role;
-        }
 
-        if (!effectiveRole) return null; // Cannot login without a role
+        if (!effectiveRole) return null;
 
-        // ----------------------------
-        // Update last login
-        // ----------------------------
         const now = new Date();
+
+        // ----------------------------
+        // Update last login & last activity
+        // ----------------------------
         await prisma.authorizedPersonnel.update({
           where: { id: personnel.id },
-          data: { lastLogin: now },
+          data: { lastLogin: now, lastActivityAt: now },
         });
 
         // ----------------------------
@@ -123,26 +123,27 @@ export const authOptions: NextAuthOptions = {
           id: personnel.id,
           name: personnel.name,
           email: personnel.email,
-          role: effectiveRole,            // ✅ Role
-          isOrgOwner: personnel.isOrgOwner, // ✅ boolean
+          role: effectiveRole,
+          isOrgOwner: personnel.isOrgOwner,
           organizationId: personnel.organizationId,
           organizationName: personnel.organization?.name ?? null,
           branchId: personnel.branchId ?? null,
           branchName: personnel.branch?.name ?? null,
           lastLogin: now.toISOString(),
+          lastActivityAt: now.toISOString(),
         };
       },
     }),
   ],
 
-  pages: {
-    signIn: "/auth/signin",
-    error: "/auth/signin",
-  },
+  pages: { signIn: "/auth/signin", error: "/auth/signin" },
 
   callbacks: {
     async jwt({ token, user }) {
+      const now = Date.now();
+
       if (user) {
+        // First login
         token.id = user.id;
         token.role = user.role;
         token.isOrgOwner = user.isOrgOwner;
@@ -151,12 +152,35 @@ export const authOptions: NextAuthOptions = {
         token.branchId = user.branchId ?? null;
         token.branchName = user.branchName ?? null;
         token.lastLogin = user.lastLogin ?? null;
+        token.lastActivityAt = now;
+      } else if (token.id) {
+        // Refresh JWT on subsequent requests
+        const personnel = await prisma.authorizedPersonnel.findUnique({
+          where: { id: token.id },
+          select: { lastActivityAt: true },
+        });
+
+        const lastActivity = personnel?.lastActivityAt?.getTime() ?? 0;
+
+        if (now - lastActivity > INACTIVITY_TIMEOUT_MINUTES * 60 * 1000) {
+          // Inactivity timeout exceeded → invalidate token
+          return {};
+        }
+
+        // Update lastActivityAt if still active
+        await prisma.authorizedPersonnel.update({
+          where: { id: token.id },
+          data: { lastActivityAt: new Date() },
+        });
+
+        token.lastActivityAt = now;
       }
+
       return token;
     },
 
     async session({ session, token }) {
-      if (token?.id && token?.role) {
+      if (token?.id) {
         session.user.id = token.id;
         session.user.role = token.role;
         session.user.isOrgOwner = token.isOrgOwner ?? false;
@@ -165,6 +189,9 @@ export const authOptions: NextAuthOptions = {
         session.user.branchId = token.branchId ?? null;
         session.user.branchName = token.branchName ?? null;
         session.user.lastLogin = token.lastLogin ?? null;
+        session.user.lastActivityAt = token.lastActivityAt
+          ? new Date(token.lastActivityAt).toISOString()
+          : null;
       }
       return session;
     },

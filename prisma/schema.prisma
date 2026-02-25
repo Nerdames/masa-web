@@ -177,11 +177,21 @@ model AuthorizedPersonnel {
 
   isOrgOwner Boolean @default(false)
 
+  // -----------------------
+  // Session & Login Tracking
+  // -----------------------
+  failedLoginAttempts Int       @default(0)     // number of consecutive failed logins
+  lockoutUntil        DateTime?                // timestamp until which login is blocked
+  lastActivityAt      DateTime?                // tracks last activity for inactivity timeout
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  organization Organization @relation(fields: [organizationId], references: [id])
-  branch       Branch?      @relation(fields: [branchId], references: [id])
+  // -----------------------
+  // Relations
+  // -----------------------
+  organization Organization         @relation(fields: [organizationId], references: [id])
+  branch       Branch?              @relation(fields: [branchId], references: [id])
 
   branchAssignments  BranchAssignment[]
   orders             Order[]            @relation("SalespersonOrders")
@@ -198,7 +208,13 @@ model AuthorizedPersonnel {
   preferences        Preference[]
 
   @@unique([organizationId, email])
+  @@index([branchId])
+  @@index([lastLogin])
+  @@index([lastActivityAt])
+  @@index([failedLoginAttempts])
+  @@index([lockoutUntil])
 }
+
 
 model BranchAssignment {
   id          String @id @default(cuid())
@@ -695,30 +711,51 @@ model VerificationToken {
 }
 
 model Preference {
-  id             String  @id @default(cuid())
+  id             String   @id @default(cuid())
+
+  // -----------------------------
+  // Multi-tenant ownership
+  // -----------------------------
   organizationId String
   branchId       String?
   personnelId    String?
 
+  // -----------------------------
+  // Classification
+  // -----------------------------
   scope    PreferenceScope
   category PreferenceCategory
   key      String
+  target   String?        // page/component/feature identifier
   value    Json
-  target   String?   // <-- NEW optional column for page/component/feature
 
+  // -----------------------------
+  // Timestamps
+  // -----------------------------
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  // -----------------------------
+  // Relations
+  // -----------------------------
   organization Organization         @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   branch       Branch?              @relation(fields: [branchId], references: [id], onDelete: Cascade)
   personnel    AuthorizedPersonnel? @relation(fields: [personnelId], references: [id], onDelete: Cascade)
 
-  @@unique([scope, key, organizationId, branchId, personnelId, target])
+  // -----------------------------
+  // Constraints
+  // -----------------------------
+  @@unique([scope, category, key, organizationId, branchId, personnelId, target])
+
+  // -----------------------------
+  // Performance Indexes
+  // -----------------------------
   @@index([organizationId])
+  @@index([organizationId, category])
+  @@index([organizationId, key])
+  @@index([organizationId, key, target])
   @@index([branchId])
   @@index([personnelId])
   @@index([scope])
-  @@index([category])
   @@index([target])
 }
-
