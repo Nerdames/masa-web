@@ -1,4 +1,4 @@
-/* eslint-disable react-hooks/immutability */ 
+/* eslint-disable react-hooks/immutability */
 "use client";
 
 import Link from "next/link";
@@ -14,7 +14,6 @@ import React, {
 import { motion, AnimatePresence } from "framer-motion";
 import { Tooltip } from "@/components/feedback/Tooltip";
 import { useSession, signOut } from "next-auth/react";
-import ConfirmModal from "@/components/modal/ConfirmModal";
 import { getInitials } from "@/lib/getInitials";
 
 /* ---------------------------------------------
@@ -108,11 +107,11 @@ const SidebarItemLink = React.memo(function SidebarItemLink({
  * Dropdown Menu Component
  * --------------------------------------------*/
 interface MenuItem {
-  type?: "card" | "action"; // card = info display, action = clickable item
+  type?: "card" | "action";
   label?: string;
   email?: string | null;
   leftElement?: React.ReactNode;
-  details?: { icon: string; value: string }[]; // org, branch, role
+  details?: { icon: string; value: string }[];
   icon?: string;
   destructive?: boolean;
   action?: () => void;
@@ -131,10 +130,8 @@ const DropdownMenu = ({
   parentWidth: number;
   containerRef: React.RefObject<HTMLDivElement>;
 }) => {
-  // Close dropdown on outside click
   useEffect(() => {
     if (!show) return;
-
     const handleClickOutside = (e: MouseEvent) => {
       if (!containerRef.current?.contains(e.target as Node)) {
         setShow(false);
@@ -157,7 +154,6 @@ const DropdownMenu = ({
         >
           <div className="absolute left-0 top-4 -ml-2 w-0 h-0 border-t-[8px] border-t-transparent border-b-[8px] border-b-transparent border-r-[8px] border-r-white" />
           {items.map((item, i) => {
-            // Render as card if type=card
             if (item.type === "card") {
               return (
                 <motion.div
@@ -191,7 +187,6 @@ const DropdownMenu = ({
               );
             }
 
-            // Otherwise render as clickable action
             return (
               <motion.button
                 key={i}
@@ -228,26 +223,78 @@ interface SidebarProps {
 
 function Sidebar({ open, onClose }: SidebarProps) {
   const pathname = usePathname() ?? "/dashboard";
-  const [collapsed, setCollapsed] = useState(false);
   const { data: session } = useSession();
   const user = session?.user;
 
+  // Use null initially to avoid render flash
+  const [collapsed, setCollapsed] = useState<boolean | null>(null);
+
   const [showAccountMenu, setShowAccountMenu] = useState(false);
   const [showManageMenu, setShowManageMenu] = useState(false);
-  const [showSignOutConfirm, setShowSignOutConfirm] = useState(false);
 
   const accountRef = useRef<HTMLDivElement>(null);
   const manageRef = useRef<HTMLDivElement>(null);
 
-  /* ---------- Hydrate persisted state ---------- */
+  /* ---------- Fetch persisted state from DB or localStorage ---------- */
   useEffect(() => {
-    const saved = localStorage.getItem("sidebar-collapsed");
-    if (saved !== null) setCollapsed(saved === "true");
-  }, []);
+    if (!user?.organizationId || !user?.id || !user?.branchId) return;
 
-  useEffect(() => {
-    localStorage.setItem("sidebar-collapsed", String(collapsed));
-  }, [collapsed]);
+    const fetchPreference = async () => {
+      // LocalStorage fallback for immediate render
+      const saved = localStorage.getItem("sidebar-collapsed");
+      if (saved !== null) setCollapsed(saved === "true");
+
+      try {
+        const params = new URLSearchParams({
+          organizationId: user.organizationId,
+          branchId: user.branchId,
+          personnelId: user.id,
+          category: "LAYOUT",
+          key: "sidebar-collapsed",
+          target: "",
+        });
+        const res = await fetch(`/api/preferences?${params.toString()}`);
+        const data = await res.json();
+        if (data.success && typeof data.preference === "boolean") {
+          setCollapsed(data.preference);
+          localStorage.setItem("sidebar-collapsed", String(data.preference));
+        }
+      } catch (err) {
+        console.error("Failed to fetch sidebar preference:", err);
+      }
+    };
+
+    fetchPreference();
+  }, [user?.organizationId, user?.id, user?.branchId]);
+
+  /* ---------- Toggle collapse & persist ---------- */
+  const toggleCollapsed = async () => {
+    if (collapsed === null) return; // avoid toggling before loaded
+    const newState = !collapsed;
+    setCollapsed(newState);
+    localStorage.setItem("sidebar-collapsed", String(newState));
+
+    if (!user?.organizationId || !user?.id || !user?.branchId) return;
+
+    try {
+      await fetch("/api/preferences", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          organizationId: user.organizationId,
+          branchId: user.branchId,
+          personnelId: user.id,
+          scope: "USER",
+          category: "LAYOUT",
+          key: "sidebar-collapsed",
+          value: newState,
+          target: "",
+        }),
+      });
+    } catch (err) {
+      console.error("Failed to save sidebar preference:", err);
+    }
+  };
 
   /* ---------- ESC close (mobile) ---------- */
   useEffect(() => {
@@ -281,7 +328,7 @@ function Sidebar({ open, onClose }: SidebarProps) {
         key={item.key}
         item={item}
         active={activeKeys.has(item.key)}
-        collapsed={collapsed}
+        collapsed={collapsed ?? false} // default to false if not loaded yet
       />
     ),
     [activeKeys, collapsed]
@@ -335,11 +382,13 @@ function Sidebar({ open, onClose }: SidebarProps) {
     [user]
   );
 
-  const sidebarWidth = collapsed ? 64 : 208;
+  const sidebarWidth = collapsed ?? false ? 64 : 208;
 
   const handleBottomClick = (setMenu: React.Dispatch<React.SetStateAction<boolean>>) => {
     setMenu(prev => !prev);
   };
+
+  if (collapsed === null) return null; // avoid flashing sidebar
 
   return (
     <>
@@ -367,7 +416,7 @@ function Sidebar({ open, onClose }: SidebarProps) {
       >
         {/* Header */}
         <div
-          className={`flex items-center h-12  px-3 ${collapsed ? "justify-center" : "justify-start"}`}
+          className={`flex items-center h-12 px-3 ${collapsed ? "justify-center" : "justify-start"}`}
         >
           <i className="bx bxs-grid-alt text-xl text-gray-500" />
           {!collapsed && (
@@ -387,7 +436,7 @@ function Sidebar({ open, onClose }: SidebarProps) {
         {/* Collapse/Expand button */}
         <Tooltip content={collapsed ? "Expand sidebar" : "Collapse sidebar"}>
           <button
-            onClick={() => setCollapsed(v => !v)}
+            onClick={toggleCollapsed}
             aria-expanded={!collapsed}
             className={`absolute top-2 -right-3 w-6 h-6 flex items-center justify-center 
               bg-white border border-gray-200 rounded-full shadow hover:bg-gray-100 transition-all z-50`}
@@ -486,16 +535,6 @@ function Sidebar({ open, onClose }: SidebarProps) {
             </div>
           )}
         </div>
-
-        <ConfirmModal
-          open={showSignOutConfirm}
-          title="Confirm Sign Out"
-          message="Are you sure you want to sign out?"
-          confirmLabel="Sign Out"
-          destructive
-          onClose={() => setShowSignOutConfirm(false)}
-          onConfirm={() => signOut({ callbackUrl: "/" })}
-        />
       </motion.aside>
     </>
   );

@@ -15,9 +15,7 @@ interface ConfirmModalProps {
   loading?: boolean;
   onClose: () => void;
   onConfirm: () => Promise<void> | void;
-  /** Optional focus on first element inside modal */
   autoFocus?: boolean;
-  /** Optional className for custom styling */
   className?: string;
 }
 
@@ -46,6 +44,7 @@ export default function ConfirmModal({
   className = "",
 }: ConfirmModalProps) {
   const confirmBtnRef = useRef<HTMLButtonElement>(null);
+  const cancelBtnRef = useRef<HTMLButtonElement>(null);
 
   // Focus confirm button when modal opens
   useEffect(() => {
@@ -57,6 +56,45 @@ export default function ConfirmModal({
   const handleClose = useCallback(() => {
     if (!loading) onClose();
   }, [loading, onClose]);
+
+  const handleConfirm = useCallback(async () => {
+    if (loading) return;
+    try {
+      await onConfirm();
+      onClose();
+    } catch (err) {
+      console.error(err);
+    }
+  }, [loading, onConfirm, onClose]);
+
+  // Keyboard accessibility: Enter = confirm, Escape = cancel
+  useEffect(() => {
+    if (!open) return;
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (loading) return;
+
+      if (e.key === "Escape") {
+        e.preventDefault();
+        handleClose();
+      }
+
+      if (e.key === "Enter") {
+        const active = document.activeElement;
+        if (
+          active === confirmBtnRef.current ||
+          active === cancelBtnRef.current ||
+          active?.closest?.("[data-radix-dialog-content]")
+        ) {
+          e.preventDefault();
+          handleConfirm();
+        }
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [open, loading, handleClose, handleConfirm]);
 
   const renderTitle = () =>
     loading ? (
@@ -82,7 +120,12 @@ export default function ConfirmModal({
     );
 
   return (
-    <Dialog.Root open={open} onOpenChange={(val) => !loading && !val && onClose()}>
+    <Dialog.Root
+      open={open}
+      onOpenChange={(val) => {
+        if (!loading && !val) onClose();
+      }}
+    >
       <AnimatePresence>
         {open && (
           <>
@@ -95,11 +138,16 @@ export default function ConfirmModal({
                 variants={overlayVariants}
                 transition={{ duration: 0.2 }}
                 className="fixed inset-0 bg-black z-[9998]"
+                onClick={handleClose}
               />
             </Dialog.Overlay>
 
             {/* Modal Content */}
-            <Dialog.Content asChild forceMount>
+            <Dialog.Content
+              asChild
+              forceMount
+              data-radix-dialog-content
+            >
               <motion.div
                 initial="hidden"
                 animate="visible"
@@ -113,14 +161,13 @@ export default function ConfirmModal({
                 {renderTitle()}
                 {renderMessage()}
 
-                {/* Custom children */}
                 {!loading && children && <div className="mt-3">{children}</div>}
 
-                {/* Actions */}
                 <div className="mt-4 flex justify-end gap-2.5">
                   {/* Cancel */}
                   <Dialog.Close asChild>
                     <button
+                      ref={cancelBtnRef}
                       onClick={handleClose}
                       disabled={loading}
                       className="h-8 px-3 rounded-lg border border-neutral-300 bg-white text-neutral-900
@@ -134,16 +181,39 @@ export default function ConfirmModal({
                   {/* Confirm */}
                   <button
                     ref={confirmBtnRef}
-                    onClick={onConfirm}
+                    onClick={handleConfirm}
                     disabled={loading}
                     className={`h-8 px-4 rounded-lg transition text-sm disabled:opacity-50
                       ${destructive
                         ? "border border-red-200 bg-red-50 text-red-600 hover:bg-red-100"
                         : "bg-black text-white hover:bg-neutral-800"}
-                      focus:ring-2 focus:ring-offset-2 focus:ring-black
-                      ${loading ? "animate-pulse" : ""}`}
+                      flex items-center justify-center gap-2
+                      focus:ring-2 focus:ring-offset-2 focus:ring-black`}
                   >
-                    {loading ? "Please wait…" : confirmLabel}
+                    {loading ? (
+                      <svg
+                        className="animate-spin h-4 w-4 text-current"
+                        xmlns="http://www.w3.org/2000/svg"
+                        fill="none"
+                        viewBox="0 0 24 24"
+                      >
+                        <circle
+                          className="opacity-25"
+                          cx="12"
+                          cy="12"
+                          r="10"
+                          stroke="currentColor"
+                          strokeWidth="2"
+                        />
+                        <path
+                          className="opacity-75"
+                          fill="currentColor"
+                          d="M4 12a8 8 0 018-8v8H4z"
+                        />
+                      </svg>
+                    ) : (
+                      confirmLabel
+                    )}
                   </button>
                 </div>
               </motion.div>
