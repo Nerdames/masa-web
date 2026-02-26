@@ -2,7 +2,7 @@
 
 import { useState, useMemo, useEffect } from "react";
 import useSWR from "swr";
-import { useDebounce } from "@/app/hooks/core/useDebounce";
+import { useDebounce } from "@/app/hooks/useDebounce";
 import { useSession } from "next-auth/react";
 import { useToast } from "@/components/feedback/ToastProvider";
 import ConfirmModal from "@/components/modal/ConfirmModal";

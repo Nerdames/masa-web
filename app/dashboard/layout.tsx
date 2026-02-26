@@ -1,6 +1,8 @@
 "use client";
 
 import { ReactNode, useState } from "react";
+import { useSession } from "next-auth/react";
+import { useRouter } from "next/navigation";
 import Sidebar from "@/components/layout/Sidebar";
 import TopBar from "@/components/layout/TopBar";
 
@@ -9,7 +11,28 @@ interface Props {
 }
 
 export default function DashboardRootLayout({ children }: Props) {
+  const { status } = useSession({ required: false });
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const router = useRouter();
+
+  // Redirect to sign in page if not authenticated
+  if (status === "unauthenticated") {
+    router.push("/auth/signin");
+    return null;
+  }
+
+  // Show skeleton while session is loading
+  if (status === "loading") {
+    return (
+      <div className="flex flex-col h-screen bg-gray-50 animate-pulse">
+        <div className="w-full h-10 bg-gray-200" />
+        <div className="flex flex-1">
+          <div className="w-64 bg-gray-200" />
+          <main className="flex-1 bg-gray-100" />
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="flex flex-col h-screen bg-gray-50">
@@ -24,9 +47,7 @@ export default function DashboardRootLayout({ children }: Props) {
         <Sidebar open={sidebarOpen} onClose={() => setSidebarOpen(false)} />
 
         {/* Main content */}
-        <main className="flex-1 overflow-hidden bg-white mx-1">
-          {children}
-        </main>
+        <main className="flex-1 overflow-hidden bg-white mx-1">{children}</main>
       </div>
 
       {/* Mobile menu button (top-left, floats above Sidebar) */}
