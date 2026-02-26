@@ -1,4 +1,3 @@
-/* eslint-disable react-hooks/immutability */
 "use client";
 
 import Link from "next/link";
@@ -246,9 +245,9 @@ function Sidebar({ open, onClose }: SidebarProps) {
 
       try {
         const params = new URLSearchParams({
-          organizationId: user.organizationId,
-          branchId: user.branchId,
-          personnelId: user.id,
+          organizationId: user.organizationId || "",
+          branchId: user.branchId || "",
+          personnelId: user.id || "",
           category: "LAYOUT",
           key: "sidebar-collapsed",
           target: "",
