@@ -99,13 +99,13 @@ function DataTable<T>({
   const computeMaxWidth = (col: DataTableColumn<T>) => {
     if (col.width) return col.width;
     if (!tableWidth) return "150px";
-    return `${Math.floor(tableWidth / columns.length)}px`;
+    return `${Math.min(Math.floor(tableWidth / columns.length), 500)}px`; // max 500px per column
   };
 
   /* ================= Render ================= */
   return (
-    <div className="flex-1 overflow-x-auto">
-      <table className="w-full text-sm table-fixed border-separate border-spacing-y-2">
+    <div className="w-full">
+      <table className="w-full table-fixed border-separate border-spacing-y-2 text-sm">
         <thead>
           <tr>
             {columns.map((col, i) => (
@@ -115,7 +115,7 @@ function DataTable<T>({
                   col.align
                 )} ${i === 0 ? "rounded-tl-xl" : ""} ${
                   i === columns.length - 1 ? "rounded-tr-xl" : ""
-                }`}
+                } truncate`}
                 style={{ width: computeMaxWidth(col) }}
               >
                 <Tooltip content={typeof col.header === "string" ? col.header : ""}>
@@ -149,7 +149,7 @@ function DataTable<T>({
                   return (
                     <tr
                       key={key}
-                      className={`bg-white rounded-xl shadow-sm transition hover:bg-emerald-50 hover:-translate-y-0.5 cursor-pointer ${rowClass}`}
+                      className={`bg-white rounded-xl shadow-sm transition hover:bg-emerald-50 cursor-pointer ${rowClass}`}
                       onClick={() => {
                         if (onRowClick) {
                           const url = onRowClick(row);
@@ -167,7 +167,7 @@ function DataTable<T>({
                         return (
                           <td
                             key={col.key}
-                            className={`px-4 py-4 ${getAlignClass(col.align)}`}
+                            className={`px-4 py-4 ${getAlignClass(col.align)} truncate`}
                             style={{ maxWidth: computeMaxWidth(col) }}
                           >
                             <Tooltip content={tooltipText}>
@@ -181,13 +181,17 @@ function DataTable<T>({
                 })}
               </React.Fragment>
             ))}
+
+          {!loading &&
+            Object.values(groupedData).every((rows) => rows.length === 0) && (
+              <tr>
+                <td colSpan={columns.length} className="p-4 text-center text-gray-500">
+                  {emptyMessage}
+                </td>
+              </tr>
+            )}
         </tbody>
       </table>
-
-      {!loading &&
-        Object.values(groupedData).every((rows) => rows.length === 0) && (
-          <div className="p-4 text-center text-gray-500">{emptyMessage}</div>
-        )}
     </div>
   );
 }

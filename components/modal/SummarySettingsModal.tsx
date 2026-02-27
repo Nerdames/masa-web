@@ -43,37 +43,66 @@ export default function SummarySettingsModal({
   onSave,
 }: Props) {
   const modalRef = useRef<HTMLDivElement>(null);
-  const [state, setState] = useState<SummarySettingsState>(initialState);
-  const [confirmOpen, setConfirmOpen] = useState(false);
 
   const MIN_COLUMNS = 3;
-  const MAX_COLUMNS = 4; // restrict to 3 or 4
+  const MAX_COLUMNS = 4;
+
+  const [state, setState] = useState<SummarySettingsState>({
+    visibleCardIds: initialState.visibleCardIds ?? [],
+    cardOrder: initialState.cardOrder ?? [],
+    maxColumns: initialState.maxColumns ?? MIN_COLUMNS,
+    showTooltips: initialState.showTooltips ?? true,
+    showIcons: initialState.showIcons ?? true,
+  });
+
+  const [confirmOpen, setConfirmOpen] = useState(false);
 
   /* ---------------- Sync on Open ---------------- */
   useEffect(() => {
     if (open) {
-      const allIds = cardsData.map(c => c.id);
+      const allIds = cardsData.map((c) => c.id);
       const visibleIds = initialState.visibleCardIds.slice(0, initialState.maxColumns);
       setState({
         ...initialState,
         cardOrder: Array.from(new Set([...initialState.cardOrder, ...allIds])),
-        visibleCardIds: Array.from(new Set([...visibleIds, ...allIds.slice(0, initialState.maxColumns)])),
+        visibleCardIds: Array.from(
+          new Set([...visibleIds, ...allIds.slice(0, initialState.maxColumns)])
+        ),
       });
     }
   }, [open, initialState, cardsData]);
 
   /* ---------------- Dirty Check ---------------- */
-  const isDirty = useMemo(() => JSON.stringify(state) !== JSON.stringify(initialState), [state, initialState]);
-  const requestClose = useCallback(() => { if (isDirty) setConfirmOpen(true); else onClose(); }, [isDirty, onClose]);
-  const confirmDiscard = useCallback(() => { setConfirmOpen(false); onClose(); }, [onClose]);
+  const isDirty = useMemo(
+    () => JSON.stringify(state) !== JSON.stringify(initialState),
+    [state, initialState]
+  );
+
+  const requestClose = useCallback(() => {
+    if (isDirty) setConfirmOpen(true);
+    else onClose();
+  }, [isDirty, onClose]);
+
+  const confirmDiscard = useCallback(() => {
+    setConfirmOpen(false);
+    onClose();
+  }, [onClose]);
 
   /* ---------------- ESC Key + Outside Click ---------------- */
   useEffect(() => {
     if (!open) return;
-    const handleEsc = (e: KeyboardEvent) => { if (e.key === "Escape") requestClose(); };
-    const handleClickOutside = (e: MouseEvent) => { if (modalRef.current && !modalRef.current.contains(e.target as Node)) requestClose(); };
+
+    const handleEsc = (e: KeyboardEvent) => {
+      if (e.key === "Escape") requestClose();
+    };
+
+    const handleClickOutside = (e: MouseEvent) => {
+      if (modalRef.current && !modalRef.current.contains(e.target as Node)) requestClose();
+    };
+
     document.addEventListener("keydown", handleEsc);
     document.addEventListener("mousedown", handleClickOutside);
+
     return () => {
       document.removeEventListener("keydown", handleEsc);
       document.removeEventListener("mousedown", handleClickOutside);
@@ -82,30 +111,42 @@ export default function SummarySettingsModal({
 
   /* ---------------- Derived Data ---------------- */
   const orderedCards = useMemo(() => {
-    const idSet = new Set(state.cardOrder);
-    const missingCards = cardsData.filter(c => !idSet.has(c.id));
-    return [...state.cardOrder.map(id => cardsData.find(c => c.id === id)).filter(Boolean), ...missingCards];
-  }, [state.cardOrder, cardsData]);
+    if (!state) return [];
+    const idSet = new Set(state.cardOrder || []);
+    const missingCards = cardsData.filter((c) => !idSet.has(c.id));
+    return [
+      ...state.cardOrder
+        .map((id) => cardsData.find((c) => c.id === id))
+        .filter((c): c is SummaryCard => c !== undefined),
+      ...missingCards,
+    ];
+  }, [state, cardsData]);
 
   const visibleCards = useMemo(() => {
-    return orderedCards.filter(c => state.visibleCardIds.includes(c.id)).slice(0, state.maxColumns);
-  }, [orderedCards, state.visibleCardIds, state.maxColumns]);
+    if (!state) return [];
+    return orderedCards
+      .filter((c) => state.visibleCardIds.includes(c.id))
+      .slice(0, state.maxColumns);
+  }, [orderedCards, state]);
 
   /* ---------------- Actions ---------------- */
   const toggleVisibleCard = useCallback((id: string) => {
-    setState(prev => {
+    setState((prev) => {
       const isVisible = prev.visibleCardIds.includes(id);
 
       let newVisible: string[];
       if (isVisible) {
         if (prev.visibleCardIds.length <= MIN_COLUMNS) return prev;
-        newVisible = prev.visibleCardIds.filter(x => x !== id);
+        newVisible = prev.visibleCardIds.filter((x) => x !== id);
       } else {
         if (prev.visibleCardIds.length >= prev.maxColumns) return prev;
         newVisible = [...prev.visibleCardIds, id];
       }
 
-      const newCardOrder = newVisible.reduce((acc, v) => acc.includes(v) ? acc : [...acc, v], prev.cardOrder);
+      const newCardOrder = newVisible.reduce(
+        (acc, v) => (acc.includes(v) ? acc : [...acc, v]),
+        prev.cardOrder
+      );
 
       return { ...prev, visibleCardIds: newVisible, cardOrder: newCardOrder };
     });
@@ -113,13 +154,13 @@ export default function SummarySettingsModal({
 
   const setMaxColumns = useCallback((cols: number) => {
     const clamped = Math.min(MAX_COLUMNS, Math.max(MIN_COLUMNS, cols));
-    setState(prev => {
+    setState((prev) => {
       let newVisible = [...prev.visibleCardIds];
 
       if (newVisible.length > clamped) {
         newVisible = newVisible.slice(0, clamped);
       } else if (newVisible.length < clamped) {
-        const missingCards = prev.cardOrder.filter(id => !newVisible.includes(id));
+        const missingCards = prev.cardOrder.filter((id) => !newVisible.includes(id));
         newVisible = [...newVisible, ...missingCards.slice(0, clamped - newVisible.length)];
       }
 
@@ -128,7 +169,7 @@ export default function SummarySettingsModal({
   }, []);
 
   const reorderVisibleCards = useCallback((newOrder: string[]) => {
-    setState(prev => {
+    setState((prev) => {
       const newCardOrder = [...prev.cardOrder];
       let vi = 0;
       for (let i = 0; i < newCardOrder.length; i++) {
@@ -141,12 +182,15 @@ export default function SummarySettingsModal({
   }, []);
 
   const resetDefaults = useCallback(() => {
-    const allIds = cardsData.map(c => c.id);
+    const allIds = cardsData.map((c) => c.id);
     const visibleIds = initialState.visibleCardIds.slice(0, initialState.maxColumns);
     setState({
       ...initialState,
       cardOrder: Array.from(new Set([...initialState.cardOrder, ...allIds])),
-      visibleCardIds: Array.from(new Set([...visibleIds, ...allIds])).slice(0, initialState.maxColumns),
+      visibleCardIds: Array.from(new Set([...visibleIds, ...allIds])).slice(
+        0,
+        initialState.maxColumns
+      ),
     });
   }, [initialState, cardsData]);
 
@@ -180,8 +224,12 @@ export default function SummarySettingsModal({
 
       <AnimatePresence>
         {open && (
-          <motion.div className="fixed inset-0 z-50 bg-black/40 backdrop-blur-sm flex items-start justify-center px-4 py-6"
-            initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
+          <motion.div
+            className="fixed inset-0 z-50 bg-black/40 backdrop-blur-sm flex items-start justify-center px-4 py-6"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+          >
             <motion.div
               ref={modalRef}
               className="bg-white rounded-xl shadow-xl border border-slate-200 w-[36rem] max-h-[88vh] flex flex-col"
@@ -194,7 +242,9 @@ export default function SummarySettingsModal({
               {/* Header */}
               <div className="flex justify-between items-center px-5 py-3 border-b">
                 <h3 className="font-semibold text-lg">Summary Settings</h3>
-                <button onClick={requestClose}><i className="bx bx-x text-xl" /></button>
+                <button onClick={requestClose}>
+                  <i className="bx bx-x text-xl" />
+                </button>
               </div>
 
               {/* Body */}
@@ -203,11 +253,13 @@ export default function SummarySettingsModal({
                 <div>
                   <p className="text-sm font-medium mb-2">Max Columns</p>
                   <div className="flex gap-2">
-                    {[3, 4].map(c => (
+                    {[3, 4].map((c) => (
                       <button
                         key={c}
                         onClick={() => setMaxColumns(c)}
-                        className={`px-3 py-1 rounded-lg ${state.maxColumns === c ? "bg-blue-500 text-white" : "bg-gray-100"}`}
+                        className={`px-3 py-1 rounded-lg ${
+                          state.maxColumns === c ? "bg-blue-500 text-white" : "bg-gray-100"
+                        }`}
                       >
                         {c}
                       </button>
@@ -220,13 +272,13 @@ export default function SummarySettingsModal({
                   <p className="text-sm font-medium mb-2">Live Preview</p>
                   <Reorder.Group
                     axis="x"
-                    values={visibleCards.map(c => c.id)}
+                    values={visibleCards.map((c) => c.id)}
                     onReorder={reorderVisibleCards}
                     className="grid gap-3"
                     style={{ gridTemplateColumns: `repeat(${state.maxColumns}, minmax(0,1fr))` }}
                   >
                     <AnimatePresence>
-                      {visibleCards.map(card => {
+                      {visibleCards.map((card) => {
                         const { color } = iconMap[card.type ?? "default"] ?? { color: "bg-gray-300" };
                         return (
                           <Reorder.Item
@@ -236,10 +288,7 @@ export default function SummarySettingsModal({
                             whileDrag={{ scale: 1.05 }}
                             transition={{ type: "spring", stiffness: 400, damping: 30 }}
                           >
-                            <motion.div
-                              layout
-                              className="h-16 bg-slate-100 rounded-lg flex items-center justify-center text-xs font-medium text-slate-500"
-                            >
+                            <motion.div className="h-16 bg-slate-100 rounded-lg flex items-center justify-center text-xs font-medium text-slate-500">
                               {card.title}
                             </motion.div>
                           </Reorder.Item>
@@ -270,9 +319,10 @@ export default function SummarySettingsModal({
                   </div>
 
                   <div className="flex flex-col gap-2">
-                    {orderedCards.map(card => {
+                    {orderedCards.map((card) => {
                       const checked = state.visibleCardIds.includes(card.id);
-                      const { icon, color } = iconMap[card.type ?? "default"] ?? { icon: "bx-question", color: "bg-gray-300" };
+                      const { icon, color } =
+                        iconMap[card.type ?? "default"] ?? { icon: "bx-question", color: "bg-gray-300" };
                       const canSelectMore = checked || state.visibleCardIds.length < state.maxColumns;
 
                       return (
@@ -311,7 +361,10 @@ export default function SummarySettingsModal({
 
               {/* Footer */}
               <div className="flex justify-end px-5 py-3 border-t">
-                <button onClick={handleSave} className="px-4 py-2 rounded-lg bg-blue-500 text-white hover:bg-blue-600">
+                <button
+                  onClick={handleSave}
+                  className="px-4 py-2 rounded-lg bg-blue-500 text-white hover:bg-blue-600"
+                >
                   Save
                 </button>
               </div>

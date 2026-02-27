@@ -10,7 +10,7 @@ export default function Unauthorized(): JSX.Element {
       <section className="flex flex-1 flex-col items-center justify-center px-6 text-center space-y-6">
         {/* Icon + heading */}
         <div className="flex flex-col items-center gap-3">
-          <i className="bx bx-lock text-6xl text-red-500"></i>
+          <i className="bx bx-lock text-6xl text-red-500" aria-hidden="true" />
           <h1 className="text-4xl font-extrabold text-gray-900">Unauthorized</h1>
         </div>
 
@@ -22,10 +22,10 @@ export default function Unauthorized(): JSX.Element {
         {/* CTA button */}
         <Link
           href="/auth/signin"
-          className="flex items-center gap-2 px-6 py-3 rounded-md border border-gray-400 text-gray-700 hover:bg-[#F2F2F3] transition-all duration-300"
+          className="inline-flex items-center gap-2 px-6 py-3 rounded-md border border-gray-400 text-gray-700 hover:bg-[#F2F2F3] transition-all duration-300"
         >
-          <i className="bx bx-log-in text-xl"></i>
-          Sign In
+          <i className="bx bx-log-in text-xl" aria-hidden="true" />
+          <span>Sign In</span>
         </Link>
       </section>
 

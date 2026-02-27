@@ -44,7 +44,7 @@ declare module "next-auth/jwt" {
     branchId?: string | null;
     branchName?: string | null;
     lastLogin?: string | null;
-    lastActivityAt?: number; // store as timestamp (ms)
+    lastActivityAt?: number; // timestamp in ms
   }
 }
 
@@ -52,6 +52,7 @@ declare module "next-auth/jwt" {
  * Inactivity timeout configuration
  * ------------------------------------------ */
 const INACTIVITY_TIMEOUT_MINUTES = 60; // 1 hour
+const INACTIVITY_TIMEOUT_MS = INACTIVITY_TIMEOUT_MINUTES * 60 * 1000;
 
 /* ------------------------------------------
  * NextAuth configuration
@@ -70,16 +71,8 @@ export const authOptions: NextAuthOptions = {
         if (!credentials?.email || !credentials?.password) return null;
 
         const personnel = await prisma.authorizedPersonnel.findFirst({
-          where: {
-            email: credentials.email,
-            disabled: false,
-            deletedAt: null,
-          },
-          include: {
-            organization: true,
-            branch: true,
-            branchAssignments: true,
-          },
+          where: { email: credentials.email, disabled: false, deletedAt: null },
+          include: { organization: true, branch: true, branchAssignments: true },
         });
 
         if (!personnel) return null;
@@ -87,20 +80,13 @@ export const authOptions: NextAuthOptions = {
         const isValid = await bcrypt.compare(credentials.password, personnel.password);
         if (!isValid) return null;
 
-        // ----------------------------
         // Determine effective role
-        // ----------------------------
         let effectiveRole: Role | null = null;
-
         if (personnel.isOrgOwner) effectiveRole = "ADMIN";
-
         if (!effectiveRole && personnel.branchId) {
-          const assignment = personnel.branchAssignments.find(
-            (ba) => ba.branchId === personnel.branchId
-          );
+          const assignment = personnel.branchAssignments.find((ba) => ba.branchId === personnel.branchId);
           if (assignment) effectiveRole = assignment.role;
         }
-
         if (!effectiveRole && personnel.branchAssignments.length > 0)
           effectiveRole = personnel.branchAssignments[0].role;
 
@@ -108,17 +94,12 @@ export const authOptions: NextAuthOptions = {
 
         const now = new Date();
 
-        // ----------------------------
         // Update last login & last activity
-        // ----------------------------
         await prisma.authorizedPersonnel.update({
           where: { id: personnel.id },
           data: { lastLogin: now, lastActivityAt: now },
         });
 
-        // ----------------------------
-        // Return NextAuth user object
-        // ----------------------------
         return {
           id: personnel.id,
           name: personnel.name,
@@ -154,20 +135,19 @@ export const authOptions: NextAuthOptions = {
         token.lastLogin = user.lastLogin ?? null;
         token.lastActivityAt = now;
       } else if (token.id) {
-        // Refresh JWT on subsequent requests
+        // Check inactivity timeout on every request
         const personnel = await prisma.authorizedPersonnel.findUnique({
           where: { id: token.id },
           select: { lastActivityAt: true },
         });
 
         const lastActivity = personnel?.lastActivityAt?.getTime() ?? 0;
-
-        if (now - lastActivity > INACTIVITY_TIMEOUT_MINUTES * 60 * 1000) {
-          // Inactivity timeout exceeded → invalidate token
+        if (now - lastActivity > INACTIVITY_TIMEOUT_MS) {
+          // Timeout exceeded → invalidate token
           return {};
         }
 
-        // Update lastActivityAt if still active
+        // Update lastActivityAt for active users
         await prisma.authorizedPersonnel.update({
           where: { id: token.id },
           data: { lastActivityAt: new Date() },
@@ -189,9 +169,7 @@ export const authOptions: NextAuthOptions = {
         session.user.branchId = token.branchId ?? null;
         session.user.branchName = token.branchName ?? null;
         session.user.lastLogin = token.lastLogin ?? null;
-        session.user.lastActivityAt = token.lastActivityAt
-          ? new Date(token.lastActivityAt).toISOString()
-          : null;
+        session.user.lastActivityAt = token.lastActivityAt ? new Date(token.lastActivityAt).toISOString() : null;
       }
       return session;
     },

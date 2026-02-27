@@ -82,7 +82,7 @@ export function UserMenu({ trigger }: UserMenuProps) {
                                hover:bg-gray-100 cursor-pointer transition-colors"
                     onClick={() => {
                       setOpen(false);
-                      router.push("/dashboard/profile");
+                      router.push("/dashboard/settings/profile");
                     }}
                   >
                     <div className="flex items-center gap-3 w-full">
@@ -114,7 +114,7 @@ export function UserMenu({ trigger }: UserMenuProps) {
                     <button
                       onClick={() => {
                         setOpen(false);
-                        router.push("/dashboard/profile");
+                        router.push("/dashboard/settings/profile");
                       }}
                       className="w-full text-left px-4 py-2 text-sm rounded hover:bg-gray-100 flex items-center gap-2"
                     >

@@ -354,7 +354,7 @@ function Sidebar({ open, onClose }: SidebarProps) {
           type: "action",
           label: "Manage your profile",
           icon: "bx-user",
-          action: () => (window.location.href = "/dashboard/settings"),
+          action: () => (window.location.href = "/dashboard/settings/profile"),
         },
         {
           type: "action",
