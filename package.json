@@ -17,7 +17,6 @@
     "@radix-ui/react-switch": "^1.2.6",
     "@radix-ui/react-toast": "^1.2.15",
     "@radix-ui/react-tooltip": "^1.2.8",
-    "@react-email/components": "^1.0.8",
     "axios": "^1.13.2",
     "bcryptjs": "^3.0.3",
     "boxicons": "^2.1.4",
@@ -36,7 +35,6 @@
     "react-modal": "^3.16.3",
     "react-toastify": "^11.0.5",
     "recharts": "^3.6.0",
-    "resend": "^6.9.3",
     "swr": "^2.3.8"
   },
   "devDependencies": {

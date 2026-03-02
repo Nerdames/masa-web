@@ -24,6 +24,21 @@ enum Role {
   DEV
 }
 
+enum ApprovalStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+enum CriticalAction {
+  EMAIL_CHANGE
+  PASSWORD_CHANGE
+  PRICE_UPDATE
+  STOCK_ADJUST
+  STOCK_TRANSFER
+  VOID_INVOICE
+}
+
 enum CustomerType {
   BUYER
   PARTNER
@@ -104,7 +119,9 @@ model Organization {
   ownerId String?
   owner   AuthorizedPersonnel? @relation("OrgOwner", fields: [ownerId], references: [id])
 
-  personnel         AuthorizedPersonnel[]
+  approvalRequests ApprovalRequest[] @relation("OrgApprovals")
+
+  personnel         AuthorizedPersonnel[]  @relation("OrgMembers")
   branches          Branch[]
   products          Product[]
   customers         Customer[]
@@ -121,7 +138,7 @@ model Organization {
   preferences       Preference[]
 
   categories Category[]
-  vendors  Vendor[]
+  vendors    Vendor[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -140,14 +157,15 @@ model Branch {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  organization Organization @relation(fields: [organizationId], references: [id])
+  organization     Organization      @relation(fields: [organizationId], references: [id])
+  approvalRequests ApprovalRequest[] @relation("BranchApprovals")
 
   personnel         AuthorizedPersonnel[]
   branchProducts    BranchProduct[]
   stockMoves        StockMovement[]        @relation("BranchStockMoves")
   orders            Order[]
   invoices          Invoice[]
-  sales             Sale[] // Branch → Sale
+  sales             Sale[]
   activityLogs      ActivityLog[]
   notifications     Notification[]
   branchAssignments BranchAssignment[]     @relation("BranchAssignments")
@@ -177,33 +195,41 @@ model AuthorizedPersonnel {
 
   isOrgOwner Boolean @default(false)
 
+  pendingEmail    String?
+  pendingPassword String?
+  isLocked        Boolean @default(false)
+  lockReason      String?
+
   // -----------------------
   // Session & Login Tracking
   // -----------------------
-  failedLoginAttempts Int       @default(0)     // number of consecutive failed logins
-  lockoutUntil        DateTime?                // timestamp until which login is blocked
-  lastActivityAt      DateTime?                // tracks last activity for inactivity timeout
+  failedLoginAttempts Int       @default(0)
+  lockoutUntil        DateTime?
+  lastActivityAt      DateTime?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  requestsCreated  ApprovalRequest[] @relation("Requester")
+  requestsApproved ApprovalRequest[] @relation("Approver")
+
   // -----------------------
   // Relations
   // -----------------------
-  organization Organization         @relation(fields: [organizationId], references: [id])
-  branch       Branch?              @relation(fields: [branchId], references: [id])
+  organization Organization @relation("OrgMembers", fields: [organizationId], references: [id])
+  branch       Branch?      @relation(fields: [branchId], references: [id])
 
   branchAssignments  BranchAssignment[]
-  orders             Order[]            @relation("SalespersonOrders")
-  invoicesIssued     Invoice[]          @relation("IssuedInvoices")
-  invoicesPaid       Payment[]          @relation("InvoicePaidBy")
-  salesAttended      Sale[]             @relation("AttendantSales")
+  orders             Order[]               @relation("SalespersonOrders")
+  invoicesIssued     Invoice[]             @relation("IssuedInvoices")
+  invoicesPaid       Payment[]             @relation("InvoicePaidBy")
+  salesAttended      Sale[]                @relation("AttendantSales")
   activityLogs       ActivityLog[]
   notifications      Notification[]
   stockMoves         StockMovement[]
   accounts           Account[]
   sessions           Session[]
-  ownedOrganizations Organization[]     @relation("OrgOwner")
+  ownedOrganizations Organization[]        @relation("OrgOwner")
   receipts           Receipt[]
   preferences        Preference[]
 
@@ -213,8 +239,37 @@ model AuthorizedPersonnel {
   @@index([lastActivityAt])
   @@index([failedLoginAttempts])
   @@index([lockoutUntil])
+  @@index([isLocked])
 }
 
+////////////////////////////////////
+// NEW: APPROVAL SYSTEM MODEL
+////////////////////////////////////
+
+model ApprovalRequest {
+  id             String         @id @default(cuid())
+  organizationId String
+  branchId       String?
+  branch         Branch?        @relation("BranchApprovals", fields: [branchId], references: [id])
+  requesterId    String
+  approverId     String?
+
+  actionType   CriticalAction
+  status       ApprovalStatus @default(PENDING)
+  requiredRole Role           @default(MANAGER)
+  changes      Json
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  organization Organization        @relation("OrgApprovals", fields: [organizationId], references: [id])
+  requester    AuthorizedPersonnel @relation("Requester", fields: [requesterId], references: [id])
+  approver     AuthorizedPersonnel? @relation("Approver", fields: [approverId], references: [id])
+
+  @@index([organizationId, status])
+  @@index([branchId, status])
+  @@index([actionType])
+}
 
 model BranchAssignment {
   id          String @id @default(cuid())
@@ -299,7 +354,7 @@ model Product {
   barcode        String?   @unique
   description    String?
   categoryId     String?
-  costPrice      Decimal @db.Decimal(18,2)
+  costPrice      Decimal   @db.Decimal(18, 2)
   currency       String    @default("NGN")
   deletedAt      DateTime?
   createdAt      DateTime  @default(now())
@@ -312,13 +367,13 @@ model Product {
   orderItems OrderItem[]     @relation("ProductOrderItems")
   sales      Sale[]          @relation("ProductSales")
 
+  @@unique([organizationId, sku])
   @@index([organizationId])
   @@index([categoryId])
-  @@unique([organizationId, sku])
 }
 
 model BranchProduct {
-  id             String   @id @default(cuid())
+  id             String @id @default(cuid())
   organizationId String
   branchId       String
   productId      String
@@ -329,9 +384,9 @@ model BranchProduct {
   lastRestockedAt DateTime?
   safetyStock     Int?      @default(0)
   unit            String?   @default("pcs")
-  sellingPrice    Decimal?  @db.Decimal(18,2)
+  sellingPrice    Decimal?  @db.Decimal(18, 2)
   vendorId        String?
-  costPrice       Decimal?  @db.Decimal(18,2)
+  costPrice       Decimal?  @db.Decimal(18, 2)
   deletedAt       DateTime?
 
   organization Organization @relation(fields: [organizationId], references: [id])
@@ -349,7 +404,7 @@ model BranchProduct {
   @@index([branchId])
   @@index([productId])
   @@index([vendorId])
-  @@index([deletedAt]) 
+  @@index([deletedAt])
 }
 
 model Category {
@@ -366,7 +421,7 @@ model Category {
 }
 
 model Vendor {
-  id             String   @id @default(cuid())
+  id             String    @id @default(cuid())
   organizationId String
   name           String
   email          String?
@@ -390,13 +445,13 @@ model Vendor {
 ////////////////////////////////////
 
 model Order {
-  id             String  @id @default(cuid())
+  id             String      @id @default(cuid())
   organizationId String
   branchId       String
   salespersonId  String
   customerId     String?
 
-  total     Decimal @db.Decimal(18,2)
+  total     Decimal     @db.Decimal(18, 2)
   currency  String      @default("NGN")
   status    OrderStatus @default(DRAFT)
   notes     String?
@@ -426,10 +481,10 @@ model OrderItem {
   productId       String
 
   quantity  Int
-  unitPrice Decimal @db.Decimal(18,2)
-  total     Decimal @db.Decimal(18,2)
-  discount  Decimal? @default(0) @db.Decimal(18,2)
-  tax       Decimal? @default(0) @db.Decimal(18,2)
+  unitPrice Decimal  @db.Decimal(18, 2)
+  total     Decimal  @db.Decimal(18, 2)
+  discount  Decimal? @default(0) @db.Decimal(18, 2)
+  tax       Decimal? @default(0) @db.Decimal(18, 2)
 
   order         Order         @relation(fields: [orderId], references: [id])
   branchProduct BranchProduct @relation("BranchProductOrderItems", fields: [branchProductId], references: [id])
@@ -449,15 +504,15 @@ model Invoice {
   issuedById String
   customerId String?
 
-  subtotal   Decimal? @db.Decimal(18,2)
-  total      Decimal? @db.Decimal(18,2)
-  discount   Decimal? @default(0) @db.Decimal(18,2)
-  tax        Decimal? @default(0) @db.Decimal(18,2)
-  paidAmount Decimal? @default(0) @db.Decimal(18,2)
-  balance    Decimal? @db.Decimal(18,2)
-  currency   String        @default("NGN")
-  status     InvoiceStatus @default(DRAFT)
-  deletedAt  DateTime?
+  subtotal    Decimal?      @db.Decimal(18, 2)
+  total       Decimal?      @db.Decimal(18, 2)
+  discount    Decimal?      @default(0) @db.Decimal(18, 2)
+  tax         Decimal?      @default(0) @db.Decimal(18, 2)
+  paidAmount  Decimal?      @default(0) @db.Decimal(18, 2)
+  balance     Decimal?      @db.Decimal(18, 2)
+  currency    String        @default("NGN")
+  status      InvoiceStatus @default(DRAFT)
+  deletedAt   DateTime?
 
   issuedAt DateTime  @default(now())
   dueDate  DateTime?
@@ -485,7 +540,7 @@ model Payment {
   cashierId String
 
   method    PaymentMethod
-  amount    Decimal @db.Decimal(18,2)
+  amount    Decimal       @db.Decimal(18, 2)
   currency  String        @default("NGN")
   status    PaymentStatus @default(COMPLETED)
   deletedAt DateTime?
@@ -496,7 +551,6 @@ model Payment {
   invoice Invoice             @relation(fields: [invoiceId], references: [id])
   cashier AuthorizedPersonnel @relation("InvoicePaidBy", fields: [cashierId], references: [id])
 
-  // One-to-one optional relation with Receipt
   receipt Receipt?
 
   @@index([invoiceId])
@@ -514,8 +568,8 @@ model Sale {
   branchId        String
 
   quantity  Int
-  unitPrice Decimal @db.Decimal(18,2)
-  total     Decimal @db.Decimal(18,2)
+  unitPrice Decimal    @db.Decimal(18, 2)
+  total     Decimal    @db.Decimal(18, 2)
   currency  String     @default("NGN")
   status    SaleStatus @default(COMPLETED)
   deletedAt DateTime?
@@ -533,7 +587,9 @@ model Sale {
   cashier       AuthorizedPersonnel @relation("AttendantSales", fields: [cashierId], references: [id])
   customer      Customer?           @relation("CustomerSales", fields: [customerId], references: [id])
   branch        Branch              @relation(fields: [branchId], references: [id])
-  receipts      Receipt[]
+  
+  // Note: One-to-one because Receipt.saleId is unique
+  receipt       Receipt?
 
   @@index([invoiceId])
   @@index([organizationId, branchId])
@@ -548,7 +604,7 @@ model Receipt {
   branchProductId String
   organizationId  String
   invoiceId       String
-  amount          Decimal @db.Decimal(18,2)
+  amount          Decimal       @db.Decimal(18, 2)
   paymentMethod   PaymentMethod
   currency        String        @default("NGN")
   createdAt       DateTime      @default(now())
@@ -595,7 +651,7 @@ model StockMovement {
 ////////////////////////////////////
 
 model Notification {
-  id             String  @id @default(cuid())
+  id             String @id @default(cuid())
   organizationId String
   branchId       String?
   personnelId    String?
@@ -608,8 +664,8 @@ model Notification {
 
   createdAt DateTime @default(now())
 
-  organization Organization         @relation(fields: [organizationId], references: [id])
-  branch       Branch?              @relation(fields: [branchId], references: [id])
+  organization Organization        @relation(fields: [organizationId], references: [id])
+  branch       Branch?             @relation(fields: [branchId], references: [id])
   personnel    AuthorizedPersonnel? @relation(fields: [personnelId], references: [id])
 
   @@index([organizationId])
@@ -622,7 +678,7 @@ model Notification {
 ////////////////////////////////////
 
 model ActivityLog {
-  id             String  @id @default(cuid())
+  id             String @id @default(cuid())
   organizationId String
   branchId       String?
   personnelId    String?
@@ -632,8 +688,8 @@ model ActivityLog {
 
   createdAt DateTime @default(now())
 
-  organization Organization         @relation(fields: [organizationId], references: [id])
-  branch       Branch?              @relation(fields: [branchId], references: [id])
+  organization Organization        @relation(fields: [organizationId], references: [id])
+  branch       Branch?             @relation(fields: [branchId], references: [id])
   personnel    AuthorizedPersonnel? @relation(fields: [personnelId], references: [id])
 
   @@index([organizationId])
@@ -646,14 +702,14 @@ model ActivityLog {
 ////////////////////////////////////
 
 model CustomerOrderSummary {
-  id               String    @id @default(cuid())
+  id               String   @id @default(cuid())
   organizationId   String
   branchId         String
   customerId       String
   totalOrders      Int
   totalQuantity    Int
-  totalSpent       Decimal @default(0) @db.Decimal(18,2)
-  currency         String    @default("NGN")
+  totalSpent       Decimal  @default(0) @db.Decimal(18, 2)
+  currency         String   @default("NGN")
   lastOrderAt      DateTime?
   productBreakdown Json?
 
@@ -711,45 +767,26 @@ model VerificationToken {
 }
 
 model Preference {
-  id             String   @id @default(cuid())
+  id String @id @default(cuid())
 
-  // -----------------------------
-  // Multi-tenant ownership
-  // -----------------------------
   organizationId String
   branchId       String?
   personnelId    String?
 
-  // -----------------------------
-  // Classification
-  // -----------------------------
   scope    PreferenceScope
   category PreferenceCategory
   key      String
-  target   String?        // page/component/feature identifier
+  target   String?
   value    Json
 
-  // -----------------------------
-  // Timestamps
-  // -----------------------------
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  // -----------------------------
-  // Relations
-  // -----------------------------
-  organization Organization         @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  branch       Branch?              @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  organization Organization        @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  branch       Branch?             @relation(fields: [branchId], references: [id], onDelete: Cascade)
   personnel    AuthorizedPersonnel? @relation(fields: [personnelId], references: [id], onDelete: Cascade)
 
-  // -----------------------------
-  // Constraints
-  // -----------------------------
   @@unique([scope, category, key, organizationId, branchId, personnelId, target])
-
-  // -----------------------------
-  // Performance Indexes
-  // -----------------------------
   @@index([organizationId])
   @@index([organizationId, category])
   @@index([organizationId, key])
