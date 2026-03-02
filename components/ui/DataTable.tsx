@@ -1,7 +1,13 @@
-import React, { useMemo } from "react";
+"use client";
+
+import React, { useMemo, useState, useEffect, useRef, useCallback } from "react";
+import { usePathname } from "next/navigation";
+import { useSession } from "next-auth/react";
 import { Tooltip } from "@/components/feedback/Tooltip";
+import { useToast } from "@/components/feedback/ToastProvider";
 
 /* ================= Types ================= */
+
 export interface DataTableColumn<T> {
   key: string;
   header: React.ReactNode;
@@ -13,113 +19,179 @@ export interface DataTableColumn<T> {
 interface DataTableProps<T> {
   data: T[];
   columns: DataTableColumn<T>[];
+  tableId: string;
   loading?: boolean;
-
   getRowId?: (row: T, index: number) => string;
-  onRowClick?: (row: T) => string | void; // return URL to open in new tab
+  onRowClick?: (row: T) => string | void;
   getRowClassName?: (row: T) => string;
-
-  emptyMessage?: string;
-
-  groupByDate?: boolean;
-  getRowDate?: (row: T) => string | Date;
-  tableWidth?: number;
+  dateField?: keyof T;
 }
 
 /* ================= Helpers ================= */
-function getAlignClass(align?: "left" | "center" | "right") {
-  switch (align) {
-    case "left":
-      return "text-left";
-    case "right":
-      return "text-right";
-    default:
-      return "text-center";
-  }
-}
 
-function normalizeDate(date: string | Date) {
-  const d = new Date(date);
-  return new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
-}
-
-function formatDDMMYYYY(dateString: string) {
-  const d = new Date(dateString);
-  return `${String(d.getDate()).padStart(2, "0")}/${String(
-    d.getMonth() + 1
-  ).padStart(2, "0")}/${d.getFullYear()}`;
+function getAlignClass(align?: "left" | "center" | "right"): string {
+  if (align === "left") return "text-left";
+  if (align === "right") return "text-right";
+  return "text-center";
 }
 
 /* ================= Component ================= */
+
 function DataTable<T>({
   data,
   columns,
+  tableId,
   loading = false,
   getRowId,
   onRowClick,
   getRowClassName,
-  emptyMessage = "No records found.",
-  groupByDate = false,
-  getRowDate,
-  tableWidth,
+  dateField,
 }: DataTableProps<T>) {
-  /* ================= Grouping ================= */
-  const groupedData = useMemo(() => {
-    if (!groupByDate || !getRowDate) return { All: data };
+  const pathname = usePathname();
+  const { addToast } = useToast();
+  const { data: session } = useSession();
 
-    const today = normalizeDate(new Date());
-    const yesterday = normalizeDate(new Date(Date.now() - 86400000));
+  const [columnOrder, setColumnOrder] = useState<string[]>(columns.map((c) => c.key));
+  const dragCol = useRef<string | null>(null);
+  const saveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const preferenceKey = `columnOrder:${pathname}`;
 
-    const groups: Record<string, T[]> = { Today: [], Yesterday: [] };
-    const older: Record<string, T[]> = {};
+  /* ================= Load Preferences ================= */
 
-    data.forEach((row) => {
-      const rowTime = normalizeDate(getRowDate(row));
-      if (rowTime === today) groups.Today.push(row);
-      else if (rowTime === yesterday) groups.Yesterday.push(row);
-      else {
-        const d = new Date(rowTime);
-        const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(
-          2,
-          "0"
-        )}-${String(d.getDate()).padStart(2, "0")}`;
-        if (!older[key]) older[key] = [];
-        older[key].push(row);
+  useEffect(() => {
+    if (!session?.user) return;
+    const controller = new AbortController();
+
+    const loadPreference = async () => {
+      try {
+        const params = new URLSearchParams({
+          category: "TABLE",
+          key: preferenceKey,
+          target: tableId,
+        });
+
+        const res = await fetch(`/api/preferences?${params.toString()}`, {
+          signal: controller.signal,
+        });
+        if (!res.ok) throw new Error("Failed to fetch preferences");
+
+        const json: unknown = await res.json();
+        if (typeof json === "object" && json !== null && "preference" in json) {
+          const pref = (json as { preference: unknown }).preference;
+          if (Array.isArray(pref) && pref.every((item) => typeof item === "string")) {
+            setColumnOrder(pref);
+            return;
+          }
+        }
+        setColumnOrder(columns.map((c) => c.key));
+      } catch (error) {
+        if (error instanceof DOMException && error.name === "AbortError") return;
+        addToast({
+          type: "error",
+          title: "Preference Load Failed",
+          message: "Could not load your saved table preferences.",
+        });
       }
+    };
+
+    loadPreference();
+    return () => controller.abort();
+  }, [session, tableId, pathname, preferenceKey, columns, addToast]);
+
+  /* ================= Save Preferences ================= */
+
+  const savePreferences = useCallback(
+    (newOrder: string[]) => {
+      if (!session?.user) return;
+      if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
+
+      saveTimeoutRef.current = setTimeout(async () => {
+        try {
+          const payload: Record<string, unknown> = {
+            scope: "USER",
+            category: "TABLE",
+            key: preferenceKey,
+            target: tableId,
+            value: newOrder,
+            organizationId: session.user.organizationId,
+            branchId: session.user.branchId,
+            personnelId: session.user.id,
+          };
+          const res = await fetch("/api/preferences", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+          });
+          if (!res.ok) throw new Error("Save failed");
+
+          addToast({ type: "success", title: "Preferences Saved", message: "Your table layout has been updated." });
+        } catch {
+          addToast({ type: "error", title: "Save Failed", message: "Could not save table preferences." });
+        }
+      }, 600);
+    },
+    [preferenceKey, tableId, session, addToast]
+  );
+
+  useEffect(() => {
+    return () => {
+      if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
+    };
+  }, []);
+
+  const orderedColumns = useMemo<DataTableColumn<T>[]>(() => {
+    const validKeys = columns.map((c) => c.key);
+    const safeOrder = [
+      ...columnOrder.filter((k) => validKeys.includes(k)),
+      ...validKeys.filter((k) => !columnOrder.includes(k)),
+    ];
+    return safeOrder
+      .map((key) => columns.find((c) => c.key === key))
+      .filter((col): col is DataTableColumn<T> => typeof col !== "undefined");
+  }, [columnOrder, columns]);
+
+  const handleDragStart = (key: string) => {
+    dragCol.current = key;
+  };
+  const handleDrop = (targetKey: string) => {
+    const sourceKey = dragCol.current;
+    if (!sourceKey || sourceKey === targetKey) return;
+
+    setColumnOrder((prev) => {
+      const newOrder = [...prev];
+      const from = newOrder.indexOf(sourceKey);
+      const to = newOrder.indexOf(targetKey);
+      if (from === -1 || to === -1) return prev;
+      newOrder.splice(from, 1);
+      newOrder.splice(to, 0, sourceKey);
+      savePreferences(newOrder);
+      return newOrder;
     });
-
-    const sortedOlderKeys = Object.keys(older).sort((a, b) => (a > b ? -1 : 1));
-    const sortedOlder: Record<string, T[]> = {};
-    sortedOlderKeys.forEach((k) => (sortedOlder[k] = older[k]));
-
-    return { ...groups, ...sortedOlder };
-  }, [data, groupByDate, getRowDate]);
-
-  /* ================= Column Width ================= */
-  const computeMaxWidth = (col: DataTableColumn<T>) => {
-    if (col.width) return col.width;
-    if (!tableWidth) return "150px";
-    return `${Math.min(Math.floor(tableWidth / columns.length), 500)}px`; // max 500px per column
+    dragCol.current = null;
   };
 
   /* ================= Render ================= */
+
   return (
-    <div className="w-full">
-      <table className="w-full table-fixed border-separate border-spacing-y-2 text-sm">
-        <thead>
+    <div className="w-full rounded-2xl bg-white/80 dark:bg-neutral-900/60 backdrop-blur-xl border border-white/30 dark:border-white/20 shadow-lg overflow-x-auto">
+      <table className="w-full table-auto text-sm">
+        {/* Header */}
+        <thead className="sticky top-0 z-10 bg-white/95 dark:bg-neutral-900/95 backdrop-blur-xl border-b border-neutral-300 dark:border-neutral-700">
           <tr>
-            {columns.map((col, i) => (
+            {orderedColumns.map((col) => (
               <th
                 key={col.key}
-                className={`px-4 py-4 font-medium bg-gray-50 ${getAlignClass(
+                draggable
+                onDragStart={() => handleDragStart(col.key)}
+                onDragOver={(e) => e.preventDefault()}
+                onDrop={() => handleDrop(col.key)}
+                style={{ width: col.width, minWidth: "80px" }}
+                className={`px-5 py-4 text-xs font-bold uppercase tracking-wider text-neutral-700 dark:text-neutral-400 cursor-move select-none ${getAlignClass(
                   col.align
-                )} ${i === 0 ? "rounded-tl-xl" : ""} ${
-                  i === columns.length - 1 ? "rounded-tr-xl" : ""
-                } truncate`}
-                style={{ width: computeMaxWidth(col) }}
+                )}`}
               >
                 <Tooltip content={typeof col.header === "string" ? col.header : ""}>
-                  <div className="truncate max-w-full">{col.header}</div>
+                  <div className="truncate max-w-[250px]">{col.header}</div>
                 </Tooltip>
               </th>
             ))}
@@ -128,68 +200,64 @@ function DataTable<T>({
 
         <tbody>
           {!loading &&
-            Object.entries(groupedData).map(([group, rows]) => (
-              <React.Fragment key={group}>
-                {groupByDate && rows.length > 0 && (
-                  <tr>
-                    <td
-                      colSpan={columns.length}
-                      className="px-4 py-1 text-xs font-semibold text-gray-400 uppercase text-center"
-                    >
-                      {group === "Today" || group === "Yesterday"
-                        ? group
-                        : formatDDMMYYYY(group)}
-                    </td>
-                  </tr>
-                )}
+            data.map((row, index) => {
+              const key = getRowId?.(row, index) ?? `${JSON.stringify(row)}-${index}`;
 
-                {rows.map((row, index) => {
-                  const key = getRowId ? getRowId(row, index) : JSON.stringify(row) + index;
-                  const rowClass = getRowClassName?.(row) ?? "";
-                  return (
-                    <tr
-                      key={key}
-                      className={`bg-white rounded-xl shadow-sm transition hover:bg-emerald-50 cursor-pointer ${rowClass}`}
-                      onClick={() => {
-                        if (onRowClick) {
-                          const url = onRowClick(row);
-                          if (typeof url === "string") window.open(url, "_blank");
-                        }
-                      }}
-                    >
-                      {columns.map((col) => {
-                        const cellContent = col.render(row);
-                        const tooltipText =
-                          typeof cellContent === "string" || typeof cellContent === "number"
-                            ? String(cellContent)
-                            : "";
+              // Faint date display logic
+              let showDateLabel = false;
+              let formattedDate = "";
+              if (dateField && row[dateField]) {
+                const rowDate = new Date(row[dateField] as unknown as string);
+                formattedDate = rowDate.toLocaleDateString("en-GB");
+                if (index === 0) showDateLabel = true;
+                else {
+                  const prevRowDate = new Date(data[index - 1][dateField] as unknown as string).toLocaleDateString("en-GB");
+                  if (formattedDate !== prevRowDate) showDateLabel = true;
+                }
+              }
 
-                        return (
-                          <td
-                            key={col.key}
-                            className={`px-4 py-4 ${getAlignClass(col.align)} truncate`}
-                            style={{ maxWidth: computeMaxWidth(col) }}
-                          >
-                            <Tooltip content={tooltipText}>
-                              <div className="truncate max-w-full">{cellContent}</div>
-                            </Tooltip>
-                          </td>
-                        );
-                      })}
+              return (
+                <React.Fragment key={key}>
+                  {showDateLabel && (
+                    <tr>
+                      <td colSpan={columns.length} className="px-5 py-1 text-center text-neutral-400 dark:text-neutral-500 text-xs italic select-none">
+                        {formattedDate}
+                      </td>
                     </tr>
-                  );
-                })}
-              </React.Fragment>
-            ))}
+                  )}
 
-          {!loading &&
-            Object.values(groupedData).every((rows) => rows.length === 0) && (
-              <tr>
-                <td colSpan={columns.length} className="p-4 text-center text-gray-500">
-                  {emptyMessage}
-                </td>
-              </tr>
-            )}
+                  <tr
+                    onClick={() => {
+                      if (onRowClick) {
+                        const url = onRowClick(row);
+                        if (typeof url === "string") window.open(url, "_blank");
+                      }
+                    }}
+                    className={`border-b border-neutral-200 dark:border-neutral-700 transition-colors duration-200
+                      ${index % 2 === 0 ? "bg-white dark:bg-neutral-900" : "bg-neutral-50 dark:bg-neutral-800"}
+                      hover:bg-blue-50 dark:hover:bg-blue-900 cursor-pointer ${getRowClassName?.(row) ?? ""}`}
+                  >
+                    {orderedColumns.map((col) => {
+                      const cellContent = col.render(row);
+                      const tooltipText =
+                        typeof cellContent === "string" || typeof cellContent === "number" ? String(cellContent) : "";
+
+                      return (
+                        <td
+                          key={col.key}
+                          style={{ width: col.width, minWidth: "80px" }}
+                          className={`px-5 py-4 text-neutral-700 dark:text-neutral-200 ${getAlignClass(col.align)}`}
+                        >
+                          <Tooltip content={tooltipText}>
+                            <div className="truncate max-w-[250px]">{cellContent}</div>
+                          </Tooltip>
+                        </td>
+                      );
+                    })}
+                  </tr>
+                </React.Fragment>
+              );
+            })}
         </tbody>
       </table>
     </div>

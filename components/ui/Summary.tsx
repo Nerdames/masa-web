@@ -30,6 +30,8 @@ const ROUTE_ICON_MAP: Record<string, { icon: string; color: string }> = {
   overview: { icon: "bx-doughnut-chart", color: "bg-teal-100 text-teal-600" },
   settings: { icon: "bx-cog", color: "bg-gray-100 text-gray-600" },
   profile: { icon: "bx-user", color: "bg-indigo-100 text-indigo-600" },
+  organizations: { icon: "bx-building", color: "bg-blue-100 text-blue-600" },
+  
   default: { icon: "bx-card", color: "bg-gray-100 text-gray-500" },
 };
 

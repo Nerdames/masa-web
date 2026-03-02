@@ -1,252 +1,428 @@
 "use client";
 
-import { useState, useMemo, useEffect } from "react";
+import { useState, useMemo, useEffect, useCallback } from "react";
+import { usePathname } from "next/navigation";
 import useSWR from "swr";
 import { useDebounce } from "@/app/hooks/useDebounce";
-import { useSession } from "next-auth/react";
-import { useToast } from "@/components/feedback/ToastProvider";
-import ConfirmModal from "@/components/modal/ConfirmModal";
 import Summary, { SummaryCard } from "@/components/ui/Summary";
+import DataTableToolbar from "@/components/ui/DataTableToolbar";
+import DataTable, { DataTableColumn } from "@/components/ui/DataTable";
+import AccessDenied from "@/components/feedback/AccessDenied";
+import { useSession } from "next-auth/react";
 
-import type { Branch } from "@prisma/client";
+/* -------------------- TYPES (MATCH API EXACTLY) -------------------- */
 
-/* ================= Fetcher ================= */
-const fetcher = (url: string) =>
-  fetch(url, { credentials: "include" }).then(res => res.json());
-
-/* ================= Skeleton ================= */
-const SkeletonRow = () => (
-  <tr className="animate-pulse">
-    {Array.from({ length: 4 }).map((_, i) => (
-      <td key={i} className="p-4">
-        <div className="h-4 bg-gray-200 rounded w-full" />
-      </td>
-    ))}
-  </tr>
-);
-
-/* ================= Custom User ================= */
-interface CustomUser {
-  organizationId: string;
-  organizationName: string;
+interface BranchPersonnel {
+  id: string;
+  name: string | null;
+  email: string;
+  role: string;
 }
 
-/* ================= Page ================= */
-export default function BranchesPage() {
-  const toast = useToast();
-  const { data: session } = useSession();
-  const user = session?.user as CustomUser | undefined;
+interface BranchWithDetails {
+  id: string;
+  organizationId: string;
+  name: string;
+  location: string | null;
+  active: boolean;
+  deletedAt: Date | null;
+  createdAt: Date;
+  updatedAt: Date;
 
-  const organizationId = user?.organizationId ?? "";
-  const organizationName = user?.organizationName ?? "—";
+  personnel: BranchPersonnel[];
+
+  personnelCount: number;
+  productCount: number;
+  orderCount: number;
+  salesTotal: number;
+
+  receiptsCount: number;
+  notificationsCount: number;
+  activityLogsCount: number;
+}
+
+interface BranchListResponse {
+  branches: BranchWithDetails[];
+  total: number;
+  pageSize: number;
+}
+
+/* -------------------- FETCHER -------------------- */
+
+const fetcher = async (url: string): Promise<BranchListResponse> => {
+  const res = await fetch(url, { credentials: "include" });
+
+  if (!res.ok) {
+    throw new Error("Failed to fetch branches");
+  }
+
+  return res.json();
+};
+
+/* -------------------- SORT / FILTER -------------------- */
+
+const SORT_VALUES = ["recent", "az"] as const;
+type SortOrder = (typeof SORT_VALUES)[number];
+
+const FILTER_OPTIONS = [
+  { label: "All", value: "" },
+  { label: "Active", value: "active" },
+  { label: "Inactive", value: "inactive" },
+];
+
+/* -------------------- PAGE -------------------- */
+
+export default function BranchesPage() {
+
+  const { data: session } = useSession();
+
+  const isAdmin = session?.user?.role === "ADMIN";
+
+  if (!isAdmin) return <AccessDenied />;
+
+  const pathname = usePathname();
+
+  /* ---------------- STATE ---------------- */
 
   const [page, setPage] = useState(1);
-  const [search, setSearch] = useState("");
-  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
-  const [confirmOpen, setConfirmOpen] = useState(false);
-  const [confirmAction, setConfirmAction] = useState<() => Promise<void>>(async () => {});
-  const [confirmMessage, setConfirmMessage] = useState("");
 
-  const debouncedSearch = useDebounce(search, 400);
+  const [search, setSearch] = useState("");
+
+  const [sortOrder, setSortOrder] =
+    useState<SortOrder>("recent");
+
+  const [refreshing, setRefreshing] =
+    useState(false);
+
+  const [filter, setFilter] =
+    useState<string>("");
+
+  const debouncedSearch =
+    useDebounce(search, 400);
+
+  /* ---------------- RESET PAGE ---------------- */
+
+  useEffect(() => {
+    setPage(1);
+  }, [debouncedSearch, sortOrder, filter]);
+
+  /* ---------------- QUERY ---------------- */
 
   const query = useMemo(() => {
-    const params = new URLSearchParams();
-    params.set("page", String(page));
-    params.set("pageSize", "10");
-    if (debouncedSearch) params.set("search", debouncedSearch);
-    return params.toString();
-  }, [page, debouncedSearch]);
 
-  const { data, isLoading, mutate } = useSWR(
-    organizationId ? `/api/dashboard/branches?organizationId=${organizationId}&${query}` : null,
+    const params = new URLSearchParams();
+
+    params.set("page", String(page));
+    params.set("perPage", "10");
+
+    if (debouncedSearch)
+      params.set("q", debouncedSearch);
+
+    if (filter)
+      params.set("status", filter);
+
+    return params.toString();
+
+  }, [page, debouncedSearch, filter]);
+
+  /* ---------------- FETCH ---------------- */
+
+  const {
+    data,
+    isLoading,
+    mutate,
+  } = useSWR<BranchListResponse>(
+    `/api/dashboard/branches?${query}`,
     fetcher,
     { keepPreviousData: true }
   );
 
-  const branches: Branch[] = data?.branches ?? [];
-  const total = data?.total ?? branches.length;
-  const pageSize = data?.pageSize ?? 10;
-  const pageCount = Math.max(1, Math.ceil(total / pageSize));
+  /* ---------------- DATA ---------------- */
 
-  /* ================= Summary ================= */
-  const summaryCards: SummaryCard[] = [
-    { id: "total", title: "Total Branches", value: total },
-    { id: "active", title: "Active Branches", value: branches.filter(b => b.active).length, color: "text-green-600" },
-    { id: "inactive", title: "Inactive Branches", value: branches.filter(b => !b.active).length, color: "text-gray-500" },
-  ];
+  const branches =
+    data?.branches ?? [];
 
-  /* ================= Selection ================= */
-  const toggleSelect = (id: string) => {
-    setSelectedIds(prev => {
-      const next = new Set(prev);
-      next.has(id) ? next.delete(id) : next.add(id);
-      return next;
-    });
-  };
+  const total =
+    data?.total ?? 0;
 
-  const toggleSelectAll = () => {
-    const all = branches.every(b => selectedIds.has(b.id));
-    setSelectedIds(all ? new Set() : new Set(branches.map(b => b.id)));
-  };
+  const pageSize =
+    data?.pageSize ?? 10;
 
-  const isAllSelected = branches.length > 0 && branches.every(b => selectedIds.has(b.id));
-  const isIndeterminate = selectedIds.size > 0 && !isAllSelected;
+  const pageCount =
+    Math.max(1, Math.ceil(total / pageSize));
 
-  /* ================= Actions ================= */
-  const bulkDelete = () => {
-    setConfirmMessage(`Delete ${selectedIds.size} selected branches?`);
-    setConfirmAction(() => async () => {
-      try {
-        await Promise.all([...selectedIds].map(id =>
-          fetch(`/api/dashboard/branches/${id}`, { method: "DELETE" })
-        ));
-        toast.addToast({ type: "success", message: "Branches deleted" });
-        setSelectedIds(new Set());
-        mutate();
-      } catch {
-        toast.addToast({ type: "error", message: "Delete failed" });
-      } finally {
-        setConfirmOpen(false);
-      }
-    });
-    setConfirmOpen(true);
-  };
+  /* ---------------- SUMMARY ---------------- */
 
-  const toggleActive = (branch: Branch) => {
-    setConfirmMessage(
-      `${branch.active ? "Deactivate" : "Activate"} branch "${branch.name}"?`
+  const summaryCards: SummaryCard[] =
+    useMemo(() => {
+
+      const activeCount =
+        branches.filter(b => b.active).length;
+
+      const inactiveCount =
+        branches.filter(b => !b.active).length;
+
+      const personnelTotal =
+        branches.reduce(
+          (sum, b) => sum + b.personnelCount,
+          0
+        );
+
+      return [
+        {
+          id: "total",
+          title: "Total Branches",
+          value: total,
+        },
+        {
+          id: "active",
+          title: "Active Branches",
+          value: activeCount,
+          color: "text-green-600",
+        },
+        {
+          id: "inactive",
+          title: "Inactive Branches",
+          value: inactiveCount,
+          color: "text-gray-500",
+        },
+        {
+          id: "personnel",
+          title: "Total Personnel",
+          value: personnelTotal,
+        },
+      ];
+
+    }, [branches, total]);
+
+  /* ---------------- FILTER / SORT ---------------- */
+
+  const filteredBranches =
+    useMemo(() => {
+
+      let result = branches;
+
+      if (filter === "active")
+        result = result.filter(b => b.active);
+
+      if (filter === "inactive")
+        result = result.filter(b => !b.active);
+
+      if (sortOrder === "az")
+        result = [...result].sort(
+          (a, b) => a.name.localeCompare(b.name)
+        );
+
+      if (sortOrder === "recent")
+        result = [...result].sort(
+          (a, b) =>
+            new Date(b.updatedAt).getTime()
+            - new Date(a.updatedAt).getTime()
+        );
+
+      return result;
+
+    }, [branches, filter, sortOrder]);
+
+  /* ---------------- EXPORT ---------------- */
+
+  const exportData =
+    useMemo(() =>
+      filteredBranches.map(b => ({
+
+        Name: b.name,
+
+        Status:
+          b.active
+            ? "Active"
+            : "Inactive",
+
+        Location:
+          b.location ?? "",
+
+        Personnel:
+          b.personnelCount,
+
+        Products:
+          b.productCount,
+
+        Orders:
+          b.orderCount,
+
+        Sales:
+          b.salesTotal,
+
+        CreatedAt:
+          b.createdAt,
+
+        UpdatedAt:
+          b.updatedAt,
+
+      })),
+      [filteredBranches]
     );
-    setConfirmAction(() => async () => {
-      try {
-        await fetch(`/api/dashboard/branches/${branch.id}`, {
-          method: "PATCH",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ active: !branch.active }),
-        });
-        toast.addToast({ type: "success", message: "Status updated" });
-        mutate();
-      } catch {
-        toast.addToast({ type: "error", message: "Update failed" });
-      } finally {
-        setConfirmOpen(false);
-      }
-    });
-    setConfirmOpen(true);
-  };
 
-  /* ================= Render ================= */
+  /* ---------------- COLUMNS ---------------- */
+
+  const columns:
+    DataTableColumn<BranchWithDetails>[] =
+    useMemo(() => [
+
+      {
+        key: "name",
+        header: "Branch",
+        render: b => b.name,
+      },
+
+      {
+        key: "location",
+        header: "Location",
+        render: b => b.location ?? "-",
+      },
+
+      {
+        key: "active",
+        header: "Status",
+        render: b =>
+          b.active
+            ? "Active"
+            : "Inactive",
+      },
+
+      {
+        key: "personnel",
+        header: "Personnel",
+        render: b => b.personnelCount,
+      },
+
+      {
+        key: "updatedAt",
+        header: "Last Updated",
+        render: b =>
+          new Date(b.updatedAt)
+            .toLocaleDateString(),
+      },
+
+    ], []);
+
+  /* ---------------- TABLE HELPERS ---------------- */
+
+  const resolveRowId =
+    useCallback(
+      (row: BranchWithDetails) => row.id,
+      []
+    );
+
+  const tableId =
+    useMemo(() =>
+      pathname
+        ? pathname
+            .replace(/^\//, "")
+            .replace(/\//g, "-")
+        : "branches-table",
+      [pathname]
+    );
+
+  const handleRefresh =
+    async () => {
+
+      setRefreshing(true);
+
+      await mutate();
+
+      setRefreshing(false);
+
+    };
+
+  const sortOptions =
+    useMemo(() => [
+
+      {
+        value: "recent" as SortOrder,
+        label: "Recently Updated",
+      },
+
+      {
+        value: "az" as SortOrder,
+        label: "Name (A → Z)",
+      },
+
+    ], []);
+
+  /* ---------------- UI ---------------- */
+
   return (
     <div className="flex flex-col space-y-4 min-h-[calc(100vh-4rem)] p-4">
-      {/* Summary */}
-      <Summary cardsData={summaryCards} />
 
-      {/* Top Bar */}
-      <div className="sticky top-0 z-40 bg-white p-3 flex items-center gap-2 shadow-sm">
-        <input
-          type="text"
-          placeholder="Search branches"
-          value={search}
-          onChange={e => setSearch(e.target.value)}
-          className="border rounded-lg p-2 text-sm h-10 min-w-[280px]"
-        />
-
-        <button
-          onClick={() => mutate()}
-          className="w-10 h-10 rounded-full bg-gray-100 flex items-center justify-center"
-        >
-          <i className="bx bx-refresh text-lg" />
-        </button>
-
-        {selectedIds.size > 0 && (
-          <button
-            onClick={bulkDelete}
-            className="w-10 h-10 rounded-full bg-gray-100 flex items-center justify-center"
-          >
-            <i className="bx bx-trash text-red-600 text-lg" />
-          </button>
-        )}
-      </div>
-
-      {/* Table */}
-      <div className="flex-1 overflow-x-auto">
-        <table className="w-full text-sm table-fixed border-separate border-spacing-y-3">
-          <thead className="text-xs bg-gray-100 uppercase text-gray-500 text-center">
-            <tr>
-              <th className="w-10 p-3">
-                <input
-                  type="checkbox"
-                  checked={isAllSelected}
-                  ref={el => { if (el) el.indeterminate = isIndeterminate; }}
-                  onChange={toggleSelectAll}
-                />
-              </th>
-              <th className="p-4">Branch</th>
-              <th className="p-4">Organization</th>
-              <th className="p-4">Status</th>
-            </tr>
-          </thead>
-
-          <tbody>
-            {isLoading && Array.from({ length: 8 }).map((_, i) => <SkeletonRow key={i} />)}
-
-            {!isLoading && branches.map(branch => {
-              const selected = selectedIds.has(branch.id);
-
-              return (
-                <tr
-                  key={branch.id}
-                  className={`
-                    bg-white rounded-xl shadow-sm transition cursor-pointer
-                    hover:bg-blue-50
-                    ${selected ? "bg-blue-100" : ""}
-                  `}
-                >
-                  <td className="p-4 text-center">
-                    <input
-                      type="checkbox"
-                      checked={selected}
-                      onClick={e => e.stopPropagation()}
-                      onChange={() => toggleSelect(branch.id)}
-                    />
-                  </td>
-                  <td className="p-4 font-medium text-center">{branch.name}</td>
-                  <td className="p-4 text-center">{organizationName}</td>
-                  <td className="p-4 text-center">
-                    <span
-                      onClick={() => toggleActive(branch)}
-                      className={`px-3 py-1 rounded-full text-xs font-semibold cursor-pointer
-                        ${branch.active ? "bg-green-100 text-green-700" : "bg-gray-200 text-gray-600"}
-                      `}
-                    >
-                      {branch.active ? "Active" : "Inactive"}
-                    </span>
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      </div>
-
-      {/* Pagination */}
-      <div className="flex justify-between items-center text-xs">
-        <span>Total: {total}</span>
-        <div className="flex gap-2 items-center">
-          <button disabled={page <= 1} onClick={() => setPage(p => p - 1)}>Prev</button>
-          <span>{page} / {pageCount}</span>
-          <button disabled={page >= pageCount} onClick={() => setPage(p => p + 1)}>Next</button>
-        </div>
-      </div>
-
-      {/* Confirm */}
-      <ConfirmModal
-        open={confirmOpen}
-        title="Confirm Action"
-        message={confirmMessage}
-        destructive
-        onClose={() => setConfirmOpen(false)}
-        onConfirm={confirmAction}
+      <Summary
+        cardsData={summaryCards}
+        loading={isLoading}
       />
+
+      <DataTableToolbar
+        search={search}
+        onSearchChange={setSearch}
+        onRefresh={handleRefresh}
+        refreshing={refreshing}
+        sortOrder={sortOrder}
+        onSortChange={setSortOrder}
+        sortOptions={sortOptions}
+        exportData={exportData}
+        exportFileName="branches.csv"
+        filters={[
+          {
+            label: "Status",
+            value: filter,
+            defaultValue: "",
+            options: FILTER_OPTIONS,
+            onChange: setFilter,
+          },
+        ]}
+      />
+
+      <DataTable
+        tableId={tableId}
+        data={filteredBranches}
+        columns={columns}
+        getRowId={resolveRowId}
+        loading={isLoading}
+        dateField="createdAt"
+      />
+
+      <div className="flex justify-between text-xs pt-2">
+
+        <span>Total: {total}</span>
+
+        <div className="flex gap-3">
+
+          <button
+            disabled={page <= 1}
+            onClick={() =>
+              setPage(p => Math.max(1, p - 1))
+            }
+          >
+            Prev
+          </button>
+
+          <span>
+            {page} / {pageCount}
+          </span>
+
+          <button
+            disabled={page >= pageCount}
+            onClick={() =>
+              setPage(p =>
+                Math.min(pageCount, p + 1)
+              )
+            }
+          >
+            Next
+          </button>
+
+        </div>
+
+      </div>
+
     </div>
   );
 }

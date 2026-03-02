@@ -1,9 +1,9 @@
 "use client";
 
 import { useState, useMemo, useEffect, useCallback } from "react";
+import { usePathname } from "next/navigation";
 import useSWR from "swr";
 import { useDebounce } from "@/app/hooks/useDebounce";
-import { useToast } from "@/components/feedback/ToastProvider";
 import Summary, { SummaryCard } from "@/components/ui/Summary";
 import DataTableToolbar from "@/components/ui/DataTableToolbar";
 import DataTable, { DataTableColumn } from "@/components/ui/DataTable";
@@ -30,19 +30,21 @@ const SORT_VALUES = ["", "az", "newest"] as const;
 type SortOrder = (typeof SORT_VALUES)[number];
 
 export default function InventoryPage() {
-  const toast = useToast();
+  const pathname = usePathname();
 
   /* ---------------- State ---------------- */
   const [page, setPage] = useState(1);
   const [search, setSearch] = useState("");
   const [sortOrder, setSortOrder] = useState<SortOrder>("newest");
   const [refreshing, setRefreshing] = useState(false);
-  const [tagFilter, setTagFilter] = useState<string>("");
+
+  // ✅ Multi-select tag filter state
+  const [tagFilterArray, setTagFilterArray] = useState<InventoryProduct["tag"][]>([]);
 
   const debouncedSearch = useDebounce(search, 400);
 
   /* ---------------- Reset Page ---------------- */
-  useEffect(() => setPage(1), [debouncedSearch, sortOrder, tagFilter]);
+  useEffect(() => setPage(1), [debouncedSearch, sortOrder, tagFilterArray]);
 
   /* ---------------- Data Fetch ---------------- */
   const query = useMemo(() => {
@@ -80,15 +82,12 @@ export default function InventoryPage() {
     const enrichedProducts = products.map((p) => {
       const stock = p.stock ?? 0;
       const reorderLevel = p.reorderLevel ?? Infinity;
-      const lastRestocked = p.lastRestockedAt
-        ? new Date(p.lastRestockedAt)
-        : null;
+      const lastRestocked = p.lastRestockedAt ? new Date(p.lastRestockedAt) : null;
 
       totalQuantity += stock;
       totalValue += stock * (p.sellingPrice ?? 0);
 
       let tag: InventoryProduct["tag"];
-
       if (!lastRestocked || lastRestocked < oneYearAgo) {
         tag = "DISCONTINUED";
         discontinuedCount++;
@@ -125,11 +124,13 @@ export default function InventoryPage() {
     };
   }, [products]);
 
-  /* ---------------- Frontend Tag Filtering ---------------- */
+  /* ---------------- Frontend Tag Filtering (multi-select) ---------------- */
   const filteredProducts = useMemo(() => {
-    if (!tagFilter) return computed.enrichedProducts;
-    return computed.enrichedProducts.filter((p) => p.tag === tagFilter);
-  }, [computed.enrichedProducts, tagFilter]);
+    if (!tagFilterArray.length) return computed.enrichedProducts;
+    return computed.enrichedProducts.filter((p) =>
+      tagFilterArray.includes(p.tag)
+    );
+  }, [computed.enrichedProducts, tagFilterArray]);
 
   /* ---------------- CSV Export ---------------- */
   const exportData = useMemo(
@@ -138,9 +139,7 @@ export default function InventoryPage() {
         Name: p.name,
         SKU: p.sku,
         Category: p.category?.name ?? "",
-        Price: p.sellingPrice
-          ? `₦${p.sellingPrice.toLocaleString()}`
-          : "₦0",
+        Price: p.sellingPrice ? `₦${p.sellingPrice.toLocaleString()}` : "₦0",
         Stock: p.stock,
         Supplier: p.vendor?.name ?? "",
         Tag: p.tag,
@@ -156,9 +155,7 @@ export default function InventoryPage() {
       {
         id: "totalValue",
         title: "Total Value",
-        value: computed.totalValue
-          ? `₦${computed.totalValue.toLocaleString()}`
-          : "₦0",
+        value: computed.totalValue ? `₦${computed.totalValue.toLocaleString()}` : "₦0",
       },
       { id: "lowStock", title: "Low Stock", value: computed.lowStockCount },
       { id: "outOfStock", title: "Out of Stock", value: computed.outOfStockCount },
@@ -211,29 +208,23 @@ export default function InventoryPage() {
         },
       },
       { key: "vendor", header: "Supplier", render: (p) => p.vendor?.name ?? "-" },
-      {
-        key: "lastRestockedAt",
-        header: "Last Restocked",
-        render: (p) =>
-          p.lastRestockedAt
-            ? new Date(p.lastRestockedAt).toLocaleDateString()
-            : "-",
-      },
     ],
     []
   );
 
   const resolveRowId = useCallback(
-    (row: InventoryProduct, index: number) =>
-      row.branchProductId ?? `row-${index}`,
+    (row: InventoryProduct, index: number) => row.branchProductId ?? `row-${index}`,
     []
   );
+
+  const tableId = useMemo(() => pathname ? pathname.replace(/^\//, "").replace(/\//g, "-") : "table", [pathname]);
 
   return (
     <div className="flex flex-col space-y-4 min-h-[calc(100vh-4rem)] p-4">
       <Summary cardsData={summaryCards} loading={isLoading} />
 
-      <DataTableToolbar<InventoryProduct, SortOrder>
+      {/* ================= DATA TABLE TOOLBAR ================= */}
+      <DataTableToolbar<InventoryProduct, SortOrder, InventoryProduct["tag"]>
         search={search}
         onSearchChange={setSearch}
         onRefresh={handleRefresh}
@@ -247,20 +238,22 @@ export default function InventoryPage() {
         filters={[
           {
             label: "Tag",
-            value: tagFilter as InventoryProduct["tag"],
-            defaultValue: "" as InventoryProduct["tag"],
+            value: tagFilterArray,
+            defaultValue: [] as InventoryProduct["tag"][],
             options: computed.filters,
-            onChange: (val: string) => setTagFilter(val),
+            onChange: setTagFilterArray, // now fully multi-select
           },
         ]}
       />
 
-      <DataTable
+      <DataTable<InventoryProduct>
+        tableId={tableId}
         data={filteredProducts}
         columns={columns}
         getRowId={resolveRowId}
         loading={isLoading}
-        onRowClick={(p) => `/dashboard/inventory/${p.branchProductId}`} // returns URL string
+        onRowClick={(p) => `/dashboard/inventory/${p.branchProductId}`}
+        dateField="lastRestockedAt"
       />
 
       <div className="flex justify-between items-center text-xs pt-2">
@@ -273,9 +266,7 @@ export default function InventoryPage() {
           >
             Prev
           </button>
-          <span>
-            {page} / {pageCount}
-          </span>
+          <span>{page} / {pageCount}</span>
           <button
             disabled={page >= pageCount}
             onClick={() => setPage((p) => Math.min(pageCount, p + 1))}

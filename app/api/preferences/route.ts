@@ -1,158 +1,228 @@
-// pages/api/preferences/route.ts
-
 import { NextRequest, NextResponse } from "next/server";
 import prisma from "@/lib/prisma";
 import { getServerSession } from "next-auth/next";
 import { authOptions } from "@/lib/auth";
+import {
+  PreferenceCategory,
+} from "@prisma/client";
 
-/* ---------------------------------- */
-/* TYPES / ENUMS */
-/* ---------------------------------- */
-export type PreferenceScope = "USER" | "BRANCH" | "ORGANIZATION";
-export type PreferenceCategory =
-  | "UI"
-  | "LAYOUT"
-  | "TABLE"
-  | "NOTIFICATION"
-  | "SYSTEM";
+/* ============================================================
+   In-Memory Cache (per server instance)
+   ============================================================ */
 
-interface PreferencePayload {
+type CacheEntry<T = unknown> = {
+  value: T;
+  expiresAt: number;
+};
+
+const CACHE_TTL = 1000 * 60 * 5; // 5 minutes
+const preferenceCache = new Map<string, CacheEntry<unknown>>();
+
+function buildCacheKey(params: {
   organizationId: string;
-  branchId?: string;
-  personnelId?: string;
-  scope: PreferenceScope;
-  category: PreferenceCategory;
+  category: string;
   key: string;
-  target?: string;
-  value: unknown;
+  target: string | null;
+  personnelId: string;
+  branchId: string | null;
+}) {
+  return [
+    params.organizationId,
+    params.category,
+    params.key,
+    params.target ?? "null",
+    params.personnelId,
+    params.branchId ?? "null",
+  ].join("|");
 }
 
-/* ---------------------------------- */
-/* HELPERS */
-/* ---------------------------------- */
-function normalizeId(id?: string | null): string | undefined {
-  if (!id || id === "undefined") return undefined;
-  return id;
+function getFromCache(key: string): unknown {
+  const entry = preferenceCache.get(key);
+  if (!entry) return null;
+
+  if (Date.now() > entry.expiresAt) {
+    preferenceCache.delete(key);
+    return null;
+  }
+
+  return entry.value;
 }
 
-/* Preference resolution priority
-   1 → USER + BRANCH
-   2 → USER (global)
-   3 → BRANCH
-   4 → ORGANIZATION
-*/
-function getPreferenceLevel(pref: {
-  scope: PreferenceScope;
-  personnelId?: string | null;
-  branchId?: string | null;
-}): number {
-  if (pref.scope === "USER" && pref.personnelId && pref.branchId) return 1;
-  if (pref.scope === "USER" && pref.personnelId) return 2;
-  if (pref.scope === "BRANCH" && pref.branchId) return 3;
-  return 4;
+function setCache(key: string, value: unknown): void {
+  preferenceCache.set(key, {
+    value,
+    expiresAt: Date.now() + CACHE_TTL,
+  });
 }
 
-/* ---------------------------------- */
-/* GET /api/preferences */
-/* ---------------------------------- */
+function invalidateCacheForOrg(orgId: string) {
+  for (const key of preferenceCache.keys()) {
+    if (key.startsWith(orgId)) {
+      preferenceCache.delete(key);
+    }
+  }
+}
+
+/* ============================================================
+   GET /api/preferences
+   Deterministic Hierarchical Resolution
+   USER → BRANCH → ORGANIZATION
+   ============================================================ */
+
 export async function GET(req: NextRequest) {
   try {
+    const session = await getServerSession(authOptions);
+
+    if (!session?.user?.id || !session.user.organizationId) {
+      return NextResponse.json(
+        { success: false, error: "Unauthorized" },
+        { status: 401 }
+      );
+    }
+
     const url = new URL(req.url);
 
-    const organizationId = normalizeId(url.searchParams.get("organizationId"));
     const category = url.searchParams.get(
       "category"
     ) as PreferenceCategory | null;
+
     const key = url.searchParams.get("key");
+    const target = url.searchParams.get("target") ?? null;
 
-    let branchId = normalizeId(url.searchParams.get("branchId"));
-    let personnelId = normalizeId(url.searchParams.get("personnelId"));
-    const target = normalizeId(url.searchParams.get("target"));
-
-    if (!organizationId || !category || !key) {
+    if (!category || !key) {
       return NextResponse.json(
-        {
-          success: false,
-          error: "organizationId, category and key are required",
-        },
+        { success: false, error: "category and key are required" },
         { status: 400 }
       );
     }
 
-    // Session fallback
-    const session = await getServerSession(authOptions);
-    if (!personnelId && session?.user?.id) {
-      personnelId = session.user.id;
-    }
-    if (!branchId && session?.user?.branchId) {
-      branchId = session.user.branchId ?? undefined;
-    }
+    const organizationId = session.user.organizationId;
+    const personnelId = session.user.id;
+    const branchId = session.user.branchId ?? null;
 
-    // Build scope resolution tree
-    const orConditions: Array<{
-      scope: PreferenceScope;
-      branchId: string | null;
-      personnelId: string | null;
-    }> = [
-      { scope: "ORGANIZATION", branchId: null, personnelId: null },
-    ];
+    /* -------------------------
+       Cache Check
+    -------------------------- */
 
-    if (branchId) {
-      orConditions.push({
-        scope: "BRANCH",
-        branchId,
-        personnelId: null,
+    const cacheKey = buildCacheKey({
+      organizationId,
+      category,
+      key,
+      target,
+      personnelId,
+      branchId,
+    });
+
+    const cached = getFromCache(cacheKey);
+    if (cached !== null) {
+      return NextResponse.json({
+        success: true,
+        preference: cached,
+        cached: true,
       });
     }
 
-    if (personnelId) {
-      if (branchId) {
-        orConditions.push({
+    /* -------------------------
+       Deterministic Fallback
+    -------------------------- */
+
+    // 1️⃣ USER (branch-specific)
+    if (personnelId && branchId) {
+      const userBranchPref = await prisma.preference.findFirst({
+        where: {
+          organizationId,
+          category,
+          key,
+          target,
           scope: "USER",
-          branchId,
           personnelId,
+          branchId,
+        },
+      });
+
+      if (userBranchPref) {
+        setCache(cacheKey, userBranchPref.value);
+        return NextResponse.json({
+          success: true,
+          preference: userBranchPref.value,
+          meta: { scope: "USER", level: 1 },
         });
       }
-
-      orConditions.push({
-        scope: "USER",
-        branchId: null,
-        personnelId,
-      });
     }
 
-    const preferences = await prisma.preference.findMany({
+    // 2️⃣ USER (global)
+    if (personnelId) {
+      const userGlobalPref = await prisma.preference.findFirst({
+        where: {
+          organizationId,
+          category,
+          key,
+          target,
+          scope: "USER",
+          personnelId,
+          branchId: null,
+        },
+      });
+
+      if (userGlobalPref) {
+        setCache(cacheKey, userGlobalPref.value);
+        return NextResponse.json({
+          success: true,
+          preference: userGlobalPref.value,
+          meta: { scope: "USER", level: 2 },
+        });
+      }
+    }
+
+    // 3️⃣ BRANCH
+    if (branchId) {
+      const branchPref = await prisma.preference.findFirst({
+        where: {
+          organizationId,
+          category,
+          key,
+          target,
+          scope: "BRANCH",
+          branchId,
+          personnelId: null,
+        },
+      });
+
+      if (branchPref) {
+        setCache(cacheKey, branchPref.value);
+        return NextResponse.json({
+          success: true,
+          preference: branchPref.value,
+          meta: { scope: "BRANCH", level: 3 },
+        });
+      }
+    }
+
+    // 4️⃣ ORGANIZATION
+    const orgPref = await prisma.preference.findFirst({
       where: {
         organizationId,
         category,
         key,
-        target: target ?? null,
-        OR: orConditions,
+        target,
+        scope: "ORGANIZATION",
+        branchId: null,
+        personnelId: null,
       },
     });
 
-    if (!preferences.length) {
+    if (orgPref) {
+      setCache(cacheKey, orgPref.value);
       return NextResponse.json({
         success: true,
-        preference: null,
+        preference: orgPref.value,
+        meta: { scope: "ORGANIZATION", level: 4 },
       });
     }
 
-    // Resolve highest-priority match
-    preferences.sort(
-      (a, b) => getPreferenceLevel(a) - getPreferenceLevel(b)
-    );
-
-    const resolved = preferences[0];
-
     return NextResponse.json({
       success: true,
-      preference: resolved.value,
-      meta: {
-        scope: resolved.scope,
-        branchId: resolved.branchId,
-        personnelId: resolved.personnelId,
-      },
+      preference: null,
     });
   } catch (error) {
     console.error("Error fetching preferences:", error);
@@ -163,67 +233,80 @@ export async function GET(req: NextRequest) {
   }
 }
 
-/* ---------------------------------- */
-/* POST /api/preferences */
-/* ---------------------------------- */
+/* ============================================================
+   POST /api/preferences
+   Safe Upsert + Cache Invalidation
+   ============================================================ */
+
 export async function POST(req: NextRequest) {
   try {
-    const body: PreferencePayload = await req.json();
     const session = await getServerSession(authOptions);
 
-    const sessionPersonnelId = session?.user?.id;
-    const sessionBranchId = session?.user?.branchId ?? undefined;
+    if (!session?.user?.id || !session.user.organizationId) {
+      return NextResponse.json(
+        { success: false, error: "Unauthorized" },
+        { status: 401 }
+      );
+    }
 
-    const organizationId = normalizeId(body.organizationId);
-    let branchId = normalizeId(body.branchId) ?? sessionBranchId;
-    let personnelId = normalizeId(body.personnelId) ?? sessionPersonnelId;
-
+    const body = await req.json();
     const { scope, category, key, target, value } = body;
 
-    // Required fields
-    if (!organizationId || !scope || !category || !key || value === undefined) {
+    if (!scope || !category || !key || value === undefined) {
       return NextResponse.json(
         {
           success: false,
-          error:
-            "Missing required fields: organizationId, scope, category, key, or value",
+          error: "Missing required fields",
         },
         { status: 400 }
       );
     }
 
-    // Scope validations
-    if (scope === "ORGANIZATION" && (branchId || personnelId)) {
+    const organizationId = session.user.organizationId;
+    const personnelId = session.user.id;
+    const branchId = session.user.branchId ?? null;
+
+    /* -------------------------
+       Role Enforcement
+    -------------------------- */
+
+    if (
+      scope === "ORGANIZATION" &&
+      !session.user.isOrgOwner &&
+      session.user.role !== "ADMIN"
+    ) {
       return NextResponse.json(
-        {
-          success: false,
-          error:
-            "ORGANIZATION scope cannot have branchId or personnelId",
-        },
+        { success: false, error: "Forbidden" },
+        { status: 403 }
+      );
+    }
+
+    if (scope === "BRANCH" && !branchId) {
+      return NextResponse.json(
+        { success: false, error: "No branch context" },
         { status: 400 }
       );
     }
 
-    if (scope === "BRANCH" && (!branchId || personnelId)) {
-      return NextResponse.json(
-        {
-          success: false,
-          error:
-            "BRANCH scope requires branchId and no personnelId",
-        },
-        { status: 400 }
-      );
+    /* -------------------------
+       Normalize Ownership
+    -------------------------- */
+
+    let finalBranchId: string | null = null;
+    let finalPersonnelId: string | null = null;
+
+    if (scope === "BRANCH") {
+      finalBranchId = branchId ?? null;
     }
 
-    if (scope === "USER" && !personnelId) {
-      return NextResponse.json(
-        {
-          success: false,
-          error: "USER scope requires personnelId",
-        },
-        { status: 400 }
-      );
+    if (scope === "USER") {
+      finalBranchId = branchId ?? null;
+      finalPersonnelId = personnelId ?? null;
     }
+
+    /* -------------------------
+       Upsert
+    -------------------------- */
 
     const preference = await prisma.preference.upsert({
       where: {
@@ -232,25 +315,29 @@ export async function POST(req: NextRequest) {
           category,
           key,
           organizationId,
-          branchId: branchId ?? null,
-          personnelId: personnelId ?? null,
+          branchId: finalBranchId,
+          personnelId: finalPersonnelId,
           target: target ?? null,
         },
       },
-      update: {
-        value, // updatedAt auto-handled by Prisma
-      },
+      update: { value },
       create: {
         organizationId,
-        branchId: branchId ?? null,
-        personnelId: personnelId ?? null,
+        branchId: finalBranchId,
+        personnelId: finalPersonnelId,
         scope,
         category,
         key,
-        value,
         target: target ?? null,
+        value,
       },
     });
+
+    /* -------------------------
+       Cache Invalidation
+    -------------------------- */
+
+    invalidateCacheForOrg(organizationId);
 
     return NextResponse.json({
       success: true,
