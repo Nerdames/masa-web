@@ -4,6 +4,8 @@ import { useState, useMemo, useEffect, useCallback } from "react";
 import useSWR from "swr";
 import { useDebounce } from "@/hooks/useDebounce";
 import { useToast } from "@/components/feedback/ToastProvider";
+import { usePathname } from "next/navigation";
+
 import Summary, { SummaryCard } from "@/components/ui/Summary";
 import DataTableToolbar from "@/components/ui/DataTableToolbar";
 import DataTable, { DataTableColumn } from "@/components/ui/DataTable";
@@ -30,17 +32,18 @@ const fetcher = async (url: string) => {
 };
 
 /* ================= Sort / Filter Types ================= */
-type VendorSort = "performance" | "newest" | "oldest" | "highest_spent" | "lowest_spent";
-type VendorStatusFilter = "all" | "active" | "inactive";
+type VendorSort = "Performance" | "Newest" | "Oldest" | "Highest Revenue" | "Lowest Revenue";
+type VendorStatusFilter = "All" | "Active" | "Inactive";
 
 export default function VendorsPage() {
-  const toast = useToast();
+  const { addToast } = useToast();
+  const pathname = usePathname();
 
   /* ---------------- State ---------------- */
   const [page, setPage] = useState(1);
   const [search, setSearch] = useState("");
-  const [status, setStatus] = useState<VendorStatusFilter>("all");
-  const [sortOrder, setSortOrder] = useState<VendorSort>("performance");
+  const [status, setStatus] = useState<VendorStatusFilter>("All");
+  const [sortOrder, setSortOrder] = useState<VendorSort>("Performance");
   const [refreshing, setRefreshing] = useState(false);
 
   const debouncedSearch = useDebounce(search, 400);
@@ -55,15 +58,19 @@ export default function VendorsPage() {
     params.set("limit", "10");
 
     if (debouncedSearch) params.set("search", debouncedSearch);
-    if (status !== "all") params.set("status", status);
+    if (status !== "All") params.set("status", status);
     if (sortOrder) params.set("sort", sortOrder);
 
     return params.toString();
   }, [page, debouncedSearch, status, sortOrder]);
 
-  const { data, isLoading, mutate } = useSWR(`/api/dashboard/vendors?${query}`, fetcher, {
+  const { data, error, isLoading, mutate } = useSWR(`/api/dashboard/vendors?${query}`, fetcher, {
     keepPreviousData: true,
   });
+
+  useEffect(() => {
+    if (error) addToast({ type: "error", message: "Failed to fetch vendors" });
+  }, [error, addToast]);
 
   const vendors = data?.vendors ?? [];
   const total = data?.pagination?.total ?? 0;
@@ -72,51 +79,39 @@ export default function VendorsPage() {
 
   /* ---------------- Summary Cards ---------------- */
   const summaryCards: SummaryCard[] = useMemo(() => {
-    if (!data?.summary) return [];
+    const summary = data?.summary;
+    const leaders = data?.leaders;
+
     return [
-      { id: "totalVendors", title: "Total Vendors", value: data.summary.totalVendors },
+      { 
+        id: "totalVendors", 
+        title: "Total Vendors", 
+        value: summary?.totalVendors ?? 0 
+      },
       {
         id: "totalRevenue",
         title: "Total Revenue",
-        value: `₦${data.summary.totalRevenue.toLocaleString()}`,
+        value: `₦${(summary?.totalRevenue ?? 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}`,
       },
-      { id: "topVendor", title: "Top Vendor", value: data.leaders?.topVendor?.name ?? "-" },
-      { id: "fastestVendor", title: "Fastest Vendor", value: data.leaders?.fastestVendor?.name ?? "-" },
-      { id: "bestOverall", title: "Best Overall", value: data.leaders?.bestOverall?.name ?? "-" },
+      { 
+        id: "topVendor", 
+        title: "Top Vendor", 
+        value: leaders?.topVendor?.name || "N/A" 
+      },
+      { 
+        id: "fastestVendor", 
+        title: "Fastest Vendor", 
+        value: leaders?.fastestVendor?.name || "N/A" 
+      },
+      { 
+        id: "bestOverall", 
+        title: "Best Overall", 
+        value: leaders?.bestOverall?.name || "N/A" 
+      },
     ];
   }, [data]);
 
-  /* ---------------- Memoized Filters ---------------- */
-  const filters = useMemo(
-    () => [
-      {
-        label: "Status",
-        value: status,
-        defaultValue: "all" as VendorStatusFilter,
-        options: [
-          { label: "All", value: "all" as VendorStatusFilter },
-          { label: "Active", value: "active" as VendorStatusFilter },
-          { label: "Inactive", value: "inactive" as VendorStatusFilter },
-        ],
-        onChange: setStatus,
-      },
-    ],
-    [status]
-  );
-
-  /* ---------------- Memoized Sort Options ---------------- */
-  const sortOptions = useMemo(
-    () => [
-      { label: "Performance", value: "performance" as VendorSort },
-      { label: "Newest", value: "newest" as VendorSort },
-      { label: "Oldest", value: "oldest" as VendorSort },
-      { label: "Highest Revenue", value: "highest_spent" as VendorSort },
-      { label: "Lowest Revenue", value: "lowest_spent" as VendorSort },
-    ],
-    []
-  );
-
-  /* ---------------- Refresh ---------------- */
+  /* ---------------- Actions ---------------- */
   const handleRefresh = async () => {
     setRefreshing(true);
     await mutate();
@@ -126,69 +121,123 @@ export default function VendorsPage() {
   /* ---------------- Columns ---------------- */
   const columns: DataTableColumn<VendorFull>[] = useMemo(
     () => [
-      { key: "name", header: "Name", render: (v) => v.name },
-      { key: "email", header: "Email", render: (v) => v.email ?? "-" },
-      { key: "phone", header: "Phone", render: (v) => v.phone ?? "-" },
-      { key: "productsSupplied", header: "Products", render: (v) => v.productsSupplied },
-      { key: "totalRevenue", header: "Revenue", render: (v) => `₦${v.totalRevenue.toLocaleString()}` },
-      { key: "totalQuantitySold", header: "Sold", render: (v) => v.totalQuantitySold },
-      { key: "totalStockValue", header: "Stock Value", render: (v) => `₦${v.totalStockValue.toLocaleString()}` },
-      { key: "salesVelocity", header: "Velocity", render: (v) => v.salesVelocity.toFixed(2) },
-      { key: "performanceScore", header: "Score", render: (v) => v.performanceScore },
+      { key: "name", header: "NAME", render: (v) => v.name },
+      { key: "email", header: "EMAIL", render: (v) => v.email ?? "-" },
+      { 
+        key: "totalRevenue", 
+        header: "REVENUE", 
+        align: "right",
+        hideTooltip: true,
+        render: (v) => (
+          <span className="font-medium text-green-600">
+            ₦{v.totalRevenue.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+          </span>
+        ) 
+      },
+      { 
+        key: "totalStockValue", 
+        header: "STOCK VALUE", 
+        align: "right",
+        hideTooltip: true,
+        render: (v) => `₦${v.totalStockValue.toLocaleString(undefined, { minimumFractionDigits: 2 })}` 
+      },
+      { 
+        key: "productsSupplied", 
+        header: "PRODUCTS", 
+        align: "center",
+        hideTooltip: true,
+        render: (v) => v.productsSupplied 
+      },
+      { 
+        key: "totalQuantitySold", 
+        header: "SOLD", 
+        align: "center",
+        hideTooltip: true,
+        render: (v) => v.totalQuantitySold 
+      },
+      { 
+        key: "salesVelocity", 
+        header: "VELOCITY", 
+        align: "center",
+        hideTooltip: true,
+        render: (v) => v.salesVelocity.toFixed(2) 
+      },
+      { 
+        key: "performanceScore", 
+        header: "SCORE", 
+        align: "center",
+        render: (v) => v.performanceScore 
+      },
     ],
     []
   );
 
-  /* ---------------- Unique Row IDs ---------------- */
-  const resolveRowId = useCallback((row: VendorFull) => row.id, []);
+  const tableId = useMemo(() => pathname?.replace(/\//g, "-").replace(/^-/, "") || "vendors-table", [pathname]);
 
   return (
     <div className="flex flex-col space-y-4 min-h-[calc(100vh-4rem)] p-4">
-      {/* ---------------- Summary ---------------- */}
       <Summary cardsData={summaryCards} loading={isLoading} />
 
-      {/* ---------------- Toolbar ---------------- */}
       <DataTableToolbar<VendorFull, VendorSort, VendorStatusFilter>
         search={search}
         onSearchChange={setSearch}
         onRefresh={handleRefresh}
         refreshing={refreshing}
-        filters={filters}
+        filters={[
+          {
+            label: "STATUS",
+            value: status,
+            defaultValue: "All",
+            options: [
+              { label: "All Status", value: "All" },
+              { label: "Active", value: "Active" },
+              { label: "Inactive", value: "Inactive" },
+            ],
+            onChange: (val) => setStatus(val as VendorStatusFilter),
+          },
+        ]}
         sortOrder={sortOrder}
         onSortChange={setSortOrder}
-        sortOptions={sortOptions}
-        onAdd={() => window.open("/dashboard/vendors/add", "_blank")} // NEW TAB
+        sortOptions={[
+          { label: "Performance", value: "Performance" },
+          { label: "Newest", value: "Newest" },
+          { label: "Oldest", value: "Oldest" },
+          { label: "Highest Revenue", value: "Highest Revenue" },
+          { label: "Lowest Revenue", value: "Lowest Revenue" },
+        ]}
+        onAdd={() => window.open("/dashboard/vendors/add", "_blank")}
       />
 
-      {/* ---------------- Data Table ---------------- */}
       <DataTable
+        tableId={tableId}
         data={vendors}
         columns={columns}
-        getRowId={resolveRowId} // ensures each row is unique
+        getRowId={(row) => row.id}
         loading={isLoading}
-        onRowClick={(v) => window.open(`/dashboard/vendors/${v.id}`, "_blank")} // NEW TAB
+        onRowClick={(v) => window.open(`/dashboard/vendors/${v.id}`, "_blank")}
       />
 
-      {/* ---------------- Pagination ---------------- */}
       <div className="flex justify-between items-center text-xs pt-2">
-        <span>Total: {total}</span>
-        <div className="flex gap-3 items-center">
+        <span className="opacity-50 text-[10px] font-bold uppercase tracking-tighter">
+          TOTAL RECORDS: {total}
+        </span>
+        <div className="flex gap-4 items-center">
           <button
-            disabled={page <= 1}
+            disabled={page <= 1 || isLoading}
             onClick={() => setPage((p) => Math.max(1, p - 1))}
-            className="disabled:opacity-40"
+            className="hover:text-blue-500 disabled:opacity-30 transition-colors uppercase font-bold tracking-tighter"
           >
-            Prev
+            PREV
           </button>
-          <span>
+          <span className="bg-gray-100 px-2 py-0.5 rounded text-[10px] font-bold">
             {page} / {pageCount}
           </span>
           <button
-            disabled={page >= pageCount}
+            disabled={page >= pageCount || isLoading}
             onClick={() => setPage((p) => Math.min(pageCount, p + 1))}
-            className="disabled:opacity-40"
+            className="hover:text-blue-500 disabled:opacity-30 transition-colors uppercase font-bold tracking-tighter"
           >
-            Next
+            NEXT
           </button>
         </div>
       </div>

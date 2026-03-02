@@ -182,20 +182,26 @@ export default function InventoryPage() {
     []
   );
 
-  /* ---------------- Columns ---------------- */
+  /* ---------------- Columns (Price is now Green) ---------------- */
   const columns: DataTableColumn<InventoryProduct>[] = useMemo(
     () => [
       { key: "name", header: "Product", render: (p) => p.name, align: "left" },
-      { key: "sku", header: "SKU", render: (p) => p.sku },
+      { key: "sku", header: "SKU", render: (p) => p.sku, hideTooltip: true },
       { key: "category", header: "Category", render: (p) => p.category?.name ?? "-" },
       {
         key: "sellingPrice",
         header: "Price",
-        render: (p) => `₦${(p.sellingPrice ?? 0).toLocaleString()}`,
+        hideTooltip: true,
+        render: (p) => (
+          <span className="font-medium text-green-600">
+            ₦{(p.sellingPrice ?? 0).toLocaleString()}
+          </span>
+        ),
       },
       {
         key: "stock",
         header: "Stock",
+        hideTooltip: true,
         render: (p) => {
           const reorderLevel = p.reorderLevel ?? Infinity;
           const stockClass =
@@ -223,7 +229,6 @@ export default function InventoryPage() {
     <div className="flex flex-col space-y-4 min-h-[calc(100vh-4rem)] p-4">
       <Summary cardsData={summaryCards} loading={isLoading} />
 
-      {/* ================= DATA TABLE TOOLBAR ================= */}
       <DataTableToolbar<InventoryProduct, SortOrder, InventoryProduct["tag"]>
         search={search}
         onSearchChange={setSearch}
@@ -241,7 +246,7 @@ export default function InventoryPage() {
             value: tagFilterArray,
             defaultValue: [] as InventoryProduct["tag"][],
             options: computed.filters,
-            onChange: setTagFilterArray, // now fully multi-select
+            onChange: setTagFilterArray,
           },
         ]}
       />
@@ -256,21 +261,24 @@ export default function InventoryPage() {
         dateField="lastRestockedAt"
       />
 
+      {/* Pagination Footer */}
       <div className="flex justify-between items-center text-xs pt-2">
-        <span>Total: {total}</span>
-        <div className="flex gap-3 items-center">
+        <span className="opacity-50 text-[10px] font-bold uppercase tracking-tighter">
+          Total Records: {total}
+        </span>
+        <div className="flex gap-4 items-center">
           <button
             disabled={page <= 1}
             onClick={() => setPage((p) => Math.max(1, p - 1))}
-            className="disabled:opacity-40"
+            className="hover:text-blue-500 disabled:opacity-30 transition-colors uppercase font-bold tracking-tighter"
           >
             Prev
           </button>
-          <span>{page} / {pageCount}</span>
+          <span className="font-mono">{page} / {pageCount}</span>
           <button
             disabled={page >= pageCount}
             onClick={() => setPage((p) => Math.min(pageCount, p + 1))}
-            className="disabled:opacity-40"
+            className="hover:text-blue-500 disabled:opacity-30 transition-colors uppercase font-bold tracking-tighter"
           >
             Next
           </button>

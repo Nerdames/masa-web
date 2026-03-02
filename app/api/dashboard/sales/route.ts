@@ -12,7 +12,7 @@ import { Decimal } from "@prisma/client/runtime/library";
    ROLE CONTROL
 ============================================================ */
 
-const ALLOWED_ROLES = ["DEV", "ADMIN", "SALES", "CASHIER"] as const;
+const ALLOWED_ROLES = ["DEV", "ADMIN", "MANAGER", "SALES", "CASHIER"] as const;
 type AllowedRole = (typeof ALLOWED_ROLES)[number];
 
 const secret = process.env.NEXTAUTH_SECRET as string;

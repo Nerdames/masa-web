@@ -1,19 +1,18 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import bcrypt from "bcryptjs";
+import crypto from "crypto";
 
 import prisma from "@/lib/prisma";
 import { authOptions } from "@/lib/auth";
 
 import {
   Role,
-  PreferenceCategory,
-  PreferenceScope,
   Prisma,
 } from "@prisma/client";
 
 ////////////////////////////////////////////////////////////
-// SESSION TYPE
+// TYPES
 ////////////////////////////////////////////////////////////
 
 interface SessionUser {
@@ -26,69 +25,6 @@ interface AuthSession {
   user?: SessionUser;
 }
 
-////////////////////////////////////////////////////////////
-// RESPONSE DTOs
-////////////////////////////////////////////////////////////
-
-interface BranchAssignmentDTO {
-  branchId: string;
-  branchName: string;
-  branchLocation: string | null;
-  role: Role;
-}
-
-interface OrganizationDTO {
-  id: string;
-  name: string;
-  active: boolean;
-}
-
-interface BranchDTO {
-  id: string;
-  name: string;
-  location: string | null;
-  active: boolean;
-}
-
-interface PreferenceDTO {
-  id: string;
-  scope: PreferenceScope;
-  category: PreferenceCategory;
-  key: string;
-  target: string | null;
-  value: Prisma.JsonValue;
-}
-
-interface ProfileDTO {
-  id: string;
-  name: string | null;
-  email: string;
-  staffCode: string | null;
-
-  isOrgOwner: boolean;
-  disabled: boolean;
-
-  lastLogin: Date | null;
-  lastActivityAt: Date | null;
-
-  organization: OrganizationDTO;
-
-  branch: BranchDTO | null;
-
-  assignments: BranchAssignmentDTO[];
-
-  roles: Role[];
-
-  preferences: PreferenceDTO[];
-
-  createdAt: Date;
-  updatedAt: Date;
-}
-
-////////////////////////////////////////////////////////////
-// REQUEST DTO
-////////////////////////////////////////////////////////////
-
 interface UpdateProfileBody {
   name?: string;
   email?: string;
@@ -96,98 +32,59 @@ interface UpdateProfileBody {
   newPassword?: string;
 }
 
-////////////////////////////////////////////////////////////
-// DB TYPE
-////////////////////////////////////////////////////////////
-
-type PersonnelWithRelations =
-  Prisma.AuthorizedPersonnelGetPayload<{
-    include: {
-      organization: true;
-      branch: true;
-      branchAssignments: {
-        include: {
-          branch: true;
-        };
-      };
-      preferences: true;
-    };
-  }>;
+type PersonnelWithRelations = Prisma.AuthorizedPersonnelGetPayload<{
+  include: {
+    organization: true;
+    branch: true;
+    branchAssignments: { include: { branch: true } };
+    preferences: true;
+  };
+}>;
 
 ////////////////////////////////////////////////////////////
 // HELPERS
 ////////////////////////////////////////////////////////////
 
 async function requirePersonnel(): Promise<PersonnelWithRelations | null> {
-  const session = await getServerSession(authOptions) as AuthSession | null;
+  const session = (await getServerSession(authOptions)) as AuthSession | null;
+  if (!session?.user?.id) return null;
 
-  if (!session?.user?.id) {
-    return null;
-  }
-
-  const personnel = await prisma.authorizedPersonnel.findUnique({
+  return prisma.authorizedPersonnel.findFirst({
     where: {
       id: session.user.id,
+      deletedAt: null,
     },
     include: {
       organization: true,
-
       branch: true,
-
-      branchAssignments: {
-        include: {
-          branch: true,
-        },
-      },
-
+      branchAssignments: { include: { branch: true } },
       preferences: true,
     },
   });
-
-  return personnel;
 }
-
-////////////////////////////////////////////////////////////
-// ROLE RESOLUTION
-////////////////////////////////////////////////////////////
 
 function resolveRoles(personnel: PersonnelWithRelations): Role[] {
   const roles = new Set<Role>();
-
-  if (personnel.isOrgOwner) {
-    roles.add(Role.ADMIN);
-  }
-
-  for (const assignment of personnel.branchAssignments) {
-    roles.add(assignment.role);
-  }
-
+  if (personnel.isOrgOwner) roles.add(Role.ADMIN);
+  personnel.branchAssignments.forEach((a) => roles.add(a.role));
   return Array.from(roles);
 }
 
-////////////////////////////////////////////////////////////
-// DTO MAPPER
-////////////////////////////////////////////////////////////
-
-function mapProfileDTO(personnel: PersonnelWithRelations): ProfileDTO {
+function mapProfileDTO(personnel: PersonnelWithRelations) {
   return {
     id: personnel.id,
     name: personnel.name,
     email: personnel.email,
     staffCode: personnel.staffCode,
-
     isOrgOwner: personnel.isOrgOwner,
     disabled: personnel.disabled,
-
     lastLogin: personnel.lastLogin,
     lastActivityAt: personnel.lastActivityAt,
-
     organization: {
       id: personnel.organization.id,
       name: personnel.organization.name,
       active: personnel.organization.active,
     },
-
     branch: personnel.branch
       ? {
           id: personnel.branch.id,
@@ -196,29 +93,21 @@ function mapProfileDTO(personnel: PersonnelWithRelations): ProfileDTO {
           active: personnel.branch.active,
         }
       : null,
-
-    assignments: personnel.branchAssignments.map(
-      (assignment): BranchAssignmentDTO => ({
-        branchId: assignment.branch.id,
-        branchName: assignment.branch.name,
-        branchLocation: assignment.branch.location,
-        role: assignment.role,
-      })
-    ),
-
+    assignments: personnel.branchAssignments.map((a) => ({
+      branchId: a.branch.id,
+      branchName: a.branch.name,
+      branchLocation: a.branch.location,
+      role: a.role,
+    })),
     roles: resolveRoles(personnel),
-
-    preferences: personnel.preferences.map(
-      (pref): PreferenceDTO => ({
-        id: pref.id,
-        scope: pref.scope,
-        category: pref.category,
-        key: pref.key,
-        target: pref.target,
-        value: pref.value,
-      })
-    ),
-
+    preferences: personnel.preferences.map((p) => ({
+      id: p.id,
+      scope: p.scope,
+      category: p.category,
+      key: p.key,
+      target: p.target,
+      value: p.value,
+    })),
     createdAt: personnel.createdAt,
     updatedAt: personnel.updatedAt,
   };
@@ -232,24 +121,16 @@ export async function GET(): Promise<NextResponse> {
   try {
     const personnel = await requirePersonnel();
 
-    if (!personnel) {
-      return NextResponse.json(
-        { error: "Unauthorized" },
-        { status: 401 }
-      );
+    if (!personnel || personnel.disabled) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
-
-    const profile = mapProfileDTO(personnel);
 
     return NextResponse.json({
       success: true,
-      profile,
+      profile: mapProfileDTO(personnel),
     });
-
-  } catch (error: unknown) {
-
-    console.error("PROFILE_GET_ERROR", error);
-
+  } catch (error) {
+    console.error("GET_PROFILE_ERROR", error);
     return NextResponse.json(
       { error: "Failed to fetch profile" },
       { status: 500 }
@@ -261,42 +142,93 @@ export async function GET(): Promise<NextResponse> {
 // PATCH /api/profile
 ////////////////////////////////////////////////////////////
 
-export async function PATCH(
-  request: NextRequest
-): Promise<NextResponse> {
-
+export async function PATCH(request: NextRequest): Promise<NextResponse> {
   try {
-
     const personnel = await requirePersonnel();
 
-    if (!personnel) {
+    if (!personnel || personnel.disabled) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+
+    // 🔒 LOCKOUT CHECK
+    if (personnel.lockoutUntil && personnel.lockoutUntil > new Date()) {
       return NextResponse.json(
-        { error: "Unauthorized" },
-        { status: 401 }
+        {
+          error: `Account locked. Try again after ${personnel.lockoutUntil.toLocaleTimeString()}`,
+        },
+        { status: 403 }
       );
     }
 
-    const body: UpdateProfileBody =
-      (await request.json()) as UpdateProfileBody;
+    const body: UpdateProfileBody = await request.json();
+    const updateData: Prisma.AuthorizedPersonnelUpdateInput = {};
+    const logActions: string[] = [];
+    let emailChangeStarted = false;
 
-    /////////////////////////////////////////////////////////
-    // EMAIL VALIDATION
-    /////////////////////////////////////////////////////////
+    ////////////////////////////////////////////////////////////
+    // PASSWORD VALIDATION FOR SENSITIVE CHANGES
+    ////////////////////////////////////////////////////////////
 
-    if (
-      body.email &&
-      body.email !== personnel.email
-    ) {
+    const isSensitiveChange =
+      body.newPassword ||
+      (body.email && body.email !== personnel.email);
 
-      const existing =
-        await prisma.authorizedPersonnel.findUnique({
-          where: {
-            organizationId_email: {
-              organizationId: personnel.organizationId,
-              email: body.email,
-            },
+    if (isSensitiveChange) {
+      if (!body.currentPassword) {
+        return NextResponse.json(
+          { error: "Current password required for this change" },
+          { status: 400 }
+        );
+      }
+
+      const isValid = await bcrypt.compare(
+        body.currentPassword,
+        personnel.password
+      );
+
+      if (!isValid) {
+        const newFailCount = personnel.failedLoginAttempts + 1;
+        const lockoutTime =
+          newFailCount >= 5
+            ? new Date(Date.now() + 15 * 60 * 1000)
+            : null;
+
+        await prisma.authorizedPersonnel.update({
+          where: { id: personnel.id },
+          data: {
+            failedLoginAttempts: newFailCount,
+            lockoutUntil: lockoutTime,
           },
-          select: { id: true },
+        });
+
+        return NextResponse.json(
+          {
+            error: `Invalid password. ${Math.max(
+              0,
+              5 - newFailCount
+            )} attempts remaining.`,
+          },
+          { status: 400 }
+        );
+      }
+
+      // reset lockout counters
+      updateData.failedLoginAttempts = 0;
+      updateData.lockoutUntil = null;
+    }
+
+    ////////////////////////////////////////////////////////////
+    // EMAIL CHANGE (Verification Required)
+    ////////////////////////////////////////////////////////////
+
+    if (body.email && body.email !== personnel.email) {
+      const existing =
+        await prisma.authorizedPersonnel.findFirst({
+          where: {
+            organizationId: personnel.organizationId,
+            email: body.email,
+            deletedAt: null,
+          },
         });
 
       if (existing) {
@@ -305,86 +237,100 @@ export async function PATCH(
           { status: 400 }
         );
       }
-    }
 
-    /////////////////////////////////////////////////////////
-    // PASSWORD CHANGE
-    /////////////////////////////////////////////////////////
-
-    let passwordHash: string | undefined;
-
-    if (body.newPassword) {
-
-      if (!body.currentPassword) {
-        return NextResponse.json(
-          { error: "Current password required" },
-          { status: 400 }
-        );
-      }
-
-      const valid = await bcrypt.compare(
-        body.currentPassword,
-        personnel.password
+      const token = crypto.randomBytes(32).toString("hex");
+      const expires = new Date(
+        Date.now() + 24 * 60 * 60 * 1000
       );
 
-      if (!valid) {
-        return NextResponse.json(
-          { error: "Invalid current password" },
-          { status: 400 }
-        );
-      }
-
-      passwordHash = await bcrypt.hash(
-        body.newPassword,
-        12
-      );
-    }
-
-    /////////////////////////////////////////////////////////
-    // UPDATE
-    /////////////////////////////////////////////////////////
-
-    const updated =
-      await prisma.authorizedPersonnel.update({
-        where: {
-          id: personnel.id,
-        },
-
+      await prisma.verificationToken.create({
         data: {
-          name: body.name ?? personnel.name,
-          email: body.email ?? personnel.email,
-          ...(passwordHash
-            ? { password: passwordHash }
-            : {}),
-        },
-
-        include: {
-          organization: true,
-          branch: true,
-          branchAssignments: {
-            include: { branch: true },
-          },
-          preferences: true,
+          identifier: body.email,
+          token,
+          expires,
         },
       });
 
-    /////////////////////////////////////////////////////////
-    // RESPONSE
-    /////////////////////////////////////////////////////////
+      emailChangeStarted = true;
+      logActions.push(`Email change initiated to ${body.email}`);
 
-    const profile = mapProfileDTO(updated);
+      // TODO: send email with link:
+      // `${BASE_URL}/api/profile/verify?token=${token}`
+    }
+
+    ////////////////////////////////////////////////////////////
+    // NAME CHANGE
+    ////////////////////////////////////////////////////////////
+
+    if (body.name && body.name !== personnel.name) {
+      updateData.name = body.name;
+      logActions.push("Name updated");
+    }
+
+    ////////////////////////////////////////////////////////////
+    // PASSWORD CHANGE
+    ////////////////////////////////////////////////////////////
+
+    if (body.newPassword) {
+      updateData.password = await bcrypt.hash(body.newPassword, 12);
+      logActions.push("Password updated");
+    }
+
+    if (
+      Object.keys(updateData).length === 0 &&
+      !emailChangeStarted
+    ) {
+      return NextResponse.json(
+        { error: "No changes provided" },
+        { status: 400 }
+      );
+    }
+
+    ////////////////////////////////////////////////////////////
+    // TRANSACTION: UPDATE + LOG
+    ////////////////////////////////////////////////////////////
+
+    const updatedUser = await prisma.$transaction(async (tx) => {
+      let user = personnel;
+
+      if (Object.keys(updateData).length > 0) {
+        user = await tx.authorizedPersonnel.update({
+          where: { id: personnel.id },
+          data: updateData,
+          include: {
+            organization: true,
+            branch: true,
+            branchAssignments: {
+              include: { branch: true },
+            },
+            preferences: true,
+          },
+        });
+      }
+
+      await tx.activityLog.create({
+        data: {
+          organizationId: personnel.organizationId,
+          branchId: personnel.branchId ?? null,
+          personnelId: personnel.id,
+          action: "PROFILE_UPDATE",
+          meta: logActions.join("; "),
+        },
+      });
+
+      return user;
+    });
 
     return NextResponse.json({
       success: true,
-      profile,
+      emailChangeStarted,
+      profile: mapProfileDTO(updatedUser),
     });
 
-  } catch (error: unknown) {
-
-    console.error("PROFILE_UPDATE_ERROR", error);
-
+  } catch (error) {
+    console.error("PATCH_PROFILE_ERROR", error);
     return NextResponse.json(
-      { error: "Failed to update profile" },
+      { error: "Update failed" },
       { status: 500 }
     );
   }

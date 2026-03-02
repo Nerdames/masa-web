@@ -4,11 +4,10 @@ import React, { useState, useMemo, useCallback, useEffect } from "react";
 import useSWR from "swr";
 import { useDebounce } from "@/app/hooks/useDebounce";
 import { useToast } from "@/components/feedback/ToastProvider";
-import ConfirmModal from "@/components/modal/ConfirmModal";
 import DataTableToolbar from "@/components/ui/DataTableToolbar";
 import DataTable, { DataTableColumn } from "@/components/ui/DataTable";
 import Summary, { SummaryCard } from "@/components/ui/Summary";
-import { useRouter } from "next/navigation";
+import { useRouter, usePathname } from "next/navigation";
 
 /* ================= Types ================= */
 
@@ -38,19 +37,23 @@ const fetcher = (url: string) =>
 /* ================= Page ================= */
 
 export default function InvoicePage() {
-  const toast = useToast();
+  const { addToast } = useToast();
   const router = useRouter();
+  const pathname = usePathname();
 
   /* ---------- State ---------- */
   const [page, setPage] = useState(1);
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<"ALL" | InvoiceStatus>("ALL");
-  const [targetDate, setTargetDate] = useState("");
-  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
-  const [bulkMarkPaidOpen, setBulkMarkPaidOpen] = useState(false);
+  const [targetDate] = useState("");
   const [refreshing, setRefreshing] = useState(false);
 
   const debouncedSearch = useDebounce(search, 400);
+
+  // Reset page on filter/search change
+  useEffect(() => {
+    setPage(1);
+  }, [debouncedSearch, statusFilter, targetDate]);
 
   /* ---------- Query & Fetch ---------- */
   const query = useMemo(() => {
@@ -70,228 +73,171 @@ export default function InvoicePage() {
   );
 
   useEffect(() => {
-    if (error) toast.addToast({ type: "error", message: "Failed to fetch invoices" });
-  }, [error, toast]);
+    if (error) addToast({ type: "error", message: "Failed to fetch invoices" });
+  }, [error, addToast]);
 
   const invoices = data?.data ?? [];
   const total = data?.total ?? 0;
-  const pageCount = Math.max(1, Math.ceil(total / 10));
+  const pageCount = useMemo(() => Math.max(1, Math.ceil(total / 10)), [total]);
 
   /* ---------- Summary ---------- */
-  const paidCount = invoices.filter((i) => i.status === "PAID").length;
-  const unpaidCount = invoices.filter((i) => i.status !== "PAID").length;
+  const summaryCards: SummaryCard[] = useMemo(() => {
+    const paidCount = invoices.filter((i) => i.status === "PAID").length;
+    const unpaidCount = invoices.filter((i) => i.status !== "PAID").length;
 
-  const summaryCards: SummaryCard[] = [
-    { id: "total", title: "Total Invoices", value: total, filter: "ALL" },
-    { id: "paid", title: "Paid", value: paidCount, filter: "PAID", color: "text-green-600" },
-    {
-      id: "unpaid",
-      title: "Unpaid",
-      value: unpaidCount,
-      filter: "UNPAID",
-      color: unpaidCount === 0 ? "text-green-600" : "text-red-600",
-    },
-  ];
+    return [
+      { id: "total", title: "Total Invoices", value: total },
+      { id: "paid", title: "Paid Invoices", value: paidCount },
+      { 
+        id: "unpaid", 
+        title: "Unpaid/Partial", 
+        value: unpaidCount,
+        color: unpaidCount > 0 ? "text-orange-600" : "text-green-600" 
+      },
+    ];
+  }, [invoices, total]);
 
-  /* ---------- Selection Helpers ---------- */
-  const selectableIds = useMemo(
-    () => invoices.filter((i) => i.status !== "PAID" && i.status !== "VOIDED").map((i) => i.id),
-    [invoices]
-  );
-  const isAllSelected = selectableIds.length > 0 && selectableIds.every((id) => selectedIds.has(id));
-  const isIndeterminate = selectedIds.size > 0 && !isAllSelected;
-
-  const toggleSelect = useCallback((id: string) => {
-    setSelectedIds((prev) => {
-      const next = new Set(prev);
-      next.has(id) ? next.delete(id) : next.add(id);
-      return next;
-    });
-  }, []);
-
-  const toggleSelectAll = useCallback(() => {
-    setSelectedIds(isAllSelected ? new Set() : new Set(selectableIds));
-  }, [isAllSelected, selectableIds]);
-
-  /* ---------- Bulk Mark Paid ---------- */
-  const bulkMarkPaid = useCallback(async () => {
-    if (selectedIds.size === 0) return;
-    try {
-      const res = await fetch("/api/dashboard/invoices/mark-paid", {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ids: [...selectedIds] }),
-      });
-      if (!res.ok) throw new Error();
-      toast.addToast({ type: "success", message: "Invoices marked as paid" });
-      setSelectedIds(new Set());
-      setBulkMarkPaidOpen(false);
-      mutate();
-    } catch {
-      toast.addToast({ type: "error", message: "Failed to mark invoices as paid" });
-    }
-  }, [selectedIds, toast, mutate]);
-
+  /* ---------- Actions ---------- */
   const handleRefresh = useCallback(async () => {
     setRefreshing(true);
     await mutate();
-    setTimeout(() => setRefreshing(false), 300);
+    setRefreshing(false);
   }, [mutate]);
 
-  /* ---------- Columns for DataTable ---------- */
+  /* ---------- Table Styling ---------- */
+  const statusStyles = useCallback((status: InvoiceStatus) => {
+    switch (status) {
+      case "PAID": return "bg-green-100 text-green-700";
+      case "PARTIALLY_PAID": return "bg-blue-100 text-blue-700";
+      case "ISSUED": return "bg-yellow-100 text-yellow-700";
+      case "VOIDED": return "bg-red-100 text-red-700";
+      default: return "bg-gray-100 text-gray-700";
+    }
+  }, []);
+
+  /* ---------- Columns ---------- */
   const columns: DataTableColumn<Invoice>[] = useMemo(
     () => [
       {
         key: "id",
         header: "Invoice",
-        render: (row) => `#${row.id.slice(-6)}`,
-        align: "center",
+        render: (row) => <span className="font-mono text-[11px] font-bold">#{row.id.slice(-6).toUpperCase()}</span>,
       },
       {
         key: "buyer",
         header: "Buyer",
-        render: (row) => row.buyerName ?? "Walk-in",
-        align: "center",
-      },
-      {
-        key: "issuedBy",
-        header: "Issued By",
-        render: (row) => row.issuedByName ?? "-",
-        align: "center",
-      },
-      {
-        key: "subtotal",
-        header: "Subtotal",
-        render: (row) => `₦${row.subtotal?.toLocaleString() ?? "0"}`,
-        align: "center",
-      },
-      {
-        key: "tax",
-        header: "Tax",
-        render: (row) => `₦${row.tax?.toLocaleString() ?? "0"}`,
-        align: "center",
-      },
-      {
-        key: "discount",
-        header: "Discount",
-        render: (row) => `₦${row.discount?.toLocaleString() ?? "0"}`,
-        align: "center",
+        render: (row) => row.buyerName ?? "Walk-in Customer",
       },
       {
         key: "total",
-        header: "Total",
-        render: (row) => `₦${row.total.toLocaleString()}`,
-        align: "center",
-      },
-      {
-        key: "paidAmount",
-        header: "Paid",
-        render: (row) => `₦${row.paidAmount.toLocaleString()}`,
-        align: "center",
+        header: "Total Amount",
+        align: "right",
+        hideTooltip: true,
+        render: (row) => (
+          <span className="font-medium text-green-600">
+            ₦{row.total.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+          </span>
+        ),
       },
       {
         key: "balance",
         header: "Balance",
-        render: (row) => `₦${Math.max(row.balance, 0).toLocaleString()}`,
-        align: "center",
+        align: "right",
+        hideTooltip: true,
+        render: (row) => (
+          <span className={` ${row.balance > 0 ? "text-red-500 font-medium" : "opacity-50"}`}>
+            ₦{row.balance.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+          </span>
+        ),
       },
       {
         key: "status",
         header: "Status",
-        render: (row) => row.status,
         align: "center",
+        hideTooltip: true,
+        render: (row) => (
+          <span className={`px-2 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider ${statusStyles(row.status)}`}>
+            {row.status.replace("_", " ")}
+          </span>
+        ),
       },
       {
         key: "dueDate",
         header: "Due Date",
-        render: (row) =>
-          row.dueDate
-            ? new Date(row.dueDate).toLocaleDateString()
-            : "-",
         align: "center",
+        render: (row) => row.dueDate ? new Date(row.dueDate).toLocaleDateString() : "-",
       },
     ],
-    []
+    [statusStyles]
   );
 
-  /* ---------- Determine Overdue ---------- */
-  const isOverdue = useCallback((invoice: Invoice) => {
-    if (!invoice.dueDate) return false;
-    const today = new Date();
-    const due = new Date(invoice.dueDate);
-    return due < today && invoice.balance > 0;
-  }, []);
+  const tableId = useMemo(() => pathname?.replace(/\//g, "-").replace(/^-/, "") || "invoices-table", [pathname]);
 
-  /* ================= Render ================= */
   return (
     <div className="flex flex-col space-y-4 min-h-[calc(100vh-4rem)] p-4">
-      {/* ===== Summary ===== */}
-      <Summary cardsData={summaryCards} loading={false} />
+      <Summary cardsData={summaryCards} loading={isLoading} />
 
-      {/* ===== Toolbar ===== */}
       <DataTableToolbar
         search={search}
         onSearchChange={setSearch}
         onRefresh={handleRefresh}
         refreshing={refreshing}
-        selectedCount={selectedIds.size}
-        onBulkAction={() => setBulkMarkPaidOpen(true)}
         filters={[
           {
             label: "Status",
             value: statusFilter,
             defaultValue: "ALL",
             options: [
-              { label: "All", value: "ALL" },
+              { label: "All Status", value: "ALL" },
               { label: "Draft", value: "DRAFT" },
               { label: "Issued", value: "ISSUED" },
               { label: "Partially Paid", value: "PARTIALLY_PAID" },
               { label: "Paid", value: "PAID" },
               { label: "Voided", value: "VOIDED" },
             ],
-            onChange: setStatusFilter,
+            onChange: (val) => setStatusFilter(val as "ALL" | InvoiceStatus),
           },
         ]}
       />
 
-      {/* ===== Data Table ===== */}
       <DataTable
+        tableId={tableId}
         data={invoices}
         columns={columns}
         loading={isLoading}
-        selectable
-        selectedIds={selectedIds}
-        onToggleSelect={toggleSelect}
-        onToggleSelectAll={toggleSelectAll}
-        isAllSelected={isAllSelected}
-        isIndeterminate={isIndeterminate}
         onRowClick={(row) => router.push(`/dashboard/invoices/${row.id}`)}
-        groupByDate
-        getRowDate={(row) => row.issuedAt}
-        highlightDate={targetDate || undefined}
-        rowClassName={(row) => isOverdue(row) ? "bg-red-100" : ""}
+        dateField="issuedAt"
+        rowClassName={(row) => {
+          const isOverdue = row.dueDate && new Date(row.dueDate) < new Date() && row.balance > 0;
+          return isOverdue ? "bg-red-50/50" : "";
+        }}
       />
 
-      {/* ===== Pagination ===== */}
-      <div className="flex justify-between items-center text-xs">
-        <span>Total Invoices: {total}</span>
-        <div className="flex gap-2">
-          <button disabled={page <= 1} onClick={() => setPage((p) => p - 1)}>Prev</button>
-          <span>{page} / {pageCount}</span>
-          <button disabled={page >= pageCount} onClick={() => setPage((p) => p + 1)}>Next</button>
+      {/* Pagination Footer */}
+      <div className="flex justify-between items-center text-xs pt-2">
+        <span className="opacity-50 text-[10px] font-bold uppercase tracking-tighter">
+          Total Records: {total}
+        </span>
+        <div className="flex gap-4 items-center">
+          <button
+            disabled={page <= 1 || isLoading}
+            onClick={() => setPage((p) => Math.max(1, p - 1))}
+            className="hover:text-blue-500 disabled:opacity-30 transition-colors uppercase font-bold tracking-tighter"
+          >
+            Prev
+          </button>
+          <span className="font-mono bg-gray-100 px-2 py-0.5 rounded text-[10px]">
+            {page} / {pageCount}
+          </span>
+          <button
+            disabled={page >= pageCount || isLoading}
+            onClick={() => setPage((p) => Math.min(pageCount, p + 1))}
+            className="hover:text-blue-500 disabled:opacity-30 transition-colors uppercase font-bold tracking-tighter"
+          >
+            Next
+          </button>
         </div>
       </div>
-
-      {/* ===== Confirm Modal ===== */}
-      {bulkMarkPaidOpen && (
-        <ConfirmModal
-          open
-          title="Mark invoices as paid"
-          message={`Mark ${selectedIds.size} invoice(s) as paid?`}
-          onClose={() => setBulkMarkPaidOpen(false)}
-          onConfirm={bulkMarkPaid}
-        />
-      )}
     </div>
   );
 }

@@ -1,11 +1,10 @@
 "use client";
 
-import { useState, useMemo, useCallback } from "react";
+import { useState, useMemo, useCallback, useEffect } from "react";
 import useSWR from "swr";
 import { useDebounce } from "@/app/hooks/useDebounce";
 import { useToast } from "@/components/feedback/ToastProvider";
-import ConfirmModal from "@/components/modal/ConfirmModal";
-import { useRouter } from "next/navigation";
+import { useRouter, usePathname } from "next/navigation";
 
 import Summary, { SummaryCard } from "@/components/ui/Summary";
 import DataTable, { DataTableColumn } from "@/components/ui/DataTable";
@@ -45,22 +44,22 @@ const fetcher = (url: string) =>
 /* ================= Component ================= */
 
 export default function OrdersPage() {
-  const toast = useToast();
+  const { addToast } = useToast();
   const router = useRouter();
+  const pathname = usePathname();
 
   /* ---------- State ---------- */
 
   const [page, setPage] = useState(1);
   const [search, setSearch] = useState("");
-  const [statusFilter, setStatusFilter] =
-    useState<OrderStatus>("ALL");
+  const [statusFilter, setStatusFilter] = useState<OrderStatus>("ALL");
   const [targetDate, setTargetDate] = useState("");
-  const [selectedIds, setSelectedIds] =
-    useState<Set<string>>(new Set());
-  const [bulkCancelOpen, setBulkCancelOpen] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
 
   const debouncedSearch = useDebounce(search, 400);
+
+  // Reset page on filter change
+  useEffect(() => setPage(1), [debouncedSearch, statusFilter, targetDate]);
 
   /* ---------- Query ---------- */
 
@@ -68,29 +67,23 @@ export default function OrdersPage() {
     const params = new URLSearchParams();
     params.set("page", String(page));
     params.set("pageSize", "10");
-
     if (debouncedSearch) params.set("search", debouncedSearch);
     if (targetDate) params.set("date", targetDate);
     if (statusFilter !== "ALL") params.set("status", statusFilter);
-
     return params.toString();
   }, [page, debouncedSearch, targetDate, statusFilter]);
 
   /* ---------- Fetch ---------- */
 
-  const { data, error, isLoading, mutate } =
-    useSWR<OrdersResponse>(
-      `/api/dashboard/orders?${query}`,
-      fetcher,
-      { keepPreviousData: true }
-    );
+  const { data, error, isLoading, mutate } = useSWR<OrdersResponse>(
+    `/api/dashboard/orders?${query}`,
+    fetcher,
+    { keepPreviousData: true }
+  );
 
-  if (error) {
-    toast.addToast({
-      type: "error",
-      message: "Failed to fetch orders",
-    });
-  }
+  useEffect(() => {
+    if (error) addToast({ type: "error", message: "Failed to fetch orders" });
+  }, [error, addToast]);
 
   const orders = data?.orders ?? [];
   const total = data?.total ?? 0;
@@ -98,174 +91,102 @@ export default function OrdersPage() {
 
   /* ---------- Summary ---------- */
 
-  const draftCount = orders.filter(
-    o => o.status === "DRAFT"
-  ).length;
+  const summaryCards: SummaryCard[] = useMemo(() => {
+    const draftCount = orders.filter(o => o.status === "DRAFT").length;
+    const submittedCount = orders.filter(o => o.status === "SUBMITTED").length;
 
-  const submittedCount = orders.filter(
-    o => o.status === "SUBMITTED"
-  ).length;
+    return [
+      { id: "total", title: "Total Orders", value: total || 0 },
+      { id: "draft", title: "Draft Orders", value: draftCount || 0 },
+      { 
+        id: "submitted", 
+        title: "Submitted", 
+        value: submittedCount || 0,
+        color: "text-green-600" 
+      },
+    ];
+  }, [orders, total]);
 
-  const summaryCards: SummaryCard[] = [
-    { id: "total", title: "Total Orders", value: total },
-    { id: "draft", title: "Draft", value: draftCount},
-    { id: "submitted", title: "Submitted", value: submittedCount },
-  ];
-
-  /* ---------- Selection ---------- */
-
-  const selectableIds = useMemo(
-    () =>
-      orders
-        .filter(o => o.status !== "CANCELLED")
-        .map(o => o.id),
-    [orders]
-  );
-
-  const toggleSelect = useCallback((id: string) => {
-    setSelectedIds(prev => {
-      const next = new Set(prev);
-      next.has(id) ? next.delete(id) : next.add(id);
-      return next;
-    });
-  }, []);
-
-  const toggleSelectAll = useCallback(() => {
-    const allSelected = selectableIds.every(id =>
-      selectedIds.has(id)
-    );
-
-    setSelectedIds(
-      allSelected ? new Set() : new Set(selectableIds)
-    );
-  }, [selectableIds, selectedIds]);
-
-  const isAllSelected =
-    selectableIds.length > 0 &&
-    selectableIds.every(id => selectedIds.has(id));
-
-  const isIndeterminate =
-    selectedIds.size > 0 && !isAllSelected;
-
-  /* ---------- Bulk Cancel ---------- */
-
-  const bulkCancel = useCallback(async () => {
-    const idsToCancel = [...selectedIds].filter(id => {
-      const o = orders.find(order => order.id === id);
-      return o && o.status !== "CANCELLED";
-    });
-
-    if (!idsToCancel.length) {
-      toast.addToast({
-        type: "info",
-        message: "No cancellable orders selected",
-      });
-      setBulkCancelOpen(false);
-      setSelectedIds(new Set());
-      return;
-    }
-
-    try {
-      await fetch("/api/dashboard/orders", {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ids: idsToCancel }),
-      });
-
-      toast.addToast({
-        type: "success",
-        message: `${idsToCancel.length} orders cancelled`,
-      });
-
-      setSelectedIds(new Set());
-      setBulkCancelOpen(false);
-      mutate();
-    } catch {
-      toast.addToast({
-        type: "error",
-        message: "Bulk cancel failed",
-      });
-    }
-  }, [selectedIds, orders, toast, mutate]);
-
-  /* ---------- Refresh ---------- */
+  /* ---------- Actions ---------- */
 
   const handleRefresh = useCallback(async () => {
     setRefreshing(true);
     await mutate();
-    setTimeout(() => setRefreshing(false), 300);
+    setRefreshing(false);
   }, [mutate]);
 
-  /* ---------- Columns ---------- */
+  /* ---------- Table Config ---------- */
 
-  const statusClass = (status: Order["status"]) => {
+  const statusStyles = (status: Order["status"]) => {
     switch (status) {
-      case "SUBMITTED":
-        return "text-green-700";
-      case "DRAFT":
-        return "text-gray-700";
-      case "CANCELLED":
-        return "text-red-700";
+      case "SUBMITTED": return "bg-green-100 text-green-700";
+      case "DRAFT": return "bg-gray-100 text-gray-700";
+      case "CANCELLED": return "bg-red-100 text-red-700";
+      default: return "bg-gray-100 text-gray-700";
     }
   };
 
-  const columns: DataTableColumn<Order>[] = [
+  const columns: DataTableColumn<Order>[] = useMemo(() => [
+    {
+      key: "id",
+      header: "Order ID",
+      hideTooltip: true,
+      render: o => <span className="text-[11px] font-bold">#{o.id.slice(-6).toUpperCase()}</span>,
+    },
     {
       key: "customer",
       header: "Customer",
-      render: o => o.customer?.name ?? "-",
+      render: o => o.customer?.name ?? "Walk-in Customer",
     },
     {
-      key: "salesperson",
-      header: "Salesperson",
-      render: o => o.salesperson?.name ?? "-",
+      key: "total",
+      header: "Total",
+      align: "right",
+      hideTooltip: true,
+      render: o => (
+        <span className="font-medium text-green-600">
+          ₦{o.total.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+        </span>
+      ),
     },
     {
       key: "items",
       header: "Items",
       align: "center",
-      render: o => o.items.length,
-    },
-    {
-      key: "total",
-      header: "Total",
-      align: "center",
-      render: o => o.total.toFixed(2),
-    },
-    {
-      key: "currency",
-      header: "Currency",
-      render: o => o.currency,
+      hideTooltip: true,
+      render: o => <span>{o.items.length}</span>,
     },
     {
       key: "invoice",
       header: "Invoice",
-      render: o => (o.invoice ? "Issued" : "-"),
+      align: "center",
+      hideTooltip: true,
+      render: o => o.invoice ? (
+        <span className="text-[10px] bg-blue-50 text-blue-600 px-1.5 py-0.5 rounded border border-blue-100">Issued</span>
+      ) : (
+        <span className="opacity-30 text-[10px]">Pending</span>
+      ),
     },
     {
       key: "status",
       header: "Status",
+      align: "center",
+      hideTooltip: true,
       render: o => (
-        <span className={`font-semibold ${statusClass(o.status)}`}>
+        <span className={`px-2 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider ${statusStyles(o.status)}`}>
           {o.status}
         </span>
       ),
     },
-  ];
+  ], []);
 
-  /* ================= Render ================= */
+  const tableId = useMemo(() => pathname?.replace(/\//g, "-").replace(/^-/, "") || "orders-table", [pathname]);
 
   return (
     <div className="flex flex-col space-y-4 min-h-[calc(100vh-4rem)] p-4">
+      <Summary cardsData={summaryCards} loading={isLoading} />
 
-      {/* ===== Summary ===== */}
-      <Summary
-        cardsData={summaryCards}
-        loading={false}
-      />
-
-      {/* ===== Toolbar ===== */}
-      <DataTableToolbar<Order, OrderStatus, OrderStatus>
+      <DataTableToolbar
         search={search}
         onSearchChange={setSearch}
         date={targetDate}
@@ -276,77 +197,56 @@ export default function OrdersPage() {
           {
             label: "Status",
             value: statusFilter,
-            onChange: setStatusFilter,
+            defaultValue: "ALL",
             options: [
-              { value: "ALL", label: "All" },
+              { value: "ALL", label: "All Status" },
               { value: "DRAFT", label: "Draft" },
               { value: "SUBMITTED", label: "Submitted" },
               { value: "CANCELLED", label: "Cancelled" },
             ],
+            onChange: (val) => setStatusFilter(val as OrderStatus),
           },
         ]}
-        selectedCount={selectedIds.size}
-        onBulkAction={() => setBulkCancelOpen(true)}
-        onClearSelection={() => setSelectedIds(new Set())}
-        exportData={orders}
-        exportFileName="orders.csv"
         onAdd={() => router.push("/dashboard/orders/add")}
       />
 
-      {/* ===== DataTable ===== */}
       <DataTable<Order>
+        tableId={tableId}
         data={orders}
         columns={columns}
         loading={isLoading}
-        selectable
-        selectedIds={selectedIds}
-        getRowId={row => row.id}
-        onToggleSelect={toggleSelect}
-        onToggleSelectAll={toggleSelectAll}
-        isAllSelected={isAllSelected}
-        isIndeterminate={isIndeterminate}
         onRowClick={order => {
           if (order.status !== "CANCELLED") {
             router.push(`/dashboard/orders/${order.id}`);
           }
         }}
-        groupByDate
-        getRowDate={row => row.createdAt}
+        dateField="createdAt"
       />
 
-      {/* ===== Pagination ===== */}
-      <div className="flex justify-between items-center text-xs">
-        <span>Total Orders: {total}</span>
-        <div className="flex gap-2 items-center">
+      <div className="flex justify-between items-center text-xs pt-2">
+        <span className="opacity-50 text-[10px] font-bold uppercase tracking-tighter">
+          Total Records: {total}
+        </span>
+        <div className="flex gap-4 items-center">
           <button
-            disabled={page <= 1}
-            onClick={() => setPage(p => p - 1)}
-            className="px-2 py-1 border rounded hover:bg-gray-50 disabled:opacity-40"
+            disabled={page <= 1 || isLoading}
+            onClick={() => setPage(p => Math.max(1, p - 1))}
+            className="hover:text-blue-500 disabled:opacity-30 transition-colors uppercase font-bold tracking-tighter"
           >
             Prev
           </button>
-          <span>{page} / {pageCount}</span>
+          <span className="bg-gray-100 px-2 py-0.5 rounded text-[10px]">
+            {page} / {pageCount}
+          </span>
           <button
-            disabled={page >= pageCount}
-            onClick={() => setPage(p => p + 1)}
-            className="px-2 py-1 border rounded hover:bg-gray-50 disabled:opacity-40"
+            disabled={page >= pageCount || isLoading}
+            onClick={() => setPage(p => Math.min(pageCount, p + 1))}
+            className="hover:text-blue-500 disabled:opacity-30 transition-colors uppercase font-bold tracking-tighter"
           >
             Next
           </button>
         </div>
       </div>
-
-      {/* ===== Bulk Modal ===== */}
-      {bulkCancelOpen && (
-        <ConfirmModal
-          open
-          title="Cancel Orders"
-          message={`Cancel ${selectedIds.size} selected order(s)?`}
-          destructive
-          onClose={() => setBulkCancelOpen(false)}
-          onConfirm={bulkCancel}
-        />
-      )}
     </div>
   );
 }

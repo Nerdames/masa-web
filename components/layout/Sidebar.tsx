@@ -433,7 +433,7 @@ function Sidebar({ open, onClose }: SidebarProps) {
         </div>
 
         {/* Collapse/Expand button */}
-        <Tooltip content={collapsed ? "Expand sidebar" : "Collapse sidebar"}>
+        <Tooltip side="right" content={collapsed ? "Expand sidebar" : "Collapse sidebar"}>
           <button
             onClick={toggleCollapsed}
             aria-expanded={!collapsed}

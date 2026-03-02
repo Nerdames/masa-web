@@ -14,6 +14,7 @@ export interface DataTableColumn<T> {
   width?: string;
   align?: "left" | "center" | "right";
   render: (row: T) => React.ReactNode;
+  hideTooltip?: boolean; // Added this property
 }
 
 interface DataTableProps<T> {
@@ -175,7 +176,6 @@ function DataTable<T>({
   return (
     <div className="w-full rounded-2xl bg-white/80 dark:bg-neutral-900/60 backdrop-blur-xl border border-white/30 dark:border-white/20 shadow-lg overflow-x-auto">
       <table className="w-full table-auto text-sm">
-        {/* Header */}
         <thead className="sticky top-0 z-10 bg-white/95 dark:bg-neutral-900/95 backdrop-blur-xl border-b border-neutral-300 dark:border-neutral-700">
           <tr>
             {orderedColumns.map((col) => (
@@ -203,7 +203,6 @@ function DataTable<T>({
             data.map((row, index) => {
               const key = getRowId?.(row, index) ?? `${JSON.stringify(row)}-${index}`;
 
-              // Faint date display logic
               let showDateLabel = false;
               let formattedDate = "";
               if (dateField && row[dateField]) {
@@ -248,9 +247,14 @@ function DataTable<T>({
                           style={{ width: col.width, minWidth: "80px" }}
                           className={`px-5 py-4 text-neutral-700 dark:text-neutral-200 ${getAlignClass(col.align)}`}
                         >
-                          <Tooltip content={tooltipText}>
+                          {/* Conditional rendering based on hideTooltip */}
+                          {col.hideTooltip ? (
                             <div className="truncate max-w-[250px]">{cellContent}</div>
-                          </Tooltip>
+                          ) : (
+                            <Tooltip content={tooltipText}>
+                              <div className="truncate max-w-[250px]">{cellContent}</div>
+                            </Tooltip>
+                          )}
                         </td>
                       );
                     })}
