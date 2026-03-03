@@ -5,6 +5,7 @@ import { AnimatePresence, motion } from "framer-motion";
 import { useToast } from "@/components/feedback/ToastProvider";
 import { Tooltip } from "@/components/feedback/Tooltip";
 import ContactForm from "@/components/forms/ContactForm";
+import { getInitials } from "@/lib/getInitials";
 
 /** * TYPES & DTOs */
 type Role = "ADMIN" | "MANAGER" | "SALES" | "INVENTORY" | "CASHIER" | "DEV";
@@ -236,7 +237,7 @@ export default function ProfilePage() {
         <section className="bg-white rounded-xl p-8 shadow-sm border border-gray-100 flex flex-col md:flex-row md:items-center justify-between gap-6">
           <div className="flex items-center gap-6">
             <div className="w-20 h-20 rounded-3xl bg-gradient-to-br from-blue-600 to-indigo-700 flex items-center justify-center text-white text-3xl font-black shadow-xl shadow-blue-100 shrink-0">
-              {profile.name?.charAt(0) || profile.email.charAt(0).toUpperCase()}
+              {getInitials(profile.name || profile.email)}
             </div>
             <div className="text-left">
               <h1 className="text-3xl font-black text-gray-900 tracking-tight">{profile.name || "Personnel"}</h1>
