@@ -56,15 +56,16 @@ export default function SummarySettingsModal({
   });
 
   const [confirmOpen, setConfirmOpen] = useState(false);
+  const [activeTab, setActiveTab] = useState<"appearance" | "visibility">("appearance");
 
   /* ---------------- Sync on Open ---------------- */
   useEffect(() => {
     if (open) {
       const allIds = cardsData.map((c) => c.id);
-      const visibleIds = initialState.visibleCardIds.slice(0, initialState.maxColumns);
+      const visibleIds = (initialState.visibleCardIds ?? []).slice(0, initialState.maxColumns);
       setState({
         ...initialState,
-        cardOrder: Array.from(new Set([...initialState.cardOrder, ...allIds])),
+        cardOrder: Array.from(new Set([...(initialState.cardOrder ?? []), ...allIds])),
         visibleCardIds: Array.from(
           new Set([...visibleIds, ...allIds.slice(0, initialState.maxColumns)])
         ),
@@ -91,18 +92,12 @@ export default function SummarySettingsModal({
   /* ---------------- ESC Key + Outside Click ---------------- */
   useEffect(() => {
     if (!open) return;
-
-    const handleEsc = (e: KeyboardEvent) => {
-      if (e.key === "Escape") requestClose();
-    };
-
+    const handleEsc = (e: KeyboardEvent) => { if (e.key === "Escape") requestClose(); };
     const handleClickOutside = (e: MouseEvent) => {
       if (modalRef.current && !modalRef.current.contains(e.target as Node)) requestClose();
     };
-
     document.addEventListener("keydown", handleEsc);
     document.addEventListener("mousedown", handleClickOutside);
-
     return () => {
       document.removeEventListener("keydown", handleEsc);
       document.removeEventListener("mousedown", handleClickOutside);
@@ -133,7 +128,6 @@ export default function SummarySettingsModal({
   const toggleVisibleCard = useCallback((id: string) => {
     setState((prev) => {
       const isVisible = prev.visibleCardIds.includes(id);
-
       let newVisible: string[];
       if (isVisible) {
         if (prev.visibleCardIds.length <= MIN_COLUMNS) return prev;
@@ -142,31 +136,23 @@ export default function SummarySettingsModal({
         if (prev.visibleCardIds.length >= prev.maxColumns) return prev;
         newVisible = [...prev.visibleCardIds, id];
       }
-
-      const newCardOrder = newVisible.reduce(
-        (acc, v) => (acc.includes(v) ? acc : [...acc, v]),
-        prev.cardOrder
-      );
-
-      return { ...prev, visibleCardIds: newVisible, cardOrder: newCardOrder };
+      return { ...prev, visibleCardIds: newVisible };
     });
-  }, []);
+  }, [MIN_COLUMNS]);
 
   const setMaxColumns = useCallback((cols: number) => {
     const clamped = Math.min(MAX_COLUMNS, Math.max(MIN_COLUMNS, cols));
     setState((prev) => {
       let newVisible = [...prev.visibleCardIds];
-
       if (newVisible.length > clamped) {
         newVisible = newVisible.slice(0, clamped);
       } else if (newVisible.length < clamped) {
         const missingCards = prev.cardOrder.filter((id) => !newVisible.includes(id));
         newVisible = [...newVisible, ...missingCards.slice(0, clamped - newVisible.length)];
       }
-
       return { ...prev, maxColumns: clamped, visibleCardIds: newVisible };
     });
-  }, []);
+  }, [MIN_COLUMNS, MAX_COLUMNS]);
 
   const reorderVisibleCards = useCallback((newOrder: string[]) => {
     setState((prev) => {
@@ -187,31 +173,20 @@ export default function SummarySettingsModal({
     setState({
       ...initialState,
       cardOrder: Array.from(new Set([...initialState.cardOrder, ...allIds])),
-      visibleCardIds: Array.from(new Set([...visibleIds, ...allIds])).slice(
-        0,
-        initialState.maxColumns
-      ),
+      visibleCardIds: Array.from(new Set([...visibleIds, ...allIds])).slice(0, initialState.maxColumns),
     });
   }, [initialState, cardsData]);
 
-  const computeChangedKeys = useCallback((): Partial<SummarySettingsState> => {
+  const handleSave = useCallback(() => {
     const changes: Partial<SummarySettingsState> = {};
-    if (JSON.stringify(state.visibleCardIds) !== JSON.stringify(initialState.visibleCardIds))
-      changes.visibleCardIds = state.visibleCardIds;
-    if (JSON.stringify(state.cardOrder) !== JSON.stringify(initialState.cardOrder))
-      changes.cardOrder = state.cardOrder;
+    if (JSON.stringify(state.visibleCardIds) !== JSON.stringify(initialState.visibleCardIds)) changes.visibleCardIds = state.visibleCardIds;
+    if (JSON.stringify(state.cardOrder) !== JSON.stringify(initialState.cardOrder)) changes.cardOrder = state.cardOrder;
     if (state.maxColumns !== initialState.maxColumns) changes.maxColumns = state.maxColumns;
     if (state.showTooltips !== initialState.showTooltips) changes.showTooltips = state.showTooltips;
     if (state.showIcons !== initialState.showIcons) changes.showIcons = state.showIcons;
-    return changes;
-  }, [state, initialState]);
+    onSave(state, changes, pageKey);
+  }, [state, initialState, onSave, pageKey]);
 
-  const handleSave = useCallback(() => {
-    const changedKeys = computeChangedKeys();
-    onSave(state, changedKeys, pageKey);
-  }, [state, computeChangedKeys, onSave, pageKey]);
-
-  /* ---------------- Render ---------------- */
   return (
     <>
       <ConfirmModal
@@ -225,148 +200,169 @@ export default function SummarySettingsModal({
       <AnimatePresence>
         {open && (
           <motion.div
-            className="fixed inset-0 z-50 bg-black/40 backdrop-blur-sm flex items-start justify-center px-4 py-6"
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[100] bg-black/25 backdrop-blur-[2px] flex items-center justify-center p-4"
+            initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
           >
             <motion.div
               ref={modalRef}
-              className="bg-white rounded-xl shadow-xl border border-slate-200 w-[36rem] max-h-[88vh] flex flex-col"
-              initial={{ y: 30, opacity: 0, scale: 0.98 }}
-              animate={{ y: 0, opacity: 1, scale: 1 }}
-              exit={{ y: 20, opacity: 0 }}
-              transition={{ duration: 0.18 }}
-              layout
+              className="bg-[#F2F2F7]/95 backdrop-blur-3xl rounded-[12px] shadow-[0_30px_80px_rgba(0,0,0,0.35)] border border-white/40 w-full max-w-[760px] h-[500px] flex overflow-hidden text-[#1d1d1f]"
+              initial={{ scale: 0.92, opacity: 0, y: 20 }}
+              animate={{ scale: 1, opacity: 1, y: 0 }}
+              exit={{ scale: 0.95, opacity: 0, y: 15 }}
+              transition={{ type: "spring", damping: 28, stiffness: 350 }}
             >
-              {/* Header */}
-              <div className="flex justify-between items-center px-5 py-3 border-b">
-                <h3 className="font-semibold text-lg">Summary Settings</h3>
-                <button onClick={requestClose}>
-                  <i className="bx bx-x text-xl" />
-                </button>
-              </div>
-
-              {/* Body */}
-              <div className="px-5 py-4 flex-1 overflow-y-auto space-y-8">
-                {/* Max Columns */}
-                <div>
-                  <p className="text-sm font-medium mb-2">Max Columns</p>
-                  <div className="flex gap-2">
-                    {[3, 4].map((c) => (
-                      <button
-                        key={c}
-                        onClick={() => setMaxColumns(c)}
-                        className={`px-3 py-1 rounded-lg ${
-                          state.maxColumns === c ? "bg-blue-500 text-white" : "bg-gray-100"
-                        }`}
-                      >
-                        {c}
-                      </button>
-                    ))}
-                  </div>
+              {/* macOS Sidebar */}
+              <aside className="w-[220px] bg-black/[0.04] border-r border-black/5 p-4 flex flex-col">
+                <div className="flex gap-2 mb-8 px-1">
+                  <button
+                    onClick={requestClose}
+                    className=" rounded-xl p-2 hover:bg-black/10 transition-colors">Close</button>
                 </div>
 
-                {/* Live Preview Grid */}
-                <motion.div layout>
-                  <p className="text-sm font-medium mb-2">Live Preview</p>
-                  <Reorder.Group
-                    axis="x"
-                    values={visibleCards.map((c) => c.id)}
-                    onReorder={reorderVisibleCards}
-                    className="grid gap-3"
-                    style={{ gridTemplateColumns: `repeat(${state.maxColumns}, minmax(0,1fr))` }}
+                <nav className="space-y-0.5">
+                  <p className="px-3 py-1.5 text-[11px] font-bold text-black/30 uppercase tracking-tight">Summary</p>
+                  <button 
+                    onClick={() => setActiveTab('appearance')}
+                    className={`w-full flex items-center gap-3 px-3 py-3 mb-4 rounded-[6px] text-[13px] font-medium transition-colors ${activeTab === 'appearance' ? 'bg-blue-500 text-white shadow-sm' : 'hover:bg-black/5 text-black/70'}`}
                   >
-                    <AnimatePresence>
-                      {visibleCards.map((card) => {
-                        const { color } = iconMap[card.type ?? "default"] ?? { color: "bg-gray-300" };
-                        return (
-                          <Reorder.Item
-                            key={card.id}
-                            value={card.id}
-                            layout
-                            whileDrag={{ scale: 1.05 }}
-                            transition={{ type: "spring", stiffness: 400, damping: 30 }}
-                          >
-                            <motion.div className="h-16 bg-slate-100 rounded-lg flex items-center justify-center text-xs font-medium text-slate-500">
-                              {card.title}
-                            </motion.div>
-                          </Reorder.Item>
-                        );
-                      })}
-                      {Array.from({ length: state.maxColumns - visibleCards.length }).map((_, i) => (
-                        <div
-                          key={`placeholder-${i}`}
-                          className="h-16 rounded-lg bg-gray-50 border border-dashed border-slate-200"
-                        />
-                      ))}
-                    </AnimatePresence>
-                  </Reorder.Group>
-                </motion.div>
+                    <i className="bx bx-palette text-base" /> Appearance
+                  </button>
+                  <button 
+                    onClick={() => setActiveTab('visibility')}
+                    className={`w-full flex items-center gap-3 px-3 py-3 mb-4 rounded-[6px] text-[13px] font-medium transition-colors ${activeTab === 'visibility' ? 'bg-blue-500 text-white shadow-sm' : 'hover:bg-black/5 text-black/70'}`}
+                  >
+                    <i className="bx bx-list-ul text-base" /> Visibility
+                  </button>
+                </nav>
+              </aside>
 
-                {/* Cards Visibility List */}
-                <div>
-                  <div className="flex justify-between items-center mb-2">
-                    <span className="text-sm font-medium">Cards Visibility</span>
-                    <Tooltip content="Reset to branch/organization default">
-                      <button
-                        onClick={resetDefaults}
-                        className="w-8 h-8 flex items-center justify-center rounded-full bg-gray-100 hover:bg-gray-200"
-                      >
-                        <i className="bx bx-reset" />
-                      </button>
-                    </Tooltip>
-                  </div>
+              {/* Main Content */}
+              <div className="flex-1 flex flex-col bg-white/40">
+                <header className="px-8 pt-8 pb-4">
+                  <h2 className="text-[20px] font-bold tracking-tight">
+                    {activeTab === 'appearance' ? 'Appearance Settings' : 'Card Visibility'}
+                  </h2>
+                </header>
 
-                  <div className="flex flex-col gap-2">
-                    {orderedCards.map((card) => {
-                      const checked = state.visibleCardIds.includes(card.id);
-                      const { icon, color } =
-                        iconMap[card.type ?? "default"] ?? { icon: "bx-question", color: "bg-gray-300" };
-                      const canSelectMore = checked || state.visibleCardIds.length < state.maxColumns;
+                <main className="flex-1 px-8 overflow-y-auto space-y-8 pb-6 custom-scrollbar">
+                  {activeTab === 'appearance' ? (
+                    <motion.div initial={{ opacity: 0, x: 5 }} animate={{ opacity: 1, x: 0 }} className="space-y-8">
+                      {/* Grid Density */}
+                      <section>
+                        <p className="text-[13px] font-semibold mb-3">Grid Layout</p>
+                        <div className="inline-flex p-1 bg-black/5 rounded-[9px] gap-1">
+                          {[3, 4].map((c) => (
+                            <button
+                              key={c}
+                              onClick={() => setMaxColumns(c)}
+                              className={`px-5 py-1.5 rounded-[6px] text-[12px] font-bold transition-all ${state.maxColumns === c ? "bg-white shadow-sm text-blue-600" : "text-black/40 hover:text-black/60"}`}
+                            >
+                              {c} Columns
+                            </button>
+                          ))}
+                        </div>
+                      </section>
 
-                      return (
-                        <motion.div
-                          key={card.id}
-                          layout
-                          className={`flex items-center justify-between p-3 rounded-lg border ${
-                            checked ? "bg-blue-50 border-blue-300" : "bg-white border-slate-200"
-                          }`}
+                      {/* Reorderable Preview */}
+                      <section>
+                        <p className="text-[13px] font-semibold mb-3">Active Arrangement</p>
+                        <Reorder.Group
+                          axis="x"
+                          values={visibleCards.map((c) => c.id)}
+                          onReorder={reorderVisibleCards}
+                          className="flex gap-2"
                         >
-                          <div className="flex items-center gap-3">
-                            {state.showIcons && (
-                              <div className={`w-8 h-8 rounded-lg flex items-center justify-center ${color}`}>
-                                <i className={`bx ${icon}`} />
+                          <AnimatePresence mode="popLayout">
+                            {visibleCards.map((card) => (
+                              <Reorder.Item key={card.id} value={card.id} whileDrag={{ scale: 1.05 }} className="flex-1 min-w-0">
+                                <div className="h-16 bg-white/80 border border-black/5 rounded-[10px] shadow-sm flex items-center justify-center px-2 text-center cursor-grab active:cursor-grabbing group">
+                                  <span className="text-[10px] font-bold text-black/50 group-hover:text-blue-500 uppercase leading-tight truncate">{card.title}</span>
+                                </div>
+                              </Reorder.Item>
+                            ))}
+                          </AnimatePresence>
+                        </Reorder.Group>
+                      </section>
+
+                      {/* Display Toggles */}
+                      <section className="space-y-2">
+                        <div className="bg-white/60 border border-black/5 rounded-[12px] overflow-hidden divide-y divide-black/5">
+                          {[
+                            { label: "Show Icons", key: "showIcons", icon: "bx-category" },
+                            { label: "Enable Tooltips", key: "showTooltips", icon: "bx-info-circle" }
+                          ].map((opt) => (
+                            <div key={opt.key} className="flex justify-between items-center px-4 py-3.5">
+                              <div className="flex items-center gap-3">
+                                <div className="w-7 h-7 bg-blue-500/10 rounded-md flex items-center justify-center">
+                                  <i className={`bx ${opt.icon} text-blue-600 text-base`} />
+                                </div>
+                                <span className="text-[13px] font-medium">{opt.label}</span>
                               </div>
-                            )}
-                            <span className="text-sm font-medium">{card.title}</span>
-                          </div>
-
-                          <button
-                            onClick={() => canSelectMore && toggleVisibleCard(card.id)}
-                            disabled={!canSelectMore}
-                            className={`w-6 h-6 flex items-center justify-center rounded border transition-colors
-                              ${checked ? "bg-blue-500 text-white border-blue-500" : "bg-white text-gray-500 border-slate-300"}
-                              ${!canSelectMore && !checked ? "opacity-50 cursor-not-allowed" : "hover:bg-gray-100"}
-                            `}
-                          >
-                            <i className={`bx ${checked ? "bx-check" : "bx-plus"}`} />
+                              <button 
+                                onClick={() => setState(p => ({...p, [opt.key]: !p[opt.key as keyof SummarySettingsState]}))}
+                                className={`w-9 h-[20px] rounded-full transition-colors relative flex items-center ${state[opt.key as keyof SummarySettingsState] ? 'bg-[#34C759]' : 'bg-black/10'}`}
+                              >
+                                <motion.div animate={{ x: state[opt.key as keyof SummarySettingsState] ? 18 : 2 }} className="w-4 h-4 bg-white rounded-full shadow-sm" />
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      </section>
+                    </motion.div>
+                  ) : (
+                    <motion.div initial={{ opacity: 0, x: 5 }} animate={{ opacity: 1, x: 0 }} className="space-y-4">
+                      <div className="flex justify-between items-center mb-2">
+                        <span className="text-[12px] font-bold text-black/40 uppercase tracking-tight">Configure Cards</span>
+                        <Tooltip content="Reset to defaults">
+                          <button onClick={resetDefaults} className="w-7 h-7 flex items-center justify-center rounded-full hover:bg-black/5 text-black/60">
+                            <i className="bx bx-reset text-lg" />
                           </button>
-                        </motion.div>
-                      );
-                    })}
-                  </div>
-                </div>
-              </div>
+                        </Tooltip>
+                      </div>
 
-              {/* Footer */}
-              <div className="flex justify-end px-5 py-3 border-t">
-                <button
-                  onClick={handleSave}
-                  className="px-4 py-2 rounded-lg bg-blue-500 text-white hover:bg-blue-600"
-                >
-                  Save
-                </button>
+                      <div className="grid grid-cols-1 gap-2">
+                        {orderedCards.map((card) => {
+                          const checked = state.visibleCardIds.includes(card.id);
+                          const { icon, color } = iconMap[card.type ?? "default"] ?? { icon: "bx-question", color: "bg-gray-300" };
+                          const canSelectMore = checked || state.visibleCardIds.length < state.maxColumns;
+
+                          return (
+                            <div key={card.id} className={`flex items-center justify-between p-3 rounded-[10px] border transition-all ${checked ? "bg-blue-500/5 border-blue-500/20" : "bg-white/50 border-black/5"}`}>
+                              <div className="flex items-center gap-3">
+                                {state.showIcons && (
+                                  <div className={`w-8 h-8 rounded-lg flex items-center justify-center text-white shadow-sm ${color.replace('bg-', 'bg-')}`}>
+                                    <i className={`bx ${icon} text-lg`} />
+                                  </div>
+                                )}
+                                <span className="text-[13px] font-semibold text-black/80">{card.title}</span>
+                              </div>
+                              <button
+                                onClick={() => canSelectMore && toggleVisibleCard(card.id)}
+                                disabled={!canSelectMore}
+                                className={`w-6 h-6 flex items-center justify-center rounded-[6px] border transition-all ${checked ? "bg-blue-500 text-white border-blue-600" : "bg-white border-black/10 text-transparent"} ${!canSelectMore && !checked ? "opacity-20 cursor-not-allowed" : "hover:border-blue-400"}`}
+                              >
+                                <i className="bx bx-check text-base" />
+                              </button>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </motion.div>
+                  )}
+                </main>
+
+                <footer className="p-5 px-8 bg-white/20 border-t border-black/5 flex justify-end items-center gap-3">
+                  <button onClick={onClose} className="px-4 py-1.5 text-[13px] font-medium text-black/60 hover:text-black transition-colors">
+                    Cancel
+                  </button>
+                  <button
+                    onClick={handleSave}
+                    disabled={!isDirty}
+                    className={`px-8 py-1.5 rounded-[8px] text-[13px] font-semibold transition-all shadow-md ${isDirty ? "bg-gradient-to-b from-blue-400 to-blue-600 text-white shadow-blue-500/20 active:scale-95" : "bg-black/5 text-black/20 shadow-none cursor-not-allowed"}`}
+                  >
+                    Done
+                  </button>
+                </footer>
               </div>
             </motion.div>
           </motion.div>
