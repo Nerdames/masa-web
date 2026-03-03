@@ -59,16 +59,29 @@ export default function SummarySettingsModal({
   const [activeTab, setActiveTab] = useState<"appearance" | "visibility">("appearance");
 
   /* ---------------- Sync on Open ---------------- */
+  /**
+   * REFINED SYNC LOGIC:
+   * 1. Trust the existing arrays in initialState if they have values.
+   * 2. Only use .slice() or defaults if the database returns empty arrays.
+   * 3. Merges new cards from code (cardsData) into existing user order.
+   */
   useEffect(() => {
     if (open) {
       const allIds = cardsData.map((c) => c.id);
-      const visibleIds = (initialState.visibleCardIds ?? []).slice(0, initialState.maxColumns);
+      
+      const syncedOrder = initialState.cardOrder?.length 
+        ? Array.from(new Set([...initialState.cardOrder, ...allIds])) 
+        : allIds;
+
+      const syncedVisible = initialState.visibleCardIds?.length
+        ? initialState.visibleCardIds
+        : allIds.slice(0, initialState.maxColumns ?? MIN_COLUMNS);
+
       setState({
         ...initialState,
-        cardOrder: Array.from(new Set([...(initialState.cardOrder ?? []), ...allIds])),
-        visibleCardIds: Array.from(
-          new Set([...visibleIds, ...allIds.slice(0, initialState.maxColumns)])
-        ),
+        cardOrder: syncedOrder,
+        visibleCardIds: syncedVisible,
+        maxColumns: initialState.maxColumns ?? MIN_COLUMNS,
       });
     }
   }, [open, initialState, cardsData]);
@@ -106,84 +119,77 @@ export default function SummarySettingsModal({
 
   /* ---------------- Derived Data ---------------- */
   const orderedCards = useMemo(() => {
-    if (!state) return [];
-    const idSet = new Set(state.cardOrder || []);
+    const idSet = new Set(state.cardOrder);
     const missingCards = cardsData.filter((c) => !idSet.has(c.id));
     return [
       ...state.cardOrder
         .map((id) => cardsData.find((c) => c.id === id))
-        .filter((c): c is SummaryCard => c !== undefined),
+        .filter((c): c is SummaryCard => !!c),
       ...missingCards,
     ];
-  }, [state, cardsData]);
+  }, [state.cardOrder, cardsData]);
 
   const visibleCards = useMemo(() => {
-    if (!state) return [];
-    return orderedCards
-      .filter((c) => state.visibleCardIds.includes(c.id))
+    // We map through cardOrder to maintain user's desired sequence
+    return state.cardOrder
+      .filter(id => state.visibleCardIds.includes(id))
+      .map(id => cardsData.find(c => c.id === id))
+      .filter((c): c is SummaryCard => !!c)
       .slice(0, state.maxColumns);
-  }, [orderedCards, state]);
+  }, [state.cardOrder, state.visibleCardIds, state.maxColumns, cardsData]);
 
   /* ---------------- Actions ---------------- */
   const toggleVisibleCard = useCallback((id: string) => {
     setState((prev) => {
       const isVisible = prev.visibleCardIds.includes(id);
-      let newVisible: string[];
       if (isVisible) {
         if (prev.visibleCardIds.length <= MIN_COLUMNS) return prev;
-        newVisible = prev.visibleCardIds.filter((x) => x !== id);
+        return { ...prev, visibleCardIds: prev.visibleCardIds.filter((x) => x !== id) };
       } else {
         if (prev.visibleCardIds.length >= prev.maxColumns) return prev;
-        newVisible = [...prev.visibleCardIds, id];
+        return { ...prev, visibleCardIds: [...prev.visibleCardIds, id] };
       }
-      return { ...prev, visibleCardIds: newVisible };
     });
   }, [MIN_COLUMNS]);
 
   const setMaxColumns = useCallback((cols: number) => {
-    const clamped = Math.min(MAX_COLUMNS, Math.max(MIN_COLUMNS, cols));
-    setState((prev) => {
-      let newVisible = [...prev.visibleCardIds];
-      if (newVisible.length > clamped) {
-        newVisible = newVisible.slice(0, clamped);
-      } else if (newVisible.length < clamped) {
-        const missingCards = prev.cardOrder.filter((id) => !newVisible.includes(id));
-        newVisible = [...newVisible, ...missingCards.slice(0, clamped - newVisible.length)];
-      }
-      return { ...prev, maxColumns: clamped, visibleCardIds: newVisible };
-    });
-  }, [MIN_COLUMNS, MAX_COLUMNS]);
+    setState((prev) => ({ ...prev, maxColumns: cols }));
+  }, []);
 
   const reorderVisibleCards = useCallback((newOrder: string[]) => {
     setState((prev) => {
+      // Create a map of where visible cards sit in the master order
       const newCardOrder = [...prev.cardOrder];
-      let vi = 0;
-      for (let i = 0; i < newCardOrder.length; i++) {
-        if (prev.visibleCardIds.includes(newCardOrder[i])) {
-          newCardOrder[i] = newOrder[vi++];
-        }
-      }
-      return { ...prev, cardOrder: newCardOrder };
+      let visibleIdx = 0;
+      
+      return {
+        ...prev,
+        cardOrder: newCardOrder.map(id => 
+          prev.visibleCardIds.includes(id) ? newOrder[visibleIdx++] : id
+        )
+      };
     });
   }, []);
 
   const resetDefaults = useCallback(() => {
     const allIds = cardsData.map((c) => c.id);
-    const visibleIds = initialState.visibleCardIds.slice(0, initialState.maxColumns);
     setState({
-      ...initialState,
-      cardOrder: Array.from(new Set([...initialState.cardOrder, ...allIds])),
-      visibleCardIds: Array.from(new Set([...visibleIds, ...allIds])).slice(0, initialState.maxColumns),
+      cardOrder: allIds,
+      visibleCardIds: allIds.slice(0, MAX_COLUMNS),
+      maxColumns: MAX_COLUMNS,
+      showTooltips: true,
+      showIcons: true,
     });
-  }, [initialState, cardsData]);
+  }, [cardsData, MAX_COLUMNS]);
 
   const handleSave = useCallback(() => {
     const changes: Partial<SummarySettingsState> = {};
-    if (JSON.stringify(state.visibleCardIds) !== JSON.stringify(initialState.visibleCardIds)) changes.visibleCardIds = state.visibleCardIds;
-    if (JSON.stringify(state.cardOrder) !== JSON.stringify(initialState.cardOrder)) changes.cardOrder = state.cardOrder;
-    if (state.maxColumns !== initialState.maxColumns) changes.maxColumns = state.maxColumns;
-    if (state.showTooltips !== initialState.showTooltips) changes.showTooltips = state.showTooltips;
-    if (state.showIcons !== initialState.showIcons) changes.showIcons = state.showIcons;
+    Object.keys(state).forEach((key) => {
+      const k = key as keyof SummarySettingsState;
+      if (JSON.stringify(state[k]) !== JSON.stringify(initialState[k])) {
+        changes[k] = state[k] as any;
+      }
+    });
     onSave(state, changes, pageKey);
   }, [state, initialState, onSave, pageKey]);
 
@@ -211,32 +217,30 @@ export default function SummarySettingsModal({
               exit={{ scale: 0.95, opacity: 0, y: 15 }}
               transition={{ type: "spring", damping: 28, stiffness: 350 }}
             >
-              {/* macOS Sidebar */}
               <aside className="w-[220px] bg-black/[0.04] border-r border-black/5 p-4 flex flex-col">
-                <div className="flex gap-2 mb-8 px-1">
-                  <button
-                    onClick={requestClose}
-                    className=" rounded-xl p-2 hover:bg-black/10 transition-colors">Close</button>
+                <div className="mb-8 px-1">
+                   <button onClick={requestClose} className="text-[13px] font-medium text-black/40 hover:text-black transition-colors">
+                     <i className="bx bx-chevron-left mr-1" /> Close
+                   </button>
                 </div>
 
                 <nav className="space-y-0.5">
                   <p className="px-3 py-1.5 text-[11px] font-bold text-black/30 uppercase tracking-tight">Summary</p>
-                  <button 
-                    onClick={() => setActiveTab('appearance')}
-                    className={`w-full flex items-center gap-3 px-3 py-3 mb-4 rounded-[6px] text-[13px] font-medium transition-colors ${activeTab === 'appearance' ? 'bg-blue-500 text-white shadow-sm' : 'hover:bg-black/5 text-black/70'}`}
-                  >
-                    <i className="bx bx-palette text-base" /> Appearance
-                  </button>
-                  <button 
-                    onClick={() => setActiveTab('visibility')}
-                    className={`w-full flex items-center gap-3 px-3 py-3 mb-4 rounded-[6px] text-[13px] font-medium transition-colors ${activeTab === 'visibility' ? 'bg-blue-500 text-white shadow-sm' : 'hover:bg-black/5 text-black/70'}`}
-                  >
-                    <i className="bx bx-list-ul text-base" /> Visibility
-                  </button>
+                  {[
+                    { id: 'appearance', label: 'Appearance', icon: 'bx-palette' },
+                    { id: 'visibility', label: 'Visibility', icon: 'bx-list-ul' }
+                  ].map(tab => (
+                    <button 
+                      key={tab.id}
+                      onClick={() => setActiveTab(tab.id as any)}
+                      className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-[6px] text-[13px] font-medium transition-all ${activeTab === tab.id ? 'bg-blue-500 text-white shadow-md' : 'hover:bg-black/5 text-black/70'}`}
+                    >
+                      <i className={`${tab.icon} text-base`} /> {tab.label}
+                    </button>
+                  ))}
                 </nav>
               </aside>
 
-              {/* Main Content */}
               <div className="flex-1 flex flex-col bg-white/40">
                 <header className="px-8 pt-8 pb-4">
                   <h2 className="text-[20px] font-bold tracking-tight">
@@ -247,7 +251,6 @@ export default function SummarySettingsModal({
                 <main className="flex-1 px-8 overflow-y-auto space-y-8 pb-6 custom-scrollbar">
                   {activeTab === 'appearance' ? (
                     <motion.div initial={{ opacity: 0, x: 5 }} animate={{ opacity: 1, x: 0 }} className="space-y-8">
-                      {/* Grid Density */}
                       <section>
                         <p className="text-[13px] font-semibold mb-3">Grid Layout</p>
                         <div className="inline-flex p-1 bg-black/5 rounded-[9px] gap-1">
@@ -263,9 +266,11 @@ export default function SummarySettingsModal({
                         </div>
                       </section>
 
-                      {/* Reorderable Preview */}
                       <section>
-                        <p className="text-[13px] font-semibold mb-3">Active Arrangement</p>
+                        <div className="flex justify-between items-end mb-3">
+                           <p className="text-[13px] font-semibold">Active Arrangement</p>
+                           <span className="text-[11px] text-black/30">Drag cards to reorder</span>
+                        </div>
                         <Reorder.Group
                           axis="x"
                           values={visibleCards.map((c) => c.id)}
@@ -274,8 +279,8 @@ export default function SummarySettingsModal({
                         >
                           <AnimatePresence mode="popLayout">
                             {visibleCards.map((card) => (
-                              <Reorder.Item key={card.id} value={card.id} whileDrag={{ scale: 1.05 }} className="flex-1 min-w-0">
-                                <div className="h-16 bg-white/80 border border-black/5 rounded-[10px] shadow-sm flex items-center justify-center px-2 text-center cursor-grab active:cursor-grabbing group">
+                              <Reorder.Item key={card.id} value={card.id} whileDrag={{ scale: 1.05, zIndex: 10 }} className="flex-1 min-w-0">
+                                <div className="h-16 bg-white/80 border border-black/5 rounded-[10px] shadow-sm flex items-center justify-center px-2 text-center cursor-grab active:cursor-grabbing group transition-colors hover:border-blue-200">
                                   <span className="text-[10px] font-bold text-black/50 group-hover:text-blue-500 uppercase leading-tight truncate">{card.title}</span>
                                 </div>
                               </Reorder.Item>
@@ -284,7 +289,6 @@ export default function SummarySettingsModal({
                         </Reorder.Group>
                       </section>
 
-                      {/* Display Toggles */}
                       <section className="space-y-2">
                         <div className="bg-white/60 border border-black/5 rounded-[12px] overflow-hidden divide-y divide-black/5">
                           {[
@@ -312,8 +316,8 @@ export default function SummarySettingsModal({
                   ) : (
                     <motion.div initial={{ opacity: 0, x: 5 }} animate={{ opacity: 1, x: 0 }} className="space-y-4">
                       <div className="flex justify-between items-center mb-2">
-                        <span className="text-[12px] font-bold text-black/40 uppercase tracking-tight">Configure Cards</span>
-                        <Tooltip content="Reset to defaults">
+                        <span className="text-[12px] font-bold text-black/40 uppercase tracking-tight">Available Cards ({state.visibleCardIds.length}/{state.maxColumns})</span>
+                        <Tooltip content="Restore Defaults">
                           <button onClick={resetDefaults} className="w-7 h-7 flex items-center justify-center rounded-full hover:bg-black/5 text-black/60">
                             <i className="bx bx-reset text-lg" />
                           </button>
@@ -330,7 +334,7 @@ export default function SummarySettingsModal({
                             <div key={card.id} className={`flex items-center justify-between p-3 rounded-[10px] border transition-all ${checked ? "bg-blue-500/5 border-blue-500/20" : "bg-white/50 border-black/5"}`}>
                               <div className="flex items-center gap-3">
                                 {state.showIcons && (
-                                  <div className={`w-8 h-8 rounded-lg flex items-center justify-center text-white shadow-sm ${color.replace('bg-', 'bg-')}`}>
+                                  <div className={`w-8 h-8 rounded-lg flex items-center justify-center text-white shadow-sm ${color}`}>
                                     <i className={`bx ${icon} text-lg`} />
                                   </div>
                                 )}

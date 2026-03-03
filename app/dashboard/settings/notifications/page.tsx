@@ -1,269 +1,341 @@
 "use client";
 
-import { useEffect, useState, useMemo } from "react";
+import React, { useEffect, useState } from "react";
 import { useSession } from "next-auth/react";
-import { Notification, NotificationType } from "@prisma/client";
+import { motion } from "framer-motion";
+import AccessDenied from "@/components/feedback/AccessDenied";
+import { SettingsGroup } from "@/components/ui/SettingsGroup";
+import { PreferenceScope } from "@prisma/client";
+import { useToast } from "@/components/feedback/ToastProvider";
 
-/* ---------------------------- CONSTANTS ---------------------------- */
-const CATEGORIES = [
-  { key: "sales", label: "Sales", description: "Orders, invoices, and revenue updates" },
-  { key: "system", label: "System", description: "Maintenance and general system alerts" },
-  { key: "security", label: "Security", description: "Login alerts and account locks" },
-  { key: "approvals", label: "Approvals", description: "Critical actions requiring your attention" },
+/* ---------------------------- CONFIG ---------------------------- */
+
+const NOTIFICATION_KEYS = [
+  { key: "sales_alerts", label: "Sales & Invoices", description: "Real-time updates on new orders and payments" },
+  { key: "inventory_alerts", label: "Inventory & Stock", description: "Low stock warnings and adjustment logs" },
+  { key: "security_alerts", label: "Security & Access", description: "Login attempts and permission changes" },
+  { key: "approval_alerts", label: "Approval Requests", description: "Tasks requiring manager or admin sign-off" },
 ];
 
 const CHANNELS = [
-  { key: "email", label: "Email" },
-  { key: "inApp", label: "In-App" },
-  { key: "sms", label: "SMS" },
-];
+  { key: "email", label: "Email", icon: "bx-envelope" },
+  { key: "inApp", label: "In-App", icon: "bx-bell" },
+  { key: "sms", label: "SMS", icon: "bx-mobile-vibration" },
+] as const;
 
-export default function NotificationsPage() {
+type ChannelKey = typeof CHANNELS[number]["key"];
+
+type RoutingValue = {
+  email: boolean;
+  inApp: boolean;
+  sms: boolean;
+};
+
+/* ---------------------------- PAGE ---------------------------- */
+
+export default function NotificationSettingsPage() {
   const { data: session, status } = useSession();
+  const { addToast } = useToast();
 
-  // State
-  const [activeTab, setActiveTab] = useState<"feed" | "settings">("feed");
-  const [notifications, setNotifications] = useState<Notification[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [settings, setSettings] = useState<any>(null);
-  const [isSaving, setIsSaving] = useState(false);
+  const [currentScope, setCurrentScope] = useState<PreferenceScope>("USER");
+  const [prefs, setPrefs] = useState<Record<string, RoutingValue>>({});
+  const [isPaused, setIsPaused] = useState(false);
+  const [isLoading, setIsLoading] = useState(true);
 
-  /* ---------------------------- FETCH DATA ---------------------------- */
-  const fetchData = async () => {
-    setLoading(true);
-    try {
-      const res = await fetch("/api/notifications");
-      if (res.ok) {
-        const data = await res.json();
-        setNotifications(data);
-      }
-    } catch (err) {
-      console.error("Fetch error:", err);
-    } finally {
-      setLoading(false);
-    }
-  };
+  /* ---------------- FETCH ---------------- */
 
   useEffect(() => {
-    if (session) {
-      fetchData();
-      // Initialize settings structure
-      setSettings({
-        sales: { email: true, inApp: true, sms: false },
-        system: { email: true, inApp: true, sms: true },
-        security: { email: true, inApp: true, sms: true },
-        approvals: { email: true, inApp: true, sms: false },
-      });
-    }
-  }, [session]);
+    if (!session) return;
 
-  /* ---------------------------- HANDLERS ---------------------------- */
-  const markAsRead = async (id: string) => {
-    const res = await fetch("/api/notifications", {
-      method: "PATCH",
-      body: JSON.stringify({ id }),
-    });
-    if (res.ok) {
-      setNotifications(prev => prev.map(n => n.id === id ? { ...n, read: true } : n));
-    }
-  };
+    async function loadPreferences() {
+      setIsLoading(true);
+      try {
+        const loaded: Record<string, RoutingValue> = {};
 
-  const markAllRead = async () => {
-    const unreadIds = notifications.filter(n => !n.read).map(n => n.id);
-    if (unreadIds.length === 0) return;
+        await Promise.all(
+          NOTIFICATION_KEYS.map(async (item) => {
+            const res = await fetch(
+              `/api/notification-preferences?key=${item.key}&scope=${currentScope}`
+            );
+            const data = await res.json();
+            if (data.success) {
+              loaded[item.key] = data.data ?? {
+                email: false,
+                inApp: true,
+                sms: false,
+              };
+            }
+          })
+        );
 
-    const res = await fetch("/api/notifications", {
-      method: "PATCH",
-      body: JSON.stringify({ ids: unreadIds }),
-    });
-    if (res.ok) {
-      setNotifications(prev => prev.map(n => ({ ...n, read: true })));
-    }
-  };
+        const pauseRes = await fetch(
+          `/api/notification-preferences/pause?scope=${currentScope}`
+        );
+        const pauseData = await pauseRes.json();
 
-  const toggleSetting = (catKey: string, chanKey: string) => {
-    setSettings((prev: any) => ({
-      ...prev,
-      [catKey]: {
-        ...prev[catKey],
-        [chanKey]: !prev[catKey][chanKey]
+        setPrefs(loaded);
+        setIsPaused(pauseData?.data?.paused ?? false);
+      } catch (err) {
+        console.error("Failed to load notification preferences", err);
+      } finally {
+        setIsLoading(false);
       }
-    }));
+    }
+
+    loadPreferences();
+  }, [session, currentScope]);
+
+  /* ---------------- SAVE ---------------- */
+
+  const saveRouting = async (key: string, value: RoutingValue) => {
+    try {
+      const res = await fetch("/api/notification-preferences", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          scope: currentScope,
+          key,
+          value,
+        }),
+      });
+
+      const data = await res.json();
+
+      if (!data.success) {
+        throw new Error(data.error || "Update failed");
+      }
+
+      addToast({
+        type: "success",
+        title: "Updated",
+        message: `${key.replace(/_/g, " ")} updated at ${currentScope} level.`,
+      });
+
+      return true;
+    } catch (err) {
+      addToast({
+        type: "error",
+        title: "Error",
+        message: "Could not update notification routing.",
+      });
+      return false;
+    }
   };
 
-  const savePreferences = async () => {
-    setIsSaving(true);
-    // Logic for PATCH /api/preferences goes here
-    setTimeout(() => setIsSaving(false), 800); 
+  const savePause = async (nextState: boolean) => {
+    try {
+      const res = await fetch("/api/notification-preferences/pause", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          scope: currentScope,
+          paused: nextState,
+        }),
+      });
+
+      const data = await res.json();
+
+      if (!data.success) throw new Error();
+
+      addToast({
+        type: "success",
+        title: "System Updated",
+        message: nextState
+          ? "Notifications paused."
+          : "Notifications resumed.",
+      });
+
+      return true;
+    } catch {
+      addToast({
+        type: "error",
+        title: "Error",
+        message: "Could not update system state.",
+      });
+      return false;
+    }
   };
 
-  const unreadCount = useMemo(() => notifications.filter(n => !n.read).length, [notifications]);
+  /* ---------------- HANDLERS ---------------- */
 
-  if (status === "loading") return <CenteredMessage>Loading session...</CenteredMessage>;
-  if (!session) return <CenteredMessage>Please sign in to continue.</CenteredMessage>;
+  const handleToggle = async (key: string, channel: ChannelKey) => {
+    const currentValue = prefs[key];
+    const newValue = {
+      ...currentValue,
+      [channel]: !currentValue[channel],
+    };
+
+    setPrefs((prev) => ({ ...prev, [key]: newValue }));
+
+    const success = await saveRouting(key, newValue);
+    if (!success) {
+      setPrefs((prev) => ({ ...prev, [key]: currentValue }));
+    }
+  };
+
+  const handlePauseToggle = async () => {
+    const next = !isPaused;
+    setIsPaused(next);
+
+    const success = await savePause(next);
+    if (!success) setIsPaused(!next);
+  };
+
+  /* ---------------- STATES ---------------- */
+
+  if (status === "loading" || isLoading)
+    return <CenteredMessage>Syncing Notification Engine…</CenteredMessage>;
+
+  if (!session) return <AccessDenied />;
+
+  /* ---------------- UI ---------------- */
 
   return (
-    <div className="max-w-5xl mx-auto p-6 space-y-6">
-      {/* Header & Tabs */}
-      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+    <div className="max-w-[850px] mx-auto py-12 px-6">
+      <header className="mb-10 flex items-end justify-between border-b border-black/[0.03] pb-8">
         <div>
-          <h1 className="text-2xl font-bold text-gray-900 flex items-center gap-2">
-            <i className='bx bx-bell text-blue-600'></i> Notifications
+          <h1 className="text-2xl font-bold text-black/90">
+            Notification Controls
           </h1>
-          <p className="text-sm text-gray-500">Stay updated with your organization activity.</p>
+          <p className="text-[13px] text-black/45 uppercase tracking-wider font-medium">
+            Scope • <span className="text-blue-600">{currentScope}</span>
+          </p>
         </div>
 
-        <div className="inline-flex p-1 bg-gray-100 rounded-xl">
-          <TabButton 
-            active={activeTab === "feed"} 
-            onClick={() => setActiveTab("feed")}
-            label="Activity Feed"
-            count={unreadCount}
-          />
-          <TabButton 
-            active={activeTab === "settings"} 
-            onClick={() => setActiveTab("settings")}
-            label="Preferences"
-          />
-        </div>
-      </div>
-
-      {activeTab === "feed" ? (
-        <div className="space-y-4">
-          <div className="flex justify-between items-center px-1">
-            <h2 className="text-xs font-bold text-gray-400 uppercase tracking-widest">Recent Activity</h2>
-            {unreadCount > 0 && (
-              <button 
-                onClick={markAllRead}
-                className="text-xs font-bold text-blue-600 hover:text-blue-700 uppercase tracking-tighter"
+        <div className="flex items-center gap-1.5 bg-black/[0.03] p-1.5 rounded-xl">
+          {(["USER", "BRANCH", "ORGANIZATION"] as PreferenceScope[]).map(
+            (s) => (
+              <button
+                key={s}
+                onClick={() => setCurrentScope(s)}
+                className={`px-3 py-1.5 text-[10px] font-black rounded-lg ${
+                  currentScope === s
+                    ? "bg-white shadow-sm text-blue-600"
+                    : "text-black/30 hover:text-black/60"
+                }`}
               >
-                Mark all read
+                {s}
               </button>
-            )}
-          </div>
-
-          <div className="bg-white border border-gray-200 rounded-2xl shadow-sm overflow-hidden divide-y divide-gray-100">
-            {loading ? (
-              <div className="p-12 text-center text-gray-400 animate-pulse">
-                <i className='bx bx-loader-alt bx-spin text-2xl mb-2'></i>
-                <p>Loading updates...</p>
-              </div>
-            ) : notifications.length === 0 ? (
-              <div className="p-16 text-center">
-                <i className='bx bx-party text-5xl text-gray-200 mb-3'></i>
-                <p className="text-gray-400 font-medium">All caught up! No new notifications.</p>
-              </div>
-            ) : (
-              notifications.map((n) => (
-                <div key={n.id} className={`flex gap-4 p-5 transition ${!n.read ? 'bg-blue-50/40' : 'hover:bg-gray-50'}`}>
-                  <NotificationTypeIcon type={n.type} />
-                  <div className="flex-1">
-                    <div className="flex justify-between items-start">
-                      <h4 className={`text-sm ${!n.read ? 'font-bold text-gray-900' : 'text-gray-700'}`}>{n.title}</h4>
-                      <span className="text-[10px] font-bold text-gray-400 uppercase tracking-tight">
-                        {new Date(n.createdAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}
-                      </span>
-                    </div>
-                    <p className="text-sm text-gray-500 mt-1 leading-relaxed">{n.message}</p>
-                    {!n.read && (
-                      <button 
-                        onClick={() => markAsRead(n.id)}
-                        className="mt-3 text-[10px] font-bold text-blue-600 uppercase tracking-widest hover:text-blue-800 flex items-center gap-1"
-                      >
-                        <i className='bx bx-check-double text-sm'></i> Mark as read
-                      </button>
-                    )}
-                  </div>
-                </div>
-              ))
-            )}
-          </div>
+            )
+          )}
         </div>
-      ) : (
-        <div className="bg-white border border-gray-200 rounded-2xl shadow-sm overflow-hidden animate-in fade-in slide-in-from-bottom-2">
-          <div className="p-6 border-b border-gray-100 flex items-center gap-3">
-             <i className='bx bx-slider-alt text-xl text-blue-600'></i>
-             <h3 className="font-bold text-gray-900">Notification Preferences</h3>
+      </header>
+
+      <div className="space-y-8">
+        <SettingsGroup header="System Status">
+          <div className="p-5 flex items-center justify-between bg-red-50/20 rounded-xl border border-red-100/30">
+            <div>
+              <div className="text-[12px] font-bold text-red-600 uppercase">
+                Pause All Delivery
+              </div>
+              <p className="text-[11px] text-black/40">
+                Silence alerts across all channels.
+              </p>
+            </div>
+            <Switch
+              checked={isPaused}
+              onChange={handlePauseToggle}
+              color="bg-red-500"
+            />
           </div>
-          <div className="divide-y divide-gray-100">
-            {CATEGORIES.map(cat => (
-              <div key={cat.key} className="p-6 flex flex-col md:flex-row md:items-center justify-between gap-6">
-                <div className="max-w-md">
-                  <h4 className="text-sm font-bold text-gray-900">{cat.label}</h4>
-                  <p className="text-xs text-gray-500 mt-1">{cat.description}</p>
-                </div>
-                <div className="flex gap-8">
-                  {CHANNELS.map(chan => (
-                    <div key={chan.key} className="flex flex-col items-center gap-2">
-                      <span className="text-[10px] font-bold text-gray-400 uppercase tracking-tighter">{chan.label}</span>
-                      <SmartSwitch 
-                        checked={settings?.[cat.key]?.[chan.key]} 
-                        onChange={() => toggleSetting(cat.key, chan.key)} 
-                      />
-                    </div>
+        </SettingsGroup>
+
+        <SettingsGroup header="Channel Routing">
+          <div className="divide-y divide-black/[0.03]">
+            {NOTIFICATION_KEYS.map((item) => (
+              <div key={item.key} className="p-5">
+                <h3 className="text-[13px] font-bold text-black/80 mb-1">
+                  {item.label}
+                </h3>
+                <p className="text-[11px] text-black/40 mb-4">
+                  {item.description}
+                </p>
+
+                <div className="flex gap-3">
+                  {CHANNELS.map((chan) => (
+                    <ChannelChip
+                      key={chan.key}
+                      label={chan.label}
+                      icon={chan.icon}
+                      active={!!prefs[item.key]?.[chan.key]}
+                      disabled={isPaused}
+                      onClick={() =>
+                        handleToggle(item.key, chan.key)
+                      }
+                    />
                   ))}
                 </div>
               </div>
             ))}
           </div>
-          <div className="p-6 bg-gray-50 border-t border-gray-100 flex justify-end items-center gap-4">
-            <button 
-              onClick={savePreferences}
-              disabled={isSaving}
-              className="bg-blue-600 text-white px-8 py-2.5 rounded-xl font-bold text-sm shadow-md hover:bg-blue-700 transition disabled:opacity-50"
-            >
-              {isSaving ? "Saving..." : "Save Preferences"}
-            </button>
-          </div>
-        </div>
-      )}
+        </SettingsGroup>
+      </div>
     </div>
   );
 }
 
-/* ---------------------------- SUB-COMPONENTS ---------------------------- */
+/* ---------------- SUB COMPONENTS ---------------- */
 
-function TabButton({ active, onClick, label, count }: { active: boolean; onClick: () => void; label: string; count?: number }) {
+function ChannelChip({
+  label,
+  icon,
+  active,
+  onClick,
+  disabled,
+}: {
+  label: string;
+  icon: string;
+  active: boolean;
+  onClick: () => void;
+  disabled?: boolean;
+}) {
   return (
     <button
       onClick={onClick}
-      className={`relative px-6 py-2 text-sm font-bold rounded-lg transition-all duration-200 ${
-        active ? "bg-white text-blue-600 shadow-sm" : "text-gray-500 hover:text-gray-700"
-      }`}
+      disabled={disabled}
+      className={`flex items-center gap-2 px-3.5 py-2.5 rounded-xl border ${
+        active
+          ? "bg-blue-50 border-blue-200 text-blue-600"
+          : "bg-white border-black/[0.06] text-black/30"
+      } ${disabled ? "opacity-30 cursor-not-allowed" : "active:scale-95"}`}
     >
-      {label}
-      {count && count > 0 ? (
-        <span className="ml-2 bg-red-500 text-white text-[10px] px-1.5 py-0.5 rounded-full animate-pulse">
-          {count}
-        </span>
-      ) : null}
+      <i className={`bx ${icon}`} />
+      <span className="text-[10px] font-black uppercase">
+        {label}
+      </span>
     </button>
   );
 }
 
-function NotificationTypeIcon({ type }: { type: NotificationType }) {
-  const base = "w-10 h-10 rounded-xl flex items-center justify-center text-xl shadow-sm flex-shrink-0";
-  switch (type) {
-    case "APPROVAL_REQUIRED": return <div className={`${base} bg-orange-100 text-orange-600`}><i className='bx bx-shield-quarter'></i></div>;
-    case "ERROR": return <div className={`${base} bg-red-100 text-red-600`}><i className='bx bx-error-circle'></i></div>;
-    case "WARNING": return <div className={`${base} bg-yellow-100 text-yellow-600`}><i className='bx bx-info-circle'></i></div>;
-    case "SYSTEM": return <div className={`${base} bg-purple-100 text-purple-600`}><i className='bx bx-bolt-circle'></i></div>;
-    default: return <div className={`${base} bg-blue-100 text-blue-600`}><i className='bx bx-envelope'></i></div>;
-  }
-}
-
-function SmartSwitch({ checked, onChange }: { checked: boolean; onChange: () => void }) {
+function Switch({
+  checked,
+  onChange,
+  color = "bg-blue-600",
+}: {
+  checked: boolean;
+  onChange: () => void;
+  color?: string;
+}) {
   return (
     <button
-      type="button"
       onClick={onChange}
-      className={`relative inline-flex h-5 w-10 items-center rounded-full transition-colors duration-300 ${checked ? "bg-blue-600" : "bg-gray-200"}`}
+      className={`w-11 h-6 rounded-full relative p-1 transition-colors ${
+        checked ? color : "bg-black/10"
+      }`}
     >
-      <span className={`inline-block h-3 w-3 transform rounded-full bg-white shadow-sm transition-transform duration-300 ${checked ? "translate-x-6" : "translate-x-1"}`} />
+      <motion.div
+        animate={{ x: checked ? 20 : 0 }}
+        transition={{ type: "spring", stiffness: 500, damping: 30 }}
+        className="w-4 h-4 bg-white rounded-full shadow-lg"
+      />
     </button>
   );
 }
 
 function CenteredMessage({ children }: { children: React.ReactNode }) {
-  return <div className="flex min-h-[50vh] items-center justify-center text-sm font-bold text-gray-400 uppercase tracking-widest">{children}</div>;
+  return (
+    <div className="flex h-[70vh] items-center justify-center text-[10px] font-black uppercase tracking-[0.3em] text-black/20">
+      {children}
+    </div>
+  );
 }
