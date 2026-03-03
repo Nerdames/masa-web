@@ -379,7 +379,7 @@ export default function ProfilePage() {
                         a.role
                       )}`}
                     >
-                      p{a.role}
+                      {a.role}
                     </span>
                   </div>
                 ))}
