@@ -45,6 +45,9 @@ type PersonnelWithRelations = Prisma.AuthorizedPersonnelGetPayload<{
 // HELPERS
 ////////////////////////////////////////////////////////////
 
+/**
+ * Validates the session and fetches the full personnel record
+ */
 async function requirePersonnel(): Promise<PersonnelWithRelations | null> {
   const session = (await getServerSession(authOptions)) as AuthSession | null;
   if (!session?.user?.id) return null;
@@ -63,6 +66,9 @@ async function requirePersonnel(): Promise<PersonnelWithRelations | null> {
   });
 }
 
+/**
+ * Consolidates roles from direct ownership and branch assignments
+ */
 function resolveRoles(personnel: PersonnelWithRelations): Role[] {
   const roles = new Set<Role>();
   if (personnel.isOrgOwner) roles.add(Role.ADMIN);
@@ -70,6 +76,9 @@ function resolveRoles(personnel: PersonnelWithRelations): Role[] {
   return Array.from(roles);
 }
 
+/**
+ * Transforms the Prisma model into a clean Data Transfer Object
+ */
 function mapProfileDTO(personnel: PersonnelWithRelations) {
   return {
     id: personnel.id,
@@ -150,11 +159,11 @@ export async function PATCH(request: NextRequest): Promise<NextResponse> {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    // 🔒 LOCKOUT CHECK
+    // 🔒 LOCKOUT CHECK: Prevent updates if the account is currently throttled
     if (personnel.lockoutUntil && personnel.lockoutUntil > new Date()) {
       return NextResponse.json(
         {
-          error: `Account locked. Try again after ${personnel.lockoutUntil.toLocaleTimeString()}`,
+          error: `Security lockout active. Try again after ${personnel.lockoutUntil.toLocaleTimeString()}`,
         },
         { status: 403 }
       );
@@ -166,32 +175,27 @@ export async function PATCH(request: NextRequest): Promise<NextResponse> {
     let emailChangeStarted = false;
 
     ////////////////////////////////////////////////////////////
-    // PASSWORD VALIDATION FOR SENSITIVE CHANGES
+    // SENSITIVE CHANGE VALIDATION (Password/Email)
     ////////////////////////////////////////////////////////////
 
-    const isSensitiveChange =
-      body.newPassword ||
-      (body.email && body.email !== personnel.email);
+    const isSensitiveChange = !!(
+      body.newPassword || 
+      (body.email && body.email !== personnel.email)
+    );
 
     if (isSensitiveChange) {
       if (!body.currentPassword) {
         return NextResponse.json(
-          { error: "Current password required for this change" },
+          { error: "Confirming your current password is required for these changes" },
           { status: 400 }
         );
       }
 
-      const isValid = await bcrypt.compare(
-        body.currentPassword,
-        personnel.password
-      );
+      const isValid = await bcrypt.compare(body.currentPassword, personnel.password);
 
       if (!isValid) {
-        const newFailCount = personnel.failedLoginAttempts + 1;
-        const lockoutTime =
-          newFailCount >= 5
-            ? new Date(Date.now() + 15 * 60 * 1000)
-            : null;
+        const newFailCount = (personnel.failedLoginAttempts || 0) + 1;
+        const lockoutTime = newFailCount >= 5 ? new Date(Date.now() + 15 * 60 * 1000) : null;
 
         await prisma.authorizedPersonnel.update({
           where: { id: personnel.id },
@@ -203,45 +207,36 @@ export async function PATCH(request: NextRequest): Promise<NextResponse> {
 
         return NextResponse.json(
           {
-            error: `Invalid password. ${Math.max(
-              0,
-              5 - newFailCount
-            )} attempts remaining.`,
+            error: `Invalid password. ${Math.max(0, 5 - newFailCount)} attempts remaining before lockout.`,
           },
           { status: 400 }
         );
       }
 
-      // reset lockout counters
+      // Success: Reset security counters
       updateData.failedLoginAttempts = 0;
       updateData.lockoutUntil = null;
     }
 
     ////////////////////////////////////////////////////////////
-    // EMAIL CHANGE (Verification Required)
+    // EMAIL CHANGE INITIATION
     ////////////////////////////////////////////////////////////
 
     if (body.email && body.email !== personnel.email) {
-      const existing =
-        await prisma.authorizedPersonnel.findFirst({
-          where: {
-            organizationId: personnel.organizationId,
-            email: body.email,
-            deletedAt: null,
-          },
-        });
+      const existing = await prisma.authorizedPersonnel.findFirst({
+        where: {
+          organizationId: personnel.organizationId,
+          email: body.email,
+          deletedAt: null,
+        },
+      });
 
       if (existing) {
-        return NextResponse.json(
-          { error: "Email already in use" },
-          { status: 400 }
-        );
+        return NextResponse.json({ error: "This email is already registered" }, { status: 400 });
       }
 
       const token = crypto.randomBytes(32).toString("hex");
-      const expires = new Date(
-        Date.now() + 24 * 60 * 60 * 1000
-      );
+      const expires = new Date(Date.now() + 24 * 60 * 60 * 1000);
 
       await prisma.verificationToken.create({
         data: {
@@ -252,42 +247,31 @@ export async function PATCH(request: NextRequest): Promise<NextResponse> {
       });
 
       emailChangeStarted = true;
-      logActions.push(`Email change initiated to ${body.email}`);
-
-      // TODO: send email with link:
-      // `${BASE_URL}/api/profile/verify?token=${token}`
+      logActions.push(`Email update request: ${body.email}`);
+      // NOTE: Here you would typically trigger your email service (e.g., Resend, SendGrid)
     }
 
     ////////////////////////////////////////////////////////////
-    // NAME CHANGE
+    // STANDARD UPDATES
     ////////////////////////////////////////////////////////////
 
     if (body.name && body.name !== personnel.name) {
       updateData.name = body.name;
-      logActions.push("Name updated");
+      logActions.push("Name changed");
     }
-
-    ////////////////////////////////////////////////////////////
-    // PASSWORD CHANGE
-    ////////////////////////////////////////////////////////////
 
     if (body.newPassword) {
       updateData.password = await bcrypt.hash(body.newPassword, 12);
       logActions.push("Password updated");
     }
 
-    if (
-      Object.keys(updateData).length === 0 &&
-      !emailChangeStarted
-    ) {
-      return NextResponse.json(
-        { error: "No changes provided" },
-        { status: 400 }
-      );
+    // Guard against empty updates
+    if (Object.keys(updateData).length === 0 && !emailChangeStarted) {
+      return NextResponse.json({ error: "No changes detected" }, { status: 400 });
     }
 
     ////////////////////////////////////////////////////////////
-    // TRANSACTION: UPDATE + LOG
+    // DATABASE TRANSACTION
     ////////////////////////////////////////////////////////////
 
     const updatedUser = await prisma.$transaction(async (tx) => {
@@ -300,9 +284,7 @@ export async function PATCH(request: NextRequest): Promise<NextResponse> {
           include: {
             organization: true,
             branch: true,
-            branchAssignments: {
-              include: { branch: true },
-            },
+            branchAssignments: { include: { branch: true } },
             preferences: true,
           },
         });
@@ -311,10 +293,10 @@ export async function PATCH(request: NextRequest): Promise<NextResponse> {
       await tx.activityLog.create({
         data: {
           organizationId: personnel.organizationId,
-          branchId: personnel.branchId ?? null,
+          branchId: personnel.branchId,
           personnelId: personnel.id,
           action: "PROFILE_UPDATE",
-          meta: logActions.join("; "),
+          meta: logActions.join(", "),
         },
       });
 
@@ -329,9 +311,6 @@ export async function PATCH(request: NextRequest): Promise<NextResponse> {
 
   } catch (error) {
     console.error("PATCH_PROFILE_ERROR", error);
-    return NextResponse.json(
-      { error: "Update failed" },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: "An error occurred while updating the profile" }, { status: 500 });
   }
 }

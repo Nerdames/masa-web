@@ -28,6 +28,7 @@ enum ApprovalStatus {
   PENDING
   APPROVED
   REJECTED
+  EXPIRED
 }
 
 enum CriticalAction {
@@ -37,6 +38,7 @@ enum CriticalAction {
   STOCK_ADJUST
   STOCK_TRANSFER
   VOID_INVOICE
+  USER_LOCK_UNLOCK
 }
 
 enum CustomerType {
@@ -86,6 +88,8 @@ enum NotificationType {
   WARNING
   ERROR
   SYSTEM
+  APPROVAL_REQUIRED
+  APPROVAL_DECISION
 }
 
 enum SaleStatus {
@@ -200,9 +204,6 @@ model AuthorizedPersonnel {
   isLocked        Boolean @default(false)
   lockReason      String?
 
-  // -----------------------
-  // Session & Login Tracking
-  // -----------------------
   failedLoginAttempts Int       @default(0)
   lockoutUntil        DateTime?
   lastActivityAt      DateTime?
@@ -213,9 +214,6 @@ model AuthorizedPersonnel {
   requestsCreated  ApprovalRequest[] @relation("Requester")
   requestsApproved ApprovalRequest[] @relation("Approver")
 
-  // -----------------------
-  // Relations
-  // -----------------------
   organization Organization @relation("OrgMembers", fields: [organizationId], references: [id])
   branch       Branch?      @relation(fields: [branchId], references: [id])
 
@@ -243,7 +241,7 @@ model AuthorizedPersonnel {
 }
 
 ////////////////////////////////////
-// NEW: APPROVAL SYSTEM MODEL
+// APPROVAL SYSTEM
 ////////////////////////////////////
 
 model ApprovalRequest {
@@ -257,14 +255,20 @@ model ApprovalRequest {
   actionType   CriticalAction
   status       ApprovalStatus @default(PENDING)
   requiredRole Role           @default(MANAGER)
-  changes      Json
-
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  changes      Json // Stores the "proposed" data
+  rejectionNote String?
+  
+  expiresAt    DateTime?
+  appliedAt    DateTime?      // When the change was actually executed in DB
+  createdAt    DateTime       @default(now())
+  updatedAt    DateTime       @updatedAt
 
   organization Organization        @relation("OrgApprovals", fields: [organizationId], references: [id])
   requester    AuthorizedPersonnel @relation("Requester", fields: [requesterId], references: [id])
   approver     AuthorizedPersonnel? @relation("Approver", fields: [approverId], references: [id])
+
+  stockMovements StockMovement[]    @relation("ApprovalStockMoves")
+  activityLogs   ActivityLog[]      @relation("ApprovalLogs")
 
   @@index([organizationId, status])
   @@index([branchId, status])
@@ -280,6 +284,7 @@ model BranchAssignment {
   personnel AuthorizedPersonnel @relation(fields: [personnelId], references: [id])
   branch    Branch              @relation("BranchAssignments", fields: [branchId], references: [id])
 
+  @@unique([personnelId, branchId]) // User can only have one role per branch
   @@index([personnelId])
   @@index([branchId])
 }
@@ -441,7 +446,7 @@ model Vendor {
 }
 
 ////////////////////////////////////
-// ORDERS, ORDER ITEMS, INVOICES
+// ORDERS & INVOICES
 ////////////////////////////////////
 
 model Order {
@@ -588,7 +593,6 @@ model Sale {
   customer      Customer?           @relation("CustomerSales", fields: [customerId], references: [id])
   branch        Branch              @relation(fields: [branchId], references: [id])
   
-  // Note: One-to-one because Receipt.saleId is unique
   receipt       Receipt?
 
   @@index([invoiceId])
@@ -597,17 +601,17 @@ model Sale {
 }
 
 model Receipt {
-  id              String        @id @default(cuid())
-  saleId          String        @unique
+  id              String         @id @default(cuid())
+  saleId          String         @unique
   cashierId       String
   branchId        String
   branchProductId String
   organizationId  String
   invoiceId       String
-  amount          Decimal       @db.Decimal(18, 2)
+  amount          Decimal        @db.Decimal(18, 2)
   paymentMethod   PaymentMethod
-  currency        String        @default("NGN")
-  createdAt       DateTime      @default(now())
+  currency        String         @default("NGN")
+  createdAt       DateTime       @default(now())
 
   paymentId String? @unique
 
@@ -634,16 +638,19 @@ model StockMovement {
   branchId        String
   type            StockMovementType
   quantity        Int
-  referenceId     String?
+  referenceId     String?           // General reference (e.g. Invoice ID)
+  approvalRequestId String?         // Link to the specific approval that allowed this
 
   createdAt DateTime @default(now())
 
   branchProduct BranchProduct       @relation("BranchProductStockMoves", fields: [branchProductId], references: [id])
   branch        Branch              @relation("BranchStockMoves", fields: [branchId], references: [id])
   personnel     AuthorizedPersonnel @relation(fields: [personnelId], references: [id])
+  approvalRequest ApprovalRequest?   @relation("ApprovalStockMoves", fields: [approvalRequestId], references: [id])
 
   @@index([branchProductId])
   @@index([referenceId])
+  @@index([approvalRequestId])
 }
 
 ////////////////////////////////////
@@ -654,13 +661,14 @@ model Notification {
   id             String @id @default(cuid())
   organizationId String
   branchId       String?
-  personnelId    String?
+  personnelId    String? // Targeted to a specific person
+  targetRole     Role?   // Targeted to a whole role (e.g., all MANAGERS)
 
   type    NotificationType @default(INFO)
   title   String
   message String
   read    Boolean          @default(false)
-  readBy  Json?
+  readBy  Json?            // Track who in a role has seen it
 
   createdAt DateTime @default(now())
 
@@ -671,6 +679,7 @@ model Notification {
   @@index([organizationId])
   @@index([branchId])
   @@index([personnelId])
+  @@index([targetRole])
 }
 
 ////////////////////////////////////
@@ -682,15 +691,17 @@ model ActivityLog {
   organizationId String
   branchId       String?
   personnelId    String?
+  approvalRequestId String?
 
   action String
-  meta   String?
+  meta   String? // JSON or string details
 
   createdAt DateTime @default(now())
 
   organization Organization        @relation(fields: [organizationId], references: [id])
   branch       Branch?             @relation(fields: [branchId], references: [id])
   personnel    AuthorizedPersonnel? @relation(fields: [personnelId], references: [id])
+  approvalRequest ApprovalRequest? @relation("ApprovalLogs", fields: [approvalRequestId], references: [id])
 
   @@index([organizationId])
   @@index([branchId])
@@ -702,15 +713,15 @@ model ActivityLog {
 ////////////////////////////////////
 
 model CustomerOrderSummary {
-  id               String   @id @default(cuid())
-  organizationId   String
-  branchId         String
-  customerId       String
-  totalOrders      Int
-  totalQuantity    Int
-  totalSpent       Decimal  @default(0) @db.Decimal(18, 2)
-  currency         String   @default("NGN")
-  lastOrderAt      DateTime?
+  id                String   @id @default(cuid())
+  organizationId    String
+  branchId          String
+  customerId        String
+  totalOrders       Int
+  totalQuantity     Int
+  totalSpent        Decimal  @default(0) @db.Decimal(18, 2)
+  currency          String   @default("NGN")
+  lastOrderAt       DateTime?
   productBreakdown Json?
 
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
@@ -723,7 +734,7 @@ model CustomerOrderSummary {
 }
 
 ////////////////////////////////////
-// NEXTAUTH
+// NEXTAUTH & PREFERENCES
 ////////////////////////////////////
 
 model Account {
