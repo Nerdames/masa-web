@@ -1,50 +1,30 @@
 "use client";
 
 import { useEffect } from "react";
-import { useRouter, usePathname } from "next/navigation";
-import { useSession } from "next-auth/react";
-import AccessDenied from "@/components/feedback/AccessDenied";
+import { useRouter } from "next/navigation";
 
-const ALLOWED_ROLES = new Set(["DEV", "ADMIN"]);
-
-export default function SettingsPageRedirect() {
+export default function SettingsPage() {
   const router = useRouter();
-  const pathname = usePathname();
-  const { data: session, status } = useSession();
-
-  const role = session?.user?.role;
-  const authorized = role ? ALLOWED_ROLES.has(role) : false;
-  const isSettingsRoot = pathname === "/dashboard/settings";
 
   useEffect(() => {
-    if (status === "authenticated" && authorized && isSettingsRoot) {
-      router.replace("/dashboard/settings/general");
-    }
-  }, [status, authorized, isSettingsRoot, router]);
+    const timeout = setTimeout(() => {
+      router.replace("/dashboard/settings/preferences");
+    }, 300); // slight delay so loader is visible smoothly
 
-  if (status === "loading") {
-    return (
-      <div className="flex min-h-[70vh] items-center justify-center px-4 text-sm text-gray-500">
-        Verifying access…
+    return () => clearTimeout(timeout);
+  }, [router]);
+
+  return (
+    <div className="min-h-screen flex flex-col items-center justify-center bg-gray-50">
+      <div className="flex space-x-2">
+        <div className="w-3 h-3 bg-blue-600 rounded-full animate-bounce [animation-delay:-0.3s]"></div>
+        <div className="w-3 h-3 bg-blue-600 rounded-full animate-bounce [animation-delay:-0.15s]"></div>
+        <div className="w-3 h-3 bg-blue-600 rounded-full animate-bounce"></div>
       </div>
-    );
-  }
 
-  if (!authorized) {
-    return (
-      <div className="flex min-h-[70vh] items-center justify-center px-4">
-        <AccessDenied />
-      </div>
-    );
-  }
-
-  if (isSettingsRoot) {
-    return (
-      <div className="flex min-h-[70vh] items-center justify-center px-4 text-sm text-gray-500">
-        Redirecting…
-      </div>
-    );
-  }
-
-  return null;
+      <p className="mt-4 text-xs font-bold text-gray-400 uppercase tracking-widest text-center">
+        Loading Settings
+      </p>
+    </div>
+  );
 }

@@ -2,7 +2,7 @@ import CredentialsProvider from "next-auth/providers/credentials";
 import type { NextAuthOptions, DefaultSession, DefaultUser } from "next-auth";
 import bcrypt from "bcryptjs";
 import prisma from "./prisma";
-import { Role } from "@/types/enums";
+import { Role } from "@prisma/client"; // Use the Prisma-generated Enum
 
 /* ------------------------------------------
  * Module augmentation for NextAuth
@@ -10,15 +10,15 @@ import { Role } from "@/types/enums";
 declare module "next-auth" {
   interface Session {
     user: {
-      id?: string;
-      role?: Role;
-      isOrgOwner?: boolean;
-      organizationId?: string;
-      organizationName?: string | null;
-      branchId?: string | null;
-      branchName?: string | null;
-      lastLogin?: string | null;
-      lastActivityAt?: string | null;
+      id: string;
+      role: Role;
+      isOrgOwner: boolean;
+      organizationId: string;
+      organizationName: string | null;
+      branchId: string | null;
+      branchName: string | null;
+      lastLogin: string | null;
+      lastActivityAt: string | null;
     } & DefaultSession["user"];
   }
 
@@ -26,41 +26,35 @@ declare module "next-auth" {
     role: Role;
     isOrgOwner: boolean;
     organizationId: string;
-    organizationName?: string | null;
-    branchId?: string | null;
-    branchName?: string | null;
-    lastLogin?: string | null;
-    lastActivityAt?: string | null;
+    organizationName: string | null;
+    branchId: string | null;
+    branchName: string | null;
+    lastLogin: string | null;
+    lastActivityAt: string | null;
   }
 }
 
 declare module "next-auth/jwt" {
   interface JWT {
-    id?: string;
-    role?: Role;
-    isOrgOwner?: boolean;
-    organizationId?: string;
-    organizationName?: string | null;
-    branchId?: string | null;
-    branchName?: string | null;
-    lastLogin?: string | null;
-    lastActivityAt?: number; // timestamp in ms
+    id: string;
+    role: Role;
+    isOrgOwner: boolean;
+    organizationId: string;
+    organizationName: string | null;
+    branchId: string | null;
+    branchName: string | null;
+    lastLogin: string | null;
+    lastActivityAt: number; 
   }
 }
 
-/* ------------------------------------------
- * Inactivity timeout configuration
- * ------------------------------------------ */
 const INACTIVITY_TIMEOUT_MS = 60 * 60 * 1000; // 1 hour
 const DB_UPDATE_THROTTLE_MS = 5 * 60 * 1000; // 5 minutes
 
-/* ------------------------------------------
- * NextAuth configuration
- * ------------------------------------------ */
 export const authOptions: NextAuthOptions = {
   session: { 
     strategy: "jwt",
-    maxAge: 24 * 60 * 60, // 24 hour total session duration
+    maxAge: 24 * 60 * 60, 
   },
 
   providers: [
@@ -74,35 +68,67 @@ export const authOptions: NextAuthOptions = {
         if (!credentials?.email || !credentials?.password) return null;
 
         const personnel = await prisma.authorizedPersonnel.findFirst({
-          where: { email: credentials.email, disabled: false, deletedAt: null },
-          include: { organization: true, branch: true, branchAssignments: true },
+          where: { 
+            email: credentials.email, 
+            disabled: false, 
+            deletedAt: null 
+          },
+          include: { 
+            organization: true, 
+            branch: true, 
+            branchAssignments: true 
+          },
         });
 
+        // 1. Basic Existence Check
         if (!personnel) return null;
 
-        const isValid = await bcrypt.compare(credentials.password, personnel.password);
-        if (!isValid) return null;
+        // 2. Security Check (Lockout & Throttling)
+        if (personnel.isLocked) throw new Error(`Account locked: ${personnel.lockReason || 'Security concerns'}`);
+        if (personnel.lockoutUntil && personnel.lockoutUntil > new Date()) {
+            throw new Error("Temporary lockout active. Please try again later.");
+        }
 
-        // Determine effective role
+        // 3. Password Verification
+        const isValid = await bcrypt.compare(credentials.password, personnel.password);
+        if (!isValid) {
+            // Optional: Increment failedLoginAttempts here if desired
+            return null;
+        }
+
+        // 4. Role Resolution Logic
         let effectiveRole: Role | null = null;
-        if (personnel.isOrgOwner) effectiveRole = "ADMIN" as Role;
         
-        if (!effectiveRole && personnel.branchId) {
-          const assignment = personnel.branchAssignments.find((ba) => ba.branchId === personnel.branchId);
-          if (assignment) effectiveRole = assignment.role as Role;
+        // Org Owners are always ADMINs globally
+        if (personnel.isOrgOwner) {
+            effectiveRole = Role.ADMIN;
+        } else {
+            // Try to find role for the primary branch first
+            const primaryAssignment = personnel.branchAssignments.find(
+                (ba) => ba.branchId === personnel.branchId
+            );
+            
+            if (primaryAssignment) {
+                effectiveRole = primaryAssignment.role;
+            } else if (personnel.branchAssignments.length > 0) {
+                // Fallback to the first available branch assignment
+                effectiveRole = personnel.branchAssignments[0].role;
+            }
         }
         
-        if (!effectiveRole && personnel.branchAssignments.length > 0)
-          effectiveRole = personnel.branchAssignments[0].role as Role;
-
         if (!effectiveRole) return null;
 
         const now = new Date();
 
-        // Initial login audit
+        // 5. Update Audit Fields
         await prisma.authorizedPersonnel.update({
           where: { id: personnel.id },
-          data: { lastLogin: now, lastActivityAt: now },
+          data: { 
+            lastLogin: now, 
+            lastActivityAt: now,
+            failedLoginAttempts: 0, // Reset on success
+            lockoutUntil: null 
+          },
         });
 
         return {
@@ -131,7 +157,6 @@ export const authOptions: NextAuthOptions = {
     async jwt({ token, user, trigger, session }) {
       const now = Date.now();
 
-      // 1. Handle initial Sign In
       if (user) {
         return {
           ...token,
@@ -147,33 +172,26 @@ export const authOptions: NextAuthOptions = {
         };
       }
 
-      // 2. Handle manual session updates (client-side update())
       if (trigger === "update" && session) {
         return { ...token, ...session };
       }
 
-      // 3. Inactivity Logic & DB Throttling
       if (token.id) {
         const lastActivity = token.lastActivityAt || 0;
         const idleTime = now - lastActivity;
 
-        // If user has been idle for > 1 hour, wipe token (401)
-        if (idleTime > INACTIVITY_TIMEOUT_MS) {
-          return {}; 
-        }
+        if (idleTime > INACTIVITY_TIMEOUT_MS) return {}; 
 
-        // If user is active, only update DB if 5 mins have passed since last write
+        // Throttle DB activity updates
         if (idleTime > DB_UPDATE_THROTTLE_MS) {
           try {
             await prisma.authorizedPersonnel.update({
               where: { id: token.id },
               data: { lastActivityAt: new Date() },
             });
-            // Update token timestamp so we don't hit DB again for another 5 mins
             token.lastActivityAt = now;
           } catch (error) {
-            console.error("Inactivity background update failed:", error);
-            // We don't return {} here so a DB hiccup doesn't log the user out
+            console.error("Activity update failed:", error);
           }
         }
       }
@@ -185,12 +203,12 @@ export const authOptions: NextAuthOptions = {
       if (token && token.id) {
         session.user.id = token.id;
         session.user.role = token.role;
-        session.user.isOrgOwner = token.isOrgOwner ?? false;
-        session.user.organizationId = token.organizationId ?? "";
-        session.user.organizationName = token.organizationName ?? null;
-        session.user.branchId = token.branchId ?? null;
-        session.user.branchName = token.branchName ?? null;
-        session.user.lastLogin = token.lastLogin ?? null;
+        session.user.isOrgOwner = token.isOrgOwner;
+        session.user.organizationId = token.organizationId;
+        session.user.organizationName = token.organizationName;
+        session.user.branchId = token.branchId;
+        session.user.branchName = token.branchName;
+        session.user.lastLogin = token.lastLogin;
         session.user.lastActivityAt = token.lastActivityAt 
           ? new Date(token.lastActivityAt).toISOString() 
           : null;
@@ -200,5 +218,4 @@ export const authOptions: NextAuthOptions = {
   },
 
   secret: process.env.NEXTAUTH_SECRET,
-  debug: process.env.NODE_ENV === "development",
 };

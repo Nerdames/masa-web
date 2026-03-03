@@ -1,14 +1,15 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import bcrypt from "bcryptjs";
-import crypto from "crypto";
-
 import prisma from "@/lib/prisma";
 import { authOptions } from "@/lib/auth";
 
 import {
   Role,
   Prisma,
+  ApprovalStatus,
+  CriticalAction,
+  NotificationType,
 } from "@prisma/client";
 
 ////////////////////////////////////////////////////////////
@@ -32,12 +33,22 @@ interface UpdateProfileBody {
   newPassword?: string;
 }
 
+interface ProfileApprovalPayload {
+  email?: string;
+  password?: string;
+  [key: string]: string | undefined;
+}
+
 type PersonnelWithRelations = Prisma.AuthorizedPersonnelGetPayload<{
   include: {
     organization: true;
     branch: true;
     branchAssignments: { include: { branch: true } };
     preferences: true;
+    activityLogs: {
+      take: number;
+      orderBy: { createdAt: "desc" };
+    };
   };
 }>;
 
@@ -45,9 +56,6 @@ type PersonnelWithRelations = Prisma.AuthorizedPersonnelGetPayload<{
 // HELPERS
 ////////////////////////////////////////////////////////////
 
-/**
- * Validates the session and fetches the full personnel record
- */
 async function requirePersonnel(): Promise<PersonnelWithRelations | null> {
   const session = (await getServerSession(authOptions)) as AuthSession | null;
   if (!session?.user?.id) return null;
@@ -62,13 +70,14 @@ async function requirePersonnel(): Promise<PersonnelWithRelations | null> {
       branch: true,
       branchAssignments: { include: { branch: true } },
       preferences: true,
+      activityLogs: {
+        take: 10,
+        orderBy: { createdAt: "desc" },
+      },
     },
   });
 }
 
-/**
- * Consolidates roles from direct ownership and branch assignments
- */
 function resolveRoles(personnel: PersonnelWithRelations): Role[] {
   const roles = new Set<Role>();
   if (personnel.isOrgOwner) roles.add(Role.ADMIN);
@@ -76,9 +85,6 @@ function resolveRoles(personnel: PersonnelWithRelations): Role[] {
   return Array.from(roles);
 }
 
-/**
- * Transforms the Prisma model into a clean Data Transfer Object
- */
 function mapProfileDTO(personnel: PersonnelWithRelations) {
   return {
     id: personnel.id,
@@ -86,6 +92,7 @@ function mapProfileDTO(personnel: PersonnelWithRelations) {
     email: personnel.email,
     staffCode: personnel.staffCode,
     isOrgOwner: personnel.isOrgOwner,
+    isLocked: personnel.isLocked,
     disabled: personnel.disabled,
     lastLogin: personnel.lastLogin,
     lastActivityAt: personnel.lastActivityAt,
@@ -105,8 +112,13 @@ function mapProfileDTO(personnel: PersonnelWithRelations) {
     assignments: personnel.branchAssignments.map((a) => ({
       branchId: a.branch.id,
       branchName: a.branch.name,
-      branchLocation: a.branch.location,
+      branchLocation: a.branch.location, // Crucial for frontend copy feature
       role: a.role,
+    })),
+    activityLogs: personnel.activityLogs.map((log) => ({
+      id: log.id,
+      action: log.action.replace(/_/g, " "), // Format for UI: "PROFILE_UPDATED" -> "PROFILE UPDATED"
+      createdAt: log.createdAt,
     })),
     roles: resolveRoles(personnel),
     preferences: personnel.preferences.map((p) => ({
@@ -130,8 +142,8 @@ export async function GET(): Promise<NextResponse> {
   try {
     const personnel = await requirePersonnel();
 
-    if (!personnel || personnel.disabled) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    if (!personnel || personnel.disabled || personnel.isLocked) {
+      return NextResponse.json({ error: "Unauthorized or account locked" }, { status: 401 });
     }
 
     return NextResponse.json({
@@ -155,16 +167,14 @@ export async function PATCH(request: NextRequest): Promise<NextResponse> {
   try {
     const personnel = await requirePersonnel();
 
-    if (!personnel || personnel.disabled) {
+    if (!personnel || personnel.disabled || personnel.isLocked) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    // 🔒 LOCKOUT CHECK: Prevent updates if the account is currently throttled
+    // 🔒 LOCKOUT CHECK
     if (personnel.lockoutUntil && personnel.lockoutUntil > new Date()) {
       return NextResponse.json(
-        {
-          error: `Security lockout active. Try again after ${personnel.lockoutUntil.toLocaleTimeString()}`,
-        },
+        { error: `Security lockout active. Try again after ${personnel.lockoutUntil.toLocaleTimeString()}` },
         { status: 403 }
       );
     }
@@ -172,21 +182,23 @@ export async function PATCH(request: NextRequest): Promise<NextResponse> {
     const body: UpdateProfileBody = await request.json();
     const updateData: Prisma.AuthorizedPersonnelUpdateInput = {};
     const logActions: string[] = [];
-    let emailChangeStarted = false;
+    
+    let requiresApproval = false;
+    const approvalPayload: ProfileApprovalPayload = {};
+    const roles = resolveRoles(personnel);
+    const isAdmin = roles.includes(Role.ADMIN);
 
     ////////////////////////////////////////////////////////////
-    // SENSITIVE CHANGE VALIDATION (Password/Email)
+    // SENSITIVE CHANGE VALIDATION
     ////////////////////////////////////////////////////////////
 
-    const isSensitiveChange = !!(
-      body.newPassword || 
-      (body.email && body.email !== personnel.email)
-    );
+    const isEmailChange = !!(body.email && body.email !== personnel.email);
+    const isPasswordChange = !!body.newPassword;
 
-    if (isSensitiveChange) {
+    if (isEmailChange || isPasswordChange) {
       if (!body.currentPassword) {
         return NextResponse.json(
-          { error: "Confirming your current password is required for these changes" },
+          { error: "Current password is required for security changes" },
           { status: 400 }
         );
       }
@@ -205,24 +217,26 @@ export async function PATCH(request: NextRequest): Promise<NextResponse> {
           },
         });
 
-        return NextResponse.json(
-          {
-            error: `Invalid password. ${Math.max(0, 5 - newFailCount)} attempts remaining before lockout.`,
-          },
-          { status: 400 }
-        );
+        return NextResponse.json({ error: "Invalid credentials." }, { status: 400 });
       }
 
-      // Success: Reset security counters
+      // Reset fails on valid password entry
       updateData.failedLoginAttempts = 0;
       updateData.lockoutUntil = null;
     }
 
     ////////////////////////////////////////////////////////////
-    // EMAIL CHANGE INITIATION
+    // PROCESS CHANGES
     ////////////////////////////////////////////////////////////
 
-    if (body.email && body.email !== personnel.email) {
+    // Non-sensitive: Name
+    if (body.name && body.name !== personnel.name) {
+      updateData.name = body.name;
+      logActions.push("Name update");
+    }
+
+    // Sensitive: Email
+    if (isEmailChange && body.email) {
       const existing = await prisma.authorizedPersonnel.findFirst({
         where: {
           organizationId: personnel.organizationId,
@@ -232,41 +246,33 @@ export async function PATCH(request: NextRequest): Promise<NextResponse> {
       });
 
       if (existing) {
-        return NextResponse.json({ error: "This email is already registered" }, { status: 400 });
+        return NextResponse.json({ error: "This email is already in use" }, { status: 400 });
       }
 
-      const token = crypto.randomBytes(32).toString("hex");
-      const expires = new Date(Date.now() + 24 * 60 * 60 * 1000);
-
-      await prisma.verificationToken.create({
-        data: {
-          identifier: body.email,
-          token,
-          expires,
-        },
-      });
-
-      emailChangeStarted = true;
-      logActions.push(`Email update request: ${body.email}`);
-      // NOTE: Here you would typically trigger your email service (e.g., Resend, SendGrid)
+      if (isAdmin) {
+        updateData.email = body.email;
+        logActions.push("Email updated directly by Admin");
+      } else {
+        requiresApproval = true;
+        approvalPayload.email = body.email;
+        logActions.push("Email change approval requested");
+      }
     }
 
-    ////////////////////////////////////////////////////////////
-    // STANDARD UPDATES
-    ////////////////////////////////////////////////////////////
-
-    if (body.name && body.name !== personnel.name) {
-      updateData.name = body.name;
-      logActions.push("Name changed");
+    // Sensitive: Password
+    if (isPasswordChange && body.newPassword) {
+      const hashedPass = await bcrypt.hash(body.newPassword, 12);
+      if (isAdmin) {
+        updateData.password = hashedPass;
+        logActions.push("Password updated directly by Admin");
+      } else {
+        requiresApproval = true;
+        approvalPayload.password = hashedPass;
+        logActions.push("Password change approval requested");
+      }
     }
 
-    if (body.newPassword) {
-      updateData.password = await bcrypt.hash(body.newPassword, 12);
-      logActions.push("Password updated");
-    }
-
-    // Guard against empty updates
-    if (Object.keys(updateData).length === 0 && !emailChangeStarted) {
+    if (Object.keys(updateData).length === 0 && !requiresApproval) {
       return NextResponse.json({ error: "No changes detected" }, { status: 400 });
     }
 
@@ -274,29 +280,74 @@ export async function PATCH(request: NextRequest): Promise<NextResponse> {
     // DATABASE TRANSACTION
     ////////////////////////////////////////////////////////////
 
-    const updatedUser = await prisma.$transaction(async (tx) => {
-      let user = personnel;
+    const result = await prisma.$transaction(async (tx) => {
+      // 1. Execute immediate updates
+      const user = await tx.authorizedPersonnel.update({
+        where: { id: personnel.id },
+        data: updateData,
+        include: {
+          organization: true,
+          branch: true,
+          branchAssignments: { include: { branch: true } },
+          preferences: true,
+          activityLogs: {
+            take: 10,
+            orderBy: { createdAt: "desc" },
+          },
+        },
+      });
 
-      if (Object.keys(updateData).length > 0) {
-        user = await tx.authorizedPersonnel.update({
-          where: { id: personnel.id },
-          data: updateData,
-          include: {
-            organization: true,
-            branch: true,
-            branchAssignments: { include: { branch: true } },
-            preferences: true,
+      // 2. Create Approval Request if needed
+      if (requiresApproval) {
+        const actionType = isEmailChange 
+            ? CriticalAction.EMAIL_CHANGE 
+            : CriticalAction.PASSWORD_CHANGE;
+
+        const request = await tx.approvalRequest.create({
+          data: {
+            organizationId: personnel.organizationId,
+            branchId: personnel.branchId,
+            requesterId: personnel.id,
+            actionType,
+            status: ApprovalStatus.PENDING,
+            requiredRole: Role.ADMIN,
+            changes: approvalPayload,
+          },
+        });
+
+        // 3. Internal Notification
+        await tx.notification.create({
+          data: {
+            organizationId: personnel.organizationId,
+            branchId: personnel.branchId,
+            targetRole: Role.ADMIN,
+            type: NotificationType.APPROVAL_REQUIRED,
+            title: "Security Change Approval Required",
+            message: `${personnel.name || personnel.email} requested a security change.`,
+          },
+        });
+
+        // 4. Link Request to Log
+        await tx.activityLog.create({
+          data: {
+            organizationId: personnel.organizationId,
+            branchId: personnel.branchId,
+            personnelId: personnel.id,
+            approvalRequestId: request.id,
+            action: "PROFILE_CHANGE_REQUESTED",
+            meta: JSON.stringify({ fields: Object.keys(approvalPayload) }),
           },
         });
       }
 
+      // 5. General Activity Log
       await tx.activityLog.create({
         data: {
           organizationId: personnel.organizationId,
           branchId: personnel.branchId,
           personnelId: personnel.id,
-          action: "PROFILE_UPDATE",
-          meta: logActions.join(", "),
+          action: "PROFILE_PATCH_EXECUTED",
+          meta: logActions.join("; "),
         },
       });
 
@@ -305,12 +356,15 @@ export async function PATCH(request: NextRequest): Promise<NextResponse> {
 
     return NextResponse.json({
       success: true,
-      emailChangeStarted,
-      profile: mapProfileDTO(updatedUser),
+      requiresApproval,
+      message: requiresApproval 
+        ? "Security changes are pending Admin approval." 
+        : "Profile updated successfully.",
+      profile: mapProfileDTO(result as PersonnelWithRelations),
     });
 
   } catch (error) {
     console.error("PATCH_PROFILE_ERROR", error);
-    return NextResponse.json({ error: "An error occurred while updating the profile" }, { status: 500 });
+    return NextResponse.json({ error: "Internal server error" }, { status: 500 });
   }
 }

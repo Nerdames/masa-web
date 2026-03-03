@@ -1,11 +1,14 @@
 import { NextRequest, NextResponse } from "next/server";
 import prisma from "@/lib/prisma";
 import { getToken } from "next-auth/jwt";
+import { Role, NotificationType } from "@prisma/client";
 
 const secret = process.env.NEXTAUTH_SECRET as string;
 
 /* --------------------------------
    GET — Fetch notifications
+   Logic: Returns notifications for the specific user, 
+   their specific role, their branch, or org-wide.
 --------------------------------- */
 export async function GET(req: NextRequest) {
   try {
@@ -17,15 +20,30 @@ export async function GET(req: NextRequest) {
 
     const url = new URL(req.url);
     const unreadOnly = url.searchParams.get("unread") === "true";
+    
+    // User context from token
+    const personnelId = token.sub as string;
+    const organizationId = token.organizationId as string;
+    const branchId = token.branchId as string | null;
+    const userRole = token.role as Role;
 
     const notifications = await prisma.notification.findMany({
       where: {
-        organizationId: token.organizationId,
+        organizationId,
         ...(unreadOnly ? { read: false } : {}),
         OR: [
-          { personnelId: token.sub ?? undefined },
-          { branchId: token.branchId ?? undefined },
-          { branchId: null, personnelId: null }, // org-wide
+          { personnelId },                      // Direct: Sent to me
+          { targetRole: userRole },             // Directed: Sent to my Role (e.g. DEV/ADMIN)
+          { 
+            branchId: branchId ?? undefined, 
+            personnelId: null, 
+            targetRole: null 
+          },                                    // Scoped: Branch-wide
+          { 
+            branchId: null, 
+            personnelId: null, 
+            targetRole: null 
+          },                                    // Scoped: Org-wide
         ],
       },
       orderBy: { createdAt: "desc" },
@@ -35,44 +53,38 @@ export async function GET(req: NextRequest) {
     return NextResponse.json(notifications);
   } catch (error) {
     console.error("GET /api/notifications error:", error);
-    return NextResponse.json({ error: "Failed to fetch notifications" }, { status: 500 });
+    return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
   }
 }
 
 /* --------------------------------
    POST — Create notification
+   Logic: Used by system actions (like Approval Requests) 
+   or manually by high-level roles.
 --------------------------------- */
 export async function POST(req: NextRequest) {
   try {
     const token = await getToken({ req, secret });
 
+    // Restrict manual notification creation to specific roles
     if (!token || !["DEV", "ADMIN", "MANAGER"].includes(token.role as string)) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+      return NextResponse.json({ error: "Forbidden" }, { status: 403 });
     }
 
     const body = await req.json();
 
+    // Validation
     if (!body.title || !body.message) {
-      return NextResponse.json(
-        { error: "Title and message are required" },
-        { status: 400 }
-      );
-    }
-
-    // Enforce schema logic
-    if (body.branchId && body.personnelId) {
-      return NextResponse.json(
-        { error: "Notification cannot target both branch and personnel" },
-        { status: 400 }
-      );
+      return NextResponse.json({ error: "Missing required fields" }, { status: 400 });
     }
 
     const notification = await prisma.notification.create({
       data: {
-        organizationId: token.organizationId!,
-        branchId: body.branchId ?? null,
-        personnelId: body.personnelId ?? null,
-        type: body.type ?? "INFO",
+        organizationId: token.organizationId as string,
+        branchId: body.branchId || null,
+        personnelId: body.personnelId || null,
+        targetRole: (body.targetRole as Role) || null,
+        type: (body.type as NotificationType) || NotificationType.INFO,
         title: body.title,
         message: body.message,
       },
@@ -86,7 +98,9 @@ export async function POST(req: NextRequest) {
 }
 
 /* --------------------------------
-   PATCH — Mark as read (single or multiple)
+   PATCH — Mark as read
+   Logic: Updates status. For Role-based notifications,
+   you can optionally extend this to update the 'readBy' Json field.
 --------------------------------- */
 export async function PATCH(req: NextRequest) {
   try {
@@ -97,40 +111,35 @@ export async function PATCH(req: NextRequest) {
     }
 
     const body = await req.json();
+    const personnelId = token.sub as string;
+    const userRole = token.role as Role;
+    
     let ids: string[] = [];
+    if (body.id) ids = [body.id];
+    else if (Array.isArray(body.ids)) ids = body.ids;
 
-    // Support single id or multiple ids
-    if (typeof body.id === "string") {
-      ids = [body.id];
-    } else if (Array.isArray(body.ids) && body.ids.length > 0) {
-      ids = body.ids;
-    } else {
-      return NextResponse.json(
-        { error: "Notification ID(s) required" },
-        { status: 400 }
-      );
+    if (ids.length === 0) {
+      return NextResponse.json({ error: "No IDs provided" }, { status: 400 });
     }
 
+    // Security check: Only mark as read if the user is a valid recipient
     const updated = await prisma.notification.updateMany({
       where: {
         id: { in: ids },
-        organizationId: token.organizationId,
+        organizationId: token.organizationId as string,
         OR: [
-          { personnelId: token.sub ?? undefined },
-          { branchId: token.branchId ?? undefined },
-          { branchId: null, personnelId: null },
-        ],
+          { personnelId },
+          { targetRole: userRole },
+          { branchId: token.branchId as string },
+          { branchId: null, personnelId: null, targetRole: null }
+        ]
       },
       data: { read: true },
     });
 
-    if (updated.count === 0) {
-      return NextResponse.json({ error: "Notification(s) not found" }, { status: 404 });
-    }
-
-    return NextResponse.json({ success: true, updatedCount: updated.count });
+    return NextResponse.json({ success: true, count: updated.count });
   } catch (error) {
     console.error("PATCH /api/notifications error:", error);
-    return NextResponse.json({ error: "Failed to update notification(s)" }, { status: 500 });
+    return NextResponse.json({ error: "Update failed" }, { status: 500 });
   }
 }

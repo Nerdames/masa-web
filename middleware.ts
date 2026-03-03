@@ -1,55 +1,73 @@
-import { NextResponse } from "next/server";
-import type { NextRequest } from "next/server";
+import { NextResponse, NextRequest } from "next/server";
 import { getToken } from "next-auth/jwt";
+import { Role } from "@prisma/client";
 
-// Use a Set for O(1) lookup performance
-const ALLOWED_ROLES = new Set<string>([
-  "DEV", 
-  "ADMIN", 
-  "MANAGER", 
-  "SALES", 
-  "INVENTORY", 
-  "CASHIER"
-]);
+/**
+ * Path-based permissions.
+ * Most specific paths should come first if there is overlap.
+ */
+const ROLE_PERMISSIONS: Record<string, Role[]> = {
+  "/dashboard/settings/organization": [Role.ADMIN, Role.DEV],
+  "/dashboard/approvals": [Role.ADMIN, Role.DEV],
+  "/dashboard/inventory": [Role.ADMIN, Role.DEV, Role.MANAGER, Role.INVENTORY],
+  "/dashboard/sales": [Role.ADMIN, Role.DEV, Role.MANAGER, Role.SALES, Role.CASHIER],
+};
 
 export async function middleware(req: NextRequest) {
   const { pathname } = req.nextUrl;
+  const origin = req.nextUrl.origin;
 
-  // 1. Get the token (NextAuth handles decryption using NEXTAUTH_SECRET automatically)
+  // 1. Get Decrypted Token
   const token = await getToken({ req });
 
-  // 2. Handle Unauthenticated users
+  // 2. Handle Unauthenticated Users
   if (!token) {
-    const signInUrl = new URL("/auth/signin", req.url);
-    // Store the current path to redirect back after login
+    // Prevent redirect loops if they are already on the signin page 
+    // (though matcher should handle this, this is a safety fallback)
+    if (pathname.startsWith("/auth")) return NextResponse.next();
+
+    const signInUrl = new URL("/auth/signin", origin);
     signInUrl.searchParams.set("callbackUrl", pathname);
     return NextResponse.redirect(signInUrl);
   }
 
-  // 3. Handle Inactivity (Synced with your authOptions logic)
-  // If authOptions returned {} due to inactivity, token.id will be missing here.
+  // 3. Session Integrity & Inactivity Check
   if (!token.id || !token.role) {
-    return NextResponse.redirect(new URL("/auth/signin?error=SessionExpired", req.url));
+    return NextResponse.redirect(new URL("/auth/signin?error=SessionExpired", origin));
   }
 
-  // 4. Role-Based Access Control (RBAC)
-  if (!ALLOWED_ROLES.has(token.role as string)) {
-    return NextResponse.redirect(new URL("/feedback/unauthorized", req.url));
+  // 4. Global RBAC
+  const userRole = token.role as Role;
+
+  // Bypass for Super-Users
+  if (token.isOrgOwner || userRole === Role.DEV) {
+    return NextResponse.next();
   }
 
-  // 5. Allow the request to proceed
+  // 5. Route-Specific Protection
+  const permissionEntry = Object.entries(ROLE_PERMISSIONS).find(([path]) => 
+    pathname.startsWith(path)
+  );
+
+  if (permissionEntry) {
+    const requiredRoles = permissionEntry[1];
+    if (!requiredRoles.includes(userRole)) {
+      return NextResponse.redirect(new URL("/dashboard?error=unauthorized", origin));
+    }
+  }
+
   return NextResponse.next();
 }
 
-// Optimization: Use the matcher to filter requests BEFORE the middleware runs.
-// This prevents the middleware from running on images, scripts, or static files.
 export const config = {
   matcher: [
     /*
-     * Match all paths starting with /dashboard
-     * Match all paths starting with /api/dashboard (if you want to protect APIs here too)
+     * Match all request paths except:
+     * - api/auth (NextAuth)
+     * - auth/* (Login/Register)
+     * - feedback/* (Public error/info pages)
+     * - _next/static, _next/image, favicon.ico
      */
-    "/dashboard/:path*",
-    "/api/dashboard/:path*", 
+    "/((?!api/auth|auth|feedback|_next/static|_next/image|favicon.ico).*)",
   ],
 };
