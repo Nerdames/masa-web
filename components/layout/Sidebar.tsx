@@ -127,7 +127,7 @@ const DropdownMenu = ({
   show: boolean;
   setShow: (v: boolean) => void;
   parentWidth: number;
-  containerRef: React.RefObject<HTMLDivElement>;
+  containerRef: React.RefObject<HTMLDivElement | null>;
 }) => {
   useEffect(() => {
     if (!show) return;
