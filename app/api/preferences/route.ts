@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import prisma from "@/lib/prisma";
 import { getServerSession } from "next-auth/next";
 import { authOptions } from "@/lib/auth";
-import { PreferenceCategory, PreferenceScope } from "@prisma/client";
+import { Preference, PreferenceCategory, PreferenceScope } from "@prisma/client";
 
 /* ============================================================
    In-Memory Cache (Per server instance)
@@ -117,30 +117,46 @@ export async function GET(req: NextRequest) {
         key,
         target,
         OR: [
-          { scope: "USER", personnelId, branchId: finalBranchId }, // 1. User specific to branch
-          { scope: "USER", personnelId, branchId: null },         // 2. User global
-          { scope: "BRANCH", branchId: finalBranchId },          // 3. Branch default
-          { scope: "ORGANIZATION" },                             // 4. Org default
+          { scope: "USER", personnelId, branchId: finalBranchId }, 
+          { scope: "USER", personnelId, branchId: null },          
+          { scope: "BRANCH", branchId: finalBranchId },           
+          { scope: "ORGANIZATION" },                             
         ],
       },
     });
 
-    const getPriority = (p: {scope: PreferenceScope; branchId: string | null}) => {
-      if (p.scope === "USER" && p.branchId) return 1;
-      if (p.scope === "USER") return 2;
-      if (p.scope === "BRANCH") return 3;
-      return 4;
-    };
+    // --- LOCK LOGIC INTEGRATION ---
+    const orgPref = candidates.find(p => p.scope === "ORGANIZATION");
+    const branchPref = candidates.find(p => p.scope === "BRANCH");
+    
+    let winner: Preference | undefined;
 
-    const winner = candidates.sort((a, b) => getPriority(a) - getPriority(b))[0];
+    // Highest authorities check for lock first
+    if (orgPref?.isLocked) {
+      winner = orgPref;
+    } else if (branchPref?.isLocked) {
+      winner = branchPref;
+    } else {
+      // Original sorting priority
+      const getPriority = (p: {scope: PreferenceScope; branchId: string | null}) => {
+        if (p.scope === "USER" && p.branchId) return 1;
+        if (p.scope === "USER") return 2;
+        if (p.scope === "BRANCH") return 3;
+        return 4;
+      };
+      winner = candidates.sort((a, b) => getPriority(a) - getPriority(b))[0];
+    }
+
     const finalValue = winner ? winner.value : null;
-
     setCache(cacheKey, finalValue);
 
     return NextResponse.json({
       success: true,
       preference: finalValue,
-      meta: winner ? { scope: winner.scope, level: getPriority(winner) } : null,
+      meta: winner ? { 
+        scope: winner.scope, 
+        isLocked: winner.isLocked // Passing lock status to frontend
+      } : null,
     });
 
   } catch (error) {
@@ -162,7 +178,7 @@ export async function POST(req: NextRequest) {
     }
 
     const body = await req.json();
-    const { category, key, value, isGlobal } = body;
+    const { category, key, value, isGlobal, isLocked } = body; // isLocked added here
     const target = normalizeTarget(body.target);
     const requestedScope = body.scope as PreferenceScope | undefined;
 
@@ -178,21 +194,15 @@ export async function POST(req: NextRequest) {
     let finalBranchId: string | null = null;
     let finalPersonnelId: string | null = null;
 
-    /* ------------------------------------------------------------
-       HIERARCHICAL PERMISSION CHECK
-    ------------------------------------------------------------ */
     if (requestedScope === "ORGANIZATION" && isAdmin) {
       scope = "ORGANIZATION";
-      // Admin setting for the whole ORG
     } else if (requestedScope === "BRANCH" && (isAdmin || isManager)) {
       scope = "BRANCH";
       finalBranchId = branchId || null;
-      // Admin or Manager setting for the specific Branch
     } else if (requestedScope === "USER" || !requestedScope) {
       scope = "USER";
       finalPersonnelId = personnelId;
       finalBranchId = isGlobal ? null : (branchId || null);
-      // Everyone setting for themselves
     } else {
       return NextResponse.json({ success: false, error: "Forbidden: Scope access denied" }, { status: 403 });
     }
@@ -213,7 +223,10 @@ export async function POST(req: NextRequest) {
     if (existing) {
       preference = await prisma.preference.update({
         where: { id: existing.id },
-        data: { value }
+        data: { 
+          value,
+          isLocked: isLocked ?? existing.isLocked // Update lock status if provided
+        }
       });
     } else {
       preference = await prisma.preference.create({
@@ -226,6 +239,7 @@ export async function POST(req: NextRequest) {
           key,
           target,
           value,
+          isLocked: isLocked ?? false,
         },
       });
     }
@@ -268,16 +282,12 @@ export async function DELETE(req: NextRequest) {
     let finalBranchId: string | null = null;
     let finalPersonnelId: string | null = null;
 
-    /* ------------------------------------------------------------
-       HIERARCHICAL RESET CHECK
-    ------------------------------------------------------------ */
     if (resetScope === "ORGANIZATION") {
       if (!isAdmin) return NextResponse.json({ error: "Forbidden" }, { status: 403 });
     } else if (resetScope === "BRANCH") {
       if (!isAdmin && !isManager) return NextResponse.json({ error: "Forbidden" }, { status: 403 });
       finalBranchId = branchId || null;
     } else {
-      // USER reset
       finalPersonnelId = personnelId;
       finalBranchId = isGlobal ? null : (branchId || null);
     }

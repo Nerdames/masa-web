@@ -1,14 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
 import prisma from "@/lib/prisma";
 import { getToken } from "next-auth/jwt";
-import { Role, NotificationType } from "@prisma/client";
+import { Role, NotificationType, Prisma } from "@prisma/client";
 
 const secret = process.env.NEXTAUTH_SECRET as string;
 
 /* --------------------------------
    GET — Fetch notifications
-   Logic: Returns notifications for the specific user, 
-   their specific role, their branch, or org-wide.
+   Logic: Returns notifications where the user is a recipient.
 --------------------------------- */
 export async function GET(req: NextRequest) {
   try {
@@ -20,31 +19,24 @@ export async function GET(req: NextRequest) {
 
     const url = new URL(req.url);
     const unreadOnly = url.searchParams.get("unread") === "true";
-    
-    // User context from token
     const personnelId = token.sub as string;
-    const organizationId = token.organizationId as string;
-    const branchId = token.branchId as string | null;
-    const userRole = token.role as Role;
 
     const notifications = await prisma.notification.findMany({
       where: {
-        organizationId,
-        ...(unreadOnly ? { read: false } : {}),
-        OR: [
-          { personnelId },                      // Direct: Sent to me
-          { targetRole: userRole },             // Directed: Sent to my Role (e.g. DEV/ADMIN)
-          { 
-            branchId: branchId ?? undefined, 
-            personnelId: null, 
-            targetRole: null 
-          },                                    // Scoped: Branch-wide
-          { 
-            branchId: null, 
-            personnelId: null, 
-            targetRole: null 
-          },                                    // Scoped: Org-wide
-        ],
+        organizationId: token.organizationId as string,
+        recipients: {
+          some: {
+            personnelId: personnelId,
+            ...(unreadOnly ? { readAt: null } : {}),
+          },
+        },
+      },
+      include: {
+        // Include recipient data to check read status on the frontend
+        recipients: {
+          where: { personnelId },
+          select: { readAt: true },
+        },
       },
       orderBy: { createdAt: "desc" },
       take: 100,
@@ -59,48 +51,62 @@ export async function GET(req: NextRequest) {
 
 /* --------------------------------
    POST — Create notification
-   Logic: Used by system actions (like Approval Requests) 
-   or manually by high-level roles.
+   Logic: Creates a notification and links it to specific recipients.
 --------------------------------- */
 export async function POST(req: NextRequest) {
   try {
     const token = await getToken({ req, secret });
 
-    // Restrict manual notification creation to specific roles
     if (!token || !["DEV", "ADMIN", "MANAGER"].includes(token.role as string)) {
       return NextResponse.json({ error: "Forbidden" }, { status: 403 });
     }
 
-    const body = await req.json();
+    const body: {
+      title: string;
+      message: string;
+      type?: NotificationType;
+      branchId?: string;
+      recipientIds?: string[]; // Array of Personnel IDs
+      sourceId?: string;
+      sourceType?: string;
+      metadata?: Prisma.InputJsonValue;
+    } = await req.json();
 
-    // Validation
-    if (!body.title || !body.message) {
-      return NextResponse.json({ error: "Missing required fields" }, { status: 400 });
+    if (!body.title || !body.message || !body.recipientIds?.length) {
+      return NextResponse.json({ error: "Missing title, message, or recipients" }, { status: 400 });
     }
 
     const notification = await prisma.notification.create({
       data: {
         organizationId: token.organizationId as string,
         branchId: body.branchId || null,
-        personnelId: body.personnelId || null,
-        targetRole: (body.targetRole as Role) || null,
-        type: (body.type as NotificationType) || NotificationType.INFO,
+        type: body.type || NotificationType.INFO,
         title: body.title,
         message: body.message,
+        sourceId: body.sourceId,
+        sourceType: body.sourceType,
+        metadata: body.metadata,
+        // Automatically create the join table entries for each recipient
+        recipients: {
+          createMany: {
+            data: body.recipientIds.map((id) => ({
+              personnelId: id,
+            })),
+          },
+        },
       },
     });
 
     return NextResponse.json(notification, { status: 201 });
   } catch (error) {
     console.error("POST /api/notifications error:", error);
-    return NextResponse.json({ error: "Failed to create notification" }, { status: 500 });
+    return NextResponse.json({ error: "Failed to create" }, { status: 500 });
   }
 }
 
 /* --------------------------------
    PATCH — Mark as read
-   Logic: Updates status. For Role-based notifications,
-   you can optionally extend this to update the 'readBy' Json field.
+   Logic: Updates the 'readAt' timestamp in the join table.
 --------------------------------- */
 export async function PATCH(req: NextRequest) {
   try {
@@ -110,31 +116,25 @@ export async function PATCH(req: NextRequest) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    const body = await req.json();
+    const body: { id?: string; ids?: string[] } = await req.json();
     const personnelId = token.sub as string;
-    const userRole = token.role as Role;
     
-    let ids: string[] = [];
-    if (body.id) ids = [body.id];
-    else if (Array.isArray(body.ids)) ids = body.ids;
+    const targetIds = body.id ? [body.id] : body.ids || [];
 
-    if (ids.length === 0) {
+    if (targetIds.length === 0) {
       return NextResponse.json({ error: "No IDs provided" }, { status: 400 });
     }
 
-    // Security check: Only mark as read if the user is a valid recipient
-    const updated = await prisma.notification.updateMany({
+    // We update the Recipient record, not the Notification record
+    const updated = await prisma.notificationRecipient.updateMany({
       where: {
-        id: { in: ids },
-        organizationId: token.organizationId as string,
-        OR: [
-          { personnelId },
-          { targetRole: userRole },
-          { branchId: token.branchId as string },
-          { branchId: null, personnelId: null, targetRole: null }
-        ]
+        personnelId: personnelId,
+        notificationId: { in: targetIds },
+        readAt: null, // Only update if not already read
       },
-      data: { read: true },
+      data: {
+        readAt: new Date(),
+      },
     });
 
     return NextResponse.json({ success: true, count: updated.count });
