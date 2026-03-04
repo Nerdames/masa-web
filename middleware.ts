@@ -4,7 +4,6 @@ import { Role } from "@prisma/client";
 
 /**
  * Path-based permissions.
- * Most specific paths should come first if there is overlap.
  */
 const ROLE_PERMISSIONS: Record<string, Role[]> = {
   "/dashboard/settings/organization": [Role.ADMIN, Role.DEV],
@@ -22,24 +21,27 @@ export async function middleware(req: NextRequest) {
 
   // 2. Handle Unauthenticated Users
   if (!token) {
-    // Prevent redirect loops if they are already on the signin page 
-    // (though matcher should handle this, this is a safety fallback)
     if (pathname.startsWith("/auth")) return NextResponse.next();
 
     const signInUrl = new URL("/auth/signin", origin);
+    // Crucial: Always set callbackUrl so the user is redirected back after login
     signInUrl.searchParams.set("callbackUrl", pathname);
     return NextResponse.redirect(signInUrl);
   }
 
   // 3. Session Integrity & Inactivity Check
+  // If the token exists but is missing data, redirect with a specific param
   if (!token.id || !token.role) {
-    return NextResponse.redirect(new URL("/auth/signin?error=SessionExpired", origin));
+    const sessionErrorUrl = new URL("/auth/signin", origin);
+    sessionErrorUrl.searchParams.set("error", "SessionRequired"); // Use a standard string
+    sessionErrorUrl.searchParams.set("callbackUrl", pathname);
+    return NextResponse.redirect(sessionErrorUrl);
   }
 
   // 4. Global RBAC
   const userRole = token.role as Role;
 
-  // Bypass for Super-Users
+  // Bypass for Super-Users (Org Owners or Developers)
   if (token.isOrgOwner || userRole === Role.DEV) {
     return NextResponse.next();
   }
@@ -52,7 +54,8 @@ export async function middleware(req: NextRequest) {
   if (permissionEntry) {
     const requiredRoles = permissionEntry[1];
     if (!requiredRoles.includes(userRole)) {
-      return NextResponse.redirect(new URL("/dashboard?error=unauthorized", origin));
+      // Redirect to a neutral dashboard page if unauthorized
+      return NextResponse.redirect(new URL("feedback/access-denied", origin));
     }
   }
 
@@ -62,11 +65,7 @@ export async function middleware(req: NextRequest) {
 export const config = {
   matcher: [
     /*
-     * Match all request paths except:
-     * - api/auth (NextAuth)
-     * - auth/* (Login/Register)
-     * - feedback/* (Public error/info pages)
-     * - _next/static, _next/image, favicon.ico
+     * Match all request paths except static assets and auth internals
      */
     "/((?!api/auth|auth|feedback|_next/static|_next/image|favicon.ico).*)",
   ],

@@ -1,9 +1,9 @@
 "use client";
 
-import React, { useState, FormEvent } from "react";
+import React, { useState, FormEvent, useEffect } from "react";
 import { signIn } from "next-auth/react";
-import { useRouter } from "next/navigation";
-import { useToast } from "@/components/feedback/ToastProvider"; // your toast hook
+import { useRouter, useSearchParams } from "next/navigation";
+import { useToast } from "@/components/feedback/ToastProvider";
 
 const SignInPage: React.FC = () => {
   const [email, setEmail] = useState<string>("");
@@ -12,7 +12,30 @@ const SignInPage: React.FC = () => {
   const [loading, setLoading] = useState<boolean>(false);
 
   const router = useRouter();
+  const searchParams = useSearchParams();
   const { addToast } = useToast();
+
+  // Extract params from middleware redirect
+  const errorParam = searchParams.get("error");
+  const callbackUrl = searchParams.get("callbackUrl") || "/dashboard";
+
+  /**
+   * 1. Handle Middleware Errors on Load
+   * This displays the toast for expired sessions and clears the URL 
+   * so it doesn't interfere with the actual login process.
+   */
+  useEffect(() => {
+    if (errorParam === "SessionExpired") {
+      addToast({ 
+        message: "Your session has expired. Please sign in again.", 
+        type: "error" 
+      });
+      
+      // Clear the error from the URL without refreshing the page
+      const newUrl = window.location.pathname + (callbackUrl ? `?callbackUrl=${encodeURIComponent(callbackUrl)}` : "");
+      window.history.replaceState({}, "", newUrl);
+    }
+  }, [errorParam, addToast, callbackUrl]);
 
   const handleSignIn = async (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
@@ -20,24 +43,28 @@ const SignInPage: React.FC = () => {
 
     try {
       const result = await signIn("credentials", {
-        redirect: false,
+        redirect: false, // Handle redirect manually for better control
         email: email.trim(),
         password: password.trim(),
+        callbackUrl,
       });
 
       if (result?.error) {
-        // Normalize errors for security
+        // 2. Distinguish real credential failures
         const message =
           result.error === "CredentialsSignin"
             ? "Invalid email or password"
             : "Login failed. Please try again.";
+        
         addToast({ message, type: "error" });
       } else if (result?.ok) {
         addToast({ message: "Signed in successfully!", type: "success" });
-        router.push("/dashboard");
+        
+        // Use result.url as it's the sanitized callback target from NextAuth
+        router.push(result?.url || callbackUrl);
       }
     } catch (err) {
-      console.error(err);
+      console.error("SignIn Error:", err);
       addToast({ message: "Something went wrong. Please try again.", type: "error" });
     } finally {
       setLoading(false);
@@ -99,25 +126,9 @@ const SignInPage: React.FC = () => {
             }`}
           >
             {loading ? (
-              <svg
-                className="animate-spin h-5 w-5 text-white"
-                xmlns="http://www.w3.org/2000/svg"
-                fill="none"
-                viewBox="0 0 24 24"
-              >
-                <circle
-                  className="opacity-25"
-                  cx="12"
-                  cy="12"
-                  r="10"
-                  stroke="currentColor"
-                  strokeWidth="4"
-                ></circle>
-                <path
-                  className="opacity-75"
-                  fill="currentColor"
-                  d="M4 12a8 8 0 018-8v8H4z"
-                ></path>
+              <svg className="animate-spin h-5 w-5 text-white" viewBox="0 0 24 24">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z" />
               </svg>
             ) : (
               "Sign In"
