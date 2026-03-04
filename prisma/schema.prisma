@@ -140,6 +140,7 @@ model Organization {
   customerSummaries CustomerOrderSummary[]
   receipts          Receipt[]
   preferences       Preference[]
+  notificationSettings NotificationSetting[]
 
   categories Category[]
   vendors    Vendor[]
@@ -223,13 +224,14 @@ model AuthorizedPersonnel {
   invoicesPaid       Payment[]             @relation("InvoicePaidBy")
   salesAttended      Sale[]                @relation("AttendantSales")
   activityLogs       ActivityLog[]
-  notifications      Notification[]
   stockMoves         StockMovement[]
   accounts           Account[]
   sessions           Session[]
   ownedOrganizations Organization[]        @relation("OrgOwner")
   receipts           Receipt[]
   preferences        Preference[]
+  notificationRecipients NotificationRecipient[]
+  notificationSettings   NotificationSetting[]
 
   @@unique([organizationId, email])
   @@index([branchId])
@@ -654,32 +656,61 @@ model StockMovement {
 }
 
 ////////////////////////////////////
-// NOTIFICATIONS
+// ENHANCED NOTIFICATIONS
 ////////////////////////////////////
 
 model Notification {
-  id             String @id @default(cuid())
+  id             String           @id @default(cuid())
   organizationId String
   branchId       String?
-  personnelId    String? // Targeted to a specific person
-  targetRole     Role?   // Targeted to a whole role (e.g., all MANAGERS)
+  
+  type           NotificationType @default(INFO)
+  title          String
+  message        String
+  
+  // Link to the actual record (Order ID, Invoice ID, etc.)
+  sourceId       String?          
+  sourceType     String?          // e.g., "ORDER", "SALE", "VOID", "APPROVAL"
+  metadata       Json?            // e.g., { "amount": 5000, "customer": "John Doe" }
 
-  type    NotificationType @default(INFO)
-  title   String
-  message String
-  read    Boolean          @default(false)
-  readBy  Json?            // Track who in a role has seen it
+  createdAt      DateTime         @default(now())
 
-  createdAt DateTime @default(now())
+  organization   Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  branch         Branch?          @relation(fields: [branchId], references: [id])
+  
+  // This connects to the join table that tracks "who saw what"
+  recipients     NotificationRecipient[]
 
-  organization Organization        @relation(fields: [organizationId], references: [id])
-  branch       Branch?             @relation(fields: [branchId], references: [id])
-  personnel    AuthorizedPersonnel? @relation(fields: [personnelId], references: [id])
+  @@index([organizationId, createdAt])
+  @@index([sourceId])
+}
 
-  @@index([organizationId])
-  @@index([branchId])
-  @@index([personnelId])
-  @@index([targetRole])
+model NotificationRecipient {
+  id             String    @id @default(cuid())
+  notificationId String
+  personnelId    String
+  readAt         DateTime? // NULL = Unread. Using DateTime is better than Boolean for auditing.
+
+  notification   Notification        @relation(fields: [notificationId], references: [id], onDelete: Cascade)
+  personnel      AuthorizedPersonnel @relation(fields: [personnelId], references: [id], onDelete: Cascade)
+
+  @@unique([notificationId, personnelId]) // One alert per person per event
+  @@index([personnelId, readAt])
+}
+
+model NotificationSetting {
+  id             String           @id @default(cuid())
+  personnelId    String
+  organizationId String
+  
+  event          String           // e.g., "ORDER_CREATED", "INVOICE_VOIDED"
+  inApp          Boolean          @default(true)
+  email          Boolean          @default(false)
+
+  personnel      AuthorizedPersonnel @relation(fields: [personnelId], references: [id], onDelete: Cascade)
+  organization   Organization        @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([personnelId, event])
 }
 
 ////////////////////////////////////
@@ -789,6 +820,7 @@ model Preference {
   key      String
   target   String?
   value    Json
+  isLocked Boolean            @default(false) // <--- New Field
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt

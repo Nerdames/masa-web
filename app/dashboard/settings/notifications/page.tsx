@@ -1,12 +1,14 @@
 "use client";
 
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useState, useMemo } from "react";
 import { useSession } from "next-auth/react";
 import { motion } from "framer-motion";
-import AccessDenied from "@/components/feedback/AccessDenied";
+import { Preference, PreferenceScope } from "@prisma/client";
+
 import { SettingsGroup } from "@/components/ui/SettingsGroup";
-import { PreferenceScope } from "@prisma/client";
+import CollapseSection from "@/components/ui/CollapseSection";
 import { useToast } from "@/components/feedback/ToastProvider";
+import AccessDenied from "@/components/feedback/AccessDenied";
 
 /* ---------------------------- CONFIG ---------------------------- */
 
@@ -24,12 +26,7 @@ const CHANNELS = [
 ] as const;
 
 type ChannelKey = typeof CHANNELS[number]["key"];
-
-type RoutingValue = {
-  email: boolean;
-  inApp: boolean;
-  sms: boolean;
-};
+type RoutingValue = Record<ChannelKey, boolean>;
 
 /* ---------------------------- PAGE ---------------------------- */
 
@@ -38,235 +35,180 @@ export default function NotificationSettingsPage() {
   const { addToast } = useToast();
 
   const [currentScope, setCurrentScope] = useState<PreferenceScope>("USER");
-  const [prefs, setPrefs] = useState<Record<string, RoutingValue>>({});
+  const [preferences, setPreferences] = useState<Preference[]>([]);
   const [isPaused, setIsPaused] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
+  const [expandedAuthority, setExpandedAuthority] = useState<Record<string, boolean>>({});
+
+  const isAdmin = session?.user?.isOrgOwner || session?.user?.role === "ADMIN" || session?.user?.role === "DEV";
+  const isManager = session?.user?.role === "MANAGER";
 
   /* ---------------- FETCH ---------------- */
 
   useEffect(() => {
-    if (!session) return;
+    if (status !== "authenticated") return;
 
-    async function loadPreferences() {
+    async function loadEngine() {
       setIsLoading(true);
       try {
-        const loaded: Record<string, RoutingValue> = {};
-
-        await Promise.all(
-          NOTIFICATION_KEYS.map(async (item) => {
-            const res = await fetch(
-              `/api/notification-preferences?key=${item.key}&scope=${currentScope}`
-            );
-            const data = await res.json();
-            if (data.success) {
-              loaded[item.key] = data.data ?? {
-                email: false,
-                inApp: true,
-                sms: false,
-              };
-            }
-          })
-        );
-
-        const pauseRes = await fetch(
-          `/api/notification-preferences/pause?scope=${currentScope}`
-        );
-        const pauseData = await pauseRes.json();
-
-        setPrefs(loaded);
-        setIsPaused(pauseData?.data?.paused ?? false);
+        const res = await fetch("/api/preferences?category=NOTIFICATION&all=true");
+        const data = await res.json();
+        if (data.success) {
+          setPreferences(data.preferences);
+          // Assuming a specific key for system-wide pause
+          const pausePref = data.preferences.find((p: Preference) => p.key === "notification_pause" && p.scope === currentScope);
+          setIsPaused(pausePref?.value === true);
+        }
       } catch (err) {
-        console.error("Failed to load notification preferences", err);
+        addToast({ type: "error", title: "Sync Error", message: "Failed to load notification engine." });
       } finally {
         setIsLoading(false);
       }
     }
 
-    loadPreferences();
-  }, [session, currentScope]);
+    loadEngine();
+  }, [status, currentScope, addToast]);
+
+  /* ---------------- HIERARCHY RESOLUTION ---------------- */
+
+  const resolveRouting = (key: string) => {
+    const find = (s: PreferenceScope) => preferences.find(p => p.key === key && p.scope === s);
+    
+    const userPref = find("USER");
+    const branchPref = find("BRANCH");
+    const orgPref = find("ORGANIZATION");
+
+    const defaultValue: RoutingValue = { email: false, inApp: true, sms: false };
+
+    // Hierarchy: User > Branch > Org > Default
+    const activeValue = (userPref?.value ?? branchPref?.value ?? orgPref?.value ?? defaultValue) as RoutingValue;
+
+    let activeScope: PreferenceScope | "DEFAULT" = "DEFAULT";
+    if (userPref) activeScope = "USER";
+    else if (branchPref) activeScope = "BRANCH";
+    else if (orgPref) activeScope = "ORGANIZATION";
+
+    return { userPref, branchPref, orgPref, activeValue, activeScope };
+  };
 
   /* ---------------- SAVE ---------------- */
 
-  const saveRouting = async (key: string, value: RoutingValue) => {
-    try {
-      const res = await fetch("/api/notification-preferences", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          scope: currentScope,
-          key,
-          value,
-        }),
-      });
+  const handleUpdate = async (key: string, value: RoutingValue, scope: PreferenceScope) => {
+    const res = await fetch("/api/preferences", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ key, value, scope, category: "NOTIFICATION" }),
+    });
 
+    if (res.ok) {
       const data = await res.json();
-
-      if (!data.success) {
-        throw new Error(data.error || "Update failed");
-      }
-
-      addToast({
-        type: "success",
-        title: "Updated",
-        message: `${key.replace(/_/g, " ")} updated at ${currentScope} level.`,
-      });
-
-      return true;
-    } catch (err) {
-      addToast({
-        type: "error",
-        title: "Error",
-        message: "Could not update notification routing.",
-      });
-      return false;
+      setPreferences(prev => [
+        ...prev.filter(p => !(p.key === key && p.scope === scope)),
+        data.preference
+      ]);
+      addToast({ type: "success", title: "Policy Updated", message: `Saved to ${scope} level.` });
     }
   };
 
-  const savePause = async (nextState: boolean) => {
-    try {
-      const res = await fetch("/api/notification-preferences/pause", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          scope: currentScope,
-          paused: nextState,
-        }),
-      });
-
-      const data = await res.json();
-
-      if (!data.success) throw new Error();
-
-      addToast({
-        type: "success",
-        title: "System Updated",
-        message: nextState
-          ? "Notifications paused."
-          : "Notifications resumed.",
-      });
-
-      return true;
-    } catch {
-      addToast({
-        type: "error",
-        title: "Error",
-        message: "Could not update system state.",
-      });
-      return false;
-    }
-  };
-
-  /* ---------------- HANDLERS ---------------- */
-
-  const handleToggle = async (key: string, channel: ChannelKey) => {
-    const currentValue = prefs[key];
-    const newValue = {
-      ...currentValue,
-      [channel]: !currentValue[channel],
-    };
-
-    setPrefs((prev) => ({ ...prev, [key]: newValue }));
-
-    const success = await saveRouting(key, newValue);
-    if (!success) {
-      setPrefs((prev) => ({ ...prev, [key]: currentValue }));
-    }
-  };
-
-  const handlePauseToggle = async () => {
-    const next = !isPaused;
-    setIsPaused(next);
-
-    const success = await savePause(next);
-    if (!success) setIsPaused(!next);
-  };
-
-  /* ---------------- STATES ---------------- */
-
-  if (status === "loading" || isLoading)
-    return <CenteredMessage>Syncing Notification Engine…</CenteredMessage>;
-
+  if (status === "loading" || isLoading) return <CenteredMessage>Syncing Notification Engine…</CenteredMessage>;
   if (!session) return <AccessDenied />;
 
-  /* ---------------- UI ---------------- */
-
   return (
-    <div className="max-w-[850px] mx-auto py-12 px-6">
-      <header className="mb-10 flex items-end justify-between border-b border-black/[0.03] pb-8">
+    <div className="max-w-[850px] mx-auto py-12 px-6 pb-32">
+      <header className="mb-10 flex flex-col md:flex-row md:items-end justify-between gap-4 border-b border-black/[0.03] pb-10">
         <div>
-          <h1 className="text-2xl font-bold text-black/90">
-            Notification Controls
-          </h1>
-          <p className="text-[13px] text-black/45 uppercase tracking-wider font-medium">
-            Scope • <span className="text-blue-600">{currentScope}</span>
-          </p>
+          <h1 className="text-2xl font-black text-black/90 tracking-tight italic">Notification Engine</h1>
+          <p className="text-[13px] text-black/40">Route system alerts across delivery channels and authority levels.</p>
         </div>
 
-        <div className="flex items-center gap-1.5 bg-black/[0.03] p-1.5 rounded-xl">
-          {(["USER", "BRANCH", "ORGANIZATION"] as PreferenceScope[]).map(
-            (s) => (
-              <button
-                key={s}
-                onClick={() => setCurrentScope(s)}
-                className={`px-3 py-1.5 text-[10px] font-black rounded-lg ${
-                  currentScope === s
-                    ? "bg-white shadow-sm text-blue-600"
-                    : "text-black/30 hover:text-black/60"
-                }`}
-              >
-                {s}
-              </button>
-            )
-          )}
+        <div className="flex items-center gap-1 bg-black/[0.04] p-1 rounded-2xl border border-black/[0.02]">
+          {(["USER", "BRANCH", "ORGANIZATION"] as PreferenceScope[]).map((s) => (
+            <button
+              key={s}
+              onClick={() => setCurrentScope(s)}
+              className={`px-4 py-2 text-[10px] font-black rounded-xl transition-all ${
+                currentScope === s ? "bg-white shadow-md text-blue-600" : "text-black/30 hover:text-black/50"
+              }`}
+            >
+              {s}
+            </button>
+          ))}
         </div>
       </header>
 
-      <div className="space-y-8">
-        <SettingsGroup header="System Status">
-          <div className="p-5 flex items-center justify-between bg-red-50/20 rounded-xl border border-red-100/30">
+      <div className="space-y-10">
+        <SettingsGroup header="System Status" icon="bx-shield-quarter">
+          <div className="p-6 flex items-center justify-between bg-red-50/30 rounded-2xl border border-red-100/50">
             <div>
-              <div className="text-[12px] font-bold text-red-600 uppercase">
-                Pause All Delivery
-              </div>
-              <p className="text-[11px] text-black/40">
-                Silence alerts across all channels.
-              </p>
+              <div className="text-[12px] font-black text-red-600 uppercase tracking-widest">Master Delivery Pause</div>
+              <p className="text-[11px] text-black/40">Silence all outgoing alerts for the current scope.</p>
             </div>
-            <Switch
-              checked={isPaused}
-              onChange={handlePauseToggle}
-              color="bg-red-500"
-            />
+            <Switch checked={isPaused} onChange={() => setIsPaused(!isPaused)} color="bg-red-500" />
           </div>
         </SettingsGroup>
 
-        <SettingsGroup header="Channel Routing">
-          <div className="divide-y divide-black/[0.03]">
-            {NOTIFICATION_KEYS.map((item) => (
-              <div key={item.key} className="p-5">
-                <h3 className="text-[13px] font-bold text-black/80 mb-1">
-                  {item.label}
-                </h3>
-                <p className="text-[11px] text-black/40 mb-4">
-                  {item.description}
-                </p>
+        <SettingsGroup header="Channel Routing" icon="bx-git-repo-forked" count={NOTIFICATION_KEYS.length}>
+          <div className="divide-y divide-black/[0.02]">
+            {NOTIFICATION_KEYS.map((item) => {
+              const { activeValue, activeScope, branchPref, orgPref } = resolveRouting(item.key);
+              const hasAuthority = branchPref ? "BRANCH" : (orgPref ? "ORGANIZATION" : "DEFAULT");
 
-                <div className="flex gap-3">
-                  {CHANNELS.map((chan) => (
-                    <ChannelChip
-                      key={chan.key}
-                      label={chan.label}
-                      icon={chan.icon}
-                      active={!!prefs[item.key]?.[chan.key]}
-                      disabled={isPaused}
-                      onClick={() =>
-                        handleToggle(item.key, chan.key)
-                      }
-                    />
-                  ))}
+              return (
+                <div key={item.key} className="flex flex-col">
+                  <div className="p-6 flex flex-col md:flex-row md:items-center justify-between gap-6">
+                    <div className="space-y-1">
+                      <div className="flex items-center gap-2">
+                        <h3 className="text-[14px] font-bold text-black/80">{item.label}</h3>
+                        <ScopeBadge scope={activeScope} />
+                      </div>
+                      <p className="text-[11px] text-black/40 max-w-sm">{item.description}</p>
+                    </div>
+
+                    <div className="flex gap-2">
+                      {CHANNELS.map((chan) => (
+                        <ChannelChip
+                          key={chan.key}
+                          label={chan.label}
+                          icon={chan.icon}
+                          active={activeValue[chan.key]}
+                          disabled={isPaused}
+                          onClick={() => {
+                            const next = { ...activeValue, [chan.key]: !activeValue[chan.key] };
+                            handleUpdate(item.key, next, currentScope);
+                          }}
+                        />
+                      ))}
+                    </div>
+                  </div>
+
+                  {(isAdmin || isManager) && (
+                    <div className="px-6 pb-6">
+                      <CollapseSection 
+                        title="Authority Policy" 
+                        badgeScope={hasAuthority}
+                        expanded={!!expandedAuthority[item.key]}
+                        onToggle={() => setExpandedAuthority(prev => ({ ...prev, [item.key]: !prev[item.key] }))}
+                      >
+                        <div className="pt-4 space-y-4">
+                          <AuthorityRow 
+                            label="Branch Policy" 
+                            value={(branchPref?.value as RoutingValue) ?? (orgPref?.value as RoutingValue) ?? { email: false, inApp: true, sms: false }}
+                            onUpdate={(val) => handleUpdate(item.key, val, "BRANCH")}
+                          />
+                          {isAdmin && (
+                            <AuthorityRow 
+                              label="Org Global" 
+                              value={(orgPref?.value as RoutingValue) ?? { email: false, inApp: true, sms: false }}
+                              onUpdate={(val) => handleUpdate(item.key, val, "ORGANIZATION")}
+                            />
+                          )}
+                        </div>
+                      </CollapseSection>
+                    </div>
+                  )}
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </SettingsGroup>
       </div>
@@ -276,52 +218,59 @@ export default function NotificationSettingsPage() {
 
 /* ---------------- SUB COMPONENTS ---------------- */
 
-function ChannelChip({
-  label,
-  icon,
-  active,
-  onClick,
-  disabled,
-}: {
-  label: string;
-  icon: string;
-  active: boolean;
-  onClick: () => void;
-  disabled?: boolean;
-}) {
+function AuthorityRow({ label, value, onUpdate }: { label: string; value: RoutingValue; onUpdate: (val: RoutingValue) => void }) {
+  return (
+    <div className="flex items-center justify-between bg-black/[0.02] p-3 rounded-xl border border-black/[0.01]">
+      <span className="text-[11px] font-bold text-black/50 uppercase tracking-tight">{label}</span>
+      <div className="flex gap-1.5">
+        {CHANNELS.map(chan => (
+          <button
+            key={chan.key}
+            onClick={() => onUpdate({ ...value, [chan.key]: !value[chan.key] })}
+            className={`w-8 h-8 rounded-lg flex items-center justify-center transition-all ${value[chan.key] ? 'bg-white shadow-sm text-blue-600' : 'text-black/20 hover:text-black/40'}`}
+          >
+            <i className={`bx ${chan.icon} text-sm`} />
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function ScopeBadge({ scope }: { scope: string }) {
+  if (scope === "DEFAULT") return null;
+  const colors = {
+    USER: "bg-blue-100 text-blue-600",
+    BRANCH: "bg-amber-100 text-amber-600",
+    ORGANIZATION: "bg-purple-100 text-purple-600",
+  };
+  return (
+    <span className={`text-[8px] font-black px-1.5 py-0.5 rounded uppercase tracking-tighter ${colors[scope as keyof typeof colors]}`}>
+      {scope}
+    </span>
+  );
+}
+
+function ChannelChip({ label, icon, active, onClick, disabled }: { label: string; icon: string; active: boolean; onClick: () => void; disabled?: boolean }) {
   return (
     <button
       onClick={onClick}
       disabled={disabled}
-      className={`flex items-center gap-2 px-3.5 py-2.5 rounded-xl border ${
-        active
-          ? "bg-blue-50 border-blue-200 text-blue-600"
-          : "bg-white border-black/[0.06] text-black/30"
-      } ${disabled ? "opacity-30 cursor-not-allowed" : "active:scale-95"}`}
+      className={`flex items-center gap-2 px-4 py-2.5 rounded-xl border transition-all ${
+        active ? "bg-blue-50 border-blue-200 text-blue-600" : "bg-white border-black/[0.06] text-black/30"
+      } ${disabled ? "opacity-30 cursor-not-allowed" : "active:scale-95 shadow-sm"}`}
     >
-      <i className={`bx ${icon}`} />
-      <span className="text-[10px] font-black uppercase">
-        {label}
-      </span>
+      <i className={`bx ${icon} text-base`} />
+      <span className="text-[10px] font-black uppercase tracking-widest">{label}</span>
     </button>
   );
 }
 
-function Switch({
-  checked,
-  onChange,
-  color = "bg-blue-600",
-}: {
-  checked: boolean;
-  onChange: () => void;
-  color?: string;
-}) {
+function Switch({ checked, onChange, color = "bg-blue-600" }: { checked: boolean; onChange: () => void; color?: string }) {
   return (
     <button
       onClick={onChange}
-      className={`w-11 h-6 rounded-full relative p-1 transition-colors ${
-        checked ? color : "bg-black/10"
-      }`}
+      className={`w-11 h-6 rounded-full relative p-1 transition-colors ${checked ? color : "bg-black/10"}`}
     >
       <motion.div
         animate={{ x: checked ? 20 : 0 }}
@@ -334,7 +283,7 @@ function Switch({
 
 function CenteredMessage({ children }: { children: React.ReactNode }) {
   return (
-    <div className="flex h-[70vh] items-center justify-center text-[10px] font-black uppercase tracking-[0.3em] text-black/20">
+    <div className="flex h-[70vh] items-center justify-center text-[11px] font-black uppercase tracking-[0.4em] text-black/20 italic animate-pulse">
       {children}
     </div>
   );

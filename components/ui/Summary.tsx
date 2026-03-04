@@ -11,8 +11,8 @@ import SummarySettingsModal, {
 
 /* ---------------- Preference Keys ---------------- */
 
-const VISIBILITY_KEY = "summary"; // 👈 controlled by PreferencePage
-const LAYOUT_KEY = "summary-layout"; // 👈 controlled here
+const VISIBILITY_KEY = "summary"; 
+const LAYOUT_KEY = "summary-layout"; 
 
 const DEFAULT_COLUMNS = 4;
 const DEFAULT_VISIBLE_COUNT = 4;
@@ -30,10 +30,11 @@ const ROUTE_ICON_MAP: Record<
   invoices: { icon: "bx-receipt", color: "bg-purple-50 text-purple-600", border: "border-purple-100" },
   orders: { icon: "bx-cart", color: "bg-orange-50 text-orange-600", border: "border-orange-100" },
   inventory: { icon: "bx-box", color: "bg-yellow-50 text-yellow-600", border: "border-yellow-100" },
-  stock: { icon: "bx-bar-chart", color: "bg-emerald-50 text-emerald-600", border: "border-emerald-100" },
   notifications: { icon: "bx-bell", color: "bg-red-50 text-red-600", border: "border-red-100" },
   overview: { icon: "bx-doughnut-chart", color: "bg-teal-50 text-teal-600", border: "border-teal-100" },
   organizations: { icon: "bx-building", color: "bg-blue-50 text-blue-600", border: "border-blue-100" },
+  personnel: { icon: "bx-user", color: "bg-gray-50 text-gray-600", border: "border-gray-100" },
+  branches: { icon: "bx-git-locator", color: "bg-green-50 text-green-600", border: "border-green-100" },
   default: { icon: "bx-card", color: "bg-gray-50 text-gray-500", border: "border-gray-100" },
 };
 
@@ -54,7 +55,7 @@ interface SummaryProps {
 /* ---------------- Component ---------------- */
 
 export default function Summary({ cardsData, loading = false }: SummaryProps) {
-  const { data: session } = useSession();
+  const { data: session, status } = useSession();
   const pathname = usePathname();
 
   const saveTimeoutRef = useRef<NodeJS.Timeout | null>(null);
@@ -78,7 +79,6 @@ export default function Summary({ cardsData, loading = false }: SummaryProps) {
 
   const getDefaultLayout = useCallback((): SummarySettingsState => {
     return {
-      showSummary: true,
       visibleCardIds: cardsData.slice(0, DEFAULT_VISIBLE_COUNT).map((c) => c.id),
       cardOrder: cardsData.map((c) => c.id),
       maxColumns: DEFAULT_COLUMNS,
@@ -97,51 +97,65 @@ export default function Summary({ cardsData, loading = false }: SummaryProps) {
   const [prefsLoaded, setPrefsLoaded] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
 
-  /* ---------------- Load Preferences ---------------- */
+  /* ---------------- Fetch Logic ---------------- */
 
-  useEffect(() => {
-    if (!organizationId || !userId || !cardsData.length) return;
+  const fetchPreferences = useCallback(async () => {
+    // Session Guard: Prevent calling API without valid IDs
+    if (!organizationId || !userId || status !== "authenticated") return;
 
-    const fetchPreferences = async () => {
-      try {
-        // 1️⃣ Visibility
-        const visibilityRes = await fetch(
-          `/api/preferences?category=LAYOUT&key=${VISIBILITY_KEY}&target=${pageKey}`
-        );
-        const visibilityData = await visibilityRes.json();
+    try {
+      // 1️⃣ Visibility (Controlled by PreferencePage as a boolean)
+      const visibilityRes = await fetch(
+        `/api/preferences?category=LAYOUT&key=${VISIBILITY_KEY}&target=${pageKey}`
+      );
+      const visibilityData = await visibilityRes.json();
 
-        if (visibilityData.success && visibilityData.preference) {
-          setShowSummary(
-            visibilityData.preference.showSummary ?? true
-          );
-        }
-
-        // 2️⃣ Layout
-        const layoutRes = await fetch(
-          `/api/preferences?category=LAYOUT&key=${LAYOUT_KEY}&target=${pageKey}`
-        );
-        const layoutData = await layoutRes.json();
-
-        if (layoutData.success && layoutData.preference) {
-          setLayout({
-            ...getDefaultLayout(),
-            ...layoutData.preference,
-            showSummary: true, // 👈 layout never controls visibility
-          });
-        } else {
-          setLayout(getDefaultLayout());
-        }
-      } catch {
-        setLayout(getDefaultLayout());
-      } finally {
-        setPrefsLoaded(true);
+      if (visibilityData.success && visibilityData.preference !== null) {
+        // If it's a raw boolean (from PreferencePage), use it. 
+        // If it's undefined, default to true.
+        const prefVal = visibilityData.preference;
+        setShowSummary(prefVal === false ? false : true);
       }
-    };
 
-    fetchPreferences();
-  }, [organizationId, userId, pageKey, cardsData, getDefaultLayout]);
+      // 2️⃣ Layout (Controlled here as an object)
+      const layoutRes = await fetch(
+        `/api/preferences?category=LAYOUT&key=${LAYOUT_KEY}&target=${pageKey}`
+      );
+      const layoutData = await layoutRes.json();
 
-  /* ---------------- Save Layout Only ---------------- */
+      if (layoutData.success && layoutData.preference) {
+        setLayout({
+          ...getDefaultLayout(),
+          ...layoutData.preference,
+          showSummary: true, // Internal state always true if component renders
+        });
+      } else {
+        setLayout(getDefaultLayout());
+      }
+    } catch (err) {
+      console.error("Preference fetch failed", err);
+    } finally {
+      setPrefsLoaded(true);
+    }
+  }, [organizationId, userId, status, pageKey, getDefaultLayout]);
+
+  /* ---------------- Effects ---------------- */
+
+  // Initial Load
+  useEffect(() => {
+    if (cardsData.length > 0) {
+      fetchPreferences();
+    }
+  }, [fetchPreferences, cardsData.length]);
+
+  // Listen for changes from PreferencePage
+  useEffect(() => {
+    const handleGlobalUpdate = () => fetchPreferences();
+    window.addEventListener("preference-update", handleGlobalUpdate);
+    return () => window.removeEventListener("preference-update", handleGlobalUpdate);
+  }, [fetchPreferences]);
+
+  /* ---------------- Save Layout ---------------- */
 
   const saveLayout = useCallback(
     (newLayout: SummarySettingsState) => {
@@ -157,7 +171,7 @@ export default function Summary({ cardsData, loading = false }: SummaryProps) {
             body: JSON.stringify({
               key: LAYOUT_KEY,
               value: newLayout,
-              scope: "USER",
+              scope: "USER", // Individual layout settings stay at User scope
               target: pageKey,
               category: "LAYOUT",
             }),
@@ -173,16 +187,13 @@ export default function Summary({ cardsData, loading = false }: SummaryProps) {
   /* ---------------- Derived ---------------- */
 
   const columnCount = layout.maxColumns;
-  const showSkeletons = loading || !prefsLoaded;
+  const showSkeletons = loading || !prefsLoaded || status === "loading";
 
   const visibleCards = useMemo(() => {
     const map = new Map(cardsData.map((c) => [c.id, c]));
     return layout.cardOrder
       .map((id) => map.get(id))
-      .filter(
-        (c): c is SummaryCard =>
-          !!c && layout.visibleCardIds.includes(c.id)
-      )
+      .filter((c): c is SummaryCard => !!c && layout.visibleCardIds.includes(c.id))
       .slice(0, columnCount);
   }, [layout, columnCount, cardsData]);
 
@@ -196,11 +207,10 @@ export default function Summary({ cardsData, loading = false }: SummaryProps) {
     return ROUTE_ICON_MAP[key] ?? ROUTE_ICON_MAP.default;
   }, [pathname]);
 
-  /* ---------------- Respect Visibility ---------------- */
+  /* ---------------- UI Render Guard ---------------- */
 
-  if (!showSummary) return null;
-
-  /* ---------------- UI ---------------- */
+  // If preferences are loaded and user has toggled this OFF, return null
+  if (prefsLoaded && !showSummary) return null;
 
   return (
     <>
@@ -228,12 +238,8 @@ export default function Summary({ cardsData, loading = false }: SummaryProps) {
         >
           <div className="flex justify-between items-center px-2">
             <div className="flex flex-col">
-              <span className="text-lg font-bold text-gray-900">
-                Overview
-              </span>
-              <p className="text-[11px] text-gray-400 font-medium">
-                Performance Metrics
-              </p>
+              <span className="text-lg font-bold text-gray-900">Overview</span>
+              <p className="text-[11px] text-gray-400 font-medium">Performance Metrics</p>
             </div>
 
             <DropdownMenu.Root>
@@ -250,7 +256,7 @@ export default function Summary({ cardsData, loading = false }: SummaryProps) {
               >
                 <DropdownMenu.Item
                   onSelect={() => setSettingsOpen(true)}
-                  className="flex items-center gap-2 px-3 py-2 text-xs font-semibold text-gray-600 cursor-pointer hover:bg-gray-50 rounded-lg"
+                  className="flex items-center gap-2 px-3 py-2 text-xs font-semibold text-gray-600 cursor-pointer hover:bg-gray-50 rounded-lg outline-none"
                 >
                   <i className="bx bx-cog text-sm" />
                   Customize Layout
@@ -261,9 +267,7 @@ export default function Summary({ cardsData, loading = false }: SummaryProps) {
 
           <div
             className="grid gap-4 px-2"
-            style={{
-              gridTemplateColumns: `repeat(${columnCount}, minmax(0,1fr))`,
-            }}
+            style={{ gridTemplateColumns: `repeat(${columnCount}, minmax(0,1fr))` }}
           >
             {showSkeletons
               ? Array.from({ length: columnCount }).map((_, i) => (
@@ -305,16 +309,12 @@ export default function Summary({ cardsData, loading = false }: SummaryProps) {
                       <div className="mt-4 flex items-center gap-2">
                         <div
                           className={`px-1.5 py-0.5 rounded-md text-[10px] font-bold ${
-                            isPositive
-                              ? "bg-emerald-50 text-emerald-600"
-                              : "bg-red-50 text-red-600"
+                            isPositive ? "bg-emerald-50 text-emerald-600" : "bg-red-50 text-red-600"
                           }`}
                         >
                           {Math.abs(card.change ?? 0)}%
                         </div>
-                        <span className="text-[10px] text-gray-400">
-                          vs last month
-                        </span>
+                        <span className="text-[10px] text-gray-400">vs last month</span>
                       </div>
                     </div>
                   );
