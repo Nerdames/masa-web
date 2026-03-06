@@ -1,80 +1,122 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
+import { getServerSession } from "next-auth/next";
+import { authOptions } from "@/lib/auth";
 import prisma from "@/lib/prisma";
+import { Role } from "@prisma/client";
 
-/* =========================
+/**
+ * Strict Role Access Control
+ * Ensures that even if middleware is bypassed, the database 
+ * is protected against non-DEV users.
+ */
+async function validateDevAccess() {
+  const session = await getServerSession(authOptions);
+  
+  if (!session?.user || (session.user as any).role !== Role.DEV) {
+    throw { status: 403, message: "Forbidden: Developer access only" };
+  }
+  
+  return session.user;
+}
+
+/* ============================================================
    GET /api/organizations
-   =========================
-   Query params:
-   - page
-   - pageSize
-   - search
-*/
-export async function GET(req: Request) {
+   ============================================================ */
+export async function GET(req: NextRequest) {
   try {
+    await validateDevAccess();
+
     const { searchParams } = new URL(req.url);
 
-    const page = Math.max(Number(searchParams.get("page")) || 1, 1);
-    const pageSize = Math.min(Number(searchParams.get("pageSize")) || 10, 50);
-    const search = searchParams.get("search")?.trim();
+    /* --- Pagination --- */
+    const page = Math.max(1, Number(searchParams.get("page") ?? 1));
+    const pageSize = Math.min(50, Number(searchParams.get("pageSize") ?? 10));
 
-    const where = search
-      ? {
-          name: {
-            contains: search,
-            mode: "insensitive" as const,
-          },
-        }
-      : {};
+    /* --- Filters --- */
+    const search = searchParams.get("search")?.trim() || undefined;
+    const activeParam = searchParams.get("active"); // "true" or "false"
+    const sortParam = searchParams.get("sort") ?? "newest";
 
-    const [data, total] = await Promise.all([
+    const where: any = {
+      ...(activeParam !== undefined && { active: activeParam === "true" }),
+      ...(search ? {
+        OR: [
+          { name: { contains: search, mode: "insensitive" } },
+          { owner: { name: { contains: search, mode: "insensitive" } } },
+          { owner: { email: { contains: search, mode: "insensitive" } } },
+        ],
+      } : {}),
+    };
+
+    /* --- Sorting --- */
+    let orderBy: any = { createdAt: "desc" };
+    if (sortParam === "oldest") orderBy = { createdAt: "asc" };
+    if (sortParam === "name_asc") orderBy = { name: "asc" };
+    if (sortParam === "name_desc") orderBy = { name: "desc" };
+
+    /* --- Parallel Fetching --- */
+    const [organizations, totalCount, summary] = await Promise.all([
       prisma.organization.findMany({
         where,
+        orderBy,
         skip: (page - 1) * pageSize,
         take: pageSize,
-        orderBy: { createdAt: "desc" },
         include: {
           owner: {
-            select: {
-              id: true,
-              name: true,
-              email: true,
-            },
+            select: { name: true, email: true },
           },
           _count: {
             select: {
               branches: true,
               personnel: true,
+              sales: true,
             },
           },
         },
       }),
       prisma.organization.count({ where }),
+      // Global Statistics for Summary Cards
+      prisma.$transaction([
+        prisma.organization.count(),
+        prisma.organization.count({ where: { active: true } }),
+        prisma.branch.count(),
+        prisma.organization.findFirst({
+          orderBy: { createdAt: "desc" },
+          select: { name: true },
+        }),
+      ]),
     ]);
 
     return NextResponse.json({
-      data,
-      total,
+      summary: {
+        totalOrganizations: summary[0],
+        activeCount: summary[1],
+        inactiveCount: summary[0] - summary[1],
+        totalBranches: summary[2],
+        newestOrg: summary[3]?.name ?? null,
+      },
+      data: organizations,
+      total: totalCount,
       page,
       pageSize,
+      totalPages: Math.ceil(totalCount / pageSize),
     });
-  } catch (error) {
+  } catch (error: any) {
     console.error("GET /api/organizations error:", error);
     return NextResponse.json(
-      { error: "Failed to fetch organizations" },
-      { status: 500 }
+      { error: error.message || "Internal Server Error" },
+      { status: error.status || 500 }
     );
   }
 }
 
-/* =========================
+/* ============================================================
    POST /api/organizations
-   =========================
-   Body:
-   - name
-   - ownerId? (AuthorizedPersonnel.id)
-*/
-export async function POST(req: Request) {
+   ============================================================ */
+export async function POST(req: NextRequest) {
   try {
+    await validateDevAccess();
+
     const body = await req.json();
     const { name, ownerId } = body;
 
@@ -88,15 +130,22 @@ export async function POST(req: Request) {
     const organization = await prisma.organization.create({
       data: {
         name,
-        ownerId: ownerId ?? null,
+        active: true,
+        // Ensure the ownerId exists in AuthorizedPersonnel before linking
+        ...(ownerId && {
+          owner: { connect: { id: ownerId } }
+        }),
       },
+      include: {
+        owner: { select: { name: true, email: true } },
+      }
     });
 
     return NextResponse.json(organization, { status: 201 });
-  } catch (error) {
+  } catch (error: any) {
     console.error("POST /api/organizations error:", error);
     return NextResponse.json(
-      { error: "Failed to create organization" },
+      { error: "Failed to create organization. Ensure Owner ID is valid." },
       { status: 500 }
     );
   }

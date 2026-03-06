@@ -259,7 +259,7 @@ export default function Summary({ cardsData, loading = false }: SummaryProps) {
                   className="flex items-center gap-2 px-3 py-2 text-xs font-semibold text-gray-600 cursor-pointer hover:bg-gray-50 rounded-lg outline-none"
                 >
                   <i className="bx bx-cog text-sm" />
-                  Customize Layout
+                  Customize
                 </DropdownMenu.Item>
               </DropdownMenu.Content>
             </DropdownMenu.Root>

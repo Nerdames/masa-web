@@ -27,7 +27,7 @@ export type VendorBranchProduct = {
   branchId: string;
   productId: string;
   stock: number;
-  sellingPrice?: number | null;
+  sellingPrice: number; // Forced as number because of toNumber() helper in API
   costPrice?: number | null;
   vendorId?: string | null;
   sales: VendorBranchProductSale[];
@@ -39,17 +39,49 @@ export type VendorBranchProduct = {
 export type VendorAnalytics = {
   id: string;
   name: string;
-  productsSupplied: number;       // # of branch products
-  totalRevenue: number;           // sum of sales total
-  totalQuantitySold: number;      // sum of sales quantity
+  productsSupplied: number;       // Count of branch products
+  totalRevenue: number;           // Sum of sales total
+  totalQuantitySold: number;      // Sum of sales quantity
   totalStockValue: number;        // stock * sellingPrice
-  salesVelocity: number;          // avg quantity per active day
-  performanceScore: number;       // 0–100 normalized
+  salesVelocity: number;          // Avg quantity per active day
+  performanceScore: number;       // 0–100 normalized score
 };
 
 /* -----------------------------------------
    Full Vendor Type (DB + Analytics + Branch Products)
 ------------------------------------------ */
+/**
+ * VendorFull merges the database schema with computed analytics
+ * and the specific subset of branch data used for the dashboard.
+ */
 export type VendorFull = VendorBase & VendorAnalytics & {
   branchProducts: VendorBranchProduct[];
 };
+
+/* -----------------------------------------
+   API Response Types
+------------------------------------------ */
+export interface VendorPagination {
+  total: number;
+  page: number;
+  totalPages: number;
+  limit: number;
+}
+
+export interface VendorSummary {
+  totalVendors: number;
+  totalRevenue: number;
+}
+
+export interface VendorLeaders {
+  topVendor: VendorAnalytics | null;
+  fastestVendor: VendorAnalytics | null;
+  bestOverall: VendorAnalytics | null;
+}
+
+export interface VendorsApiResponse {
+  summary: VendorSummary;
+  leaders: VendorLeaders;
+  vendors: VendorFull[];
+  pagination: VendorPagination;
+}

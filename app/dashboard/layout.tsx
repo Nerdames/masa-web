@@ -42,7 +42,7 @@ export default function DashboardRootLayout({ children }: Props) {
         />
 
         {/* Main content */}
-        <main className="flex-1 overflow-y-auto bg-white mx-1 p-4 relative z-0">
+        <main className="flex-1 overflow-y-auto bg-white ml-1 pl-4 relative z-0">
           {children}
         </main>
       </div>

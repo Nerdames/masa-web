@@ -1,24 +1,14 @@
+"use server";
+
 import { NextRequest, NextResponse } from "next/server";
-import { getToken } from "next-auth/jwt";
+import { getServerSession } from "next-auth/next";
+import { authOptions } from "@/lib/auth";
 import prisma from "@/lib/prisma";
-import {
-  Prisma,
-  SaleStatus,
-  PaymentMethod,
-} from "@prisma/client";
+import { Prisma, SaleStatus, PaymentMethod } from "@prisma/client";
 import { Decimal } from "@prisma/client/runtime/library";
 
 /* ============================================================
-   ROLE CONTROL
-============================================================ */
-
-const ALLOWED_ROLES = ["DEV", "ADMIN", "MANAGER", "SALES", "CASHIER"] as const;
-type AllowedRole = (typeof ALLOWED_ROLES)[number];
-
-const secret = process.env.NEXTAUTH_SECRET as string;
-
-/* ============================================================
-   DTO
+   DTO & Types
 ============================================================ */
 
 export type SaleDTO = {
@@ -43,8 +33,53 @@ export type SaleDTO = {
   customerName: string | null;
   cashierName: string | null;
 
-  paymentMethods: PaymentMethod[];
+  paymentMethod: PaymentMethod | "N/A";
 };
+
+type Role = "DEV" | "ADMIN" | "MANAGER" | "SALES" | "CASHIER" | "INVENTORY";
+
+interface AuthUser {
+  id: string;
+  organizationId: string;
+  branchId?: string;
+  role: Role;
+  isOrgOwner: boolean;
+  disabled?: boolean;
+  deletedAt?: Date | null;
+}
+
+interface ApiError {
+  status: number;
+  message: string;
+}
+
+/* ============================================================
+   Auth Helper
+============================================================ */
+
+async function requireDashboardAccess(
+  allowedRoles: Role[] = ["ADMIN", "MANAGER", "DEV", "SALES", "CASHIER"]
+): Promise<AuthUser> {
+  const session = await getServerSession(authOptions);
+
+  if (!session?.user || !("organizationId" in session.user)) {
+    throw { status: 401, message: "Unauthorized" } as ApiError;
+  }
+
+  const user = session.user as AuthUser;
+
+  if (user.disabled || user.deletedAt) {
+    throw { status: 403, message: "Account disabled" } as ApiError;
+  }
+
+  const hasAccess = user.isOrgOwner || allowedRoles.includes(user.role);
+
+  if (!hasAccess) {
+    throw { status: 403, message: "Forbidden: Insufficient Permissions" } as ApiError;
+  }
+
+  return user;
+}
 
 /* ============================================================
    GET HANDLER
@@ -53,100 +88,37 @@ export type SaleDTO = {
 export async function GET(req: NextRequest) {
   try {
     /* ================= AUTH ================= */
-
-    const token = await getToken({ req, secret });
-
-    if (
-      !token ||
-      typeof token.role !== "string" ||
-      typeof token.organizationId !== "string" ||
-      !ALLOWED_ROLES.includes(token.role as AllowedRole)
-    ) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
-
-    const organizationId = token.organizationId;
-    const branchId =
-      typeof token.branchId === "string" ? token.branchId : undefined;
+    const user = await requireDashboardAccess();
+    const { organizationId, isOrgOwner, branchId: userBranchId } = user;
 
     /* ================= QUERY PARAMS ================= */
-
     const { searchParams } = new URL(req.url);
 
     const page = Math.max(1, Number(searchParams.get("page") ?? 1));
     const pageSize = Math.min(50, Number(searchParams.get("pageSize") ?? 10));
-
     const search = searchParams.get("search")?.trim() || undefined;
 
     const dateStartParam = searchParams.get("dateStart");
     const dateEndParam = searchParams.get("dateEnd");
-
     const dateStart = dateStartParam ? new Date(dateStartParam) : undefined;
     const dateEnd = dateEndParam ? new Date(dateEndParam) : undefined;
 
-    if (dateEnd) {
-      dateEnd.setHours(23, 59, 59, 999);
-    }
-
-    /* ---------- Status Filter ---------- */
+    if (dateEnd) dateEnd.setHours(23, 59, 59, 999);
 
     const statusParam = searchParams.get("status");
     const status =
-      statusParam &&
-      Object.values(SaleStatus).includes(statusParam as SaleStatus)
+      statusParam && Object.values(SaleStatus).includes(statusParam as SaleStatus)
         ? (statusParam as SaleStatus)
         : undefined;
 
-    /* ---------- Payment Method Filter ---------- */
-
-    const paymentMethodParam = searchParams.get("paymentMethod");
-
-    const paymentMethods =
-      paymentMethodParam
-        ?.split(",")
-        .map((pm) => pm.trim())
-        .filter((pm) =>
-          Object.values(PaymentMethod).includes(pm as PaymentMethod)
-        ) as PaymentMethod[] | undefined;
-
-    /* ---------- Sorting ---------- */
-
     const sortParam = searchParams.get("sort") ?? "createdAt_DESC";
 
-    let orderBy: Prisma.SaleOrderByWithRelationInput = {
-      createdAt: "desc",
-    };
-
-    switch (sortParam) {
-      case "createdAt_ASC":
-        orderBy = { createdAt: "asc" };
-        break;
-
-      case "createdAt_DESC":
-        orderBy = { createdAt: "desc" };
-        break;
-
-      case "productName_ASC":
-        orderBy = { product: { name: "asc" } };
-        break;
-
-      case "productName_DESC":
-        orderBy = { product: { name: "desc" } };
-        break;
-
-      default:
-        orderBy = { createdAt: "desc" };
-    }
-
     /* ================= WHERE CLAUSE ================= */
-
     const where: Prisma.SaleWhereInput = {
       organizationId,
       deletedAt: null,
-
-      ...(branchId && { branchId }),
+      ...(isOrgOwner ? {} : { branchId: userBranchId }),
       ...(status && { status }),
-
       ...(dateStart || dateEnd
         ? {
             createdAt: {
@@ -155,43 +127,26 @@ export async function GET(req: NextRequest) {
             },
           }
         : {}),
-
       ...(search
         ? {
             OR: [
-              {
-                product: {
-                  name: { contains: search, mode: "insensitive" },
-                },
-              },
-              {
-                customer: {
-                  name: { contains: search, mode: "insensitive" },
-                },
-              },
-              {
-                cashier: {
-                  name: { contains: search, mode: "insensitive" },
-                },
-              },
+              { product: { name: { contains: search, mode: "insensitive" } } },
+              { customer: { name: { contains: search, mode: "insensitive" } } },
+              { cashier: { name: { contains: search, mode: "insensitive" } } },
+              { invoice: { invoiceNumber: { contains: search, mode: "insensitive" } } },
             ],
-          }
-        : {}),
-
-      ...(paymentMethods?.length
-        ? {
-            receipts: {
-              some: {
-                paymentMethod: { in: paymentMethods },
-              },
-            },
           }
         : {}),
     };
 
-    /* ================= FETCH ================= */
+    /* ================= ORDER BY ================= */
+    let orderBy: Prisma.SaleOrderByWithRelationInput = { createdAt: "desc" };
+    if (sortParam === "createdAt_ASC") orderBy = { createdAt: "asc" };
+    if (sortParam === "productName_ASC") orderBy = { product: { name: "asc" } };
+    if (sortParam === "productName_DESC") orderBy = { product: { name: "desc" } };
 
-    const [sales, total] = await Promise.all([
+    /* ================= FETCH & AGGREGATE ================= */
+    const [sales, totalCount, aggregateData] = await Promise.all([
       prisma.sale.findMany({
         where,
         orderBy,
@@ -201,15 +156,20 @@ export async function GET(req: NextRequest) {
           product: { select: { name: true } },
           customer: { select: { name: true } },
           cashier: { select: { name: true } },
-          receipts: { select: { paymentMethod: true } },
+          receipt: { select: { paymentMethod: true } },
         },
       }),
-
       prisma.sale.count({ where }),
+      prisma.sale.aggregate({
+        where,
+        _sum: {
+          total: true,
+          quantity: true,
+        },
+      }),
     ]);
 
     /* ================= TRANSFORM ================= */
-
     const mappedSales: SaleDTO[] = sales.map((s) => ({
       id: s.id,
       organizationId: s.organizationId,
@@ -226,32 +186,37 @@ export async function GET(req: NextRequest) {
       createdAt: s.createdAt,
 
       cashierId: s.cashierId,
-      customerId: s.customerId ?? null,
+      customerId: s.customerId,
 
-      productName: s.product?.name ?? null,
-      customerName: s.customer?.name ?? null,
-      cashierName: s.cashier?.name ?? null,
+      productName: s.product?.name ?? "Unknown Product",
+      customerName: s.customer?.name ?? "Walk-in Customer",
+      cashierName: s.cashier?.name ?? "System",
 
-      paymentMethods: [
-        ...new Set(s.receipts.map((r) => r.paymentMethod)),
-      ],
+      paymentMethod: s.receipt?.paymentMethod ?? "N/A",
     }));
 
     /* ================= RESPONSE ================= */
-
     return NextResponse.json({
+      summary: {
+        totalRevenue: (aggregateData._sum.total as Decimal | null)?.toNumber() ?? 0,
+        totalItemsSold: aggregateData._sum.quantity ?? 0,
+        transactionCount: totalCount,
+      },
       sales: mappedSales,
-      total,
-      page,
-      pageSize,
-      totalPages: Math.ceil(total / pageSize),
+      pagination: {
+        total: totalCount,
+        page,
+        pageSize,
+        totalPages: Math.ceil(totalCount / pageSize),
+      },
     });
-  } catch (error) {
-    console.error("GET /api/dashboard/sales error:", error);
+  } catch (error: unknown) {
+    const err = error as ApiError;
+    console.error("GET /api/dashboard/sales error:", err);
 
     return NextResponse.json(
-      { error: "Failed to fetch sales" },
-      { status: 500 }
+      { error: err.message || "Failed to fetch sales" },
+      { status: err.status || 500 }
     );
   }
 }

@@ -9,6 +9,24 @@ import { Decimal } from "@prisma/client/runtime/library";
 import dayjs from "dayjs";
 import type { VendorFull } from "@/types/vendor";
 
+/* -------------------- Types & Interfaces -------------------- */
+type Role = "ADMIN" | "MANAGER" | "SALES" | "INVENTORY" | "CASHIER" | "DEV";
+
+interface AuthUser {
+  id: string;
+  organizationId: string;
+  branchId?: string;
+  role: Role;
+  isOrgOwner: boolean;
+  disabled?: boolean;
+  deletedAt?: Date | null;
+}
+
+interface ApiError {
+  status: number;
+  message: string;
+}
+
 /* -------------------- Helpers -------------------- */
 const toNumber = (value: number | Decimal | null | undefined): number =>
   value instanceof Decimal ? value.toNumber() : Number(value ?? 0);
@@ -25,36 +43,33 @@ const sanitizePageLimit = (page: number, limit: number) => {
   return { safePage, safeLimit };
 };
 
-/* -------------------- Auth -------------------- */
-async function requireAdmin() {
+/* -------------------- Flexible Auth -------------------- */
+async function requireDashboardAccess(allowedRoles: Role[] = ["ADMIN", "MANAGER", "DEV"]): Promise<AuthUser> {
   const session = await getServerSession(authOptions);
 
   if (!session?.user || !("organizationId" in session.user)) {
-    throw { status: 401, message: "Unauthorized" };
+    throw { status: 401, message: "Unauthorized" } as ApiError;
   }
 
-  const { role, isOrgOwner, disabled, deletedAt } = session.user as {
-    role: string;
-    isOrgOwner: boolean;
-    disabled?: boolean;
-    deletedAt?: Date | null;
-  };
+  const user = session.user as AuthUser;
 
-  if (disabled || deletedAt) {
-    throw { status: 403, message: "Account disabled" };
+  if (user.disabled || user.deletedAt) {
+    throw { status: 403, message: "Account disabled" } as ApiError;
   }
 
-  if (role !== "ADMIN" && !isOrgOwner) {
-    throw { status: 403, message: "Forbidden" };
+  const hasAccess = user.isOrgOwner || allowedRoles.includes(user.role);
+
+  if (!hasAccess) {
+    throw { status: 403, message: "Forbidden: Insufficient Permissions" } as ApiError;
   }
 
-  return session.user;
+  return user;
 }
 
 /* -------------------- GET /api/vendors -------------------- */
 export async function GET(req: NextRequest) {
   try {
-    const user = await requireAdmin();
+    const user = await requireDashboardAccess(["ADMIN", "MANAGER", "INVENTORY", "DEV"]);
     const { organizationId, branchId, isOrgOwner } = user;
 
     const params = req.nextUrl.searchParams;
@@ -62,8 +77,9 @@ export async function GET(req: NextRequest) {
       Number(params.get("page")),
       Number(params.get("limit"))
     );
+    
     const search = params.get("search")?.trim() ?? "";
-    const sort = params.get("sort")?.trim() ?? "performance";
+    const sort = params.get("sort")?.toLowerCase() ?? "performance";
     const fromDate = parseDate(params.get("from"));
     const toDate = parseDate(params.get("to"));
 
@@ -75,9 +91,9 @@ export async function GET(req: NextRequest) {
       organizationId,
       deletedAt: null,
       ...(search ? { name: { contains: search, mode: "insensitive" } } : {}),
-      ...(isOrgOwner
-        ? {}
-        : { branchProducts: { some: { branchId, organizationId, deletedAt: null } } }),
+      ...(isOrgOwner ? {} : { 
+        branchProducts: { some: { branchId, deletedAt: null } } 
+      }),
     };
 
     const totalVendors = await prisma.vendor.count({ where: vendorWhere });
@@ -86,20 +102,26 @@ export async function GET(req: NextRequest) {
       where: vendorWhere,
       include: {
         branchProducts: {
-          where: { organizationId, deletedAt: null, ...(isOrgOwner ? {} : { branchId }) },
+          where: { 
+            organizationId, 
+            deletedAt: null, 
+            ...(isOrgOwner ? {} : { branchId }) 
+          },
           include: {
             sales: {
-              where: { organizationId, status: SaleStatus.COMPLETED, deletedAt: null, ...dateFilter },
+              where: { 
+                organizationId, 
+                status: SaleStatus.COMPLETED, 
+                deletedAt: null, 
+                ...dateFilter 
+              },
               select: { quantity: true, total: true, createdAt: true },
             },
           },
         },
       },
-      skip: (page - 1) * limit,
-      take: limit,
     });
 
-    /* -------------------- Compute Analytics -------------------- */
     const vendors: VendorFull[] = vendorsRaw.map((vendor) => {
       let totalRevenue = 0;
       let totalQuantitySold = 0;
@@ -113,7 +135,10 @@ export async function GET(req: NextRequest) {
           totalQuantitySold += sale.quantity;
           salesDates.push(sale.createdAt);
         });
-        return { ...bp, sales: bp.sales.map((s) => ({ ...s, quantity: Number(s.quantity), total: toNumber(s.total) })) };
+        return { 
+          ...bp, 
+          sales: bp.sales.map((s) => ({ ...s, quantity: Number(s.quantity), total: toNumber(s.total) })) 
+        };
       });
 
       let salesVelocity = 0;
@@ -124,10 +149,18 @@ export async function GET(req: NextRequest) {
         salesVelocity = totalQuantitySold / daysActive;
       }
 
-      return { ...vendor, branchProducts, productsSupplied: branchProducts.length, totalRevenue, totalQuantitySold, totalStockValue, salesVelocity, performanceScore: 0 };
+      return { 
+        ...vendor, 
+        branchProducts, 
+        productsSupplied: branchProducts.length, 
+        totalRevenue, 
+        totalQuantitySold, 
+        totalStockValue, 
+        salesVelocity, 
+        performanceScore: 0 
+      };
     });
 
-    /* -------------------- Normalize Performance -------------------- */
     const maxRevenue = Math.max(...vendors.map((v) => v.totalRevenue), 1);
     const maxVelocity = Math.max(...vendors.map((v) => v.salesVelocity), 1);
     const maxDiversity = Math.max(...vendors.map((v) => v.productsSupplied), 1);
@@ -141,103 +174,116 @@ export async function GET(req: NextRequest) {
     });
 
     const sortedVendors = [...vendors].sort((a, b) => {
-      switch (sort) {
-        case "newest": return b.createdAt.getTime() - a.createdAt.getTime();
-        case "oldest": return a.createdAt.getTime() - b.createdAt.getTime();
-        case "highest_spent": return b.totalRevenue - a.totalRevenue;
-        case "lowest_spent": return a.totalRevenue - b.totalRevenue;
-        default: return b.performanceScore - a.performanceScore;
-      }
+      if (sort === "newest") return b.createdAt.getTime() - a.createdAt.getTime();
+      if (sort === "oldest") return a.createdAt.getTime() - b.createdAt.getTime();
+      if (sort === "highest revenue") return b.totalRevenue - a.totalRevenue;
+      if (sort === "lowest revenue") return a.totalRevenue - b.totalRevenue;
+      return b.performanceScore - a.performanceScore;
     });
 
+    const leaders = {
+      topVendor: vendors.length ? vendors.reduce((prev, current) => (prev.totalRevenue > current.totalRevenue) ? prev : current) : null,
+      fastestVendor: vendors.length ? vendors.reduce((prev, current) => (prev.salesVelocity > current.salesVelocity) ? prev : current) : null,
+      bestOverall: vendors.length ? vendors.reduce((prev, current) => (prev.performanceScore > current.performanceScore) ? prev : current) : null,
+    };
+
     return NextResponse.json({
-      summary: { totalVendors, totalRevenue: vendors.reduce((sum, v) => sum + v.totalRevenue, 0) },
-      vendors: sortedVendors,
-      pagination: { total: totalVendors, page, totalPages: Math.max(1, Math.ceil(totalVendors / limit)), limit },
+      summary: { 
+        totalVendors, 
+        totalRevenue: vendors.reduce((sum, v) => sum + v.totalRevenue, 0) 
+      },
+      leaders,
+      vendors: sortedVendors.slice((page - 1) * limit, page * limit),
+      pagination: { 
+        total: totalVendors, 
+        page, 
+        totalPages: Math.max(1, Math.ceil(totalVendors / limit)), 
+        limit 
+      },
     });
   } catch (err: unknown) {
-    console.error("Vendor GET failed:", err);
-    const message = (err as { message?: string })?.message || "Failed to load vendors";
-    const status = (err as { status?: number })?.status || 500;
-    return NextResponse.json({ error: message }, { status });
+    const error = err as ApiError;
+    console.error("Vendor GET failed:", error);
+    return NextResponse.json(
+      { error: error.message || "Failed to load vendors" }, 
+      { status: error.status || 500 }
+    );
   }
 }
 
-/* -------------------- POST /api/vendors -------------------- */
+/* -------------------- POST / PATCH / DELETE -------------------- */
 export async function POST(req: NextRequest) {
   try {
-    const user = await requireAdmin();
+    const user = await requireDashboardAccess(["ADMIN", "DEV"]);
     const { organizationId } = user;
+    const body = (await req.json()) as { name?: string; email?: string; phone?: string; address?: string };
 
-    const body: { name?: string; email?: string; phone?: string; address?: string } = await req.json();
     if (!body.name?.trim()) return NextResponse.json({ error: "Name is required" }, { status: 400 });
 
-    const existing = await prisma.vendor.findFirst({ where: { organizationId, name: body.name.trim(), deletedAt: null } });
+    const existing = await prisma.vendor.findFirst({ 
+      where: { organizationId, name: body.name.trim(), deletedAt: null } 
+    });
     if (existing) return NextResponse.json({ error: "Vendor already exists" }, { status: 409 });
 
     const newVendor = await prisma.vendor.create({
-      data: { organizationId, name: body.name.trim(), email: body.email?.trim() ?? null, phone: body.phone?.trim() ?? null, address: body.address?.trim() ?? null },
+      data: { 
+        organizationId, 
+        name: body.name.trim(), 
+        email: body.email?.trim() || null, 
+        phone: body.phone?.trim() || null, 
+        address: body.address?.trim() || null 
+      },
     });
 
     return NextResponse.json({ vendor: newVendor });
   } catch (err: unknown) {
-    const message = (err as { message?: string })?.message || "Failed to create vendor";
-    const status = (err as { status?: number })?.status || 500;
-    return NextResponse.json({ error: message }, { status });
+    const error = err as ApiError;
+    return NextResponse.json({ error: error.message }, { status: error.status || 500 });
   }
 }
 
-/* -------------------- PATCH /api/vendors/:id -------------------- */
 export async function PATCH(req: NextRequest, { params }: { params: { id: string } }) {
   try {
-    const user = await requireAdmin();
-    const { organizationId } = user;
-    const { id } = params;
+    const user = await requireDashboardAccess(["ADMIN", "DEV"]);
+    const body = (await req.json()) as { name?: string; email?: string; phone?: string; address?: string };
 
-    const body: { name?: string; email?: string; phone?: string; address?: string } = await req.json();
-
-    const vendor = await prisma.vendor.findFirst({ where: { id, organizationId, deletedAt: null } });
+    const vendor = await prisma.vendor.findFirst({ where: { id: params.id, organizationId: user.organizationId, deletedAt: null } });
     if (!vendor) return NextResponse.json({ error: "Vendor not found" }, { status: 404 });
 
-    if (body.name && body.name.trim() !== vendor.name) {
-      const duplicate = await prisma.vendor.findFirst({ where: { organizationId, name: body.name.trim(), deletedAt: null, NOT: { id } } });
-      if (duplicate) return NextResponse.json({ error: "Vendor with this name already exists" }, { status: 409 });
-    }
-
     const updated = await prisma.vendor.update({
-      where: { id },
-      data: { name: body.name?.trim(), email: body.email?.trim() ?? null, phone: body.phone?.trim() ?? null, address: body.address?.trim() ?? null },
+      where: { id: params.id },
+      data: { 
+        name: body.name?.trim(), 
+        email: body.email?.trim(), 
+        phone: body.phone?.trim(), 
+        address: body.address?.trim() 
+      },
     });
 
     return NextResponse.json({ vendor: updated });
   } catch (err: unknown) {
-    const message = (err as { message?: string })?.message || "Failed to update vendor";
-    const status = (err as { status?: number })?.status || 500;
-    return NextResponse.json({ error: message }, { status });
+    const error = err as ApiError;
+    return NextResponse.json({ error: error.message }, { status: error.status || 500 });
   }
 }
 
-/* -------------------- DELETE /api/vendors/:id -------------------- */
 export async function DELETE(req: NextRequest, { params }: { params: { id: string } }) {
   try {
-    const user = await requireAdmin();
-    const { organizationId } = user;
-    const { id } = params;
-
+    const user = await requireDashboardAccess(["ADMIN", "DEV"]);
     const vendor = await prisma.vendor.findFirst({
-      where: { id, organizationId, deletedAt: null },
-      include: { branchProducts: { where: { deletedAt: null } } },
+      where: { id: params.id, organizationId: user.organizationId, deletedAt: null },
+      include: { branchProducts: { where: { deletedAt: null } } }
     });
 
     if (!vendor) return NextResponse.json({ error: "Vendor not found" }, { status: 404 });
-    if (vendor.branchProducts.length > 0) return NextResponse.json({ error: "Cannot delete vendor linked to active products" }, { status: 400 });
+    if (vendor.branchProducts.length > 0) {
+      return NextResponse.json({ error: "Cannot delete vendor with active products" }, { status: 400 });
+    }
 
-    await prisma.vendor.update({ where: { id }, data: { deletedAt: new Date() } });
-
+    await prisma.vendor.update({ where: { id: params.id }, data: { deletedAt: new Date() } });
     return NextResponse.json({ success: true });
   } catch (err: unknown) {
-    const message = (err as { message?: string })?.message || "Failed to delete vendor";
-    const status = (err as { status?: number })?.status || 500;
-    return NextResponse.json({ error: message }, { status });
+    const error = err as ApiError;
+    return NextResponse.json({ error: error.message }, { status: error.status || 500 });
   }
 }

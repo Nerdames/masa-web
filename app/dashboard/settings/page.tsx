@@ -8,7 +8,7 @@ export default function SettingsPage() {
 
   useEffect(() => {
     const timeout = setTimeout(() => {
-      router.replace("/dashboard/settings/preferences");
+      router.replace("/dashboard/settings/profile");
     }, 300); // slight delay so loader is visible smoothly
 
     return () => clearTimeout(timeout);

@@ -180,7 +180,7 @@ export default function SalesPage() {
   const tableId = useMemo(() => pathname ? pathname.replace(/^\//, "").replace(/\//g, "-") : "sales-table", [pathname]);
 
   return (
-    <div className="flex flex-col space-y-4 min-h-[calc(100vh-4rem)] p-4">
+    <div className="flex flex-col space-y-4 min-h-[calc(100vh-4rem)] p-4 overflow-y-auto">
       <Summary cardsData={summaryCards} loading={isLoading} />
 
       <DataTableToolbar<Sale, string, string>

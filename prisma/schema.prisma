@@ -566,41 +566,41 @@ model Payment {
   @@index([receivedAt])
 }
 
-model Sale {
-  id              String @id @default(cuid())
-  organizationId  String
-  invoiceId       String
-  branchProductId String
-  productId       String
-  branchId        String
+  model Sale {
+    id              String @id @default(cuid())
+    organizationId  String
+    invoiceId       String
+    branchProductId String
+    productId       String
+    branchId        String
 
-  quantity  Int
-  unitPrice Decimal    @db.Decimal(18, 2)
-  total     Decimal    @db.Decimal(18, 2)
-  currency  String     @default("NGN")
-  status    SaleStatus @default(COMPLETED)
-  deletedAt DateTime?
+    quantity  Int
+    unitPrice Decimal    @db.Decimal(18, 2)
+    total     Decimal    @db.Decimal(18, 2)
+    currency  String     @default("NGN")
+    status    SaleStatus @default(COMPLETED)
+    deletedAt DateTime?
 
-  cashierId  String
-  customerId String?
+    cashierId  String
+    customerId String?
 
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+    createdAt DateTime @default(now())
+    updatedAt DateTime @updatedAt
 
-  organization  Organization        @relation(fields: [organizationId], references: [id])
-  invoice       Invoice             @relation(fields: [invoiceId], references: [id])
-  branchProduct BranchProduct       @relation("BranchProductSales", fields: [branchProductId], references: [id])
-  product       Product             @relation("ProductSales", fields: [productId], references: [id])
-  cashier       AuthorizedPersonnel @relation("AttendantSales", fields: [cashierId], references: [id])
-  customer      Customer?           @relation("CustomerSales", fields: [customerId], references: [id])
-  branch        Branch              @relation(fields: [branchId], references: [id])
-  
-  receipt       Receipt?
+    organization  Organization        @relation(fields: [organizationId], references: [id])
+    invoice       Invoice             @relation(fields: [invoiceId], references: [id])
+    branchProduct BranchProduct       @relation("BranchProductSales", fields: [branchProductId], references: [id])
+    product       Product             @relation("ProductSales", fields: [productId], references: [id])
+    cashier       AuthorizedPersonnel @relation("AttendantSales", fields: [cashierId], references: [id])
+    customer      Customer?           @relation("CustomerSales", fields: [customerId], references: [id])
+    branch        Branch              @relation(fields: [branchId], references: [id])
+    
+    receipt       Receipt?
 
-  @@index([invoiceId])
-  @@index([organizationId, branchId])
-  @@index([createdAt])
-}
+    @@index([invoiceId])
+    @@index([organizationId, branchId])
+    @@index([createdAt])
+  }
 
 model Receipt {
   id              String         @id @default(cuid())

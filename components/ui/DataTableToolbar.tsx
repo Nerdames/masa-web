@@ -259,7 +259,7 @@ function DataTableToolbarInner<
               className={iconButton} 
               title="Refresh Data"
             >
-              <span className={refreshing ? "animate-spin" : ""}>↻</span>
+              <i className={`bx bx-refresh text-lg ${refreshing ? "bx-spin" : ""}`} />
             </button>
           </div>
 

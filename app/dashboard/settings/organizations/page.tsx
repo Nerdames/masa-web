@@ -2,271 +2,249 @@
 
 import { useState, useMemo, useEffect } from "react";
 import useSWR from "swr";
-import { useDebounce } from "@/app/hooks/core/useDebounce";
+import { useDebounce } from "@/app/hooks/useDebounce";
 import { useToast } from "@/components/feedback/ToastProvider";
-import ConfirmModal from "@/components/modal/ConfirmModal";
 import Summary, { SummaryCard } from "@/components/ui/Summary";
+import DataTableToolbar from "@/components/ui/DataTableToolbar";
+import DataTable, { DataTableColumn } from "@/components/ui/DataTable";
 
-import type { Organization } from "@prisma/client";
+/* ================= Types ================= */
+type OrgStatus = "All" | "Active" | "Inactive";
+type OrgSort = "newest" | "oldest" | "name_asc" | "name_desc";
+
+interface OrganizationData {
+  id: string;
+  name: string;
+  active: boolean;
+  createdAt: string;
+  owner?: { name: string; email: string } | null;
+  _count: {
+    branches: number;
+    personnel: number;
+    sales: number;
+  };
+}
+
+interface ApiResponse {
+  summary: {
+    totalOrganizations: number;
+    activeCount: number;
+    inactiveCount: number;
+    totalBranches: number;
+    newestOrg: string | null;
+  };
+  data: OrganizationData[];
+  total: number;
+  pageSize: number;
+}
 
 /* ================= Fetcher ================= */
-const fetcher = (url: string) =>
-  fetch(url, { credentials: "include" }).then(res => res.json());
+const fetcher = async (url: string) => {
+  const res = await fetch(url, { credentials: "include" });
+  if (!res.ok) {
+    if (res.status === 403 || res.status === 401) throw new Error("Access Denied: DEV Only");
+    throw new Error("Failed to fetch organizations");
+  }
+  return res.json() as Promise<ApiResponse>;
+};
 
-/* ================= Skeleton ================= */
-const SkeletonRow = () => (
-  <tr className="animate-pulse">
-    {Array.from({ length: 5 }).map((_, i) => (
-      <td key={i} className="p-4">
-        <div className="h-4 w-full bg-gray-200 rounded" />
-      </td>
-    ))}
-  </tr>
-);
+const STATUS_OPTIONS: { label: string; value: OrgStatus }[] = [
+  { label: "All Statuses", value: "All" },
+  { label: "Active", value: "Active" },
+  { label: "Inactive", value: "Inactive" },
+];
 
 export default function OrganizationPage() {
   const toast = useToast();
 
+  /* ---------------- State ---------------- */
   const [page, setPage] = useState(1);
   const [search, setSearch] = useState("");
-  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
-  const [confirmOpen, setConfirmOpen] = useState(false);
-  const [confirmMessage, setConfirmMessage] = useState("");
-  const [confirmAction, setConfirmAction] = useState<() => Promise<void>>(async () => {});
+  const [statusFilter, setStatusFilter] = useState<OrgStatus>("All");
+  const [sortOrder, setSortOrder] = useState<OrgSort>("newest");
+  const [refreshing, setRefreshing] = useState(false);
 
   const debouncedSearch = useDebounce(search, 400);
+
+  // Reset page on filter change
+  useEffect(() => setPage(1), [debouncedSearch, statusFilter, sortOrder]);
 
   const query = useMemo(() => {
     const params = new URLSearchParams();
     params.set("page", String(page));
     params.set("pageSize", "10");
     if (debouncedSearch) params.set("search", debouncedSearch);
+    if (statusFilter !== "All") params.set("active", statusFilter === "Active" ? "true" : "false");
+    if (sortOrder) params.set("sort", sortOrder);
     return params.toString();
-  }, [page, debouncedSearch]);
+  }, [page, debouncedSearch, statusFilter, sortOrder]);
 
-  const { data, isLoading, mutate } = useSWR(
-    `/api/organizations?${query}`,
-    fetcher,
-    { keepPreviousData: true }
+  const { data, isLoading, mutate, error } = useSWR(`/api/organizations?${query}`, fetcher, {
+    keepPreviousData: true,
+  });
+
+  // Handle unauthorized or dev-only error
+  useEffect(() => {
+    if (error) toast.addToast({ type: "error", message: error.message });
+  }, [error, toast]);
+
+  const organizations = data?.data ?? [];
+  const total = data?.total ?? 0;
+  const pageCount = Math.max(1, Math.ceil(total / (data?.pageSize ?? 10)));
+
+  /* ---------------- Summary Cards ---------------- */
+  const summaryCards: SummaryCard[] = useMemo(() => {
+    if (!data?.summary) return [];
+    const s = data.summary;
+    return [
+      { 
+        id: "totalOrg", 
+        title: "Total Organizations", 
+        value: s.totalOrganizations,
+        tooltip: "Total count of organizations on the platform."
+      },
+      { 
+        id: "activeOrg", 
+        title: "Active", 
+        value: s.activeCount,
+        color: "text-green-600",
+        tooltip: "Organizations currently permitted to process transactions."
+      },
+      { 
+        id: "inactiveOrg", 
+        title: "Inactive", 
+        value: s.inactiveCount,
+        color: "text-gray-400",
+        tooltip: "Deactivated organizations with restricted access."
+      },
+      { 
+        id: "branches", 
+        title: "Total Branches", 
+        value: s.totalBranches,
+        tooltip: "Total footprint of all organization branches."
+      },
+      { 
+        id: "newest", 
+        title: "Latest Entry", 
+        value: s.newestOrg ?? "-",
+        tooltip: "The most recently registered organization name."
+      },
+    ];
+  }, [data]);
+
+  const handleRefresh = async () => {
+    setRefreshing(true);
+    await mutate();
+    setRefreshing(false);
+  };
+
+  /* ---------------- Columns ---------------- */
+  const columns: DataTableColumn<OrganizationData>[] = useMemo(
+    () => [
+      { key: "name", header: "Organization", render: (o) => o.name },
+      { 
+        key: "owner", 
+        header: "Owner", 
+        render: (o) => (
+          <div className="flex flex-col">
+            <span className="font-medium">{o.owner?.name ?? "No Owner"}</span>
+            <span className="text-[10px] opacity-50">{o.owner?.email ?? "—"}</span>
+          </div>
+        ) 
+      },
+      { 
+        key: "branches", 
+        header: "Branches", 
+        align: "center", 
+        hideTooltip: true,
+        render: (o) => <span className="font-mono">{o._count.branches}</span> 
+      },
+      { 
+        key: "personnel", 
+        header: "Staff", 
+        align: "center", 
+        hideTooltip: true,
+        render: (o) => <span className="font-mono">{o._count.personnel}</span> 
+      },
+      { 
+        key: "status", 
+        header: "Status", 
+        align: "right",
+        hideTooltip: true,
+        render: (o) => (
+          <span className={`text-[10px] font-bold uppercase tracking-widest ${o.active ? "text-green-600" : "text-red-400"}`}>
+            {o.active ? "Active" : "Inactive"}
+          </span>
+        ) 
+      },
+    ],
+    []
   );
 
-  const organizations: (Organization & {
-    _count?: { branches: number; personnel: number };
-    owner?: { name?: string; email: string };
-  })[] = data?.data ?? [];
-
-  const total = data?.total ?? 0;
-  const pageSize = data?.pageSize ?? 10;
-  const pageCount = Math.max(1, Math.ceil(total / pageSize));
-
-  /* ================= Summary ================= */
-  const summaryCards: SummaryCard[] = [
-    { id: "total", title: "Organizations", value: total },
-    {
-      id: "active",
-      title: "Active",
-      value: organizations.filter(o => o.active).length,
-      color: "text-green-600",
-    },
-    {
-      id: "inactive",
-      title: "Inactive",
-      value: organizations.filter(o => !o.active).length,
-      color: "text-gray-500",
-    },
-  ];
-
-  /* ================= Selection ================= */
-  const toggleSelect = (id: string) => {
-    setSelectedIds(prev => {
-      const next = new Set(prev);
-      next.has(id) ? next.delete(id) : next.add(id);
-      return next;
-    });
-  };
-
-  const toggleSelectAll = () => {
-    const allSelected = organizations.every(o => selectedIds.has(o.id));
-    setSelectedIds(allSelected ? new Set() : new Set(organizations.map(o => o.id)));
-  };
-
-  const isAllSelected = organizations.length > 0 && organizations.every(o => selectedIds.has(o.id));
-  const isIndeterminate = selectedIds.size > 0 && !isAllSelected;
-
-  /* ================= Actions ================= */
-  const toggleActive = (org: Organization) => {
-    setConfirmMessage(
-      `${org.active ? "Deactivate" : "Activate"} organization "${org.name}"?`
-    );
-    setConfirmAction(() => async () => {
-      try {
-        const res = await fetch(`/api/dashboard/organizations/${org.id}`, {
-          method: "PATCH",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ active: !org.active }),
-        });
-        if (!res.ok) throw new Error();
-        toast.addToast({ type: "success", message: "Organization updated" });
-        mutate();
-      } catch {
-        toast.addToast({ type: "error", message: "Update failed" });
-      } finally {
-        setConfirmOpen(false);
-      }
-    });
-    setConfirmOpen(true);
-  };
-
-  const bulkDelete = () => {
-    setConfirmMessage(`Delete ${selectedIds.size} selected organizations?`);
-    setConfirmAction(() => async () => {
-      try {
-        await Promise.all(
-          [...selectedIds].map(id =>
-            fetch(`/api/dashboard/organizations/${id}`, { method: "DELETE" })
-          )
-        );
-        toast.addToast({ type: "success", message: "Organizations deleted" });
-        setSelectedIds(new Set());
-        mutate();
-      } catch {
-        toast.addToast({ type: "error", message: "Bulk delete failed" });
-      } finally {
-        setConfirmOpen(false);
-      }
-    });
-    setConfirmOpen(true);
-  };
-
-  /* ================= Render ================= */
   return (
-    <div className="flex flex-col space-y-4 min-h-[calc(100vh-4rem)] p-4">
-      {/* Summary */}
-      <Summary cardsData={summaryCards} />
+    <div className="flex flex-col space-y-4 min-h-[calc(100vh-4rem)] p-4 overflow-y-auto">
+      <Summary cardsData={summaryCards} loading={isLoading} />
 
-      {/* Top Bar */}
-      <div className="sticky top-0 z-40 bg-white p-3 flex items-center gap-2 shadow-sm">
-        <input
-          type="text"
-          placeholder="Search organizations"
-          value={search}
-          onChange={e => setSearch(e.target.value)}
-          className="border rounded-lg p-2 text-sm h-10 min-w-[300px]"
-        />
+      <DataTableToolbar<OrganizationData, OrgSort, OrgStatus>
+        search={search}
+        onSearchChange={setSearch}
+        onRefresh={handleRefresh}
+        refreshing={refreshing}
+        sortOrder={sortOrder}
+        onSortChange={setSortOrder}
+        sortOptions={[
+          { label: "Newest", value: "newest" },
+          { label: "Oldest", value: "oldest" },
+          { label: "Name (A-Z)", value: "name_asc" },
+          { label: "Name (Z-A)", value: "name_desc" },
+        ]}
+        filters={[
+          {
+            label: "Status",
+            value: statusFilter,
+            defaultValue: "All",
+            options: STATUS_OPTIONS,
+            onChange: (val) => setStatusFilter(val as OrgStatus),
+          },
+        ]}
+        exportData={organizations}
+        exportFileName="organizations_list.csv"
+        onAdd={() => window.open("/dashboard/organizations/new", "_blank")}
+      />
 
-        <button
-          onClick={() => mutate()}
-          className="w-10 h-10 rounded-full bg-gray-100 flex items-center justify-center"
-        >
-          <i className="bx bx-refresh text-lg" />
-        </button>
+      <DataTable<OrganizationData>
+        data={organizations}
+        columns={columns}
+        tableId="org-management-table"
+        getRowId={(row) => row.id}
+        loading={isLoading}
+        onRowClick={(o) => window.open(`/dashboard/organizations/${o.id}`, "_blank")}
+        dateField="createdAt" 
+      />
 
-        {selectedIds.size > 0 && (
+      {/* Pagination Footer */}
+      <div className="flex justify-between items-center text-xs pt-2">
+        <span className="opacity-50 text-[10px] font-bold uppercase tracking-tighter">
+          Total Organizations: {total}
+        </span>
+        <div className="flex gap-4 items-center">
           <button
-            onClick={bulkDelete}
-            className="w-10 h-10 rounded-full bg-gray-100 flex items-center justify-center"
+            disabled={page <= 1}
+            onClick={() => setPage((p) => Math.max(1, p - 1))}
+            className="hover:text-blue-500 disabled:opacity-30 transition-colors uppercase font-bold tracking-tighter"
           >
-            <i className="bx bx-trash text-red-600 text-lg" />
+            Prev
           </button>
-        )}
-      </div>
-
-      {/* Table */}
-      <div className="flex-1 overflow-x-auto">
-        <table className="w-full text-sm table-fixed border-separate border-spacing-y-3">
-          <thead className="text-xs bg-gray-100 uppercase text-gray-500 text-center">
-            <tr>
-              <th className="w-10 p-3">
-                <input
-                  type="checkbox"
-                  checked={isAllSelected}
-                  ref={el => {
-                    if (el) el.indeterminate = isIndeterminate;
-                  }}
-                  onChange={toggleSelectAll}
-                />
-              </th>
-              <th className="p-4">Organization</th>
-              <th className="p-4">Owner</th>
-              <th className="p-4">Branches</th>
-              <th className="p-4">Status</th>
-            </tr>
-          </thead>
-
-          <tbody>
-            {isLoading && Array.from({ length: 8 }).map((_, i) => <SkeletonRow key={i} />)}
-
-            {!isLoading &&
-              organizations.map(org => {
-                const selected = selectedIds.has(org.id);
-
-                return (
-                  <tr
-                    key={org.id}
-                    className={`
-                      bg-white rounded-xl shadow-sm transition cursor-pointer
-                      hover:bg-indigo-50
-                      ${selected ? "bg-indigo-100" : ""}
-                    `}
-                  >
-                    <td className="p-4 text-center">
-                      <input
-                        type="checkbox"
-                        checked={selected}
-                        onClick={e => e.stopPropagation()}
-                        onChange={() => toggleSelect(org.id)}
-                      />
-                    </td>
-
-                    <td className="p-4 text-center font-medium">{org.name}</td>
-
-                    <td className="p-4 text-center text-xs">
-                      {org.owner?.name ?? org.owner?.email ?? "—"}
-                    </td>
-
-                    <td className="p-4 text-center">
-                      {org._count?.branches ?? 0}
-                    </td>
-
-                    <td className="p-4 text-center">
-                      <span
-                        onClick={() => toggleActive(org)}
-                        className={`
-                          px-3 py-1 rounded-full text-xs font-semibold cursor-pointer
-                          ${org.active
-                            ? "bg-green-100 text-green-700"
-                            : "bg-gray-200 text-gray-600"}
-                        `}
-                      >
-                        {org.active ? "Active" : "Inactive"}
-                      </span>
-                    </td>
-                  </tr>
-                );
-              })}
-          </tbody>
-        </table>
-      </div>
-
-      {/* Pagination */}
-      <div className="flex justify-between items-center text-xs">
-        <span>Total: {total}</span>
-        <div className="flex gap-2 items-center">
-          <button disabled={page <= 1} onClick={() => setPage(p => p - 1)}>Prev</button>
-          <span>{page} / {pageCount}</span>
-          <button disabled={page >= pageCount} onClick={() => setPage(p => p + 1)}>Next</button>
+          <span className="font-mono">{page} / {pageCount}</span>
+          <button
+            disabled={page >= pageCount}
+            onClick={() => setPage((p) => Math.min(pageCount, p + 1))}
+            className="hover:text-blue-500 disabled:opacity-30 transition-colors uppercase font-bold tracking-tighter"
+          >
+            Next
+          </button>
         </div>
       </div>
-
-      {/* Confirm */}
-      <ConfirmModal
-        open={confirmOpen}
-        title="Confirm Action"
-        message={confirmMessage}
-        destructive
-        onClose={() => setConfirmOpen(false)}
-        onConfirm={confirmAction}
-      />
     </div>
   );
 }
