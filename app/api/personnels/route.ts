@@ -1,122 +1,173 @@
 import { NextRequest, NextResponse } from "next/server";
 import prisma from "@/lib/prisma";
-import {Prisma} from "@prisma/client";
-import { getToken } from "next-auth/jwt"; // Use JWT from NextAuth for server-side
+import { Prisma } from "@prisma/client";
+import { getToken } from "next-auth/jwt";
 
 const JWT_SECRET = process.env.NEXTAUTH_SECRET;
 
-/* -------------------- DEV/ADMIN Guard -------------------- */
-async function requireDevOrAdmin(req: NextRequest) {
+/**
+ * Enhanced Guard:
+ * Ensures the user is logged in and belongs to the Organization.
+ * Admins/Devs get broad access; Managers are scoped to their Org.
+ */
+async function getAuthContext(req: NextRequest) {
   const token = await getToken({ req, secret: JWT_SECRET });
-  if (!token || !["DEV", "ADMIN"].includes(token.role)) {
-    return false;
-  }
-  return true;
+  if (!token) return null;
+
+  return {
+    userId: token.sub,
+    role: token.role as string,
+    organizationId: token.organizationId as string,
+  };
 }
 
 /* -------------------- GET /api/personnels -------------------- */
 export async function GET(req: NextRequest) {
-  if (!(await requireDevOrAdmin(req))) {
+  const auth = await getAuthContext(req);
+
+  if (!auth || !["DEV", "ADMIN", "MANAGER"].includes(auth.role)) {
     return NextResponse.json({ message: "Access denied" }, { status: 403 });
   }
 
   try {
     const { searchParams } = new URL(req.url);
     const page = Math.max(Number(searchParams.get("page") ?? 1), 1);
-    const pageSize = Math.min(Number(searchParams.get("pageSize") ?? 10), 50);
-    const search = searchParams.get("search")?.trim();
+    const pageSize = Math.max(Number(searchParams.get("pageSize") ?? 10), 1);
+    const search = searchParams.get("q") || searchParams.get("search");
+    const status = searchParams.get("status");
+    const sort = searchParams.get("sort");
 
-    const where: Prisma.AuthorizedPersonnelWhereInput = { deletedAt: null };
+    const baseWhere: Prisma.AuthorizedPersonnelWhereInput = {
+      deletedAt: null,
+      ...(auth.role !== "DEV" && { organizationId: auth.organizationId }),
+    };
 
+    // Search filter
     if (search) {
-      where.OR = [
+      baseWhere.OR = [
         { name: { contains: search, mode: "insensitive" } },
         { email: { contains: search, mode: "insensitive" } },
         { staffCode: { contains: search, mode: "insensitive" } },
       ];
     }
 
-    const [total, data] = await Promise.all([
-      prisma.authorizedPersonnel.count({ where }),
+    // Status filter for pagination
+    const paginationWhere: Prisma.AuthorizedPersonnelWhereInput = { ...baseWhere };
+    if (status === "active") {
+      paginationWhere.disabled = false;
+      paginationWhere.isLocked = false;
+    } else if (status === "disabled") {
+      paginationWhere.disabled = true;
+    } else if (status === "locked") {
+      paginationWhere.isLocked = true;
+    }
+
+    // Sorting
+    const orderBy: Prisma.AuthorizedPersonnelOrderByWithRelationInput =
+      sort === "az" ? { name: "asc" } : { lastActivityAt: "desc" };
+
+    // Fetch personnels + overall summary concurrently
+    const [total, data, activeCount, disabledCount, lockedCount] = await Promise.all([
+      prisma.authorizedPersonnel.count({ where: baseWhere }),
       prisma.authorizedPersonnel.findMany({
-        where,
+        where: paginationWhere,
         skip: (page - 1) * pageSize,
         take: pageSize,
-        orderBy: { createdAt: "desc" },
-        select: {
-          id: true,
-          name: true,
-          email: true,
-          staffCode: true,
-          disabled: true,
-          deletedAt: true,
-          createdAt: true,
-          lastLogin: true,
+        orderBy,
+        include: {
           branch: { select: { id: true, name: true } },
-          branchAssignments: { select: { role: true } },
+          branchAssignments: { include: { branch: { select: { id: true, name: true } } } },
         },
       }),
+      prisma.authorizedPersonnel.count({ where: { ...baseWhere, disabled: false, isLocked: false } }),
+      prisma.authorizedPersonnel.count({ where: { ...baseWhere, disabled: true } }),
+      prisma.authorizedPersonnel.count({ where: { ...baseWhere, isLocked: true } }),
     ]);
 
-    const formatted = data.map(p => ({
-      ...p,
-      roles: p.branchAssignments.map(b => b.role),
-    }));
+    // Branch-level summaries
+    const branchSummariesRaw = await prisma.branch.findMany({
+      where: { organizationId: auth.organizationId, deletedAt: null },
+      select: {
+        id: true,
+        name: true,
+        personnel: true,
+      },
+    });
 
-    return NextResponse.json({ data: formatted, total, page, pageSize });
+    const branchSummaries = branchSummariesRaw.map(branch => {
+      const active = branch.personnel.filter(p => !p.disabled && !p.isLocked).length;
+      const disabled = branch.personnel.filter(p => p.disabled).length;
+      const locked = branch.personnel.filter(p => p.isLocked).length;
+      return {
+        branchId: branch.id,
+        branchName: branch.name,
+        total: branch.personnel.length,
+        active,
+        disabled,
+        locked,
+      };
+    });
+
+    const summary = { total, active: activeCount, disabled: disabledCount, locked: lockedCount };
+
+    return NextResponse.json({ data, total, page, pageSize, summary, branchSummaries });
   } catch (error) {
     console.error("GET /api/personnels error:", error);
-    return NextResponse.json(
-      { message: "Failed to fetch personnels" },
-      { status: 500 }
-    );
+    return NextResponse.json({ message: "Internal server error" }, { status: 500 });
   }
 }
 
 /* -------------------- POST /api/personnels -------------------- */
 export async function POST(req: NextRequest) {
-  if (!(await requireDevOrAdmin(req))) {
+  const auth = await getAuthContext(req);
+
+  if (!auth || !["DEV", "ADMIN", "MANAGER"].includes(auth.role)) {
     return NextResponse.json({ message: "Access denied" }, { status: 403 });
   }
 
   try {
-    const body: {
-      name?: string;
-      email?: string;
-      password?: string;
-      organizationId?: string;
-      branchId?: string | null;
-      staffCode?: string | null;
-    } = await req.json();
+    const body = await req.json();
+    const { name, email, password, staffCode, branchId, role, isOrgOwner } = body;
 
-    const { name, email, password, organizationId, branchId, staffCode } = body;
-
-    if (!email || !password || !organizationId) {
-      return NextResponse.json({ message: "Missing required fields" }, { status: 400 });
+    if (!email || !password) {
+      return NextResponse.json({ message: "Missing credentials" }, { status: 400 });
     }
 
-    const exists = await prisma.authorizedPersonnel.findUnique({ where: { email } });
-    if (exists) {
-      return NextResponse.json({ message: "Email already exists" }, { status: 409 });
-    }
-
-    const personnel = await prisma.authorizedPersonnel.create({
-      data: {
-        name: name ?? null,
-        email,
-        password, // ⚠️ hash this in production
-        organizationId,
-        branchId: branchId ?? null,
-        staffCode: staffCode ?? null,
-      },
+    // Ensure unique within organization
+    const exists = await prisma.authorizedPersonnel.findFirst({
+      where: { email, organizationId: auth.organizationId },
     });
 
-    return NextResponse.json(personnel, { status: 201 });
+    if (exists) {
+      return NextResponse.json({ message: "User already exists in this organization" }, { status: 409 });
+    }
+
+    // Create personnel + optional branch assignment transactionally
+    const newPersonnel = await prisma.$transaction(async tx => {
+      const personnel = await tx.authorizedPersonnel.create({
+        data: {
+          name,
+          email,
+          password, // TODO: hash password before storing!
+          staffCode,
+          organizationId: auth.organizationId,
+          branchId: branchId || null,
+          isOrgOwner: isOrgOwner || false,
+        },
+      });
+
+      if (branchId && role) {
+        await tx.branchAssignment.create({
+          data: { personnelId: personnel.id, branchId, role },
+        });
+      }
+
+      return personnel;
+    });
+
+    return NextResponse.json(newPersonnel, { status: 201 });
   } catch (error) {
     console.error("POST /api/personnels error:", error);
-    return NextResponse.json(
-      { message: "Failed to create personnel" },
-      { status: 500 }
-    );
+    return NextResponse.json({ message: "Failed to create personnel" }, { status: 500 });
   }
 }

@@ -43,6 +43,9 @@ const SUMMARY_PAGES = [
   { label: "Inventory Hub", target: "inventory-page", icon: "bx-box" },
   { label: "Customers Hub", target: "customers-page", icon: "bx-user" },
   { label: "Vendors Hub", target: "vendors-page", icon: "bx-store" },
+  { label: "Personnel Hub", target: "personnels-page", icon: "bx-id-card" },
+  { label: "Branch Hub", target: "branches-page", icon: "bx-building" },
+  { label: "Organization Hub", target: "organizations-page", icon: "bx-globe" },
 ];
 
 const CATEGORY_ICONS: Record<string, string> = {
@@ -68,7 +71,7 @@ export default function PreferencePage() {
   const [isResetting, setIsResetting] = useState(false);
   const [syncing, setSyncing] = useState(true);
 
-  const isAdmin = session?.user?.isOrgOwner || role === "ADMIN" || role === "DEV";
+  const isAdmin = session?.user?.isOrgOwner || role === "ADMIN";
   const isManager = role === "MANAGER";
 
   useEffect(() => {

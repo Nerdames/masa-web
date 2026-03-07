@@ -32,9 +32,9 @@ const ROUTE_ICON_MAP: Record<
   inventory: { icon: "bx-box", color: "bg-yellow-50 text-yellow-600", border: "border-yellow-100" },
   notifications: { icon: "bx-bell", color: "bg-red-50 text-red-600", border: "border-red-100" },
   overview: { icon: "bx-doughnut-chart", color: "bg-teal-50 text-teal-600", border: "border-teal-100" },
-  organizations: { icon: "bx-building", color: "bg-blue-50 text-blue-600", border: "border-blue-100" },
-  personnel: { icon: "bx-user", color: "bg-gray-50 text-gray-600", border: "border-gray-100" },
-  branches: { icon: "bx-git-locator", color: "bg-green-50 text-green-600", border: "border-green-100" },
+  organizations: { icon: "bx-globe", color: "bg-blue-50 text-blue-600", border: "border-blue-100" },
+  personnels: { icon: "bx-user", color: "bg-gray-50 text-gray-600", border: "border-gray-100" },
+  branches: { icon: "bx-building", color: "bg-green-50 text-green-600", border: "border-green-100" },
   default: { icon: "bx-card", color: "bg-gray-50 text-gray-500", border: "border-gray-100" },
 };
 
@@ -65,15 +65,18 @@ export default function Summary({ cardsData, loading = false }: SummaryProps) {
 
   /* ---------------- Page Key ---------------- */
 
-  const pageKey = useMemo(() => {
-    if (!pathname) return "unknown-page";
-    const segments = pathname.split("/").filter(Boolean);
-    const key =
-      segments[0] === "dashboard" && segments[1]
-        ? segments[1]
-        : segments[segments.length - 1] || "overview";
-    return `${key}-page`;
-  }, [pathname]);
+/* ---------------- Page Key ---------------- */
+const pageKey = useMemo(() => {
+  if (!pathname) return "unknown-page";
+
+  // Split the path and filter out empty segments
+  const segments = pathname.split("/").filter(Boolean);
+
+  // Take the last segment as the key
+  const key = segments[segments.length - 1] || "overview";
+
+  return `${key}-page`;
+}, [pathname]);
 
   /* ---------------- Default Layout ---------------- */
 
@@ -197,15 +200,20 @@ export default function Summary({ cardsData, loading = false }: SummaryProps) {
       .slice(0, columnCount);
   }, [layout, columnCount, cardsData]);
 
-  const routeIconConfig = useMemo(() => {
-    if (!pathname) return ROUTE_ICON_MAP.default;
-    const segments = pathname.split("/").filter(Boolean);
-    const key =
-      segments[0] === "dashboard" && segments[1]
-        ? segments[1]
-        : segments[segments.length - 1] || "overview";
-    return ROUTE_ICON_MAP[key] ?? ROUTE_ICON_MAP.default;
-  }, [pathname]);
+const routeIconConfig = useMemo(() => {
+  if (!pathname) return ROUTE_ICON_MAP.default;
+
+  // Remove empty segments
+  const segments = pathname.split("/").filter(Boolean);
+
+  // If first segment is "dashboard", skip it
+  const relevantSegments = segments[0] === "dashboard" ? segments.slice(1) : segments;
+
+  // Use the last segment as key
+  const key = relevantSegments[relevantSegments.length - 1] || "overview";
+
+  return ROUTE_ICON_MAP[key] ?? ROUTE_ICON_MAP.default;
+}, [pathname]);
 
   /* ---------------- UI Render Guard ---------------- */
 

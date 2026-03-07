@@ -367,7 +367,7 @@ function Sidebar({ open, onClose }: SidebarProps) {
     : [];
 
   const manageMenu: MenuItem[] = [
-    { label: "Personnel & Role", icon: "bx-user", action: () => (window.location.href = "/dashboard/settings/personnel") },
+    { label: "Personnel & Role", icon: "bx-user", action: () => (window.location.href = "/dashboard/settings/personnels") },
     { label: "Branches", icon: "bx-git-branch", action: () => (window.location.href = "/dashboard/settings/branches") },
     { label: "Organizations", icon: "bx-buildings", action: () => (window.location.href = "/dashboard/settings/organizations") },
     { label: "Settings", icon: "bx-cog", action: () => (window.location.href = "/dashboard/settings") },
