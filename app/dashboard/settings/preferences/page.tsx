@@ -66,7 +66,6 @@ const HUB_SETTINGS: HubSetting[] = [
     ],
     defaultValue: "system",
   },
-  // Table settings
   {
     key: "row_density",
     label: "Row Density",
@@ -181,7 +180,7 @@ export default function PreferencePage() {
   const [isResetting, setIsResetting] = useState(false);
   const [syncing, setSyncing] = useState(true);
 
-  const toastRef = useRef<Record<string, boolean>>({}); // prevents duplicate toasts
+  const toastRef = useRef<Record<string, boolean>>({});
 
   const showToastOnce = (id: string, toast: Parameters<typeof addToast>[0]) => {
     if (toastRef.current[id]) return;
@@ -189,22 +188,22 @@ export default function PreferencePage() {
     toastRef.current[id] = true;
     setTimeout(() => {
       toastRef.current[id] = false;
-    }, 2000); // reset after 2s
+    }, 2000);
   };
 
   const isAdmin = session?.user?.isOrgOwner || role === "ADMIN";
   const isManager = role === "MANAGER";
 
-  /* ---------------- Load Preferences ---------------- */
   useEffect(() => {
     if (status !== "authenticated") return;
     fetch("/api/preferences?all=true", { cache: "no-store" })
       .then((res) => res.json())
-      .then((data) => { if (data.success) setPreferences(data.preferences); })
+      .then((data) => {
+        if (data.success) setPreferences(data.preferences);
+      })
       .finally(() => setSyncing(false));
   }, [status]);
 
-  /* ---------------- RESOLVE HIERARCHY ---------------- */
   const resolveHierarchy = (setting: HubSetting) => {
     const find = (s: PreferenceScope) =>
       preferences.find(
@@ -233,7 +232,6 @@ export default function PreferencePage() {
     return { userPref, branchPref, orgPref, activeScope, activeValue, isLocked };
   };
 
-  /* ---------------- HANDLE UPDATE ---------------- */
   const handleUpdate = async (
     setting: HubSetting,
     value: any,
@@ -257,17 +255,24 @@ export default function PreferencePage() {
     if (!res.ok) return;
     const data = await res.json();
     setPreferences((prev) => [
-      ...prev.filter((p) => !(p.key === setting.key && p.scope === scope && p.target === (setting.target || null))),
+      ...prev.filter(
+        (p) =>
+          !(
+            p.key === setting.key &&
+            p.scope === scope &&
+            p.target === (setting.target || null)
+          )
+      ),
       data.preference,
     ]);
 
-    showToastOnce(
-      `${setting.key}-${scope}`,
-      { type: "success", title: "Saved", message: `${scope} policy updated.` }
-    );
+    showToastOnce(`${setting.key}-${scope}`, {
+      type: "success",
+      title: "Saved",
+      message: `${scope} policy updated.`,
+    });
   };
 
-  /* ---------------- HANDLE RESET ---------------- */
   const handleFinalDelete = async () => {
     if (!resetTarget) return;
     setIsResetting(true);
@@ -279,23 +284,27 @@ export default function PreferencePage() {
       target: resetTarget.target ?? "",
     });
 
-    const res = await fetch(`/api/preferences?${params.toString()}`, { method: "DELETE" });
+    const res = await fetch(`/api/preferences?${params.toString()}`, {
+      method: "DELETE",
+    });
     if (res.ok) {
       setPreferences((prev) => prev.filter((p) => p.id !== resetTarget.id));
-      showToastOnce(
-        `reset-${resetTarget.id}`,
-        { type: "info", title: "Reset", message: "Reverted to inherited value." }
-      );
+      showToastOnce(`reset-${resetTarget.id}`, {
+        type: "info",
+        title: "Reset",
+        message: "Reverted to inherited value.",
+      });
       setResetTarget(null);
     }
 
     setIsResetting(false);
   };
 
-  /* ---------------- GROUP SETTINGS ---------------- */
   const grouped = useMemo(() => {
     const groups = HUB_SETTINGS.reduce((acc, setting) => {
-      acc[setting.category] = acc[setting.category] ? [...acc[setting.category], setting] : [setting];
+      acc[setting.category] = acc[setting.category]
+        ? [...acc[setting.category], setting]
+        : [setting];
       return acc;
     }, {} as Record<string, HubSetting[]>);
     if (!groups["LAYOUT"]) groups["LAYOUT"] = [];
@@ -312,15 +321,19 @@ export default function PreferencePage() {
   if (!role) return <AccessDenied />;
 
   return (
-    <div className="max-w-[850px] mx-auto py-12 px-6 pb-32">
+    // 'relative z-0' establishes a safe stacking root. 
+    // Ensuring 'overflow-visible' allows child selects to pop out of the container.
+    <div className="max-w-[850px] mx-auto py-12 px-6 pb-32 relative z-0 overflow-visible">
       <header className="mb-12">
-        <h1 className="text-2xl font-black text-black/90 tracking-tight italic">Preference Settings</h1>
+        <h1 className="text-2xl font-black text-black/90 tracking-tight italic">
+          Preference Settings
+        </h1>
         <p className="text-[13px] text-black/40">
           Manage personal workspace overrides and authority-level mandatory policies.
         </p>
       </header>
 
-      <div className="space-y-6">
+      <div className="space-y-6 overflow-visible">
         {Object.entries(grouped).map(([category, settings]) => (
           <SettingsGroup
             key={category}
@@ -328,13 +341,28 @@ export default function PreferencePage() {
             icon={CATEGORY_ICONS[category] || "bx-cog"}
             count={category === "LAYOUT" ? SUMMARY_PAGES.length : settings.length}
             initialExpanded={category === "SYSTEM"}
+            className="overflow-visible" // Force group to allow overflows
           >
             {settings.map((setting) => {
-              const { userPref, branchPref, orgPref, activeValue, activeScope, isLocked } = resolveHierarchy(setting);
-              const hasAuthorityOverride = branchPref ? "BRANCH" : orgPref ? "ORGANIZATION" : "DEFAULT";
+              const {
+                userPref,
+                branchPref,
+                orgPref,
+                activeValue,
+                activeScope,
+                isLocked,
+              } = resolveHierarchy(setting);
+              const hasAuthorityOverride = branchPref
+                ? "BRANCH"
+                : orgPref
+                ? "ORGANIZATION"
+                : "DEFAULT";
 
               return (
-                <div key={setting.key} className="flex flex-col border-b border-black/[0.02] last:border-0">
+                <div
+                  key={setting.key}
+                  className="flex flex-col border-b border-black/[0.02] last:border-0 overflow-visible relative"
+                >
                   <SettingRow
                     label={setting.label}
                     value={activeValue}
@@ -348,29 +376,49 @@ export default function PreferencePage() {
                   />
 
                   {(isAdmin || isManager) && (
-                    <div className="px-4 pb-3">
+                    <div className="px-4 pb-3 overflow-visible">
                       <CollapseSection
                         title="Authority Policy"
                         badgeScope={hasAuthorityOverride}
                         expanded={!!expandedAuthority[setting.key]}
                         onToggle={() =>
-                          setExpandedAuthority((p) => ({ ...p, [setting.key]: !p[setting.key] }))
+                          setExpandedAuthority((p) => ({
+                            ...p,
+                            [setting.key]: !p[setting.key],
+                          }))
                         }
+                        className="overflow-visible"
                       >
-                        <div className="space-y-1 py-1">
+                        <div className="space-y-1 py-1 overflow-visible">
                           <SettingRow
                             isMini
                             label="Branch Default"
-                            value={branchPref?.value ?? orgPref?.value ?? setting.defaultValue}
+                            value={
+                              branchPref?.value ??
+                              orgPref?.value ??
+                              setting.defaultValue
+                            }
                             type={setting.type}
                             options={setting.options}
                             isOverride={!!branchPref}
                             isLocked={!!branchPref?.isLocked}
                             activeScope={branchPref ? "BRANCH" : "DEFAULT"}
-                            onChange={(val) => handleUpdate(setting, val, "BRANCH", branchPref?.isLocked)}
+                            onChange={(val) =>
+                              handleUpdate(
+                                setting,
+                                val,
+                                "BRANCH",
+                                branchPref?.isLocked
+                              )
+                            }
                             onReset={() => branchPref && setResetTarget(branchPref)}
                             onToggleLock={() =>
-                              handleUpdate(setting, branchPref?.value ?? true, "BRANCH", !branchPref?.isLocked)
+                              handleUpdate(
+                                setting,
+                                branchPref?.value ?? true,
+                                "BRANCH",
+                                !branchPref?.isLocked
+                              )
                             }
                           />
                           {isAdmin && (
@@ -383,10 +431,22 @@ export default function PreferencePage() {
                               isOverride={!!orgPref}
                               isLocked={!!orgPref?.isLocked}
                               activeScope={orgPref ? "ORGANIZATION" : "DEFAULT"}
-                              onChange={(val) => handleUpdate(setting, val, "ORGANIZATION", orgPref?.isLocked)}
+                              onChange={(val) =>
+                                handleUpdate(
+                                  setting,
+                                  val,
+                                  "ORGANIZATION",
+                                  orgPref?.isLocked
+                                )
+                              }
                               onReset={() => orgPref && setResetTarget(orgPref)}
                               onToggleLock={() =>
-                                handleUpdate(setting, orgPref?.value ?? true, "ORGANIZATION", !orgPref?.isLocked)
+                                handleUpdate(
+                                  setting,
+                                  orgPref?.value ?? true,
+                                  "ORGANIZATION",
+                                  !orgPref?.isLocked
+                                )
                               }
                             />
                           )}
@@ -409,12 +469,25 @@ export default function PreferencePage() {
                   target: page.target,
                   defaultValue: true,
                 };
-                const { userPref, branchPref, orgPref, activeValue, activeScope, isLocked } =
-                  resolveHierarchy(setting);
-                const hasAuthorityOverride = branchPref ? "BRANCH" : orgPref ? "ORGANIZATION" : "DEFAULT";
+                const {
+                  userPref,
+                  branchPref,
+                  orgPref,
+                  activeValue,
+                  activeScope,
+                  isLocked,
+                } = resolveHierarchy(setting);
+                const hasAuthorityOverride = branchPref
+                  ? "BRANCH"
+                  : orgPref
+                  ? "ORGANIZATION"
+                  : "DEFAULT";
 
                 return (
-                  <div key={page.target} className="flex flex-col border-b border-black/[0.02] last:border-0">
+                  <div
+                    key={page.target}
+                    className="flex flex-col border-b border-black/[0.02] last:border-0 overflow-visible relative"
+                  >
                     <SettingRow
                       label={page.label}
                       value={activeValue}
@@ -427,28 +500,50 @@ export default function PreferencePage() {
                     />
 
                     {(isAdmin || isManager) && (
-                      <div className="px-4 pb-3">
+                      <div className="px-4 pb-3 overflow-visible">
                         <CollapseSection
                           title={`${page.label} Policy`}
                           badgeScope={hasAuthorityOverride}
                           expanded={!!expandedAuthority[page.target]}
                           onToggle={() =>
-                            setExpandedAuthority((p) => ({ ...p, [page.target]: !p[page.target] }))
+                            setExpandedAuthority((p) => ({
+                              ...p,
+                              [page.target]: !p[page.target],
+                            }))
                           }
+                          className="overflow-visible"
                         >
-                          <div className="space-y-1 py-1">
+                          <div className="space-y-1 py-1 overflow-visible">
                             <SettingRow
                               isMini
                               label="Branch Visibility"
-                              value={branchPref?.value ?? orgPref?.value ?? setting.defaultValue}
+                              value={
+                                branchPref?.value ??
+                                orgPref?.value ??
+                                setting.defaultValue
+                              }
                               type="switch"
                               isOverride={!!branchPref}
                               isLocked={!!branchPref?.isLocked}
                               activeScope={branchPref ? "BRANCH" : "DEFAULT"}
-                              onChange={(val) => handleUpdate(setting, val, "BRANCH", branchPref?.isLocked)}
-                              onReset={() => branchPref && setResetTarget(branchPref)}
+                              onChange={(val) =>
+                                handleUpdate(
+                                  setting,
+                                  val,
+                                  "BRANCH",
+                                  branchPref?.isLocked
+                                )
+                              }
+                              onReset={() =>
+                                branchPref && setResetTarget(branchPref)
+                              }
                               onToggleLock={() =>
-                                handleUpdate(setting, branchPref?.value ?? true, "BRANCH", !branchPref?.isLocked)
+                                handleUpdate(
+                                  setting,
+                                  branchPref?.value ?? true,
+                                  "BRANCH",
+                                  !branchPref?.isLocked
+                                )
                               }
                             />
                             {isAdmin && (
@@ -461,11 +556,23 @@ export default function PreferencePage() {
                                 isLocked={!!orgPref?.isLocked}
                                 activeScope={orgPref ? "ORGANIZATION" : "DEFAULT"}
                                 onChange={(val) =>
-                                  handleUpdate(setting, val, "ORGANIZATION", orgPref?.isLocked)
+                                  handleUpdate(
+                                    setting,
+                                    val,
+                                    "ORGANIZATION",
+                                    orgPref?.isLocked
+                                  )
                                 }
-                                onReset={() => orgPref && setResetTarget(orgPref)}
+                                onReset={() =>
+                                  orgPref && setResetTarget(orgPref)
+                                }
                                 onToggleLock={() =>
-                                  handleUpdate(setting, orgPref?.value ?? true, "ORGANIZATION", !orgPref?.isLocked)
+                                  handleUpdate(
+                                    setting,
+                                    orgPref?.value ?? true,
+                                    "ORGANIZATION",
+                                    !orgPref?.isLocked
+                                  )
                                 }
                               />
                             )}
