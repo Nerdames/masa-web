@@ -63,20 +63,20 @@ export default function Summary({ cardsData, loading = false }: SummaryProps) {
   const userId = session?.user?.id;
   const organizationId = session?.user?.organizationId;
 
+
+
   /* ---------------- Page Key ---------------- */
+  const pageKey = useMemo(() => {
+    if (!pathname) return "unknown-page";
 
-/* ---------------- Page Key ---------------- */
-const pageKey = useMemo(() => {
-  if (!pathname) return "unknown-page";
+    // Split the path and filter out empty segments
+    const segments = pathname.split("/").filter(Boolean);
 
-  // Split the path and filter out empty segments
-  const segments = pathname.split("/").filter(Boolean);
+    // Take the last segment as the key
+    const key = segments[segments.length - 1] || "overview";
 
-  // Take the last segment as the key
-  const key = segments[segments.length - 1] || "overview";
-
-  return `${key}-page`;
-}, [pathname]);
+    return `${key}-page`;
+  }, [pathname]);
 
   /* ---------------- Default Layout ---------------- */
 

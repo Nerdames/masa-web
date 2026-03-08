@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useState, useMemo } from "react";
+import React, { useEffect, useState, useMemo, useRef } from "react";
 import { useSession } from "next-auth/react";
 import { Preference, PreferenceScope, PreferenceCategory } from "@prisma/client";
 
@@ -23,18 +23,131 @@ interface HubSetting {
   defaultValue?: string | number | boolean;
 }
 
-/* ============================================================
-    CONFIG & HELPERS
-============================================================ */
-
+/* ================= HUB SETTINGS ================= */
 const HUB_SETTINGS: HubSetting[] = [
-  { key: "auto_lock_invoices", label: "Auto-Lock Invoices", category: "SYSTEM", type: "switch", target: "Invoice", defaultValue: false },
-  { key: "stock_approval_threshold", label: "Stock Adjustment Limit", category: "SYSTEM", type: "number", target: "StockMovement", defaultValue: 1000 },
-  { key: "default_payment_method", label: "Default Payment", category: "SYSTEM", type: "select", options: [{ label: "Cash", value: "CASH" }, { label: "Card", value: "CARD" }, { label: "Bank Transfer", value: "BANK_TRANSFER" }], target: "Payment", defaultValue: "CASH" },
-  { key: "theme_mode", label: "Interface Theme", category: "UI", type: "select", options: [{ label: "System", value: "System" }, { label: "Light", value: "Light" }, { label: "Dark", value: "Dark" }], defaultValue: "System" },
-  { key: "row_density", label: "Table Density", category: "TABLE", type: "select", options: [{ label: "Compact", value: "Compact" }, { label: "Standard", value: "Standard" }], defaultValue: "Standard" },
+  {
+    key: "auto_lock_invoices",
+    label: "Auto-Lock Invoices",
+    category: "SYSTEM",
+    type: "switch",
+    target: "Invoice",
+    defaultValue: false,
+  },
+  {
+    key: "stock_approval_threshold",
+    label: "Stock Adjustment Limit",
+    category: "SYSTEM",
+    type: "number",
+    target: "StockMovement",
+    defaultValue: 1000,
+  },
+  {
+    key: "default_payment_method",
+    label: "Default Payment",
+    category: "SYSTEM",
+    type: "select",
+    options: [
+      { label: "Cash", value: "CASH" },
+      { label: "Card", value: "CARD" },
+      { label: "Bank Transfer", value: "BANK_TRANSFER" },
+    ],
+    target: "Payment",
+    defaultValue: "CASH",
+  },
+  {
+    key: "theme_mode",
+    label: "Interface Theme",
+    category: "UI",
+    type: "select",
+    options: [
+      { label: "System", value: "system" },
+      { label: "Light", value: "light" },
+      { label: "Dark", value: "dark" },
+    ],
+    defaultValue: "system",
+  },
+  // Table settings
+  {
+    key: "row_density",
+    label: "Row Density",
+    category: "TABLE",
+    type: "select",
+    options: [
+      { label: "Compact", value: "compact" },
+      { label: "Standard", value: "standard" },
+    ],
+    defaultValue: "standard",
+  },
+  {
+    key: "table_font_size",
+    label: "Table Font Size",
+    category: "TABLE",
+    type: "select",
+    options: [
+      { label: "Small", value: "sm" },
+      { label: "Normal", value: "md" },
+      { label: "Large", value: "lg" },
+    ],
+    defaultValue: "md",
+  },
+  {
+    key: "table_wrap_cells",
+    label: "Wrap Table Cells",
+    category: "TABLE",
+    type: "switch",
+    defaultValue: false,
+  },
+  {
+    key: "table_sticky_header",
+    label: "Sticky Table Header",
+    category: "TABLE",
+    type: "switch",
+    defaultValue: true,
+  },
+  {
+    key: "table_row_numbers",
+    label: "Show Row Numbers",
+    category: "TABLE",
+    type: "switch",
+    defaultValue: false,
+  },
+  {
+    key: "table_highlight_hover",
+    label: "Highlight Row on Hover",
+    category: "TABLE",
+    type: "switch",
+    defaultValue: true,
+  },
+  {
+    key: "table_group_dates",
+    label: "Group Rows by Date",
+    category: "TABLE",
+    type: "switch",
+    defaultValue: true,
+  },
+  {
+    key: "table_rows_per_page",
+    label: "Rows Per Page",
+    category: "TABLE",
+    type: "select",
+    options: [
+      { label: "10", value: 10 },
+      { label: "25", value: 25 },
+      { label: "50", value: 50 },
+      { label: "100", value: 100 },
+    ],
+    defaultValue: 25,
+  },
+  {
+    key: "table_tooltips",
+    label: "Show Column Tooltips",
+    category: "TABLE",
+    type: "switch",
+    defaultValue: true,
+  },
 ];
 
+/* ================= SUMMARY PAGES ================= */
 const SUMMARY_PAGES = [
   { label: "Dashboard Overview", target: "dashboard-page", icon: "bx-home" },
   { label: "Sales Hub", target: "sales-page", icon: "bx-line-chart" },
@@ -56,10 +169,7 @@ const CATEGORY_ICONS: Record<string, string> = {
   NOTIFICATION: "bx-bell",
 };
 
-/* ============================================================
-    PAGE COMPONENT
-============================================================ */
-
+/* ================= PREFERENCE PAGE ================= */
 export default function PreferencePage() {
   const { data: session, status } = useSession();
   const { addToast } = useToast();
@@ -71,9 +181,21 @@ export default function PreferencePage() {
   const [isResetting, setIsResetting] = useState(false);
   const [syncing, setSyncing] = useState(true);
 
+  const toastRef = useRef<Record<string, boolean>>({}); // prevents duplicate toasts
+
+  const showToastOnce = (id: string, toast: Parameters<typeof addToast>[0]) => {
+    if (toastRef.current[id]) return;
+    addToast(toast);
+    toastRef.current[id] = true;
+    setTimeout(() => {
+      toastRef.current[id] = false;
+    }, 2000); // reset after 2s
+  };
+
   const isAdmin = session?.user?.isOrgOwner || role === "ADMIN";
   const isManager = role === "MANAGER";
 
+  /* ---------------- Load Preferences ---------------- */
   useEffect(() => {
     if (status !== "authenticated") return;
     fetch("/api/preferences?all=true", { cache: "no-store" })
@@ -82,14 +204,13 @@ export default function PreferencePage() {
       .finally(() => setSyncing(false));
   }, [status]);
 
-  /**
-   * RESOLVE HIERARCHY WITH LOCKING
-   * Priority: Org Lock > Branch Lock > User Value > Branch Value > Org Value > Default
-   */
+  /* ---------------- RESOLVE HIERARCHY ---------------- */
   const resolveHierarchy = (setting: HubSetting) => {
-    const find = (s: PreferenceScope) => 
-      preferences.find(p => p.key === setting.key && p.scope === s && p.target === (setting.target || null));
-    
+    const find = (s: PreferenceScope) =>
+      preferences.find(
+        (p) => p.key === setting.key && p.scope === s && p.target === (setting.target || null)
+      );
+
     const userPref = find("USER");
     const branchPref = find("BRANCH");
     const orgPref = find("ORGANIZATION");
@@ -102,32 +223,31 @@ export default function PreferencePage() {
     if (isLockedByOrg) activeScope = "ORGANIZATION";
     else if (isLockedByBranch) activeScope = "BRANCH";
     else if (userPref) activeScope = "USER";
-    else if (branchPref) activeScope = "BRANCH";
-    else if (orgPref) activeScope = "ORGANIZATION";
 
-    const activeValue = isLockedByOrg 
-      ? orgPref.value 
-      : isLockedByBranch 
-        ? branchPref.value 
-        : (userPref?.value ?? branchPref?.value ?? orgPref?.value ?? setting.defaultValue);
+    const activeValue = isLockedByOrg
+      ? orgPref.value
+      : isLockedByBranch
+      ? branchPref.value
+      : userPref?.value ?? branchPref?.value ?? orgPref?.value ?? setting.defaultValue;
 
     return { userPref, branchPref, orgPref, activeScope, activeValue, isLocked };
   };
 
+  /* ---------------- HANDLE UPDATE ---------------- */
   const handleUpdate = async (
-    setting: HubSetting, 
-    value: any, 
-    scope: PreferenceScope, 
+    setting: HubSetting,
+    value: any,
+    scope: PreferenceScope,
     isLocked: boolean = false
   ) => {
     const res = await fetch("/api/preferences", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        key: setting.key, 
-        value, 
-        scope, 
-        isLocked, // Pass the lock status to the DB
+        key: setting.key,
+        value,
+        scope,
+        isLocked,
         category: setting.category,
         target: setting.target || null,
         isGlobal: scope === "USER" && !setting.target,
@@ -141,30 +261,38 @@ export default function PreferencePage() {
       data.preference,
     ]);
 
-    addToast({ type: "success", title: "Saved", message: `${scope} policy updated.` });
-    window.dispatchEvent(new Event("preference-update"));
+    showToastOnce(
+      `${setting.key}-${scope}`,
+      { type: "success", title: "Saved", message: `${scope} policy updated.` }
+    );
   };
 
+  /* ---------------- HANDLE RESET ---------------- */
   const handleFinalDelete = async () => {
     if (!resetTarget) return;
     setIsResetting(true);
+
     const params = new URLSearchParams({
-      scope: resetTarget.scope, 
-      category: resetTarget.category, 
-      key: resetTarget.key, 
+      scope: resetTarget.scope,
+      category: resetTarget.category,
+      key: resetTarget.key,
       target: resetTarget.target ?? "",
     });
 
     const res = await fetch(`/api/preferences?${params.toString()}`, { method: "DELETE" });
     if (res.ok) {
       setPreferences((prev) => prev.filter((p) => p.id !== resetTarget.id));
+      showToastOnce(
+        `reset-${resetTarget.id}`,
+        { type: "info", title: "Reset", message: "Reverted to inherited value." }
+      );
       setResetTarget(null);
-      addToast({ type: "info", title: "Reset", message: "Reverted to inherited value." });
-      window.dispatchEvent(new Event("preference-update"));
     }
+
     setIsResetting(false);
   };
 
+  /* ---------------- GROUP SETTINGS ---------------- */
   const grouped = useMemo(() => {
     const groups = HUB_SETTINGS.reduce((acc, setting) => {
       acc[setting.category] = acc[setting.category] ? [...acc[setting.category], setting] : [setting];
@@ -174,34 +302,36 @@ export default function PreferencePage() {
     return groups;
   }, []);
 
-  if (status === "loading" || syncing) return (
-    <div className="h-[60vh] flex items-center justify-center text-[11px] font-black opacity-20 uppercase tracking-widest italic animate-pulse">
-      Syncing Hub...
-    </div>
-  );
-  
+  if (status === "loading" || syncing)
+    return (
+      <div className="h-[60vh] flex items-center justify-center text-[11px] font-black opacity-20 uppercase tracking-widest italic animate-pulse">
+        Syncing Hub...
+      </div>
+    );
+
   if (!role) return <AccessDenied />;
 
   return (
     <div className="max-w-[850px] mx-auto py-12 px-6 pb-32">
       <header className="mb-12">
         <h1 className="text-2xl font-black text-black/90 tracking-tight italic">Preference Settings</h1>
-        <p className="text-[13px] text-black/40">Manage personal workspace overrides and authority-level mandatory policies.</p>
+        <p className="text-[13px] text-black/40">
+          Manage personal workspace overrides and authority-level mandatory policies.
+        </p>
       </header>
 
       <div className="space-y-6">
         {Object.entries(grouped).map(([category, settings]) => (
-          <SettingsGroup 
-            key={category} 
-            header={category} 
+          <SettingsGroup
+            key={category}
+            header={category}
             icon={CATEGORY_ICONS[category] || "bx-cog"}
             count={category === "LAYOUT" ? SUMMARY_PAGES.length : settings.length}
             initialExpanded={category === "SYSTEM"}
           >
-            {/* 1. General Settings Rows */}
             {settings.map((setting) => {
               const { userPref, branchPref, orgPref, activeValue, activeScope, isLocked } = resolveHierarchy(setting);
-              const hasAuthorityOverride = branchPref ? "BRANCH" : (orgPref ? "ORGANIZATION" : "DEFAULT");
+              const hasAuthorityOverride = branchPref ? "BRANCH" : orgPref ? "ORGANIZATION" : "DEFAULT";
 
               return (
                 <div key={setting.key} className="flex flex-col border-b border-black/[0.02] last:border-0">
@@ -223,7 +353,9 @@ export default function PreferencePage() {
                         title="Authority Policy"
                         badgeScope={hasAuthorityOverride}
                         expanded={!!expandedAuthority[setting.key]}
-                        onToggle={() => setExpandedAuthority(p => ({ ...p, [setting.key]: !p[setting.key] }))}
+                        onToggle={() =>
+                          setExpandedAuthority((p) => ({ ...p, [setting.key]: !p[setting.key] }))
+                        }
                       >
                         <div className="space-y-1 py-1">
                           <SettingRow
@@ -237,7 +369,9 @@ export default function PreferencePage() {
                             activeScope={branchPref ? "BRANCH" : "DEFAULT"}
                             onChange={(val) => handleUpdate(setting, val, "BRANCH", branchPref?.isLocked)}
                             onReset={() => branchPref && setResetTarget(branchPref)}
-                            onToggleLock={() => handleUpdate(setting, branchPref?.value ?? true, "BRANCH", !branchPref?.isLocked)}
+                            onToggleLock={() =>
+                              handleUpdate(setting, branchPref?.value ?? true, "BRANCH", !branchPref?.isLocked)
+                            }
                           />
                           {isAdmin && (
                             <SettingRow
@@ -251,7 +385,9 @@ export default function PreferencePage() {
                               activeScope={orgPref ? "ORGANIZATION" : "DEFAULT"}
                               onChange={(val) => handleUpdate(setting, val, "ORGANIZATION", orgPref?.isLocked)}
                               onReset={() => orgPref && setResetTarget(orgPref)}
-                              onToggleLock={() => handleUpdate(setting, orgPref?.value ?? true, "ORGANIZATION", !orgPref?.isLocked)}
+                              onToggleLock={() =>
+                                handleUpdate(setting, orgPref?.value ?? true, "ORGANIZATION", !orgPref?.isLocked)
+                              }
                             />
                           )}
                         </div>
@@ -262,75 +398,84 @@ export default function PreferencePage() {
               );
             })}
 
-            {/* 2. Layout Section Specifics */}
-            {category === "LAYOUT" && SUMMARY_PAGES.map((page) => {
-              const setting: HubSetting = { 
-                key: "summary", 
-                label: page.label, 
-                category: "LAYOUT", 
-                type: "switch", 
-                target: page.target, 
-                defaultValue: true 
-              };
-              
-              const { userPref, branchPref, orgPref, activeValue, activeScope, isLocked } = resolveHierarchy(setting);
-              const hasAuthorityOverride = branchPref ? "BRANCH" : (orgPref ? "ORGANIZATION" : "DEFAULT");
+            {/* Layout / Summary pages */}
+            {category === "LAYOUT" &&
+              SUMMARY_PAGES.map((page) => {
+                const setting: HubSetting = {
+                  key: "summary",
+                  label: page.label,
+                  category: "LAYOUT",
+                  type: "switch",
+                  target: page.target,
+                  defaultValue: true,
+                };
+                const { userPref, branchPref, orgPref, activeValue, activeScope, isLocked } =
+                  resolveHierarchy(setting);
+                const hasAuthorityOverride = branchPref ? "BRANCH" : orgPref ? "ORGANIZATION" : "DEFAULT";
 
-              return (
-                <div key={page.target} className="flex flex-col border-b border-black/[0.02] last:border-0">
-                  <SettingRow
-                    label={page.label}
-                    value={activeValue}
-                    type="switch"
-                    isOverride={!!userPref && !isLocked}
-                    isLocked={isLocked}
-                    activeScope={activeScope}
-                    onChange={(val) => handleUpdate(setting, val, "USER")}
-                    onReset={() => userPref && setResetTarget(userPref)}
-                  />
+                return (
+                  <div key={page.target} className="flex flex-col border-b border-black/[0.02] last:border-0">
+                    <SettingRow
+                      label={page.label}
+                      value={activeValue}
+                      type="switch"
+                      isOverride={!!userPref && !isLocked}
+                      isLocked={isLocked}
+                      activeScope={activeScope}
+                      onChange={(val) => handleUpdate(setting, val, "USER")}
+                      onReset={() => userPref && setResetTarget(userPref)}
+                    />
 
-                  {(isAdmin || isManager) && (
-                    <div className="px-4 pb-3">
-                      <CollapseSection
-                        title={`${page.label} Policy`}
-                        badgeScope={hasAuthorityOverride}
-                        expanded={!!expandedAuthority[page.target]}
-                        onToggle={() => setExpandedAuthority(p => ({ ...p, [page.target]: !p[page.target] }))}
-                      >
-                        <div className="space-y-1 py-1">
-                          <SettingRow
-                            isMini
-                            label="Branch Visibility"
-                            value={branchPref?.value ?? orgPref?.value ?? setting.defaultValue}
-                            type="switch"
-                            isOverride={!!branchPref}
-                            isLocked={!!branchPref?.isLocked}
-                            activeScope={branchPref ? "BRANCH" : "DEFAULT"}
-                            onChange={(val) => handleUpdate(setting, val, "BRANCH", branchPref?.isLocked)}
-                            onReset={() => branchPref && setResetTarget(branchPref)}
-                            onToggleLock={() => handleUpdate(setting, branchPref?.value ?? true, "BRANCH", !branchPref?.isLocked)}
-                          />
-                          {isAdmin && (
+                    {(isAdmin || isManager) && (
+                      <div className="px-4 pb-3">
+                        <CollapseSection
+                          title={`${page.label} Policy`}
+                          badgeScope={hasAuthorityOverride}
+                          expanded={!!expandedAuthority[page.target]}
+                          onToggle={() =>
+                            setExpandedAuthority((p) => ({ ...p, [page.target]: !p[page.target] }))
+                          }
+                        >
+                          <div className="space-y-1 py-1">
                             <SettingRow
                               isMini
-                              label="Org Global Visibility"
-                              value={orgPref?.value ?? setting.defaultValue}
+                              label="Branch Visibility"
+                              value={branchPref?.value ?? orgPref?.value ?? setting.defaultValue}
                               type="switch"
-                              isOverride={!!orgPref}
-                              isLocked={!!orgPref?.isLocked}
-                              activeScope={orgPref ? "ORGANIZATION" : "DEFAULT"}
-                              onChange={(val) => handleUpdate(setting, val, "ORGANIZATION", orgPref?.isLocked)}
-                              onReset={() => orgPref && setResetTarget(orgPref)}
-                              onToggleLock={() => handleUpdate(setting, orgPref?.value ?? true, "ORGANIZATION", !orgPref?.isLocked)}
+                              isOverride={!!branchPref}
+                              isLocked={!!branchPref?.isLocked}
+                              activeScope={branchPref ? "BRANCH" : "DEFAULT"}
+                              onChange={(val) => handleUpdate(setting, val, "BRANCH", branchPref?.isLocked)}
+                              onReset={() => branchPref && setResetTarget(branchPref)}
+                              onToggleLock={() =>
+                                handleUpdate(setting, branchPref?.value ?? true, "BRANCH", !branchPref?.isLocked)
+                              }
                             />
-                          )}
-                        </div>
-                      </CollapseSection>
-                    </div>
-                  )}
-                </div>
-              );
-            })}
+                            {isAdmin && (
+                              <SettingRow
+                                isMini
+                                label="Org Global Visibility"
+                                value={orgPref?.value ?? setting.defaultValue}
+                                type="switch"
+                                isOverride={!!orgPref}
+                                isLocked={!!orgPref?.isLocked}
+                                activeScope={orgPref ? "ORGANIZATION" : "DEFAULT"}
+                                onChange={(val) =>
+                                  handleUpdate(setting, val, "ORGANIZATION", orgPref?.isLocked)
+                                }
+                                onReset={() => orgPref && setResetTarget(orgPref)}
+                                onToggleLock={() =>
+                                  handleUpdate(setting, orgPref?.value ?? true, "ORGANIZATION", !orgPref?.isLocked)
+                                }
+                              />
+                            )}
+                          </div>
+                        </CollapseSection>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
           </SettingsGroup>
         ))}
       </div>

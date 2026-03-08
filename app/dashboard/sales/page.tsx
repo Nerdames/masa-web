@@ -28,6 +28,7 @@ export interface Sale {
 
 type PaymentFilter = "ALL" | "CASH" | "CARD" | "BANK_TRANSFER" | "MOBILE_MONEY" | "POS";
 type StatusFilter = "ALL" | "PENDING" | "COMPLETED" | "CANCELLED";
+type DensityOption = "standard" | "compact";
 
 /* ================= Fetcher ================= */
 
@@ -42,12 +43,12 @@ export default function SalesPage() {
   const pathname = usePathname();
 
   /* ---------- State ---------- */
-
   const [page, setPage] = useState(1);
   const [search, setSearch] = useState("");
   const [paymentFilter, setPaymentFilter] = useState<PaymentFilter>("ALL");
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("ALL");
   const [refreshing, setRefreshing] = useState(false);
+  const [rowDensity, setRowDensity] = useState<DensityOption>("standard"); // ✅ density state
 
   const debouncedSearch = useDebounce(search, 400);
 
@@ -55,7 +56,6 @@ export default function SalesPage() {
   useEffect(() => setPage(1), [debouncedSearch, paymentFilter, statusFilter]);
 
   /* ---------- Query (memoized) ---------- */
-
   const query = useMemo(() => {
     const params = new URLSearchParams();
     params.set("page", String(page));
@@ -69,22 +69,15 @@ export default function SalesPage() {
   }, [page, debouncedSearch, paymentFilter, statusFilter]);
 
   /* ---------- Fetch ---------- */
-
   const { data, error, isLoading, mutate } = useSWR<{
     sales: Sale[];
     total: number;
-  }>(`/api/dashboard/sales?${query}`, fetcher, {
-    keepPreviousData: true,
-  });
+  }>(`/api/dashboard/sales?${query}`, fetcher, { keepPreviousData: true });
 
   /* ---------- Error Side Effect ---------- */
-
   useEffect(() => {
     if (error) {
-      toast.addToast({
-        type: "error",
-        message: "Failed to fetch sales",
-      });
+      toast.addToast({ type: "error", message: "Failed to fetch sales" });
     }
   }, [error, toast]);
 
@@ -93,10 +86,8 @@ export default function SalesPage() {
   const pageCount = useMemo(() => Math.max(1, Math.ceil(total / 10)), [total]);
 
   /* ---------- Summary ---------- */
-
   const { pendingCount, completedCount } = useMemo(() => {
-    let pending = 0;
-    let completed = 0;
+    let pending = 0, completed = 0;
     for (const s of sales) {
       if (s.status === "PENDING") pending++;
       if (s.status === "COMPLETED") completed++;
@@ -104,73 +95,47 @@ export default function SalesPage() {
     return { pendingCount: pending, completedCount: completed };
   }, [sales]);
 
-  const summaryCards: SummaryCard[] = useMemo(
-    () => [
-      { id: "totalSales", title: "Total Sales", value: total },
-      { id: "pendingSales", title: "Pending Sales", value: pendingCount },
-      { id: "completedSales", title: "Completed Sales", value: completedCount },
-    ],
-    [total, pendingCount, completedCount]
-  );
+  const summaryCards: SummaryCard[] = useMemo(() => [
+    { id: "totalSales", title: "Total Sales", value: total },
+    { id: "pendingSales", title: "Pending Sales", value: pendingCount },
+    { id: "completedSales", title: "Completed Sales", value: completedCount },
+  ], [total, pendingCount, completedCount]);
 
-  /* ---------- Status Styling (Pill Backgrounds) ---------- */
-
+  /* ---------- Status Styling ---------- */
   const statusClass = useCallback((status?: Sale["status"]) => {
     switch (status) {
-      case "COMPLETED":
-        return "bg-green-100 text-green-700";
-      case "PENDING":
-        return "bg-yellow-100 text-yellow-700";
-      case "CANCELLED":
-        return "bg-red-100 text-red-700";
-      default:
-        return "bg-gray-100 text-gray-700";
+      case "COMPLETED": return "bg-green-100 text-green-700";
+      case "PENDING": return "bg-yellow-100 text-yellow-700";
+      case "CANCELLED": return "bg-red-100 text-red-700";
+      default: return "bg-gray-100 text-gray-700";
     }
   }, []);
 
   /* ---------- Columns ---------- */
-
-  const columns: DataTableColumn<Sale>[] = useMemo(
-    () => [
-      { key: "product", header: "Product", render: (s) => s.productName ?? "-" },
-      { key: "customer", header: "Customer", render: (s) => s.customerName ?? "-" },
-      { 
-        key: "quantity", 
-        header: "Quantity", 
-        align: "center", 
-        hideTooltip: true,
-        render: (s) => <span className="font-mono">{s.quantity}</span> 
-      },
-      { 
-        key: "total", 
-        header: "Total", 
-        align: "right", 
-        hideTooltip: true,
-        render: (s) => (
-            <span className="font-medium text-green-600">
-                ₦{s.total.toLocaleString(undefined, { minimumFractionDigits: 2 })}
-            </span>
-        ) 
-      },
-      { key: "currency", header: "Currency", render: (s) => s.currency },
-      { key: "payment", header: "Payment", render: (s) => s.paymentMethods?.join(", ") ?? "-" },
-      {
-        key: "status",
-        header: "Status",
-        hideTooltip: true,
-        align: "center",
-        render: (s) => (
-          <span className={`px-2 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider ${statusClass(s.status)}`}>
-            {s.status}
-          </span>
-        ),
-      },
-    ],
-    [statusClass]
-  );
+  const columns: DataTableColumn<Sale>[] = useMemo(() => [
+    { key: "product", header: "Product", render: (s) => s.productName ?? "-" },
+    { key: "customer", header: "Customer", render: (s) => s.customerName ?? "-" },
+    { key: "quantity", header: "Quantity", align: "center", hideTooltip: true,
+      render: (s) => <span className="font-mono">{s.quantity}</span> },
+    { key: "total", header: "Total", align: "right", hideTooltip: true,
+      render: (s) => (
+        <span className="font-medium text-green-600">
+          ₦{s.total.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+        </span>
+      )
+    },
+    { key: "currency", header: "Currency", render: (s) => s.currency },
+    { key: "payment", header: "Payment", render: (s) => s.paymentMethods?.join(", ") ?? "-" },
+    { key: "status", header: "Status", hideTooltip: true, align: "center",
+      render: (s) => (
+        <span className={`px-2 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider ${statusClass(s.status)}`}>
+          {s.status}
+        </span>
+      )
+    },
+  ], [statusClass]);
 
   /* ---------- Refresh ---------- */
-
   const handleRefresh = useCallback(async () => {
     setRefreshing(true);
     await mutate();
@@ -179,6 +144,7 @@ export default function SalesPage() {
 
   const tableId = useMemo(() => pathname ? pathname.replace(/^\//, "").replace(/\//g, "-") : "sales-table", [pathname]);
 
+  /* ---------- Render ---------- */
   return (
     <div className="flex flex-col space-y-4 min-h-[calc(100vh-4rem)] p-4 overflow-y-auto">
       <Summary cardsData={summaryCards} loading={isLoading} />
@@ -216,6 +182,22 @@ export default function SalesPage() {
             ],
           },
         ]}
+        extraControls={
+          <div className="flex gap-2">
+            <button
+              className={`px-3 py-1 rounded border ${rowDensity === "standard" ? "bg-blue-600 text-white" : "bg-white text-black"}`}
+              onClick={() => setRowDensity("standard")}
+            >
+              Standard
+            </button>
+            <button
+              className={`px-3 py-1 rounded border ${rowDensity === "compact" ? "bg-blue-600 text-white" : "bg-white text-black"}`}
+              onClick={() => setRowDensity("compact")}
+            >
+              Compact
+            </button>
+          </div>
+        }
         exportData={sales}
         exportFileName="sales.csv"
         onAdd={() => router.push("/dashboard/sales/add")}
@@ -227,11 +209,9 @@ export default function SalesPage() {
         columns={columns}
         loading={isLoading}
         getRowId={(row) => row.id}
-        onRowClick={(sale) => {
-          if (sale.status !== "CANCELLED")
-            router.push(`/dashboard/sales/${sale.id}`);
-        }}
+        onRowClick={(sale) => { if (sale.status !== "CANCELLED") router.push(`/dashboard/sales/${sale.id}`); }}
         dateField="createdAt"
+        rowDensity={rowDensity} // ✅ pass density here
       />
 
       {/* Pagination Footer */}
