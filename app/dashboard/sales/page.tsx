@@ -43,47 +43,40 @@ export default function SalesPage() {
   const pathname = usePathname();
 
   /* ---------- State ---------- */
-  const [page, setPage] = useState(1);
   const [search, setSearch] = useState("");
   const [paymentFilter, setPaymentFilter] = useState<PaymentFilter>("ALL");
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("ALL");
   const [refreshing, setRefreshing] = useState(false);
-  const [rowDensity, setRowDensity] = useState<DensityOption>("standard"); // ✅ density state
+  const [rowDensity, setRowDensity] = useState<DensityOption>("standard");
 
   const debouncedSearch = useDebounce(search, 400);
 
-  // Reset page on filter change
-  useEffect(() => setPage(1), [debouncedSearch, paymentFilter, statusFilter]);
+  /* ---------- Reset on filter/search change ---------- */
+  useEffect(() => {}, [debouncedSearch, paymentFilter, statusFilter]);
 
-  /* ---------- Query (memoized) ---------- */
+  /* ---------- Query ---------- */
   const query = useMemo(() => {
     const params = new URLSearchParams();
-    params.set("page", String(page));
-    params.set("pageSize", "10");
-
+    params.set("page", "1"); // pagination handled by table itself
+    params.set("pageSize", "1000"); // fetch enough rows for table
     if (debouncedSearch) params.set("search", debouncedSearch);
     if (paymentFilter !== "ALL") params.set("paymentMethod", paymentFilter);
     if (statusFilter !== "ALL") params.set("status", statusFilter);
-
     return params.toString();
-  }, [page, debouncedSearch, paymentFilter, statusFilter]);
+  }, [debouncedSearch, paymentFilter, statusFilter]);
 
   /* ---------- Fetch ---------- */
-  const { data, error, isLoading, mutate } = useSWR<{
-    sales: Sale[];
-    total: number;
-  }>(`/api/dashboard/sales?${query}`, fetcher, { keepPreviousData: true });
+  const { data, error, isLoading, mutate } = useSWR<{ sales: Sale[] }>(
+    `/api/dashboard/sales?${query}`,
+    fetcher,
+    { keepPreviousData: true }
+  );
 
-  /* ---------- Error Side Effect ---------- */
   useEffect(() => {
-    if (error) {
-      toast.addToast({ type: "error", message: "Failed to fetch sales" });
-    }
+    if (error) toast.addToast({ type: "error", message: "Failed to fetch sales" });
   }, [error, toast]);
 
   const sales = data?.sales ?? [];
-  const total = data?.total ?? 0;
-  const pageCount = useMemo(() => Math.max(1, Math.ceil(total / 10)), [total]);
 
   /* ---------- Summary ---------- */
   const { pendingCount, completedCount } = useMemo(() => {
@@ -96,10 +89,10 @@ export default function SalesPage() {
   }, [sales]);
 
   const summaryCards: SummaryCard[] = useMemo(() => [
-    { id: "totalSales", title: "Total Sales", value: total },
+    { id: "totalSales", title: "Total Sales", value: sales.length },
     { id: "pendingSales", title: "Pending Sales", value: pendingCount },
     { id: "completedSales", title: "Completed Sales", value: completedCount },
-  ], [total, pendingCount, completedCount]);
+  ], [sales.length, pendingCount, completedCount]);
 
   /* ---------- Status Styling ---------- */
   const statusClass = useCallback((status?: Sale["status"]) => {
@@ -113,26 +106,24 @@ export default function SalesPage() {
 
   /* ---------- Columns ---------- */
   const columns: DataTableColumn<Sale>[] = useMemo(() => [
-    { key: "product", header: "Product", render: (s) => s.productName ?? "-" },
-    { key: "customer", header: "Customer", render: (s) => s.customerName ?? "-" },
+    { key: "product", header: "Product", render: s => s.productName ?? "-" },
+    { key: "customer", header: "Customer", render: s => s.customerName ?? "-" },
     { key: "quantity", header: "Quantity", align: "center", hideTooltip: true,
-      render: (s) => <span className="font-mono">{s.quantity}</span> },
+      render: s => <span className="font-mono">{s.quantity}</span> },
     { key: "total", header: "Total", align: "right", hideTooltip: true,
-      render: (s) => (
+      render: s => (
         <span className="font-medium text-green-600">
           ₦{s.total.toLocaleString(undefined, { minimumFractionDigits: 2 })}
         </span>
-      )
-    },
-    { key: "currency", header: "Currency", render: (s) => s.currency },
-    { key: "payment", header: "Payment", render: (s) => s.paymentMethods?.join(", ") ?? "-" },
-    { key: "status", header: "Status", hideTooltip: true, align: "center",
-      render: (s) => (
+      ) },
+    { key: "currency", header: "Currency", render: s => s.currency },
+    { key: "payment", header: "Payment", render: s => s.paymentMethods?.join(", ") ?? "-" },
+    { key: "status", header: "Status", align: "center", hideTooltip: true,
+      render: s => (
         <span className={`px-2 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider ${statusClass(s.status)}`}>
           {s.status}
         </span>
-      )
-    },
+      ) },
   ], [statusClass]);
 
   /* ---------- Refresh ---------- */
@@ -159,7 +150,7 @@ export default function SalesPage() {
             label: "Payment",
             value: paymentFilter,
             defaultValue: "ALL",
-            onChange: (val) => setPaymentFilter(val as PaymentFilter),
+            onChange: val => setPaymentFilter(val as PaymentFilter),
             options: [
               { value: "ALL", label: "All" },
               { value: "CASH", label: "Cash" },
@@ -173,7 +164,7 @@ export default function SalesPage() {
             label: "Status",
             value: statusFilter,
             defaultValue: "ALL",
-            onChange: (val) => setStatusFilter(val as StatusFilter),
+            onChange: val => setStatusFilter(val as StatusFilter),
             options: [
               { value: "ALL", label: "All" },
               { value: "PENDING", label: "Pending" },
@@ -208,35 +199,13 @@ export default function SalesPage() {
         data={sales}
         columns={columns}
         loading={isLoading}
-        getRowId={(row) => row.id}
-        onRowClick={(sale) => { if (sale.status !== "CANCELLED") router.push(`/dashboard/sales/${sale.id}`); }}
+        getRowId={row => row.id}
+        onRowClick={sale => {
+          if (sale.status !== "CANCELLED") router.push(`/dashboard/sales/${sale.id}`);
+        }}
         dateField="createdAt"
-        rowDensity={rowDensity} // ✅ pass density here
+        rowDensity={rowDensity}
       />
-
-      {/* Pagination Footer */}
-      <div className="flex justify-between items-center text-xs pt-2">
-        <span className="opacity-50 text-[10px] font-bold uppercase tracking-tighter">
-          Total Records: {total}
-        </span>
-        <div className="flex gap-4 items-center">
-          <button
-            disabled={page <= 1}
-            onClick={() => setPage((p) => Math.max(1, p - 1))}
-            className="hover:text-blue-500 disabled:opacity-30 transition-colors uppercase font-bold tracking-tighter"
-          >
-            Prev
-          </button>
-          <span className="font-mono">{page} / {pageCount}</span>
-          <button
-            disabled={page >= pageCount}
-            onClick={() => setPage((p) => Math.min(pageCount, p + 1))}
-            className="hover:text-blue-500 disabled:opacity-30 transition-colors uppercase font-bold tracking-tighter"
-          >
-            Next
-          </button>
-        </div>
-      </div>
     </div>
   );
 }

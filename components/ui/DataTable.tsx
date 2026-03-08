@@ -97,7 +97,6 @@ function DataTable<T>({
 
     const loadPreferences = async () => {
       try {
-        /* Load column order */
         const orderRes = await fetch(
           `/api/preferences?category=TABLE&key=${preferenceKey}&target=${tableId}`,
           { signal: controller.signal }
@@ -110,7 +109,6 @@ function DataTable<T>({
           }
         }
 
-        /* Load all TABLE preferences */
         const prefsRes = await fetch(`/api/preferences?category=TABLE&all=true`, {
           cache: "no-store",
         });
@@ -229,15 +227,64 @@ function DataTable<T>({
     dragCol.current = null;
   };
 
+  /* ---------------- Row Index Map (fix numbering) ---------------- */
+  const rowIndexMap = useMemo(() => {
+    const map = new Map<any, number>();
+    data.forEach((row, i) => map.set(row, i));
+    return map;
+  }, [data]);
+
+  /* ---------------- Group by Date ---------------- */
+  const groupedData = useMemo(() => {
+    if (!dateField || !tablePrefs.table_group_dates) return null;
+    const groups: Record<string, T[]> = {};
+
+    data.forEach(row => {
+      const value = row[dateField];
+      let key: string;
+
+      if (value instanceof Date) {
+        key = value.toLocaleDateString("en-US", {
+          weekday: "short",
+          day: "numeric",
+          month: "long",
+          year: "numeric",
+        });
+      } else if (typeof value === "string") {
+        const date = new Date(value.split("T")[0]);
+        key = isNaN(date.getTime())
+          ? "Unknown"
+          : date.toLocaleDateString("en-US", {
+              weekday: "short",
+              day: "numeric",
+              month: "short",
+              year: "numeric",
+            });
+      } else {
+        key = "Unknown";
+      }
+
+      if (!groups[key]) groups[key] = [];
+      groups[key].push(row);
+    });
+
+    return groups;
+  }, [data, dateField, tablePrefs.table_group_dates]);
+
   /* ---------------- Pagination ---------------- */
   const total = data.length;
   const rowsPerPage = tablePrefs.table_rows_per_page ?? 25;
   const pageCount = Math.ceil(total / rowsPerPage);
 
   const paginatedData = useMemo(() => {
+    if (groupedData) {
+      const flat = Object.entries(groupedData).flatMap(([, rows]) => rows);
+      const start = (page - 1) * rowsPerPage;
+      return flat.slice(start, start + rowsPerPage);
+    }
     const start = (page - 1) * rowsPerPage;
     return data.slice(start, start + rowsPerPage);
-  }, [data, page, rowsPerPage]);
+  }, [data, page, rowsPerPage, groupedData]);
 
   /* ---------------- Row Padding ---------------- */
   const rowPaddingClass =
@@ -262,7 +309,9 @@ function DataTable<T>({
             } bg-white/95 dark:bg-neutral-900/95 border-b border-neutral-300 dark:border-neutral-700`}
           >
             <tr>
-              {tablePrefs.table_row_numbers && <th className={rowPaddingClass}>#</th>}
+              {tablePrefs.table_row_numbers && (
+                <th className={rowPaddingClass}>S/N</th>
+              )}
 
               {orderedColumns.map(col => (
                 <th
@@ -292,109 +341,214 @@ function DataTable<T>({
 
           <tbody>
             {!loading &&
-              paginatedData.map((row, index) => {
-                const key =
-                  getRowId?.(row, index) ??
-                  `${JSON.stringify(row)}-${index}`;
+              (groupedData
+                ? Object.entries(groupedData).flatMap(([group, rows]) => {
+                    const groupHeader = (
+                      <tr key={`group-${group}`}>
+                        <td
+                          colSpan={
+                            orderedColumns.length +
+                            (tablePrefs.table_row_numbers ? 1 : 0)
+                          }
+                          className="text-center py-2 px-3 text-neutral-400 font-medium bg-neutral-50/50 dark:bg-neutral-800/30"
+                        >
+                          {group}
+                        </td>
+                      </tr>
+                    );
 
-                const globalIndex = (page - 1) * rowsPerPage + index;
+                    const groupRows = rows.map((row, index) => {
+                      const key =
+                        getRowId?.(row, index) ??
+                        `${JSON.stringify(row)}-${index}`;
 
-                return (
-                  <tr
-                    key={key}
-                    onClick={() => {
-                      if (onRowClick) {
-                        const url = onRowClick(row);
-                        if (typeof url === "string") window.open(url, "_blank");
-                      }
-                    }}
-                    className={`border-b border-neutral-200 dark:border-neutral-700 transition-colors duration-200 ${
-                      tablePrefs.table_highlight_hover
-                        ? globalIndex % 2 === 0
-                          ? "bg-white dark:bg-neutral-900 hover:bg-blue-50 dark:hover:bg-blue-900"
-                          : "bg-neutral-50 dark:bg-neutral-800 hover:bg-blue-50 dark:hover:bg-blue-900"
-                        : globalIndex % 2 === 0
-                        ? "bg-white dark:bg-neutral-900"
-                        : "bg-neutral-50 dark:bg-neutral-800"
-                    } cursor-pointer ${getRowClassName?.(row) ?? ""}`}
-                  >
-                    {tablePrefs.table_row_numbers && (
-                      <td className={rowPaddingClass + " text-neutral-500"}>
-                        {globalIndex + 1}
-                      </td>
-                    )}
-
-                    {orderedColumns.map(col => {
-                      const cellContent = col.render(row);
-                      const tooltipText =
-                        typeof cellContent === "string" ||
-                        typeof cellContent === "number"
-                          ? String(cellContent)
-                          : "";
-
-                      const showTooltip =
-                        tablePrefs.table_tooltips && !col.hideTooltip;
+                      const globalIndex = rowIndexMap.get(row) ?? index;
 
                       return (
-                        <td
-                          key={col.key}
-                          style={{ width: col.width, minWidth: "80px" }}
-                          className={`${rowPaddingClass} text-neutral-700 dark:text-neutral-200 ${getAlignClass(
-                            col.align
-                          )}`}
+                        <tr
+                          key={key}
+                          onClick={() => {
+                            if (onRowClick) {
+                              const url = onRowClick(row);
+                              if (typeof url === "string")
+                                window.open(url, "_blank");
+                            }
+                          }}
+                          className={`border-b border-neutral-200 dark:border-neutral-700 transition-colors duration-200 ${
+                            tablePrefs.table_highlight_hover
+                              ? globalIndex % 2 === 0
+                                ? "bg-white dark:bg-neutral-900 hover:bg-blue-50 dark:hover:bg-blue-900"
+                                : "bg-neutral-50 dark:bg-neutral-800 hover:bg-blue-50 dark:hover:bg-blue-900"
+                              : globalIndex % 2 === 0
+                              ? "bg-white dark:bg-neutral-900"
+                              : "bg-neutral-50 dark:bg-neutral-800"
+                          } cursor-pointer ${getRowClassName?.(row) ?? ""}`}
                         >
-                          {showTooltip ? (
-                            <Tooltip content={tooltipText}>
-                              <div
-                                className={`${
-                                  tablePrefs.table_wrap_cells
-                                    ? "break-words"
-                                    : "truncate"
-                                } max-w-[250px]`}
-                              >
-                                {cellContent}
-                              </div>
-                            </Tooltip>
-                          ) : (
-                            <div
-                              className={`${
-                                tablePrefs.table_wrap_cells
-                                  ? "break-words"
-                                  : "truncate"
-                              } max-w-[250px]`}
-                            >
-                              {cellContent}
-                            </div>
+                          {tablePrefs.table_row_numbers && (
+                            <td className={rowPaddingClass + " text-neutral-500"}>
+                              {globalIndex + 1}
+                            </td>
                           )}
-                        </td>
+
+                          {orderedColumns.map(col => {
+                            const cellContent = col.render(row);
+                            const tooltipText =
+                              typeof cellContent === "string" ||
+                              typeof cellContent === "number"
+                                ? String(cellContent)
+                                : "";
+
+                            const showTooltip =
+                              tablePrefs.table_tooltips && !col.hideTooltip;
+
+                            return (
+                              <td
+                                key={col.key}
+                                style={{ width: col.width, minWidth: "80px" }}
+                                className={`${rowPaddingClass} text-neutral-700 dark:text-neutral-200 ${getAlignClass(
+                                  col.align
+                                )}`}
+                              >
+                                {showTooltip ? (
+                                  <Tooltip content={tooltipText}>
+                                    <div
+                                      className={`${
+                                        tablePrefs.table_wrap_cells
+                                          ? "break-words"
+                                          : "truncate"
+                                      } max-w-[250px]`}
+                                    >
+                                      {cellContent}
+                                    </div>
+                                  </Tooltip>
+                                ) : (
+                                  <div
+                                    className={`${
+                                      tablePrefs.table_wrap_cells
+                                        ? "break-words"
+                                        : "truncate"
+                                    } max-w-[250px]`}
+                                  >
+                                    {cellContent}
+                                  </div>
+                                )}
+                              </td>
+                            );
+                          })}
+                        </tr>
                       );
-                    })}
-                  </tr>
-                );
-              })}
+                    });
+
+                    return [groupHeader, ...groupRows];
+                  })
+                : paginatedData.map((row, index) => {
+                    const key =
+                      getRowId?.(row, index) ??
+                      `${JSON.stringify(row)}-${index}`;
+
+                    const globalIndex = (page - 1) * rowsPerPage + index;
+
+                    return (
+                      <tr
+                        key={key}
+                        onClick={() => {
+                          if (onRowClick) {
+                            const url = onRowClick(row);
+                            if (typeof url === "string")
+                              window.open(url, "_blank");
+                          }
+                        }}
+                        className={`border-b border-neutral-200 dark:border-neutral-700 transition-colors duration-200 ${
+                          tablePrefs.table_highlight_hover
+                            ? globalIndex % 2 === 0
+                              ? "bg-white dark:bg-neutral-900 hover:bg-blue-50 dark:hover:bg-blue-900"
+                              : "bg-neutral-50 dark:bg-neutral-800 hover:bg-blue-50 dark:hover:bg-blue-900"
+                            : globalIndex % 2 === 0
+                            ? "bg-white dark:bg-neutral-900"
+                            : "bg-neutral-50 dark:bg-neutral-800"
+                        } cursor-pointer ${getRowClassName?.(row) ?? ""}`}
+                      >
+                        {tablePrefs.table_row_numbers && (
+                          <td className={rowPaddingClass + " text-neutral-500"}>
+                            {globalIndex + 1}
+                          </td>
+                        )}
+
+                        {orderedColumns.map(col => {
+                          const cellContent = col.render(row);
+                          const tooltipText =
+                            typeof cellContent === "string" ||
+                            typeof cellContent === "number"
+                              ? String(cellContent)
+                              : "";
+
+                          const showTooltip =
+                            tablePrefs.table_tooltips && !col.hideTooltip;
+
+                          return (
+                            <td
+                              key={col.key}
+                              style={{ width: col.width, minWidth: "80px" }}
+                              className={`${rowPaddingClass} text-neutral-700 dark:text-neutral-200 ${getAlignClass(
+                                col.align
+                              )}`}
+                            >
+                              {showTooltip ? (
+                                <Tooltip content={tooltipText}>
+                                  <div
+                                    className={`${
+                                      tablePrefs.table_wrap_cells
+                                        ? "break-words"
+                                        : "truncate"
+                                    } max-w-[250px]`}
+                                  >
+                                    {cellContent}
+                                  </div>
+                                </Tooltip>
+                              ) : (
+                                <div
+                                  className={`${
+                                    tablePrefs.table_wrap_cells
+                                      ? "break-words"
+                                      : "truncate"
+                                  } max-w-[250px]`}
+                                >
+                                  {cellContent}
+                                </div>
+                              )}
+                            </td>
+                          );
+                        })}
+                      </tr>
+                    );
+                  }))}
           </tbody>
         </table>
       </div>
 
       {/* Pagination */}
-      <div className="flex justify-between text-xs pt-2">
-        <span>Total: {total}</span>
+      <div className="flex justify-between items-center text-xs pt-2">
+        <span className="opacity-50 text-[10px] font-bold uppercase tracking-tighter">
+          Total : {total}
+        </span>
 
-        <div className="flex gap-3">
+        <div className="flex gap-4 items-center">
           <button
             disabled={page <= 1}
             onClick={() => setPage(p => Math.max(1, p - 1))}
+            className="hover:text-blue-500 disabled:opacity-30 transition-colors uppercase font-bold tracking-tighter"
           >
             Prev
           </button>
 
-          <span>
+          <span className="font-mono">
             {page} / {pageCount}
           </span>
 
           <button
             disabled={page >= pageCount}
             onClick={() => setPage(p => Math.min(pageCount, p + 1))}
+            className="hover:text-blue-500 disabled:opacity-30 transition-colors uppercase font-bold tracking-tighter"
           >
             Next
           </button>
