@@ -15,72 +15,105 @@ const SignInPage: React.FC = () => {
   const searchParams = useSearchParams();
   const { addToast } = useToast();
 
-  // Extract params from middleware redirect
+  // 1. Extract and sanitize callbackUrl
+  const rawCallbackUrl = searchParams.get("callbackUrl");
   const errorParam = searchParams.get("error");
-  const callbackUrl = searchParams.get("callbackUrl") || "/dashboard";
 
-  /**
-   * 1. Handle Middleware Errors on Load
-   * This displays the toast for expired sessions and clears the URL 
-   * so it doesn't interfere with the actual login process.
-   */
+  // If callback is empty, root, or points back to signin, default to dashboard
+  const callbackUrl = (
+    !rawCallbackUrl || 
+    rawCallbackUrl === "/" || 
+    rawCallbackUrl === "/auth/signin" || 
+    rawCallbackUrl === "%2F"
+  ) ? "/dashboard" : rawCallbackUrl;
+
+  // 2. Handle forced logout / session expired / account status errors
   useEffect(() => {
+    if (!errorParam) return;
+
+    let message = "";
     if (errorParam === "SessionExpired") {
-      addToast({ 
-        message: "Your session has expired. Please sign in again.", 
-        type: "error" 
-      });
-      
-      // Clear the error from the URL without refreshing the page
-      const newUrl = window.location.pathname + (callbackUrl ? `?callbackUrl=${encodeURIComponent(callbackUrl)}` : "");
+      message = "Your session has expired. Please sign in again.";
+    } else if (errorParam === "disabled") {
+      message = "Your account has been disabled. Contact your administrator.";
+    } else if (errorParam === "locked") {
+      message = "Your account is locked. Please contact your administrator.";
+    }
+
+    if (message) {
+      addToast({ message, type: "error" });
+
+      // Clean the URL: remove the error param so it doesn't toast again on refresh
+      const newUrl = window.location.pathname + 
+        (rawCallbackUrl ? `?callbackUrl=${encodeURIComponent(rawCallbackUrl)}` : "");
       window.history.replaceState({}, "", newUrl);
     }
-  }, [errorParam, addToast, callbackUrl]);
+  }, [errorParam, addToast, rawCallbackUrl]);
 
+  // 3. Handle form submission
   const handleSignIn = async (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
+    if (loading) return;
     setLoading(true);
 
     try {
       const result = await signIn("credentials", {
-        redirect: false, // Handle redirect manually for better control
+        redirect: false, // Handle redirect manually to control UX
         email: email.trim(),
         password: password.trim(),
         callbackUrl,
       });
 
       if (result?.error) {
-        // 2. Distinguish real credential failures
-        const message =
-          result.error === "CredentialsSignin"
-            ? "Invalid email or password"
-            : "Login failed. Please try again.";
-        
+        let message = "Login failed. Please try again.";
+
+        switch (result.error) {
+          case "CredentialsSignin":
+            message = "Invalid email or password.";
+            break;
+          case "disabled":
+            message = "Your account has been disabled. Contact your administrator.";
+            break;
+          case "locked":
+            message = "Your account is locked. Please contact your administrator.";
+            break;
+          case "temporary_lockout":
+            message = "Too many failed attempts. Please try again after 15 minutes.";
+            break;
+        }
+
         addToast({ message, type: "error" });
       } else if (result?.ok) {
         addToast({ message: "Signed in successfully!", type: "success" });
-        
-        // Use result.url as it's the sanitized callback target from NextAuth
-        router.push(result?.url || callbackUrl);
+        // Use replace to prevent the user from clicking "Back" into the login form
+        router.replace(callbackUrl);
+        router.refresh(); // Ensure the server-side components recognize the new session
       }
     } catch (err) {
       console.error("SignIn Error:", err);
-      addToast({ message: "Something went wrong. Please try again.", type: "error" });
+      addToast({
+        message: "Something went wrong. Please try again.",
+        type: "error",
+      });
     } finally {
       setLoading(false);
     }
   };
 
   return (
-    <main className="flex flex-col min-h-screen items-center justify-center bg-gray-50 px-4">
+    <main className="flex flex-col min-h-screen items-center justify-center bg-gradient-to-br from-blue-50 via-white to-green-50 px-4">
       <div className="w-full max-w-xs p-6 bg-white rounded-xl shadow-lg space-y-4">
         {/* Header */}
-        <h1 className="text-2xl font-bold text-center text-gray-900">Sign In to MASA</h1>
-        <p className="text-center text-gray-500 text-sm">
-          Enter your credentials to access the dashboard
-        </p>
+        <div className="space-y-2">
+          <h1 className="text-2xl font-bold text-center text-green-700">
+            Sign In to MASA
+          </h1>
+          <p className="text-center text-gray-500 text-sm">
+            Enter your credentials to access your dashboard
+          </p>
+        </div>
 
-        {/* Sign In form */}
+        {/* Form */}
         <form className="flex flex-col gap-3" onSubmit={handleSignIn}>
           {/* Email Input */}
           <div className="relative">
@@ -90,9 +123,10 @@ const SignInPage: React.FC = () => {
               placeholder="Email"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
-              className="pl-10 pr-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-black w-full text-sm"
+              className="pl-10 pr-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-green-700 w-full text-sm"
               required
               autoFocus
+              disabled={loading}
             />
           </div>
 
@@ -104,8 +138,9 @@ const SignInPage: React.FC = () => {
               placeholder="Password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
-              className="pl-10 pr-10 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-black w-full text-sm"
+              className="pl-10 pr-10 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-green-700 w-full text-sm"
               required
+              disabled={loading}
             />
             <button
               type="button"
@@ -122,7 +157,9 @@ const SignInPage: React.FC = () => {
             type="submit"
             disabled={loading}
             className={`w-full py-2 text-sm font-medium rounded-lg transition flex items-center justify-center ${
-              loading ? "bg-gray-400 cursor-not-allowed" : "bg-black text-white hover:bg-gray-900"
+              loading
+                ? "bg-gray-400 cursor-not-allowed"
+                : "bg-green-700 text-white hover:bg-green-800"
             }`}
           >
             {loading ? (
@@ -138,7 +175,7 @@ const SignInPage: React.FC = () => {
 
         {/* Footer */}
         <p className="text-center text-xs text-gray-400">
-          © {new Date().getFullYear()} MASA. All rights reserved.
+          Securely access your MASA dashboard and manage your organization seamlessly.
         </p>
       </div>
     </main>

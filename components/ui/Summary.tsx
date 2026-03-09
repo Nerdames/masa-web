@@ -14,9 +14,9 @@ import SummarySettingsModal, {
 const VISIBILITY_KEY = "summary"; 
 const LAYOUT_KEY = "summary-layout"; 
 
-const DEFAULT_COLUMNS = 4;
-const DEFAULT_VISIBLE_COUNT = 4;
-const SAVE_DEBOUNCE_MS = 600;
+const DEFAULT_COLUMNS = 3;
+const DEFAULT_VISIBLE_COUNT = 3;
+const SAVE_DEBOUNCE_MS = 1000;
 
 /* ---------------- Route Icon Map ---------------- */
 

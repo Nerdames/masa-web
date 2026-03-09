@@ -184,7 +184,7 @@ export default function OrdersPage() {
 
   return (
     <div className="flex flex-col space-y-4 min-h-[calc(100vh-4rem)] p-4 overflow-y-auto">
-      <Summary cardsData={summaryCards} loading={isLoading} />
+      <Summary cardsData={summaryCards} />
 
       <DataTableToolbar
         search={search}
@@ -207,7 +207,7 @@ export default function OrdersPage() {
             onChange: (val) => setStatusFilter(val as OrderStatus),
           },
         ]}
-        onAdd={() => router.push("/dashboard/orders/add")}
+        onAdd={() => window.open("/dashboard/orders/create", "_blank")}
       />
 
       <DataTable<Order>
@@ -217,36 +217,13 @@ export default function OrdersPage() {
         loading={isLoading}
         onRowClick={order => {
           if (order.status !== "CANCELLED") {
-            router.push(`/dashboard/orders/${order.id}`);
+            window.open(`/dashboard/orders/${order.id}`, "_blank");
           }
         }}
         dateField="createdAt"
       />
 
-      <div className="flex justify-between items-center text-xs pt-2">
-        <span className="opacity-50 text-[10px] font-bold uppercase tracking-tighter">
-          Total Records: {total}
-        </span>
-        <div className="flex gap-4 items-center">
-          <button
-            disabled={page <= 1 || isLoading}
-            onClick={() => setPage(p => Math.max(1, p - 1))}
-            className="hover:text-blue-500 disabled:opacity-30 transition-colors uppercase font-bold tracking-tighter"
-          >
-            Prev
-          </button>
-          <span className="bg-gray-100 px-2 py-0.5 rounded text-[10px]">
-            {page} / {pageCount}
-          </span>
-          <button
-            disabled={page >= pageCount || isLoading}
-            onClick={() => setPage(p => Math.min(pageCount, p + 1))}
-            className="hover:text-blue-500 disabled:opacity-30 transition-colors uppercase font-bold tracking-tighter"
-          >
-            Next
-          </button>
-        </div>
-      </div>
+
     </div>
   );
 }

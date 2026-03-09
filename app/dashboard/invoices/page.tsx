@@ -175,7 +175,7 @@ export default function InvoicePage() {
 
   return (
     <div className="flex flex-col space-y-4 min-h-[calc(100vh-4rem)] p-4">
-      <Summary cardsData={summaryCards} loading={isLoading} />
+      <Summary cardsData={summaryCards} />
 
       <DataTableToolbar
         search={search}
@@ -205,39 +205,13 @@ export default function InvoicePage() {
         data={invoices}
         columns={columns}
         loading={isLoading}
-        onRowClick={(row) => router.push(`/dashboard/invoices/${row.id}`)}
+        onRowClick={(row) => window.open(`/dashboard/invoices/${row.id}`, "_blank")}
         dateField="issuedAt"
         rowClassName={(row) => {
           const isOverdue = row.dueDate && new Date(row.dueDate) < new Date() && row.balance > 0;
           return isOverdue ? "bg-red-50/50" : "";
         }}
       />
-
-      {/* Pagination Footer */}
-      <div className="flex justify-between items-center text-xs pt-2">
-        <span className="opacity-50 text-[10px] font-bold uppercase tracking-tighter">
-          Total Records: {total}
-        </span>
-        <div className="flex gap-4 items-center">
-          <button
-            disabled={page <= 1 || isLoading}
-            onClick={() => setPage((p) => Math.max(1, p - 1))}
-            className="hover:text-blue-500 disabled:opacity-30 transition-colors uppercase font-bold tracking-tighter"
-          >
-            Prev
-          </button>
-          <span className="font-mono bg-gray-100 px-2 py-0.5 rounded text-[10px]">
-            {page} / {pageCount}
-          </span>
-          <button
-            disabled={page >= pageCount || isLoading}
-            onClick={() => setPage((p) => Math.min(pageCount, p + 1))}
-            className="hover:text-blue-500 disabled:opacity-30 transition-colors uppercase font-bold tracking-tighter"
-          >
-            Next
-          </button>
-        </div>
-      </div>
     </div>
   );
 }

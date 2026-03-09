@@ -14,52 +14,69 @@ export default function DashboardRootLayout({ children }: Props) {
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
   return (
-    <div className="flex flex-col h-screen bg-[#FAFAFA]">
-      {/* Gemini-style loading animation logic:
-        The progress bar is embedded directly into the TopBar container.
-      */}
-      <div className="flex-shrink-0 z-[70] relative">
+    <div className="flex flex-col h-screen bg-gray-50">
+      {/* TopBar with loading animation */}
+      <div className="flex-shrink-0 relative z-[70]">
         <TopBar />
-        
+
         {status === "loading" && (
-          <div className="absolute bottom-0 left-0 w-full h-[3px] bg-transparent overflow-hidden">
-            <div className="h-full w-full bg-gradient-to-r from-blue-400 via-blue-600 to-blue-400 animate-[loading_1.5s_infinite_ease-in-out]" />
+          <div className="absolute bottom-0 left-0 w-full h-[4px] overflow-hidden bg-transparent">
+            <div className="h-full w-full gradient-loading animate-gradient-slide" />
           </div>
         )}
       </div>
 
-      {/* Main Layout Area */}
+      {/* Main Layout */}
       <div className="flex flex-1 overflow-hidden relative z-0">
-        <Sidebar
-          open={sidebarOpen}
-          onClose={() => setSidebarOpen(false)}
-        />
+        <Sidebar open={sidebarOpen} onClose={() => setSidebarOpen(false)} />
 
-        <main className="flex-1 overflow-y-auto bg-white ml-1 pl-4 relative z-0">
-          {/* Content visibility transition */}
-          <div className={`transition-opacity duration-500 ${status === "loading" ? "opacity-0" : "opacity-100"}`}>
+        <main className="flex-1 overflow-y-auto bg-gray-50 ml-1 pl-4 relative z-0">
+          <div
+            className={`transition-opacity duration-500 ${
+              status === "loading" ? "opacity-0" : "opacity-100"
+            }`}
+          >
             {children}
           </div>
         </main>
       </div>
 
-      {/* Mobile menu button */}
+      {/* Mobile menu toggle */}
       {!sidebarOpen && (
         <div className="fixed top-2 left-2 lg:hidden z-[80]">
           <button
             onClick={() => setSidebarOpen(true)}
-            className="p-2 rounded-md hover:bg-gray-100 bg-white shadow-sm border border-black/5"
+            className="p-2 rounded-md bg-white shadow-sm border border-black/5 hover:bg-gray-100"
           >
-            <i className="bx bx-menu text-2xl" />
+            <i className="bx bx-menu text-2xl text-gray-700" />
           </button>
         </div>
       )}
 
-      {/* Inline styles for the custom loading bar animation */}
+      {/* Global keyframes & gradient animation */}
       <style jsx global>{`
-        @keyframes loading {
-          0% { transform: translateX(-100%); }
-          100% { transform: translateX(100%); }
+        .gradient-loading {
+          background: linear-gradient(
+            90deg,
+            #FF6B35,
+            #FCA311,
+            #FF6B35,
+            #FCA311
+          );
+          background-size: 200% 100%;
+        }
+
+        @keyframes gradient-slide {
+          0% {
+            background-position: 200% 0;
+          }
+          100% {
+            background-position: -200% 0;
+          }
+        }
+
+        .animate-gradient-slide {
+          animation: gradient-slide 1.5s linear infinite;
         }
       `}</style>
     </div>

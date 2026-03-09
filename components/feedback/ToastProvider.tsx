@@ -16,10 +16,10 @@ export type ToastType =
 export interface Toast {
   id: string;
   type: ToastType;
-  title?: string;       // optional title
+  title?: string;       
   message: string;
   duration?: number;
-  onClick?: () => void; // optional click handler
+  onClick?: () => void; 
 }
 
 interface ToastContextType {
@@ -47,7 +47,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
         ? crypto.randomUUID()
         : Math.random().toString(36).substring(2, 10);
 
-    const duration = toast.duration ?? 5000; // default 5s
+    const duration = toast.duration ?? 5000;
     setToasts((prev) => [...prev, { id, ...toast, duration }]);
   };
 
@@ -115,27 +115,34 @@ export function ToastProvider({ children }: { children: ReactNode }) {
                 exit={{ opacity: 0, y: 50, scale: 0.95 }}
                 transition={{ type: "spring", stiffness: 500, damping: 30 }}
                 className={`
-                  flex items-start justify-between gap-2.5 px-4 py-2.5
-                  rounded-lg shadow-lg w-[300px] cursor-pointer bg-white ${borderByType[t.type]}
+                  flex items-start justify-between gap-2.5 px-4 py-3
+                  rounded-lg shadow-lg cursor-pointer bg-white ${borderByType[t.type]}
+                  max-w-[350px] min-w-[280px] break-words
                 `}
                 onClick={() => t.onClick?.()}
+                title={t.message} // tooltip for full message
               >
                 {/* Icon + Text */}
-                <div className="flex items-start gap-2.5 min-w-0">
+                <div className="flex items-start gap-3 min-w-0">
                   <span
                     className={`flex items-center justify-center p-1.5 rounded-full ${iconBgByType[t.type]}`}
                   >
                     <i className={`bx ${iconByType[t.type]} ${iconTextByType[t.type]} text-lg`} />
                   </span>
 
-                  <div className="flex flex-col truncate min-w-0">
+                  <div className="flex flex-col min-w-0">
                     {t.title && (
-                      <span className={`font-semibold truncate ${textByType[t.type]}`}>
-                        {t.title.length > 30 ? t.title.slice(0, 30) + "..." : t.title}
+                      <span
+                        className={`font-semibold ${textByType[t.type]} truncate`}
+                        title={t.title} // full title tooltip
+                      >
+                        {t.title}
                       </span>
                     )}
-                    <span className={`text-sm truncate ${textByType[t.type]}`}>
-                      {t.message.length > 80 ? t.message.slice(0, 80) + "..." : t.message}
+                    <span
+                      className={`text-sm ${textByType[t.type]} whitespace-pre-wrap`}
+                    >
+                      {t.message}
                     </span>
                   </div>
                 </div>
@@ -151,11 +158,10 @@ export function ToastProvider({ children }: { children: ReactNode }) {
           ))}
         </AnimatePresence>
 
-        {/* Bottom-right viewport */}
         <RadixToast.Viewport
           className="
             fixed bottom-5 right-5 flex flex-col-reverse gap-2.5 z-50
-            items-end w-auto max-w-[90vw]
+            items-end w-auto max-w-[90vw] max-h-[90vh] overflow-y-auto
           "
         />
       </RadixToast.Provider>

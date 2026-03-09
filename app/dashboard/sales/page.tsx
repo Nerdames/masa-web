@@ -43,6 +43,7 @@ export default function SalesPage() {
   const pathname = usePathname();
 
   /* ---------- State ---------- */
+
   const [search, setSearch] = useState("");
   const [paymentFilter, setPaymentFilter] = useState<PaymentFilter>("ALL");
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("ALL");
@@ -51,21 +52,23 @@ export default function SalesPage() {
 
   const debouncedSearch = useDebounce(search, 400);
 
-  /* ---------- Reset on filter/search change ---------- */
-  useEffect(() => {}, [debouncedSearch, paymentFilter, statusFilter]);
-
   /* ---------- Query ---------- */
+
   const query = useMemo(() => {
     const params = new URLSearchParams();
-    params.set("page", "1"); // pagination handled by table itself
-    params.set("pageSize", "1000"); // fetch enough rows for table
+
+    params.set("page", "1");
+    params.set("pageSize", "1000");
+
     if (debouncedSearch) params.set("search", debouncedSearch);
     if (paymentFilter !== "ALL") params.set("paymentMethod", paymentFilter);
     if (statusFilter !== "ALL") params.set("status", statusFilter);
+
     return params.toString();
   }, [debouncedSearch, paymentFilter, statusFilter]);
 
   /* ---------- Fetch ---------- */
+
   const { data, error, isLoading, mutate } = useSWR<{ sales: Sale[] }>(
     `/api/dashboard/sales?${query}`,
     fetcher,
@@ -73,72 +76,137 @@ export default function SalesPage() {
   );
 
   useEffect(() => {
-    if (error) toast.addToast({ type: "error", message: "Failed to fetch sales" });
+    if (error) {
+      toast.addToast({
+        type: "error",
+        message: "Failed to fetch sales",
+      });
+    }
   }, [error, toast]);
 
   const sales = data?.sales ?? [];
 
   /* ---------- Summary ---------- */
+
   const { pendingCount, completedCount } = useMemo(() => {
-    let pending = 0, completed = 0;
+    let pending = 0;
+    let completed = 0;
+
     for (const s of sales) {
       if (s.status === "PENDING") pending++;
       if (s.status === "COMPLETED") completed++;
     }
-    return { pendingCount: pending, completedCount: completed };
+
+    return {
+      pendingCount: pending,
+      completedCount: completed,
+    };
   }, [sales]);
 
-  const summaryCards: SummaryCard[] = useMemo(() => [
-    { id: "totalSales", title: "Total Sales", value: sales.length },
-    { id: "pendingSales", title: "Pending Sales", value: pendingCount },
-    { id: "completedSales", title: "Completed Sales", value: completedCount },
-  ], [sales.length, pendingCount, completedCount]);
+  const summaryCards: SummaryCard[] = useMemo(
+    () => [
+      { id: "totalSales", title: "Total Sales", value: sales.length },
+      { id: "pendingSales", title: "Pending Sales", value: pendingCount },
+      { id: "completedSales", title: "Completed Sales", value: completedCount },
+    ],
+    [sales.length, pendingCount, completedCount]
+  );
 
   /* ---------- Status Styling ---------- */
+
   const statusClass = useCallback((status?: Sale["status"]) => {
     switch (status) {
-      case "COMPLETED": return "bg-green-100 text-green-700";
-      case "PENDING": return "bg-yellow-100 text-yellow-700";
-      case "CANCELLED": return "bg-red-100 text-red-700";
-      default: return "bg-gray-100 text-gray-700";
+      case "COMPLETED":
+        return "bg-green-100 text-green-700";
+      case "PENDING":
+        return "bg-yellow-100 text-yellow-700";
+      case "CANCELLED":
+        return "bg-red-100 text-red-700";
+      default:
+        return "bg-gray-100 text-gray-700";
     }
   }, []);
 
   /* ---------- Columns ---------- */
-  const columns: DataTableColumn<Sale>[] = useMemo(() => [
-    { key: "product", header: "Product", render: s => s.productName ?? "-" },
-    { key: "customer", header: "Customer", render: s => s.customerName ?? "-" },
-    { key: "quantity", header: "Quantity", align: "center", hideTooltip: true,
-      render: s => <span className="font-mono">{s.quantity}</span> },
-    { key: "total", header: "Total", align: "right", hideTooltip: true,
-      render: s => (
-        <span className="font-medium text-green-600">
-          ₦{s.total.toLocaleString(undefined, { minimumFractionDigits: 2 })}
-        </span>
-      ) },
-    { key: "currency", header: "Currency", render: s => s.currency },
-    { key: "payment", header: "Payment", render: s => s.paymentMethods?.join(", ") ?? "-" },
-    { key: "status", header: "Status", align: "center", hideTooltip: true,
-      render: s => (
-        <span className={`px-2 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider ${statusClass(s.status)}`}>
-          {s.status}
-        </span>
-      ) },
-  ], [statusClass]);
+
+  const columns: DataTableColumn<Sale>[] = useMemo(
+    () => [
+      {
+        key: "product",
+        header: "Product",
+        render: (s) => s.productName ?? "-",
+      },
+      {
+        key: "customer",
+        header: "Customer",
+        render: (s) => s.customerName ?? "-",
+      },
+      {
+        key: "quantity",
+        header: "Quantity",
+        align: "center",
+        hideTooltip: true,
+        render: (s) => <span className="font-mono">{s.quantity}</span>,
+      },
+      {
+        key: "total",
+        header: "Total",
+        align: "right",
+        hideTooltip: true,
+        render: (s) => (
+          <span className="font-medium text-green-600">
+            ₦{s.total.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+          </span>
+        ),
+      },
+      {
+        key: "currency",
+        header: "Currency",
+        render: (s) => s.currency,
+      },
+      {
+        key: "payment",
+        header: "Payment",
+        render: (s) => s.paymentMethods?.join(", ") ?? "-",
+      },
+      {
+        key: "status",
+        header: "Status",
+        align: "center",
+        hideTooltip: true,
+        render: (s) => (
+          <span
+            className={`px-2 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider ${statusClass(
+              s.status
+            )}`}
+          >
+            {s.status}
+          </span>
+        ),
+      },
+    ],
+    [statusClass]
+  );
 
   /* ---------- Refresh ---------- */
+
   const handleRefresh = useCallback(async () => {
     setRefreshing(true);
     await mutate();
     setRefreshing(false);
   }, [mutate]);
 
-  const tableId = useMemo(() => pathname ? pathname.replace(/^\//, "").replace(/\//g, "-") : "sales-table", [pathname]);
+  /* ---------- Table ID ---------- */
+
+  const tableId = useMemo(() => {
+    return pathname?.replaceAll("/", "-") || "sales-table";
+  }, [pathname]);
 
   /* ---------- Render ---------- */
+
   return (
     <div className="flex flex-col space-y-4 min-h-[calc(100vh-4rem)] p-4 overflow-y-auto">
-      <Summary cardsData={summaryCards} loading={isLoading} />
+      <Summary cardsData={summaryCards}/>
 
       <DataTableToolbar<Sale, string, string>
         search={search}
@@ -150,7 +218,7 @@ export default function SalesPage() {
             label: "Payment",
             value: paymentFilter,
             defaultValue: "ALL",
-            onChange: val => setPaymentFilter(val as PaymentFilter),
+            onChange: (val) => setPaymentFilter(val as PaymentFilter),
             options: [
               { value: "ALL", label: "All" },
               { value: "CASH", label: "Cash" },
@@ -164,7 +232,7 @@ export default function SalesPage() {
             label: "Status",
             value: statusFilter,
             defaultValue: "ALL",
-            onChange: val => setStatusFilter(val as StatusFilter),
+            onChange: (val) => setStatusFilter(val as StatusFilter),
             options: [
               { value: "ALL", label: "All" },
               { value: "PENDING", label: "Pending" },
@@ -176,13 +244,22 @@ export default function SalesPage() {
         extraControls={
           <div className="flex gap-2">
             <button
-              className={`px-3 py-1 rounded border ${rowDensity === "standard" ? "bg-blue-600 text-white" : "bg-white text-black"}`}
+              className={`px-3 py-1 rounded border ${
+                rowDensity === "standard"
+                  ? "bg-blue-600 text-white"
+                  : "bg-white text-black"
+              }`}
               onClick={() => setRowDensity("standard")}
             >
               Standard
             </button>
+
             <button
-              className={`px-3 py-1 rounded border ${rowDensity === "compact" ? "bg-blue-600 text-white" : "bg-white text-black"}`}
+              className={`px-3 py-1 rounded border ${
+                rowDensity === "compact"
+                  ? "bg-blue-600 text-white"
+                  : "bg-white text-black"
+              }`}
               onClick={() => setRowDensity("compact")}
             >
               Compact
@@ -191,20 +268,27 @@ export default function SalesPage() {
         }
         exportData={sales}
         exportFileName="sales.csv"
-        onAdd={() => router.push("/dashboard/sales/add")}
+        onAdd={() => window.open("/dashboard/sales/create", "_blank")}
       />
 
       <DataTable<Sale>
         tableId={tableId}
+        tablePrefsKey="sales-table"
         data={sales}
         columns={columns}
         loading={isLoading}
-        getRowId={row => row.id}
-        onRowClick={sale => {
-          if (sale.status !== "CANCELLED") router.push(`/dashboard/sales/${sale.id}`);
+        getRowId={(row) => row.id}
+        tablePrefs={{
+          table_row_numbers: true,
+          table_group_dates: true,
         }}
         dateField="createdAt"
         rowDensity={rowDensity}
+        onRowClick={(sale) => {
+          if (sale.status !== "CANCELLED") {
+            window.open(`/dashboard/sales/${sale.id}`, "_blank");
+          }
+        }}
       />
     </div>
   );

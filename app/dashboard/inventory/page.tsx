@@ -261,29 +261,7 @@ export default function InventoryPage() {
         dateField="lastRestockedAt"
       />
 
-      {/* Pagination Footer */}
-      <div className="flex justify-between items-center text-xs pt-2">
-        <span className="opacity-50 text-[10px] font-bold uppercase tracking-tighter">
-          Total Records: {total}
-        </span>
-        <div className="flex gap-4 items-center">
-          <button
-            disabled={page <= 1}
-            onClick={() => setPage((p) => Math.max(1, p - 1))}
-            className="hover:text-blue-500 disabled:opacity-30 transition-colors uppercase font-bold tracking-tighter"
-          >
-            Prev
-          </button>
-          <span className="font-mono">{page} / {pageCount}</span>
-          <button
-            disabled={page >= pageCount}
-            onClick={() => setPage((p) => Math.min(pageCount, p + 1))}
-            className="hover:text-blue-500 disabled:opacity-30 transition-colors uppercase font-bold tracking-tighter"
-          >
-            Next
-          </button>
-        </div>
-      </div>
+
     </div>
   );
 }
