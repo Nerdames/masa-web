@@ -205,7 +205,8 @@ export default function SalesPage() {
   /* ---------- Render ---------- */
 
   return (
-    <div className="flex flex-col space-y-4 min-h-[calc(100vh-4rem)] p-4 overflow-y-auto">
+    <div className="flex flex-col space-y-4 min-h-[calc(100vh)] p-4 bg-white">
+
       <Summary cardsData={summaryCards}/>
 
       <DataTableToolbar<Sale, string, string>

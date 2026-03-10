@@ -75,7 +75,7 @@ export default function DashboardPage() {
   };
 
   return (
-    <div className="flex flex-col h-screen bg-gray-50">
+    <div className="flex flex-col h-screen">
      
 
         <main className="flex-1 overflow-y-auto p-6">

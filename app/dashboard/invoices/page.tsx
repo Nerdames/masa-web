@@ -174,7 +174,7 @@ export default function InvoicePage() {
   const tableId = useMemo(() => pathname?.replace(/\//g, "-").replace(/^-/, "") || "invoices-table", [pathname]);
 
   return (
-    <div className="flex flex-col space-y-4 min-h-[calc(100vh-4rem)] p-4">
+    <div className="flex flex-col space-y-4 min-h-[calc(100vh)] p-4 bg-white">
       <Summary cardsData={summaryCards} />
 
       <DataTableToolbar

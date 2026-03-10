@@ -14,7 +14,8 @@ export default function DashboardRootLayout({ children }: Props) {
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
   return (
-    <div className="flex flex-col h-screen bg-gray-50">
+    <div className="flex flex-col h-screen bg-gradient-to-br from-blue-50 via-white to-green-50">
+      
       {/* TopBar with loading animation */}
       <div className="flex-shrink-0 relative z-[70]">
         <TopBar />
@@ -30,7 +31,7 @@ export default function DashboardRootLayout({ children }: Props) {
       <div className="flex flex-1 overflow-hidden relative z-0">
         <Sidebar open={sidebarOpen} onClose={() => setSidebarOpen(false)} />
 
-        <main className="flex-1 overflow-y-auto bg-gray-50 ml-1 pl-4 relative z-0">
+        <main className="flex-1 overflow-y-auto ml-1 pl-4 relative z-0 bg-transparent">
           <div
             className={`transition-opacity duration-500 ${
               status === "loading" ? "opacity-0" : "opacity-100"
@@ -46,14 +47,14 @@ export default function DashboardRootLayout({ children }: Props) {
         <div className="fixed top-2 left-2 lg:hidden z-[80]">
           <button
             onClick={() => setSidebarOpen(true)}
-            className="p-2 rounded-md bg-white shadow-sm border border-black/5 hover:bg-gray-100"
+            className="p-2 rounded-md bg-white/80 backdrop-blur-sm shadow-sm border border-black/5 hover:bg-white transition"
           >
             <i className="bx bx-menu text-2xl text-gray-700" />
           </button>
         </div>
       )}
 
-      {/* Global keyframes & gradient animation */}
+      {/* Gradient loading animation */}
       <style jsx global>{`
         .gradient-loading {
           background: linear-gradient(

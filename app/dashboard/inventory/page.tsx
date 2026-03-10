@@ -226,7 +226,7 @@ export default function InventoryPage() {
   const tableId = useMemo(() => pathname ? pathname.replace(/^\//, "").replace(/\//g, "-") : "table", [pathname]);
 
   return (
-    <div className="flex flex-col space-y-4 min-h-[calc(100vh-4rem)] p-4">
+    <div className="flex flex-col space-y-4 min-h-[calc(100vh)] p-4 bg-white">
       <Summary cardsData={summaryCards} loading={isLoading} />
 
       <DataTableToolbar<InventoryProduct, SortOrder, InventoryProduct["tag"]>

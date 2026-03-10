@@ -231,7 +231,7 @@ export default function ProfilePage() {
   if (!profile) return null;
 
   return (
-    <main className="min-h-screen overflow-y-hidden bg-[#F8F9FC] py-12 px-4 sm:px-6">
+    <main className="min-h-screen py-12 px-4 sm:px-6">
       <div className="max-w-5xl mx-auto space-y-6">
         {/* Header Hero */}
         <section className="bg-white rounded-xl p-8 shadow-sm border border-gray-100 flex flex-col md:flex-row md:items-center justify-between gap-6">
