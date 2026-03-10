@@ -1,97 +1,52 @@
 masa/
-│
-├─ _architecture/                        # Architecture docs
+├─ _architecture/                 # Architecture docs & decisions
 │  └─ schema-v6.md
-│
-├─ app/                                  # Next.js App Router
-│
-│  ├─ (auth)/                            # Auth route group
-│  │  └─ signin/
-│  │     └─ page.tsx
-│  │
-│  ├─ (dashboard)/                       # Protected app
-│  │
-│  │  ├─ dashboard/
-│  │  │  ├─ overview/
-│  │  │  │  └─ page.tsx
-│  │  │  │
-│  │  │  ├─ customers/
-│  │  │  │  └─ page.tsx
-│  │  │  │
-│  │  │  ├─ inventory/
-│  │  │  │  └─ page.tsx
-│  │  │  │
-│  │  │  ├─ orders/
-│  │  │  │  └─ page.tsx
-│  │  │  │
-│  │  │  ├─ sales/
-│  │  │  │  └─ page.tsx
-│  │  │  │
-│  │  │  ├─ personnel/
-│  │  │  │  └─ page.tsx
-│  │  │  │
-│  │  │  ├─ notifications/
-│  │  │  │  └─ page.tsx
-│  │  │  │
-│  │  │  ├─ logs/
-│  │  │  │  └─ page.tsx
-│  │  │  │
-│  │  │  ├─ settings/
-│  │  │  │  └─ page.tsx
-│  │  │  │
-│  │  │  ├─ layout.tsx
-│  │  │  └─ page.tsx
-│  │
-│  ├─ api/                               # API Routes
-│  │
-│  │  ├─ auth/
-│  │  │  └─ [...nextauth]/
-│  │  │     └─ route.ts
-│  │  │
+
+├─ app/                            # Next.js App Router
+│  ├─ api/
 │  │  ├─ admin/
-│  │  │  └─ [id]/
-│  │  │     └─ route.ts
-│  │  │
+│  │  │  └─ [id]/route.ts
 │  │  ├─ manager/
-│  │  │  └─ [id]/
-│  │  │     └─ route.ts
-│  │  │
+│  │  │  └─ [id]/route.ts
 │  │  ├─ dev/
-│  │  │  └─ [id]/
-│  │  │     └─ route.ts
-│  │  │
+│  │  │  └─ [id]/route.ts
 │  │  ├─ dashboard/
-│  │  │  └─ route.ts
-│  │  │
+│  │  │  └─ [id]/route.ts
+│  │  └─ auth/
+│  │     └─ [...nextauth]/route.ts
+│  │
+│  ├─ auth/
+│  │  ├─ signin/
+│  │  │  └─ page.tsx
+│  │  └─ middleware.ts
+│  │
+│  ├─ dashboard/
+│  │  ├─ Overview/
+│  │  │  └─ page.tsx
 │  │  ├─ customers/
-│  │  │  └─ route.ts
-│  │  │
+│  │  │  └─ page.tsx
 │  │  ├─ inventory/
-│  │  │  └─ route.ts
-│  │  │
+│  │  │  └─ page.tsx
 │  │  ├─ orders/
-│  │  │  └─ route.ts
-│  │  │
+│  │  │  └─ page.tsx
 │  │  ├─ sales/
-│  │  │  └─ route.ts
-│  │  │
-│  │  ├─ personnel/
-│  │  │  └─ route.ts
-│  │  │
-│  │  ├─ notifications/
-│  │  │  └─ route.ts
-│  │  │
-│  │  └─ logs/
-│  │     └─ route.ts
-│
+│  │  │  └─ page.tsx
+│  │  ├─ settings/
+│  │  │  └─ page.tsx
+│  │  ├─ layout.tsx
+│  │  └─ page.tsx
+│  │
+│  ├─ hooks/
+│  │  └─ hooksPlaceholder.ts
+│  │
+│  ├─ providers/
+│  │  └─ SessionProvider.tsx
+│  │
+│  ├─ favicon.ico
 │  ├─ layout.tsx
-│  ├─ page.tsx
-│  └─ favicon.ico
-│
-├─ middleware.ts                         # Auth protection
-│
-├─ components/                           # UI + Feature Components
-│
+│  └─ page.tsx
+
+├─ components/                     # UI & feature components
 │  ├─ dashboard/
 │  │  ├─ DashboardCard.tsx
 │  │  ├─ CustomersTable.tsx
@@ -146,37 +101,12 @@ masa/
 │  │
 │  ├─ ui/
 │  │  ├─ SectionTitle.tsx
-│  │  ├─ StatCard.tsx
-│  │  ├─ Button.tsx
-│  │  ├─ Input.tsx
-│  │  └─ Table.tsx
+│  │  └─ StatCard.tsx
 │  │
-│  └─ shared/                            # Cross-feature primitives
-│
-├─ server/                               # Backend service layer
-│
-│  ├─ services/
-│  │  ├─ auth.service.ts
-│  │  ├─ customers.service.ts
-│  │  ├─ inventory.service.ts
-│  │  ├─ orders.service.ts
-│  │  ├─ sales.service.ts
-│  │  └─ personnel.service.ts
-│  │
-│  ├─ repositories/
-│  │  ├─ customers.repo.ts
-│  │  ├─ inventory.repo.ts
-│  │  ├─ orders.repo.ts
-│  │  ├─ sales.repo.ts
-│  │  └─ personnel.repo.ts
-│  │
-│  └─ actions/
-│     ├─ createSale.ts
-│     ├─ createOrder.ts
-│     └─ updateStock.ts
-│
-├─ dev/                                  # Internal dev modules
-│  └─ modules/
+│  └─ shared/                      # Cross-feature primitives
+
+├─ dev/
+│  └─ modules/                     # Domain-driven backend logic
 │     ├─ auth/
 │     ├─ personnel/
 │     ├─ customers/
@@ -185,78 +115,49 @@ masa/
 │     ├─ sales/
 │     ├─ notifications/
 │     └─ logs/
-│
-├─ hooks/                                # Global reusable hooks
-│  ├─ index.ts
-│  ├─ useDebounce.ts
-│  └─ usePagination.ts
-│
-├─ providers/                            # Global providers
-│  ├─ SessionProvider.tsx
-│  ├─ QueryProvider.tsx
+
+├─ hooks/                          # Global reusable hooks
 │  └─ index.ts
-│
+
 ├─ lib/
-│
 │  ├─ authOptions.ts
 │  ├─ prisma.ts
-│  │
 │  ├─ db/
-│  │  └─ migrations/
-│  │
 │  ├─ helpers/
-│  │  ├─ authHelpers.ts
-│  │  ├─ formatCurrency.ts
-│  │  └─ getInitials.ts
-│  │
-│  ├─ guards/
-│  │  ├─ requireAuth.ts
-│  │  ├─ requireAdmin.ts
-│  │  ├─ requireDev.ts
-│  │  └─ requireBranchRole.ts
-│  │
-│  ├─ validators/
-│  │  ├─ customer.schema.ts
-│  │  ├─ product.schema.ts
-│  │  ├─ order.schema.ts
-│  │  └─ sale.schema.ts
-│  │
-│  └─ rbac/
-│     └─ permissions.ts
-│
-├─ modules/                              # Optional shared domain modules
-│
+│  │  └─ authHelpers.ts
+│  └─ guards/
+│     ├─ requireAuth.ts
+│     ├─ requireAdmin.ts
+│     ├─ requireDev.ts
+│     └─ requireBranchRole.ts
+
+├─ modules/                        # Shared domain services (optional)
 │  ├─ personnel/
 │  ├─ customers/
 │  ├─ inventory/
 │  └─ orders/
-│
+
 ├─ prisma/
-│  ├─ schema.prisma
+│  ├─ schema.prisma                # ✅ schema v6 (final)
 │  └─ seed.ts
-│
+
+├─ providers/
+│  └─ index.ts
+
 ├─ public/
-│
+
 ├─ scripts/
-│  ├─ migrate.ps1
-│  └─ seed.ts
-│
+│  └─ migrate.ps1
+
 ├─ styles/
 │  └─ globals.css
-│
+
 ├─ tests/
-│
 │  ├─ unit/
-│  │  └─ services.test.ts
-│  │
 │  ├─ integration/
-│  │  └─ api.test.ts
-│  │
 │  └─ e2e/
-│     └─ login.test.ts
-│
+
 ├─ types/
-│
 │  ├─ auth.d.ts
 │  ├─ personnel.d.ts
 │  ├─ customer.d.ts
@@ -266,7 +167,7 @@ masa/
 │  ├─ notifications.d.ts
 │  ├─ enums.d.ts
 │  └─ domain.d.ts
-│
+
 ├─ .env
 ├─ .gitignore
 ├─ eslint.config.mjs
