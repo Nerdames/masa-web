@@ -1,0 +1,172 @@
+import { NextResponse, NextRequest } from "next/server";
+import { getToken } from "next-auth/jwt";
+import { Role } from "@prisma/client";
+import { PAGE_PERMISSIONS, MANAGEMENT_ROUTES, PERSONAL_ROUTES } from "@/lib/rbac";
+
+const PUBLIC_PATHS = [
+  "/favicon.ico",
+  "/robots.txt",
+  "/manifest.json",
+  "/_next",
+  "/static",
+];
+
+const INACTIVITY_TIMEOUT_MS = 60 * 60 * 1000; // 1 hour
+const DB_UPDATE_THROTTLE_MS = 5 * 60 * 1000; // 5 minutes
+
+export async function proxy(req: NextRequest) {
+  const { pathname } = req.nextUrl;
+  const origin = req.nextUrl.origin;
+
+  // Allow static/public files
+  if (PUBLIC_PATHS.some((p) => pathname.startsWith(p))) {
+    return NextResponse.next();
+  }
+
+  // ✅ CRITICAL: allow auth routes without session check
+  if (pathname.startsWith("/auth")) {
+    return NextResponse.next();
+  }
+
+  const token = await getToken({
+    req,
+    secret: process.env.NEXTAUTH_SECRET,
+  });
+
+  const now = Date.now();
+  const lastActivity = Number(token?.lastActivityAt || 0);
+
+  const needsSignIn =
+    !token?.id ||
+    token.disabled ||
+    token.locked ||
+    (lastActivity && now - lastActivity > INACTIVITY_TIMEOUT_MS);
+
+  if (needsSignIn) {
+    const url = new URL("/auth/signin", origin);
+
+    if (!token?.id) {
+      url.searchParams.set("callbackUrl", pathname);
+
+      fetch(`${origin}/api/logs`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "SESSION_INVALID_NO_TOKEN",
+          meta: { path: pathname },
+        }),
+      }).catch(() => {});
+    } else {
+      const errorType = token.disabled
+        ? "disabled"
+        : token.locked
+        ? "locked"
+        : "SessionExpired";
+
+      url.searchParams.set("error", errorType);
+
+      fetch(`${origin}/api/logs`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: `SESSION_${errorType.toUpperCase()}`,
+          personnelId: token.id,
+          organizationId: token.organizationId,
+          branchId: token.branchId,
+          meta: { path: pathname },
+        }),
+      }).catch(() => {});
+    }
+
+    return NextResponse.redirect(url);
+  }
+
+  const role = token.role as Role | undefined;
+
+  if (!role) {
+    return NextResponse.redirect(new URL("/auth/signin", origin));
+  }
+
+  // Update activity periodically
+  if (token.id && now - lastActivity > DB_UPDATE_THROTTLE_MS) {
+    fetch(`${origin}/api/logs`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        action: "LAST_ACTIVITY_UPDATE",
+        personnelId: token.id,
+        organizationId: token.organizationId,
+        branchId: token.branchId,
+      }),
+    }).catch(() => {});
+  }
+
+  // Super access
+  if (token.isOrgOwner || role === Role.ADMIN) {
+    return NextResponse.next();
+  }
+
+  // DEV role blocked
+  if (role === Role.DEV) {
+    return NextResponse.redirect(
+      new URL("/feedback/access-denied", origin)
+    );
+  }
+
+  // Personal routes allowed
+  if (
+    PERSONAL_ROUTES.some(
+      (p) => pathname === p || pathname.startsWith(`${p}/`)
+    )
+  ) {
+    return NextResponse.next();
+  }
+
+  // Management routes blocked
+  if (
+    MANAGEMENT_ROUTES.some(
+      (p) => pathname === p || pathname.startsWith(`${p}/`)
+    )
+  ) {
+    return NextResponse.redirect(
+      new URL("/feedback/access-denied", origin)
+    );
+  }
+
+  // Page permissions
+  const pageEntry = Object.entries(PAGE_PERMISSIONS).find(
+    ([path]) => pathname === path || pathname.startsWith(`${path}/`)
+  );
+
+  if (pageEntry && !(pageEntry[1] as readonly Role[]).includes(role)) {
+    return NextResponse.redirect(
+      new URL("/feedback/access-denied", origin)
+    );
+  }
+
+  // Prevent unknown dashboard routes
+  if (pathname.startsWith("/dashboard")) {
+    const knownRoutes = [
+      ...Object.keys(PAGE_PERMISSIONS),
+      ...MANAGEMENT_ROUTES,
+      ...PERSONAL_ROUTES,
+      "/dashboard",
+    ];
+
+    const isKnown = knownRoutes.some(
+      (p) => pathname === p || pathname.startsWith(`${p}/`)
+    );
+
+    if (!isKnown) {
+      return NextResponse.redirect(
+        new URL("/feedback/access-denied", origin)
+      );
+    }
+  }
+
+  return NextResponse.next();
+}
+
+export const config = {
+  matcher: ["/dashboard/:path*"], // ✅ only protect dashboard routes
+};
