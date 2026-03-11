@@ -7,36 +7,44 @@ const secret = process.env.NEXTAUTH_SECRET as string;
 
 /* --------------------------------
    GET — Fetch notifications
-   Logic: Returns notifications where the user is a recipient.
+   Query params supported:
+     unread=true
+     type=INFO
+     branchId=<branchId>
 --------------------------------- */
 export async function GET(req: NextRequest) {
   try {
     const token = await getToken({ req, secret });
-
     if (!token || !token.organizationId) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
     const url = new URL(req.url);
     const unreadOnly = url.searchParams.get("unread") === "true";
+    const typeFilter = url.searchParams.get("type") as NotificationType | null;
+    const branchIdFilter = url.searchParams.get("branchId");
+
     const personnelId = token.sub as string;
 
     const notifications = await prisma.notification.findMany({
       where: {
         organizationId: token.organizationId as string,
+        ...(branchIdFilter ? { branchId: branchIdFilter } : {}),
+        ...(typeFilter ? { type: typeFilter } : {}),
         recipients: {
           some: {
-            personnelId: personnelId,
-            ...(unreadOnly ? { readAt: null } : {}),
+            personnelId,
+            ...(unreadOnly ? { read: false } : {}),
           },
         },
+        deletedAt: null,
       },
       include: {
-        // Include recipient data to check read status on the frontend
         recipients: {
           where: { personnelId },
-          select: { readAt: true },
+          select: { read: true },
         },
+        branch: true,
       },
       orderBy: { createdAt: "desc" },
       take: 100,
@@ -51,12 +59,10 @@ export async function GET(req: NextRequest) {
 
 /* --------------------------------
    POST — Create notification
-   Logic: Creates a notification and links it to specific recipients.
 --------------------------------- */
 export async function POST(req: NextRequest) {
   try {
     const token = await getToken({ req, secret });
-
     if (!token || !["DEV", "ADMIN", "MANAGER"].includes(token.role as string)) {
       return NextResponse.json({ error: "Forbidden" }, { status: 403 });
     }
@@ -66,10 +72,10 @@ export async function POST(req: NextRequest) {
       message: string;
       type?: NotificationType;
       branchId?: string;
-      recipientIds?: string[]; // Array of Personnel IDs
+      recipientIds: string[];
+      metadata?: Prisma.InputJsonValue;
       sourceId?: string;
       sourceType?: string;
-      metadata?: Prisma.InputJsonValue;
     } = await req.json();
 
     if (!body.title || !body.message || !body.recipientIds?.length) {
@@ -83,63 +89,81 @@ export async function POST(req: NextRequest) {
         type: body.type || NotificationType.INFO,
         title: body.title,
         message: body.message,
-        sourceId: body.sourceId,
-        sourceType: body.sourceType,
-        metadata: body.metadata,
-        // Automatically create the join table entries for each recipient
+        metadata: body.metadata || null,
         recipients: {
           createMany: {
-            data: body.recipientIds.map((id) => ({
-              personnelId: id,
-            })),
+            data: body.recipientIds.map((id) => ({ personnelId: id })),
           },
         },
       },
+      include: { recipients: true, branch: true },
     });
 
     return NextResponse.json(notification, { status: 201 });
   } catch (error) {
     console.error("POST /api/notifications error:", error);
-    return NextResponse.json({ error: "Failed to create" }, { status: 500 });
+    return NextResponse.json({ error: "Failed to create notification" }, { status: 500 });
   }
 }
 
 /* --------------------------------
-   PATCH — Mark as read
-   Logic: Updates the 'readAt' timestamp in the join table.
+   PATCH — Mark notifications as read
 --------------------------------- */
 export async function PATCH(req: NextRequest) {
   try {
     const token = await getToken({ req, secret });
-
     if (!token || !token.organizationId) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
     const body: { id?: string; ids?: string[] } = await req.json();
     const personnelId = token.sub as string;
-    
-    const targetIds = body.id ? [body.id] : body.ids || [];
 
-    if (targetIds.length === 0) {
+    const targetIds = body.id ? [body.id] : body.ids || [];
+    if (!targetIds.length) {
       return NextResponse.json({ error: "No IDs provided" }, { status: 400 });
     }
 
-    // We update the Recipient record, not the Notification record
     const updated = await prisma.notificationRecipient.updateMany({
       where: {
-        personnelId: personnelId,
         notificationId: { in: targetIds },
-        readAt: null, // Only update if not already read
+        personnelId,
+        read: false,
       },
-      data: {
-        readAt: new Date(),
-      },
+      data: { read: true },
     });
 
     return NextResponse.json({ success: true, count: updated.count });
   } catch (error) {
     console.error("PATCH /api/notifications error:", error);
     return NextResponse.json({ error: "Update failed" }, { status: 500 });
+  }
+}
+
+/* --------------------------------
+   DELETE — Soft-delete notification
+--------------------------------- */
+export async function DELETE(req: NextRequest) {
+  try {
+    const token = await getToken({ req, secret });
+    if (!token || !["DEV", "ADMIN"].includes(token.role as string)) {
+      return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+    }
+
+    const body: { id?: string; ids?: string[] } = await req.json();
+    const targetIds = body.id ? [body.id] : body.ids || [];
+    if (!targetIds.length) {
+      return NextResponse.json({ error: "No IDs provided" }, { status: 400 });
+    }
+
+    const deleted = await prisma.notification.updateMany({
+      where: { id: { in: targetIds }, organizationId: token.organizationId as string },
+      data: { deletedAt: new Date() },
+    });
+
+    return NextResponse.json({ success: true, count: deleted.count });
+  } catch (error) {
+    console.error("DELETE /api/notifications error:", error);
+    return NextResponse.json({ error: "Delete failed" }, { status: 500 });
   }
 }

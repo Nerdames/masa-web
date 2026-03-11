@@ -185,7 +185,7 @@ export const authOptions: NextAuthOptions = {
             branchId: personnel.branchId,
             personnelId: personnel.id,
             action: "LOGIN_SUCCESS",
-            meta: JSON.stringify({ role: effectiveRole }),
+            metadata: JSON.stringify({ role: effectiveRole }),
             createdAt: now,
           },
         });

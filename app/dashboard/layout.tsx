@@ -5,18 +5,20 @@ import { useSession } from "next-auth/react";
 import Sidebar from "@/components/layout/Sidebar";
 import TopBar from "@/components/layout/TopBar";
 
-interface Props {
+interface DashboardRootLayoutProps {
   children: ReactNode;
 }
 
-export default function DashboardRootLayout({ children }: Props) {
-  const { status } = useSession({ required: true, onUnauthenticated: () => {} });
+export default function DashboardRootLayout({
+  children,
+}: DashboardRootLayoutProps) {
+  const { status } = useSession({ required: true });
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
   return (
-    <div className="flex flex-col h-screen bg-gradient-to-br from-blue-50 via-white to-green-50">
+    <div className="flex flex-col h-screen bg-gradient-to-br from-[#FFD8B1] via-[#FFF5F0] to-[#D8FFE5] overflow-hidden">
       
-      {/* TopBar with loading animation */}
+      {/* TopBar */}
       <div className="flex-shrink-0 relative z-[70]">
         <TopBar />
 
@@ -27,53 +29,39 @@ export default function DashboardRootLayout({ children }: Props) {
         )}
       </div>
 
-      {/* Main Layout */}
+      {/* Layout Wrapper */}
       <div className="flex flex-1 overflow-hidden relative z-0">
-        <Sidebar open={sidebarOpen} onClose={() => setSidebarOpen(false)} />
 
-        <main className="flex-1 overflow-y-auto ml-1 pl-4 relative z-0 bg-transparent">
-          <div
-            className={`transition-opacity duration-500 ${
-              status === "loading" ? "opacity-0" : "opacity-100"
-            }`}
-          >
-            {children}
-          </div>
+        {/* Sidebar */}
+        <Sidebar sidebarOpen={sidebarOpen} setSidebarOpen={setSidebarOpen} />
+
+        {/* Main Content */}
+        <main
+          className={`flex-1 overflow-y-auto transition-opacity duration-500 ${
+            status === "loading" ? "opacity-0" : "opacity-100"
+          }`}
+        >
+          {children}
         </main>
+
       </div>
 
-      {/* Mobile menu toggle */}
-      {!sidebarOpen && (
-        <div className="fixed top-2 left-2 lg:hidden z-[80]">
-          <button
-            onClick={() => setSidebarOpen(true)}
-            className="p-2 rounded-md bg-white/80 backdrop-blur-sm shadow-sm border border-black/5 hover:bg-white transition"
-          >
-            <i className="bx bx-menu text-2xl text-gray-700" />
-          </button>
-        </div>
-      )}
-
-      {/* Gradient loading animation */}
+      {/* Global Styles */}
       <style jsx global>{`
         .gradient-loading {
           background: linear-gradient(
             90deg,
             #FF6B35,
-            #FCA311,
             #FF6B35,
-            #FCA311
+            #35ff35,
+            #4c11fc
           );
           background-size: 200% 100%;
         }
 
         @keyframes gradient-slide {
-          0% {
-            background-position: 200% 0;
-          }
-          100% {
-            background-position: -200% 0;
-          }
+          0% { background-position: 200% 0; }
+          100% { background-position: -200% 0; }
         }
 
         .animate-gradient-slide {

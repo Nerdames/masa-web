@@ -35,13 +35,13 @@ export default function TopBar() {
       >
         <div
           className="w-6 h-6 rounded flex items-center justify-center font-bold text-xs text-white
-          bg-gradient-to-br from-[#FF6B35] via-[#2A9D8F] to-[#F4A261]
+          bg-black
           transition-transform duration-200 group-hover:scale-105"
         >
           M
         </div>
 
-        <span className="text-sm font-semibold truncate max-w-[220px] text-green-700 group-hover:text-orange-500 transition-colors">
+        <span className="text-sm font-semibold truncate max-w-[220px] text-black-700 group-hover:text-green-700 transition-colors">
           {user?.organizationName || "MASA"}
         </span>
       </div>
@@ -91,7 +91,7 @@ export default function TopBar() {
                 <div
                   className="w-8 h-8 rounded-full text-white
                   flex items-center justify-center font-semibold text-sm
-                  bg-gradient-to-br from-[#FF6B35] via-[#2A9D8F] to-[#F4A261]"
+                  bg-green-700"
                 >
                   {getInitials(user.name)}
                 </div>
@@ -102,7 +102,7 @@ export default function TopBar() {
                   </span>
 
                   {user.role && (
-                    <span className="text-xs text-orange-500 truncate capitalize">
+                    <span className="text-xs text-green-700 truncate capitalize">
                       ({user.role})
                     </span>
                   )}
@@ -114,8 +114,7 @@ export default function TopBar() {
           <button
             onClick={() => router.push("/auth/signin")}
             className="px-4 py-1.5 rounded-lg text-sm font-medium text-white
-            bg-gradient-to-r from-[#FF6B35] via-[#2A9D8F] to-[#F4A261]
-            hover:opacity-90 transition"
+            bg-black hover:bg-gray-900 transition"
           >
             Sign in
           </button>

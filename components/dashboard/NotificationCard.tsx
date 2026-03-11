@@ -1,14 +1,21 @@
 "use client";
 
-import { FC } from "react";
+import { FC, useMemo } from "react";
+
+export type NotificationType =
+  | "INFO"
+  | "WARNING"
+  | "ERROR"
+  | "SYSTEM"
+  | "APPROVAL_REQUIRED"
+  | "APPROVAL_DECISION";
 
 export interface Notification {
   id: string;
   title?: string;
   message: string;
   read: boolean;
-  type?: "info" | "success" | "warning" | "alert";
-  userId?: string;
+  type?: NotificationType;
   createdAt: string;
 }
 
@@ -17,70 +24,70 @@ interface NotificationCardProps {
   onMarkRead?: (id: string) => void;
 }
 
-const NotificationCard: FC<NotificationCardProps> = ({ notification, onMarkRead }) => {
-  // Determine background color based on type
-  const getBgColor = (): string => {
-    switch (notification.type) {
-      case "alert":
-        return "bg-red-500";
-      case "success":
-        return "bg-green-600";
-      case "warning":
-        return "bg-yellow-500";
-      default:
-        return "bg-blue-600";
-    }
-  };
+const typeStyles: Record<NotificationType, { bg: string; icon: string }> = {
+  INFO: { bg: "bg-blue-600", icon: "bx bx-info-circle" },
+  WARNING: { bg: "bg-yellow-500", icon: "bx bx-error-circle" },
+  ERROR: { bg: "bg-red-500", icon: "bx bx-x-circle" },
+  SYSTEM: { bg: "bg-gray-700", icon: "bx bx-cog" },
+  APPROVAL_REQUIRED: { bg: "bg-purple-600", icon: "bx bx-time" },
+  APPROVAL_DECISION: { bg: "bg-green-600", icon: "bx bx-check" },
+};
 
-  // Icon based on notification type
-  const getIcon = () => {
-    switch (notification.type) {
-      case "alert":
-        return <i className="bx bx-error"></i>;
-      case "warning":
-        return <i className="bx bx-error-circle"></i>;
-      case "success":
-        return <i className="bx bx-check"></i>;
-      default:
-        return <i className="bx bx-info-circle"></i>;
-    }
-  };
+export const NotificationCard: FC<NotificationCardProps> = ({
+  notification,
+  onMarkRead,
+}) => {
+  const type = notification.type ?? "INFO";
+  const { bg, icon } = typeStyles[type];
+
+  const formattedDate = useMemo(
+    () => new Date(notification.createdAt).toLocaleString(),
+    [notification.createdAt]
+  );
 
   return (
     <li
-      className={`flex justify-between items-start p-3 rounded-lg border border-gray-100 hover:bg-gray-50 transition ${
-        notification.read ? "opacity-70" : "bg-gray-50"
-      }`}
+      className={`flex justify-between items-start gap-3 p-3 rounded-lg border border-gray-100 transition
+      ${notification.read ? "opacity-70" : "bg-gray-50"}
+      hover:bg-gray-100`}
     >
-      {/* Left Icon + Message */}
+      {/* Icon + Content */}
       <div className="flex items-start gap-3">
         <div
-          className={`w-9 h-9 flex items-center justify-center rounded-full text-white text-lg ${getBgColor()}`}
+          className={`w-9 h-9 flex items-center justify-center rounded-full text-white text-lg ${bg}`}
         >
-          {getIcon()}
+          <i className={icon}></i>
         </div>
 
-        <div className="flex flex-col">
+        <div className="flex flex-col min-w-0">
           {notification.title && (
-            <span className={`text-sm font-semibold ${notification.read ? "text-gray-600" : "text-black"}`}>
+            <span
+              className={`text-sm font-semibold truncate ${
+                notification.read ? "text-gray-500" : "text-gray-900"
+              }`}
+            >
               {notification.title}
             </span>
           )}
-          <span className={`text-sm ${notification.read ? "text-gray-600" : "text-black font-medium"}`}>
+
+          <span
+            className={`text-sm truncate ${
+              notification.read ? "text-gray-500" : "text-gray-800 font-medium"
+            }`}
+          >
             {notification.message}
           </span>
-          <span className="text-xs text-gray-400">
-            {new Date(notification.createdAt).toLocaleString()}
-          </span>
+
+          <span className="text-xs text-gray-400 mt-1">{formattedDate}</span>
         </div>
       </div>
 
-      {/* Mark as Read */}
+      {/* Mark as Read Button */}
       {!notification.read && onMarkRead && (
         <button
           onClick={() => onMarkRead(notification.id)}
-          className="text-gray-400 hover:text-black transition p-1"
-          title="Mark as read"
+          className="flex-shrink-0 text-gray-400 hover:text-gray-900 transition p-1 rounded focus:outline-none focus:ring-2 focus:ring-offset-1 focus:ring-gray-300"
+          aria-label="Mark as read"
         >
           <i className="bx bx-check text-lg"></i>
         </button>
@@ -89,4 +96,43 @@ const NotificationCard: FC<NotificationCardProps> = ({ notification, onMarkRead 
   );
 };
 
-export default NotificationCard;
+/* ---------------- Notification List ---------------- */
+interface NotificationListProps {
+  notifications?: Notification[];
+  loading?: boolean;
+  onMarkRead?: (id: string) => void;
+}
+
+export const NotificationList: FC<NotificationListProps> = ({
+  notifications,
+  loading = false,
+  onMarkRead,
+}) => {
+  if (loading) {
+    return (
+      <div className="flex justify-center items-center h-32 text-gray-500">
+        Loading notifications...
+      </div>
+    );
+  }
+
+  if (!notifications || notifications.length === 0) {
+    return (
+      <div className="flex justify-center items-center h-32 text-gray-400">
+        No notifications
+      </div>
+    );
+  }
+
+  return (
+    <ul className="space-y-2">
+      {notifications.map((n) => (
+        <NotificationCard
+          key={n.id}
+          notification={n}
+          onMarkRead={onMarkRead}
+        />
+      ))}
+    </ul>
+  );
+};

@@ -108,7 +108,7 @@ export function UserMenu({ trigger }: UserMenuProps) {
                       <div
                         className="w-12 h-12 rounded-full text-white
                         flex items-center justify-center font-semibold text-lg
-                        bg-gradient-to-br from-[#FF6B35] via-[#2A9D8F] to-[#F4A261]"
+                        bg-green-700"
                       >
                         {getInitials(name)}
                       </div>

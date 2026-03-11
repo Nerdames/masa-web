@@ -224,13 +224,13 @@ export default function Summary({ cardsData, loading = false }: SummaryProps) {
           initial={{ opacity: 0, height: 0 }}
           animate={{ opacity: 1, height: "auto" }}
           exit={{ opacity: 0, height: 0 }}
-          className="overflow-hidden py-4"
+          className="overflow-hidden"
         >
           <div className="relative group">
 
             {/* Cards */}
             <div
-              className="grid gap-4 px-2"
+              className="grid gap-3"
               style={{ gridTemplateColumns: `repeat(${columnCount}, minmax(0,1fr))` }}
             >
               {showSkeletons
