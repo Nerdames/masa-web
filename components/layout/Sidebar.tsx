@@ -42,9 +42,9 @@ const MAIN_ITEMS: SidebarItem[] = [
 ];
 
 const MANAGEMENT_ITEMS: SidebarItem[] = [
-  { key: "personnel", name: "Personnel", href: "/dashboard/settings/personnels", icon: "bx-user" },
-  { key: "branches", name: "Branches", href: "/dashboard/settings/branches", icon: "bx-buildings" },
-  { key: "organizations", name: "Organizations", href: "/dashboard/settings/organizations", icon: "bx-globe" },
+  { key: "personnel", name: "Personnel", href: "/dashboard/personnels", icon: "bx-user" },
+  { key: "branches", name: "Branches", href: "/dashboard/branches", icon: "bx-buildings" },
+  { key: "organizations", name: "Organizations", href: "/dashboard/organizations", icon: "bx-globe" },
 ];
 
 const SECONDARY_ITEMS: SidebarItem[] = [
@@ -56,8 +56,8 @@ const SECONDARY_ITEMS: SidebarItem[] = [
 /* --------------------------------------------- */
 
 const SIDEBAR_MOTION = {
-  expanded: { width: 232 },
-  collapsed: { width: 64 },
+  expanded: { width: 200 },
+  collapsed: { width: 52 },
 };
 
 /* --------------------------------------------- */
@@ -89,7 +89,7 @@ const SidebarItemLink = React.memo(function SidebarItemLink({
       {active && (
         <motion.span
           layoutId="sidebar-active"
-          className="absolute inset-0 rounded-md bg-green-700"
+          className="absolute inset-0 rounded-md bg-blue-600"
           transition={{ type: "spring", stiffness: 480, damping: 38 }}
         />
       )}
@@ -306,9 +306,9 @@ function Sidebar() {
           action: () => (window.location.href = "/dashboard/settings/profile"),
         },
         {
-          label: "Settings",
+          label: "Preferences",
           icon: "bx-cog",
-          action: () => (window.location.href = "/dashboard/settings"),
+          action: () => (window.location.href = "/dashboard/settings/preferences"),
         },
         {
           label: "Log out",

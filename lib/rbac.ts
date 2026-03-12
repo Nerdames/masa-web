@@ -36,7 +36,6 @@ export const PAGE_PERMISSIONS = {
   "/dashboard/sales": [
     Role.ADMIN,
     Role.MANAGER,
-    Role.SALES,
     Role.CASHIER,
   ],
 
@@ -68,12 +67,9 @@ export const PAGE_PERMISSIONS = {
  * Only ADMIN or OrgOwner allowed (blocked by proxy)
  */
 export const MANAGEMENT_ROUTES = [
-  "/dashboard/settings",
-  "/dashboard/settings/branches",
-  "/dashboard/settings/organizations",
-  "/dashboard/settings/personnels",
-  "/dashboard/settings/preferences",
-  "/dashboard/settings/products",
+  "/dashboard/personnels",
+  "/dashboard/branches",
+  "/dashboard/organizations",
 ] as const;
 
 
@@ -83,6 +79,7 @@ export const MANAGEMENT_ROUTES = [
  */
 export const PERSONAL_ROUTES = [
   "/dashboard/settings/profile",
+  "/dashboard/settings/preferences",
   "/dashboard/settings/notifications",
 ] as const;
 

@@ -37,7 +37,7 @@ export default function DashboardRootLayout({
 
         {/* Main Content */}
         <main
-          className={`flex-1 overflow-y-auto transition-opacity duration-500 ${
+          className={`flex-1 transition-opacity duration-500 ${
             status === "loading" ? "opacity-0" : "opacity-100"
           }`}
         >

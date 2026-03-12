@@ -9,20 +9,14 @@ import SummarySettingsModal, {
 } from "@/components/modal/SummarySettingsModal";
 
 /* ---------------- Preference Keys ---------------- */
-
-const VISIBILITY_KEY = "summary"; 
-const LAYOUT_KEY = "summary-layout"; 
-
+const VISIBILITY_KEY = "summary";
+const LAYOUT_KEY = "summary-layout";
 const DEFAULT_COLUMNS = 3;
 const DEFAULT_VISIBLE_COUNT = 3;
 const SAVE_DEBOUNCE_MS = 1000;
 
 /* ---------------- Route Icon Map ---------------- */
-
-const ROUTE_ICON_MAP: Record<
-  string,
-  { icon: string; color: string; border: string }
-> = {
+const ROUTE_ICON_MAP: Record<string, { icon: string; color: string; border: string }> = {
   sales: { icon: "bx-chart", color: "bg-blue-50 text-blue-600", border: "border-blue-100" },
   customers: { icon: "bx-group", color: "bg-pink-50 text-pink-600", border: "border-pink-100" },
   vendors: { icon: "bx-store", color: "bg-green-50 text-green-600", border: "border-green-100" },
@@ -38,7 +32,6 @@ const ROUTE_ICON_MAP: Record<
 };
 
 /* ---------------- Types ---------------- */
-
 export type SummaryCard = {
   id: string;
   title: string;
@@ -52,7 +45,6 @@ interface SummaryProps {
 }
 
 /* ---------------- Component ---------------- */
-
 export default function Summary({ cardsData, loading = false }: SummaryProps) {
   const { data: session, status } = useSession();
   const pathname = usePathname();
@@ -62,69 +54,59 @@ export default function Summary({ cardsData, loading = false }: SummaryProps) {
   const userId = session?.user?.id;
   const organizationId = session?.user?.organizationId;
 
-  /* ---------------- Page Key ---------------- */
-
   const pageKey = useMemo(() => {
     if (!pathname) return "unknown-page";
-
     const segments = pathname.split("/").filter(Boolean);
-    const key = segments[segments.length - 1] || "overview";
-
-    return `${key}-page`;
+    return `${segments[segments.length - 1] || "overview"}-page`;
   }, [pathname]);
 
   /* ---------------- Default Layout ---------------- */
-
-  const getDefaultLayout = useCallback((): SummarySettingsState => {
-    return {
-      visibleCardIds: cardsData.slice(0, DEFAULT_VISIBLE_COUNT).map((c) => c.id),
-      cardOrder: cardsData.map((c) => c.id),
-      maxColumns: DEFAULT_COLUMNS,
-      showTooltips: true,
-      showIcons: true,
-    };
-  }, [cardsData]);
+  const getDefaultLayout = useCallback((): SummarySettingsState => ({
+    visibleCardIds: cardsData.slice(0, DEFAULT_VISIBLE_COUNT).map(c => c.id),
+    cardOrder: cardsData.map(c => c.id),
+    columns: DEFAULT_COLUMNS,
+    showTooltips: true,
+    showIcons: true,
+    borderRadius: "rounded-2xl",
+    cardBg: "bg-white",
+    borderColor: "border-gray-100",
+    shadow: "shadow-sm",
+    padding: "p-4",
+    titleSize: "text-sm",
+    valueSize: "text-2xl",
+    fontWeight: "font-bold",
+    align: "left",
+    showFooter: true,
+    hoverEffect: "lift",
+    animation: "fade",
+    gap: "gap-4",
+    density: "comfortable",
+  }), [cardsData]);
 
   /* ---------------- State ---------------- */
-
-  const [layout, setLayout] = useState<SummarySettingsState>(() =>
-    getDefaultLayout()
-  );
-
+  const [layout, setLayout] = useState<SummarySettingsState>(() => getDefaultLayout());
   const [showSummary, setShowSummary] = useState(true);
   const [prefsLoaded, setPrefsLoaded] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
 
-  /* ---------------- Fetch Logic ---------------- */
-
+  /* ---------------- Fetch Preferences ---------------- */
   const fetchPreferences = useCallback(async () => {
     if (!organizationId || !userId || status !== "authenticated") return;
 
     try {
+      // Visibility
       const visibilityRes = await fetch(
         `/api/preferences?category=LAYOUT&key=${VISIBILITY_KEY}&target=${pageKey}`
       );
       const visibilityData = await visibilityRes.json();
+      setShowSummary(visibilityData?.preference !== false);
 
-      if (visibilityData.success && visibilityData.preference !== null) {
-        const prefVal = visibilityData.preference;
-        setShowSummary(prefVal === false ? false : true);
-      }
-
+      // Layout
       const layoutRes = await fetch(
         `/api/preferences?category=LAYOUT&key=${LAYOUT_KEY}&target=${pageKey}`
       );
       const layoutData = await layoutRes.json();
-
-      if (layoutData.success && layoutData.preference) {
-        setLayout({
-          ...getDefaultLayout(),
-          ...layoutData.preference,
-          showSummary: true,
-        });
-      } else {
-        setLayout(getDefaultLayout());
-      }
+      setLayout(layoutData?.preference ? { ...getDefaultLayout(), ...layoutData.preference } : getDefaultLayout());
     } catch (err) {
       console.error("Preference fetch failed", err);
     } finally {
@@ -132,26 +114,13 @@ export default function Summary({ cardsData, loading = false }: SummaryProps) {
     }
   }, [organizationId, userId, status, pageKey, getDefaultLayout]);
 
-  /* ---------------- Effects ---------------- */
-
-  useEffect(() => {
-    if (cardsData.length > 0) {
-      fetchPreferences();
-    }
-  }, [fetchPreferences, cardsData.length]);
-
-  useEffect(() => {
-    const handleGlobalUpdate = () => fetchPreferences();
-    window.addEventListener("preference-update", handleGlobalUpdate);
-    return () => window.removeEventListener("preference-update", handleGlobalUpdate);
-  }, [fetchPreferences]);
+  useEffect(() => { if (cardsData.length > 0) fetchPreferences(); }, [fetchPreferences, cardsData.length]);
+  useEffect(() => { window.addEventListener("preference-update", fetchPreferences); return () => window.removeEventListener("preference-update", fetchPreferences); }, [fetchPreferences]);
 
   /* ---------------- Save Layout ---------------- */
-
   const saveLayout = useCallback(
     (newLayout: SummarySettingsState) => {
       if (!organizationId || !userId) return;
-
       if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
 
       saveTimeoutRef.current = setTimeout(async () => {
@@ -176,34 +145,26 @@ export default function Summary({ cardsData, loading = false }: SummaryProps) {
   );
 
   /* ---------------- Derived ---------------- */
-
-  const columnCount = layout.maxColumns;
-  const showSkeletons = loading || !prefsLoaded || status === "loading";
-
   const visibleCards = useMemo(() => {
-    const map = new Map(cardsData.map((c) => [c.id, c]));
+    const map = new Map(cardsData.map(c => [c.id, c]));
     return layout.cardOrder
-      .map((id) => map.get(id))
+      .map(id => map.get(id))
       .filter((c): c is SummaryCard => !!c && layout.visibleCardIds.includes(c.id))
-      .slice(0, columnCount);
-  }, [layout, columnCount, cardsData]);
+      .slice(0, layout.columns);
+  }, [layout, cardsData]);
 
   const routeIconConfig = useMemo(() => {
     if (!pathname) return ROUTE_ICON_MAP.default;
-
     const segments = pathname.split("/").filter(Boolean);
-    const relevantSegments = segments[0] === "dashboard" ? segments.slice(1) : segments;
-    const key = relevantSegments[relevantSegments.length - 1] || "overview";
-
-    return ROUTE_ICON_MAP[key] ?? ROUTE_ICON_MAP.default;
+    const key = segments[0] === "dashboard" ? segments.slice(1).pop() : segments.pop();
+    return ROUTE_ICON_MAP[key ?? "default"] ?? ROUTE_ICON_MAP.default;
   }, [pathname]);
-
-  /* ---------------- UI Render Guard ---------------- */
 
   if (prefsLoaded && !showSummary) return null;
 
   return (
     <>
+      {/* Modal */}
       <SummarySettingsModal
         pageKey={pageKey}
         open={settingsOpen}
@@ -218,6 +179,7 @@ export default function Summary({ cardsData, loading = false }: SummaryProps) {
         }}
       />
 
+      {/* Summary Grid */}
       <AnimatePresence mode="wait">
         <motion.div
           key="summary-content"
@@ -227,62 +189,44 @@ export default function Summary({ cardsData, loading = false }: SummaryProps) {
           className="overflow-hidden"
         >
           <div className="relative group">
-
-            {/* Cards */}
             <div
               className="grid gap-3"
-              style={{ gridTemplateColumns: `repeat(${columnCount}, minmax(0,1fr))` }}
+              style={{ gridTemplateColumns: `repeat(${layout.columns}, minmax(0,1fr))` }}
             >
-              {showSkeletons
-                ? Array.from({ length: columnCount }).map((_, i) => (
+              {loading || !prefsLoaded
+                ? Array.from({ length: layout.columns }).map((_, i) => (
                     <div
                       key={i}
-                      className="bg-white p-5 rounded-2xl border border-gray-100 shadow-sm animate-pulse h-[112px]"
+                      className={`p-5 border animate-pulse h-[112px] ${layout.borderRadius} ${layout.cardBg} ${layout.borderColor} ${layout.shadow}`}
                     />
                   ))
-                : visibleCards.map((card) => {
+                : visibleCards.map(card => {
                     const { icon, color, border } = routeIconConfig;
                     const isPositive = (card.change ?? 0) >= 0;
-
                     return (
                       <div
                         key={card.id}
-                        className="bg-white p-5 rounded-2xl border border-gray-100 shadow-sm"
+                        className={`p-5 border ${layout.borderRadius} ${layout.cardBg} ${layout.borderColor} ${layout.shadow}`}
                       >
                         <div className="flex justify-between items-start">
                           <div>
-                            <p className="text-[10px] font-bold text-gray-400 uppercase">
-                              {card.title}
-                            </p>
+                            <p className="text-[10px] font-bold text-gray-400 uppercase">{card.title}</p>
                             <h3 className="text-2xl font-extrabold text-gray-900">
-                              {typeof card.value === "number"
-                                ? card.value.toLocaleString()
-                                : card.value}
+                              {typeof card.value === "number" ? card.value.toLocaleString() : card.value}
                             </h3>
                           </div>
-
                           {layout.showIcons && (
-                            <div
-                              className={`w-9 h-9 rounded-xl flex items-center justify-center border ${border} ${color}`}
-                            >
+                            <div className={`w-9 h-9 rounded-xl flex items-center justify-center border ${border} ${color}`}>
                               <i className={`bx ${icon}`} />
                             </div>
                           )}
                         </div>
 
                         <div className="mt-4 flex items-center gap-2">
-                          <div
-                            className={`px-1.5 py-0.5 rounded-md text-[10px] font-bold ${
-                              isPositive
-                                ? "bg-emerald-50 text-emerald-600"
-                                : "bg-red-50 text-red-600"
-                            }`}
-                          >
+                          <div className={`px-1.5 py-0.5 rounded-md text-[10px] font-bold ${isPositive ? "bg-emerald-50 text-emerald-600" : "bg-red-50 text-red-600"}`}>
                             {Math.abs(card.change ?? 0)}%
                           </div>
-                          <span className="text-[10px] text-gray-400">
-                            vs last month
-                          </span>
+                          <span className="text-[10px] text-gray-400">vs last month</span>
                         </div>
                       </div>
                     );
@@ -298,13 +242,11 @@ export default function Summary({ cardsData, loading = false }: SummaryProps) {
                 >
                   <i className="bx bx-cog text-lg text-gray-400" />
                 </button>
-
                 <div className="absolute right-10 top-1/2 -translate-y-1/2 whitespace-nowrap rounded-md bg-gray-900 text-white text-[10px] px-2 py-1 opacity-0 group-hover/edit:opacity-100 transition">
                   Edit
                 </div>
               </div>
             </div>
-
           </div>
         </motion.div>
       </AnimatePresence>

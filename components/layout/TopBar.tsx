@@ -3,14 +3,11 @@
 import { useSession } from "next-auth/react";
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { NotificationsButton } from "@/components/shared/NotificationsButton";
-import { Tooltip } from "@/components/feedback/Tooltip";
 import { UserMenu } from "@/components/shared/UserMenu";
 import { getInitials } from "@/lib/getInitials";
 
 export default function TopBar() {
   const { data: session, status } = useSession({ required: false });
-  const [unreadCount, setUnreadCount] = useState(0);
   const router = useRouter();
 
   const user = session?.user;
@@ -26,7 +23,7 @@ export default function TopBar() {
   }
 
   return (
-    <header className="w-full h-10 flex items-center px-3 border-b border-gray-200 bg-white">
+    <header className="w-full h-10 flex justify-between items-center px-3 border-b border-gray-200 bg-white">
 
       {/* Left - Logo */}
       <div
@@ -41,43 +38,12 @@ export default function TopBar() {
           M
         </div>
 
-        <span className="text-sm font-semibold truncate max-w-[220px] text-black-700 group-hover:text-green-700 transition-colors">
+        <span className="text-sm font-semibold truncate max-w-[220px] text-black-700 group-hover:text-blue-500 transition-colors">
           {user?.organizationName || "MASA"}
         </span>
       </div>
 
-      {/* Center */}
-      <div className="flex-1 flex justify-center px-4 min-w-0">
-        <div className="flex items-center gap-2 w-full max-w-lg min-w-0">
 
-          <Tooltip side="bottom" content="Search the dashboard">
-            <input
-              type="text"
-              placeholder="Search..."
-              className="flex-1 min-w-0 px-2 py-1 text-sm border border-gray-300 rounded
-              focus:outline-none focus:ring-1 focus:ring-[#2A9D8F] transition"
-            />
-          </Tooltip>
-
-          {user && (
-            <Tooltip
-              side="bottom"
-              content={
-                unreadCount === 0
-                  ? "No new notifications"
-                  : unreadCount === 1
-                  ? "1 unread notification"
-                  : `${unreadCount} unread notifications`
-              }
-            >
-              <div className="ml-2">
-                <NotificationsButton onUnreadChange={setUnreadCount} />
-              </div>
-            </Tooltip>
-          )}
-
-        </div>
-      </div>
 
       {/* Right */}
       <div className="flex items-center gap-2 flex-shrink-0">
@@ -91,7 +57,7 @@ export default function TopBar() {
                 <div
                   className="w-8 h-8 rounded-full text-white
                   flex items-center justify-center font-semibold text-sm
-                  bg-green-700"
+                  bg-blue-600"
                 >
                   {getInitials(user.name)}
                 </div>

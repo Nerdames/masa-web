@@ -82,6 +82,13 @@ enum AccountType {
   POS
 }
 
+enum TransactionType {
+  PAYMENT
+  REFUND
+  TRANSFER
+  ADJUSTMENT
+}
+
 enum StockMovementType {
   IN
   OUT
@@ -122,6 +129,11 @@ enum DraftSaleStatus {
   ABANDONED
 }
 
+enum POSSessionStatus {
+  OPEN
+  CLOSED
+}
+
 enum PreferenceScope {
   USER
   BRANCH
@@ -158,6 +170,7 @@ model Organization {
   orders               Order[]
   invoices             Invoice[]
   sales                Sale[]
+  posSessions          POSSession[]           @relation("OrgPOSSessions")
   notifications        Notification[]
   activityLogs         ActivityLog[]
   branchProducts       BranchProduct[]
@@ -202,6 +215,7 @@ model Branch {
   orders            Order[]
   invoices          Invoice[]
   sales             Sale[]
+  posSessions       POSSession[]           @relation("BranchPOSSessions")
   activityLogs      ActivityLog[]
   notifications     Notification[]
   branchAssignments BranchAssignment[]     @relation("BranchAssignments")
@@ -214,6 +228,39 @@ model Branch {
   expenses          Expense[]
 
   @@index([organizationId])
+  @@index([organizationId, deletedAt])
+}
+
+////////////////////////////////////
+// POS SESSION 
+////////////////////////////////////
+
+model POSSession {
+  id             String           @id @default(cuid())
+  organizationId String
+  branchId       String
+  cashierId      String
+  
+  openedAt       DateTime         @default(now())
+  closedAt       DateTime?
+  openingBalance Decimal          @db.Decimal(18, 2)
+  closingBalance Decimal?         @db.Decimal(18, 2)
+  status         POSSessionStatus @default(OPEN)
+
+  organization Organization        @relation("OrgPOSSessions", fields: [organizationId], references: [id])
+  branch       Branch              @relation("BranchPOSSessions", fields: [branchId], references: [id])
+  cashier      AuthorizedPersonnel @relation("CashierPOSSessions", fields: [cashierId], references: [id])
+  
+  receipts   Receipt[]   @relation("POSSessionReceipts")
+  draftSales DraftSale[] @relation("POSSessionDraftSales")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([branchId])
+  @@index([cashierId])
+  @@index([cashierId, status])
+  @@index([status])
 }
 
 ////////////////////////////////////
@@ -226,6 +273,7 @@ model AuthorizedPersonnel {
   email     String
   password  String
   staffCode String?   @unique
+  role      Role      @default(CASHIER)
   disabled  Boolean   @default(false)
   deletedAt DateTime?
   lastLogin DateTime?
@@ -257,13 +305,14 @@ model AuthorizedPersonnel {
   organization Organization @relation("OrgMembers", fields: [organizationId], references: [id])
   branch       Branch?      @relation(fields: [branchId], references: [id])
 
+  posSessions            POSSession[]            @relation("CashierPOSSessions")
   branchAssignments      BranchAssignment[]
   orders                 Order[]                 @relation("SalespersonOrders")
   invoicesIssued         Invoice[]               @relation("IssuedInvoices")
   invoicesPaid           Payment[]               @relation("InvoicePaidBy")
   salesAttended          Sale[]                  @relation("AttendantSales")
   activityLogs           ActivityLog[]
-  stockMoves             StockMovement[]
+  handledStockMoves      StockMovement[]         @relation("HandledStockMoves")
   financeAccounts        FinanceAccount[]
   sessions               Session[]
   ownedOrganizations     Organization[]          @relation("OrgOwner")
@@ -274,6 +323,22 @@ model AuthorizedPersonnel {
   draftSales             DraftSale[]             @relation("CashierDraftSales")
   createdStockTransfers  StockTransfer[]         @relation("CreatedStockTransfers")
   approvedStockTransfers StockTransfer[]         @relation("ApprovedStockTransfers")
+
+  // Master Data Audit Relations
+  productsCreated   Product[]  @relation("ProductCreatedBy")
+  productsUpdated   Product[]  @relation("ProductUpdatedBy")
+  categoriesCreated Category[] @relation("CategoryCreatedBy")
+  categoriesUpdated Category[] @relation("CategoryUpdatedBy")
+  vendorsCreated    Vendor[]   @relation("VendorCreatedBy")
+  vendorsUpdated    Vendor[]   @relation("VendorUpdatedBy")
+  customersCreated  Customer[] @relation("CustomerCreatedBy")
+  customersUpdated  Customer[] @relation("CustomerUpdatedBy")
+  invoicesUpdated   Invoice[]  @relation("InvoiceUpdatedBy")
+  paymentsUpdated   Payment[]  @relation("PaymentUpdatedBy")
+  stockMovementsUpdated StockMovement[] @relation("StockMovementUpdatedBy")
+  receiptsUpdated Receipt[] @relation("ReceiptUpdatedBy")
+  expensesCreated Expense[] @relation("ExpenseCreatedBy")
+  expensesUpdated Expense[] @relation("ExpenseUpdatedBy")
 
   @@unique([organizationId, email])
   @@index([branchId])
@@ -296,10 +361,10 @@ model ApprovalRequest {
   requesterId    String
   approverId     String?
 
-  actionType    CriticalAction
-  status        ApprovalStatus @default(PENDING)
-  requiredRole  Role           @default(MANAGER)
-  changes       Json
+  actionType   CriticalAction
+  status       ApprovalStatus @default(PENDING)
+  requiredRole Role           @default(MANAGER)
+  changes      Json
   rejectionNote String?
 
   targetType String?
@@ -310,8 +375,8 @@ model ApprovalRequest {
   createdAt DateTime  @default(now())
   updatedAt DateTime  @updatedAt
 
-  organization Organization         @relation("OrgApprovals", fields: [organizationId], references: [id])
-  requester    AuthorizedPersonnel  @relation("Requester", fields: [requesterId], references: [id])
+  organization Organization        @relation("OrgApprovals", fields: [organizationId], references: [id])
+  requester    AuthorizedPersonnel @relation("Requester", fields: [requesterId], references: [id])
   approver     AuthorizedPersonnel? @relation("Approver", fields: [approverId], references: [id])
 
   stockMovements StockMovement[] @relation("ApprovalStockMoves")
@@ -323,15 +388,18 @@ model ApprovalRequest {
 }
 
 model BranchAssignment {
-  id          String @id @default(cuid())
+  id          String  @id @default(cuid())
   personnelId String
   branchId    String
   role        Role
+  isPrimary   Boolean @default(false)
 
   personnel AuthorizedPersonnel @relation(fields: [personnelId], references: [id])
   branch    Branch              @relation("BranchAssignments", fields: [branchId], references: [id])
 
   @@unique([personnelId, branchId])
+  // This unique index prevents a user from having two primary branches
+  @@unique([personnelId, isPrimary], map: "one_primary_branch_per_personnel") 
   @@index([personnelId])
   @@index([branchId])
 }
@@ -349,20 +417,29 @@ model Customer {
   address        String?
   type           CustomerType
 
-  totalOrders Int       @default(0)
-  totalSpent  Float     @default(0)
+  totalOrders Int      @default(0)
+  totalSpent  Decimal  @default(0) @db.Decimal(18, 2)
   deletedAt   DateTime?
+
+  createdById String?
+  updatedById String?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   organization      Organization           @relation(fields: [organizationId], references: [id])
+  createdBy         AuthorizedPersonnel?   @relation("CustomerCreatedBy", fields: [createdById], references: [id])
+  updatedBy         AuthorizedPersonnel?   @relation("CustomerUpdatedBy", fields: [updatedById], references: [id])
+  
   orders            Order[]
   invoices          Invoice[]
   sales             Sale[]                 @relation("CustomerSales")
   tags              CustomerTag[]
   groups            CustomerGroup[]        @relation("CustomerGroups")
   customerSummaries CustomerOrderSummary[]
+
+  @@index([organizationId])
+  @@index([organizationId, deletedAt])
 }
 
 model CustomerTag {
@@ -373,10 +450,12 @@ model CustomerTag {
   deletedAt      DateTime?
 
   createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   organization Organization @relation(fields: [organizationId], references: [id])
   customer     Customer     @relation(fields: [customerId], references: [id])
 
+  @@unique([customerId, name])
   @@index([organizationId])
   @@index([customerId])
 }
@@ -389,10 +468,12 @@ model CustomerGroup {
   deletedAt      DateTime?
 
   createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   organization Organization @relation(fields: [organizationId], references: [id])
   customers    Customer[]   @relation("CustomerGroups")
 
+  @@unique([organizationId, name])
   @@index([organizationId])
 }
 
@@ -405,17 +486,23 @@ model Product {
   organizationId String
   name           String
   sku            String
-  barcode        String?
+  barcode        String? @unique
   description    String?
   categoryId     String?
   costPrice      Decimal   @db.Decimal(18, 2)
   currency       String    @default("NGN")
   deletedAt      DateTime?
+  
+  createdById    String?
+  updatedById    String?
+
   createdAt      DateTime  @default(now())
   updatedAt      DateTime  @updatedAt
 
-  organization Organization @relation(fields: [organizationId], references: [id])
-  category     Category?    @relation(fields: [categoryId], references: [id])
+  organization Organization         @relation(fields: [organizationId], references: [id])
+  category     Category?            @relation(fields: [categoryId], references: [id])
+  createdBy    AuthorizedPersonnel? @relation("ProductCreatedBy", fields: [createdById], references: [id])
+  updatedBy    AuthorizedPersonnel? @relation("ProductUpdatedBy", fields: [updatedById], references: [id])
 
   branches           BranchProduct[]
   orderItems         OrderItem[]         @relation("ProductOrderItems")
@@ -427,6 +514,7 @@ model Product {
   @@unique([organizationId, sku])
   @@unique([organizationId, barcode])
   @@index([organizationId])
+  @@index([organizationId, deletedAt])
   @@index([categoryId])
 }
 
@@ -462,7 +550,9 @@ model BranchProduct {
 
   @@unique([branchId, productId])
   @@index([organizationId])
+  @@index([organizationId, deletedAt])
   @@index([branchId])
+  @@index([branchId, deletedAt])
   @@index([productId])
   @@index([vendorId])
   @@index([stock])
@@ -471,7 +561,7 @@ model BranchProduct {
 }
 
 ////////////////////////////////////
-// CATEGORIES, VENDORS & ORDERS
+// CATEGORIES, VENDORS
 ////////////////////////////////////
 
 model Category {
@@ -480,12 +570,20 @@ model Category {
   name           String
   description    String?
   deletedAt      DateTime?
-  createdAt      DateTime  @default(now())
+  
+  createdById    String?
+  updatedById    String?
 
-  organization Organization @relation(fields: [organizationId], references: [id])
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  organization Organization         @relation(fields: [organizationId], references: [id])
+  createdBy    AuthorizedPersonnel? @relation("CategoryCreatedBy", fields: [createdById], references: [id])
+  updatedBy    AuthorizedPersonnel? @relation("CategoryUpdatedBy", fields: [updatedById], references: [id])
   products     Product[]
   expenses     Expense[]
 
+  @@unique([organizationId, name])
   @@index([organizationId])
 }
 
@@ -498,10 +596,15 @@ model Vendor {
   address        String?
   deletedAt      DateTime?
 
+  createdById    String?
+  updatedById    String?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  organization   Organization    @relation(fields: [organizationId], references: [id])
+  organization   Organization         @relation(fields: [organizationId], references: [id])
+  createdBy      AuthorizedPersonnel? @relation("VendorCreatedBy", fields: [createdById], references: [id])
+  updatedBy      AuthorizedPersonnel? @relation("VendorUpdatedBy", fields: [updatedById], references: [id])
   branchProducts BranchProduct[]
   expenses       Expense[]
 
@@ -543,11 +646,12 @@ model Order {
   @@index([organizationId, branchId, status])
   @@index([organizationId, deletedAt])
   @@index([branchId, createdAt])
+  @@index([salespersonId])
+  @@index([customerId])
 }
 
 model OrderItem {
   id              String @id @default(cuid())
-  organizationId  String
   orderId         String
   branchProductId String
   productId       String
@@ -558,9 +662,13 @@ model OrderItem {
   discount  Decimal? @default(0) @db.Decimal(18, 2)
   tax       Decimal? @default(0) @db.Decimal(18, 2)
 
-  order         Order         @relation(fields: [orderId], references: [id])
-  branchProduct BranchProduct @relation("BranchProductOrderItems", fields: [branchProductId], references: [id])
-  product       Product       @relation("ProductOrderItems", fields: [productId], references: [id])
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  order         Order           @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  branchProduct BranchProduct   @relation("BranchProductOrderItems", fields: [branchProductId], references: [id])
+  product       Product         @relation("ProductOrderItems", fields: [productId], references: [id])
+  stockMoves    StockMovement[]
 
   @@index([orderId])
   @@index([branchProductId])
@@ -573,8 +681,9 @@ model Invoice {
   branchId       String
   orderId        String @unique
 
-  issuedById String
-  customerId String?
+  issuedById  String
+  updatedById String?
+  customerId  String?
 
   subtotal   Decimal?      @db.Decimal(18, 2)
   total      Decimal?      @db.Decimal(18, 2)
@@ -594,10 +703,12 @@ model Invoice {
   sales    Sale[]
   receipts Receipt[]
 
+  // Relations
   organization Organization        @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   branch       Branch              @relation(fields: [branchId], references: [id])
   order        Order               @relation(fields: [orderId], references: [id], onDelete: Cascade)
   issuedBy     AuthorizedPersonnel @relation("IssuedInvoices", fields: [issuedById], references: [id])
+  updatedBy    AuthorizedPersonnel? @relation("InvoiceUpdatedBy", fields: [updatedById], references: [id])
   customer     Customer?           @relation(fields: [customerId], references: [id])
   checkHash    String?
 
@@ -611,6 +722,7 @@ model Payment {
   organizationId String
   invoiceId      String
   cashierId      String
+  updatedById    String?      // For audit/compliance
   receiptId      String?
 
   method    PaymentMethod
@@ -622,11 +734,16 @@ model Payment {
   reference  String?
   receivedAt DateTime @default(now())
 
-  invoice Invoice             @relation(fields: [invoiceId], references: [id])
-  cashier AuthorizedPersonnel @relation("InvoicePaidBy", fields: [cashierId], references: [id])
-  receipt Receipt?            @relation("PaymentReceipt", fields: [receiptId], references: [id])
+  // Relations
+  invoice   Invoice             @relation(fields: [invoiceId], references: [id])
+  cashier   AuthorizedPersonnel @relation("InvoicePaidBy", fields: [cashierId], references: [id])
+  updatedBy AuthorizedPersonnel? @relation("PaymentUpdatedBy", fields: [updatedById], references: [id])
+  receipt   Receipt?            @relation("PaymentReceipt", fields: [receiptId], references: [id])
 
   @@index([invoiceId])
+  @@index([cashierId])
+  @@index([updatedById])
+  @@index([receiptId])
   @@index([method])
   @@index([status])
   @@index([receivedAt])
@@ -639,10 +756,11 @@ model Payment {
 ////////////////////////////////////
 
 model DraftSale {
-  id             String @id @default(cuid())
+  id             String  @id @default(cuid())
   organizationId String
   branchId       String
   cashierId      String
+  posSessionId   String?
 
   status    DraftSaleStatus @default(OPEN)
   deletedAt DateTime?
@@ -655,11 +773,14 @@ model DraftSale {
   organization Organization        @relation("OrgDraftSales", fields: [organizationId], references: [id])
   branch       Branch              @relation("BranchDraftSales", fields: [branchId], references: [id])
   cashier      AuthorizedPersonnel @relation("CashierDraftSales", fields: [cashierId], references: [id])
+  posSession   POSSession?         @relation("POSSessionDraftSales", fields: [posSessionId], references: [id])
+
+  @@index([cashierId])
+  @@index([cashierId, posSessionId])
 }
 
 model DraftSaleItem {
   id              String @id @default(cuid())
-  organizationId  String
   draftSaleId     String
   branchProductId String
   productId       String
@@ -667,13 +788,20 @@ model DraftSaleItem {
   quantity  Int
   unitPrice Decimal @db.Decimal(18, 2)
 
-  draftSale     DraftSale     @relation(fields: [draftSaleId], references: [id])
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  draftSale     DraftSale     @relation(fields: [draftSaleId], references: [id], onDelete: Cascade)
   branchProduct BranchProduct @relation(fields: [branchProductId], references: [id])
   product       Product       @relation(fields: [productId], references: [id])
+
+  @@index([draftSaleId])
+  @@index([branchProductId])
+  @@index([productId])
 }
 
 model Sale {
-  id              String @id @default(cuid())
+  id              String   @id @default(cuid())
   organizationId  String
   invoiceId       String
   branchProductId String
@@ -689,10 +817,12 @@ model Sale {
 
   cashierId  String
   customerId String?
-  receipts   Receipt[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+
+  receipts   Receipt[]
+  stockMoves StockMovement[]
 
   organization  Organization        @relation(fields: [organizationId], references: [id])
   invoice       Invoice             @relation(fields: [invoiceId], references: [id])
@@ -702,12 +832,25 @@ model Sale {
   attendant     AuthorizedPersonnel @relation("AttendantSales", fields: [cashierId], references: [id])
   customer      Customer?           @relation("CustomerSales", fields: [customerId], references: [id])
 
+  // Prevent duplicate product lines in the same invoice
+  @@unique([invoiceId, branchProductId])
+
+  // Multi-tenant performance
   @@index([organizationId, branchId])
+  @@index([organizationId, deletedAt])
+  @@index([organizationId, createdAt])
+
+  // Foreign key lookup indexes
   @@index([invoiceId])
   @@index([productId])
   @@index([branchProductId])
   @@index([cashierId])
   @@index([customerId])
+
+  // Reporting / analytics indexes
+  @@index([createdAt])
+  @@index([branchId, createdAt])
+  @@index([cashierId, createdAt])
 }
 
 ////////////////////////////////////
@@ -721,32 +864,101 @@ model StockMovement {
   branchProductId String
   productId       String
   type            StockMovementType
-  quantity        Int
+  quantity        Int               // always positive
   unitCost        Decimal           @db.Decimal(18, 2)
   totalCost       Decimal           @db.Decimal(18, 2)
+  reason          String?
   approvedAt      DateTime?
   approvalId      String?
-  reason          String?
-  deletedAt       DateTime?
   handledById     String?
+  updatedById     String?           // For audit/compliance
+  deletedAt       DateTime?
+
+  saleId              String?
+  orderItemId         String?
+  stockTransferItemId String?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  organization  Organization         @relation(fields: [organizationId], references: [id])
-  branch        Branch               @relation("BranchStockMoves", fields: [branchId], references: [id])
-  branchProduct BranchProduct        @relation("BranchProductStockMoves", fields: [branchProductId], references: [id])
-  product       Product              @relation(fields: [productId], references: [id])
-  approval      ApprovalRequest?     @relation("ApprovalStockMoves", fields: [approvalId], references: [id])
-  handledBy     AuthorizedPersonnel? @relation(fields: [handledById], references: [id])
+  // Relations
+  organization      Organization         @relation(fields: [organizationId], references: [id])
+  branch            Branch               @relation("BranchStockMoves", fields: [branchId], references: [id])
+  branchProduct     BranchProduct        @relation("BranchProductStockMoves", fields: [branchProductId], references: [id])
+  product           Product              @relation(fields: [productId], references: [id])
+  approval          ApprovalRequest?     @relation("ApprovalStockMoves", fields: [approvalId], references: [id])
+  handledBy         AuthorizedPersonnel? @relation("HandledStockMoves", fields: [handledById], references: [id])
+  updatedBy         AuthorizedPersonnel? @relation("StockMovementUpdatedBy", fields: [updatedById], references: [id])
+  sale              Sale?                @relation(fields: [saleId], references: [id])
+  orderItem         OrderItem?           @relation(fields: [orderItemId], references: [id])
+  stockTransferItem StockTransferItem?   @relation(fields: [stockTransferItemId], references: [id])
 
+  // Indexes for reporting and concurrency
   @@index([organizationId])
+  @@index([organizationId, deletedAt])
   @@index([branchId])
   @@index([branchProductId])
   @@index([productId])
   @@index([type])
   @@index([approvedAt])
   @@index([deletedAt])
+  @@index([branchProductId, type])        // quick stock movement lookups
+  @@index([branchProductId, createdAt])   // for FIFO/LIFO reporting
+  @@index([updatedById])
+}
+
+////////////////////////////////////
+// STOCK TRANSFERS
+////////////////////////////////////
+
+model StockTransfer {
+  id             String              @id @default(cuid())
+  organizationId String
+  fromBranchId   String
+  toBranchId     String
+  status         StockTransferStatus
+  createdById    String
+  approvedById   String?
+  approvedAt     DateTime?
+  deletedAt      DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  organization Organization        @relation("OrgStockTransfers", fields: [organizationId], references: [id])
+  fromBranch   Branch              @relation("BranchTransfersFrom", fields: [fromBranchId], references: [id])
+  toBranch     Branch              @relation("BranchTransfersTo", fields: [toBranchId], references: [id])
+  createdBy    AuthorizedPersonnel @relation("CreatedStockTransfers", fields: [createdById], references: [id])
+  approvedBy   AuthorizedPersonnel? @relation("ApprovedStockTransfers", fields: [approvedById], references: [id])
+
+  items StockTransferItem[]
+
+  @@index([organizationId])
+  @@index([fromBranchId])
+  @@index([toBranchId])
+  @@index([status])
+  @@index([deletedAt])
+}
+
+model StockTransferItem {
+  id              String    @id @default(cuid())
+  stockTransferId String
+  branchProductId String
+  productId       String
+  quantity        Int
+  deletedAt       DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  stockTransfer StockTransfer   @relation(fields: [stockTransferId], references: [id], onDelete: Cascade)
+  branchProduct BranchProduct   @relation(fields: [branchProductId], references: [id])
+  product       Product         @relation(fields: [productId], references: [id])
+  stockMoves    StockMovement[]
+
+  @@index([stockTransferId])
+  @@index([branchProductId])
+  @@index([productId])
 }
 
 ////////////////////////////////////
@@ -757,10 +969,11 @@ model Receipt {
   id              String  @id @default(cuid())
   organizationId  String
   branchId        String
-  personnelId     String
+  personnelId     String            // now required
   saleId          String?
   invoiceId       String?
   branchProductId String?
+  posSessionId    String?
 
   amount    Decimal   @db.Decimal(18, 2)
   currency  String    @default("NGN")
@@ -768,20 +981,26 @@ model Receipt {
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+  updatedById String?                 // optional audit field
 
+  // Relations
   organization  Organization         @relation(fields: [organizationId], references: [id])
   branch        Branch               @relation(fields: [branchId], references: [id])
-  personnel     AuthorizedPersonnel? @relation("PersonnelReceipts", fields: [personnelId], references: [id])
+  personnel     AuthorizedPersonnel  @relation("PersonnelReceipts", fields: [personnelId], references: [id])
+  updatedBy     AuthorizedPersonnel? @relation("ReceiptUpdatedBy", fields: [updatedById], references: [id])
   sale          Sale?                @relation(fields: [saleId], references: [id])
   invoice       Invoice?             @relation(fields: [invoiceId], references: [id])
   branchProduct BranchProduct?       @relation(fields: [branchProductId], references: [id])
+  posSession    POSSession?          @relation("POSSessionReceipts", fields: [posSessionId], references: [id])
   payments      Payment[]            @relation("PaymentReceipt")
 
+  // Indexes
   @@index([organizationId, branchId])
   @@index([saleId])
   @@index([invoiceId])
   @@index([branchProductId])
   @@index([deletedAt])
+  @@index([updatedById])
 }
 
 ////////////////////////////////////
@@ -828,7 +1047,6 @@ model Notification {
   type           NotificationType
   title          String
   message        String
-  read           Boolean          @default(false)
   deletedAt      DateTime?
 
   createdAt DateTime @default(now())
@@ -840,7 +1058,6 @@ model Notification {
 
   @@index([organizationId, branchId])
   @@index([type])
-  @@index([read])
   @@index([deletedAt])
 }
 
@@ -939,7 +1156,7 @@ model FinanceAccount {
 
   transactions Transaction[]
 
-  @@unique([organizationId, name])
+  @@unique([organizationId, branchId, name])
   @@index([organizationId])
   @@index([branchId])
   @@index([personnelId])
@@ -947,11 +1164,11 @@ model FinanceAccount {
 }
 
 model Transaction {
-  id        String  @id @default(cuid())
+  id        String          @id @default(cuid())
   accountId String
-  type      String
-  amount    Decimal @db.Decimal(18, 2)
-  currency  String  @default("NGN")
+  type      TransactionType
+  amount    Decimal         @db.Decimal(18, 2)
+  currency  String          @default("NGN")
   metadata  Json?
 
   createdAt DateTime @default(now())
@@ -981,13 +1198,19 @@ model Expense {
   paidAt         DateTime?
   deletedAt      DateTime?
 
+  createdById    String?
+  updatedById    String?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  organization Organization @relation(fields: [organizationId], references: [id])
-  branch       Branch?      @relation(fields: [branchId], references: [id])
-  vendor       Vendor?      @relation(fields: [vendorId], references: [id])
-  category     Category?    @relation(fields: [categoryId], references: [id])
+  // Relations
+  organization Organization         @relation(fields: [organizationId], references: [id])
+  branch       Branch?              @relation(fields: [branchId], references: [id])
+  vendor       Vendor?              @relation(fields: [vendorId], references: [id])
+  category     Category?            @relation(fields: [categoryId], references: [id])
+  createdBy    AuthorizedPersonnel? @relation("ExpenseCreatedBy", fields: [createdById], references: [id])
+  updatedBy    AuthorizedPersonnel? @relation("ExpenseUpdatedBy", fields: [updatedById], references: [id])
 
   @@index([organizationId, branchId])
   @@index([vendorId])
@@ -1000,17 +1223,17 @@ model Expense {
 ////////////////////////////////////
 
 model CustomerOrderSummary {
-  id                String    @id @default(cuid())
-  organizationId    String
-  branchId          String
-  customerId        String
-  totalOrders       Int       @default(0)
-  totalQuantity     Int       @default(0)
-  totalSpent        Decimal   @default(0) @db.Decimal(18, 2)
-  averageOrderValue Decimal?  @db.Decimal(18, 2)
-  lifetimeValue     Decimal?  @db.Decimal(18, 2)
-  lastOrderAt       DateTime?
-  productBreakdown  Json?
+  id                 String    @id @default(cuid())
+  organizationId     String
+  branchId           String
+  customerId         String
+  totalOrders        Int       @default(0)
+  totalQuantity      Int       @default(0)
+  totalSpent         Decimal   @default(0) @db.Decimal(18, 2)
+  averageOrderValue  Decimal?  @db.Decimal(18, 2)
+  lifetimeValue      Decimal?  @db.Decimal(18, 2)
+  lastOrderAt        DateTime?
+  productBreakdown   Json?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -1019,59 +1242,10 @@ model CustomerOrderSummary {
   branch       Branch       @relation(fields: [branchId], references: [id], onDelete: Cascade)
   customer     Customer     @relation(fields: [customerId], references: [id], onDelete: Cascade)
 
+  @@unique([organizationId, branchId, customerId])
   @@index([organizationId])
   @@index([branchId])
   @@index([customerId])
-}
-
-////////////////////////////////////
-// STOCK TRANSFERS
-////////////////////////////////////
-
-model StockTransfer {
-  id             String              @id @default(cuid())
-  organizationId String
-  fromBranchId   String
-  toBranchId     String
-  status         StockTransferStatus
-  createdById    String
-  approvedById   String?
-  approvedAt     DateTime?
-  deletedAt      DateTime?
-
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  organization Organization         @relation("OrgStockTransfers", fields: [organizationId], references: [id])
-  fromBranch   Branch               @relation("BranchTransfersFrom", fields: [fromBranchId], references: [id])
-  toBranch     Branch               @relation("BranchTransfersTo", fields: [toBranchId], references: [id])
-  createdBy    AuthorizedPersonnel  @relation("CreatedStockTransfers", fields: [createdById], references: [id])
-  approvedBy   AuthorizedPersonnel? @relation("ApprovedStockTransfers", fields: [approvedById], references: [id])
-
-  items StockTransferItem[]
-
-  @@index([organizationId])
-  @@index([fromBranchId])
-  @@index([toBranchId])
-  @@index([status])
-  @@index([deletedAt])
-}
-
-model StockTransferItem {
-  id              String    @id @default(cuid())
-  stockTransferId String
-  branchProductId String
-  productId       String
-  quantity        Int
-  deletedAt       DateTime?
-
-  stockTransfer StockTransfer @relation(fields: [stockTransferId], references: [id])
-  branchProduct BranchProduct @relation(fields: [branchProductId], references: [id])
-  product       Product       @relation(fields: [productId], references: [id])
-
-  @@index([stockTransferId])
-  @@index([branchProductId])
-  @@index([productId])
 }
 
 ////////////////////////////////////
@@ -1092,7 +1266,7 @@ model AuthAccount {
   id_token          String?
   session_state     String?
 
-  personnel AuthorizedPersonnel @relation(fields: [personnelId], references: [id])
+  personnel AuthorizedPersonnel @relation(fields: [personnelId], references: [id], onDelete: Cascade)
 
   @@unique([provider, providerAccountId])
   @@index([personnelId])
@@ -1104,7 +1278,7 @@ model Session {
   personnelId  String
   expires      DateTime
 
-  personnel AuthorizedPersonnel @relation(fields: [personnelId], references: [id])
+  personnel AuthorizedPersonnel @relation(fields: [personnelId], references: [id], onDelete: Cascade)
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt

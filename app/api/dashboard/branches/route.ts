@@ -2,7 +2,7 @@ import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import prisma from "@/lib/prisma";
 import { NextRequest, NextResponse } from "next/server";
-import { Prisma } from "@prisma/client";
+import { Prisma, Role } from "@prisma/client";
 
 /* -------------------- RESPONSE TYPES -------------------- */
 
@@ -10,7 +10,7 @@ interface BranchPersonnelDTO {
   id: string;
   name: string | null;
   email: string;
-  role: string;
+  role: Role;
 }
 
 interface BranchDTO {
@@ -38,89 +38,60 @@ interface BranchDTO {
 interface BranchListResponse {
   branches: BranchDTO[];
   total: number;
+  page: number;
   pageSize: number;
 }
 
-/* -------------------- GET /api/dashboard/branches -------------------- */
+interface CreateBranchPersonnel {
+  personnelId: string;
+  role: Role;
+}
+
+interface CreateBranchBody {
+  name: string;
+  location?: string;
+  personnel?: CreateBranchPersonnel[];
+}
+
+/* -------------------- GET: LIST BRANCHES -------------------- */
 
 export async function GET(
   req: NextRequest
 ): Promise<NextResponse<BranchListResponse | { error: string }>> {
   try {
-    /* -------------------- AUTH -------------------- */
-
     const session = await getServerSession(authOptions);
 
-    if (!session || session.user.role !== "ADMIN") {
-      return NextResponse.json(
-        { error: "Access denied" },
-        { status: 403 }
-      );
+    if (!session || (session.user.role !== Role.ADMIN && !session.user.isOrgOwner)) {
+      return NextResponse.json({ error: "Access denied" }, { status: 403 });
     }
 
     const organizationId = session.user.organizationId;
-
-    if (!organizationId) {
-      return NextResponse.json(
-        { error: "Missing organization context" },
-        { status: 400 }
-      );
-    }
-
-    /* -------------------- QUERY PARAMS -------------------- */
-
     const { searchParams } = new URL(req.url);
 
     const q = searchParams.get("q")?.trim() ?? "";
     const status = searchParams.get("status");
-
-    const page = Math.max(
-      1,
-      parseInt(searchParams.get("page") ?? "1", 10)
-    );
-
-    const perPageRaw = parseInt(
-      searchParams.get("perPage") ?? "10",
-      10
-    );
-
+    const page = Math.max(1, parseInt(searchParams.get("page") ?? "1", 10));
+    const perPageRaw = parseInt(searchParams.get("perPage") ?? "10", 10);
     const pageSize = Math.min(Math.max(perPageRaw, 1), 100);
     const skip = (page - 1) * pageSize;
-
-    /* -------------------- WHERE (FULLY TYPED) -------------------- */
 
     const where: Prisma.BranchWhereInput = {
       organizationId,
       deletedAt: null,
       ...(q && {
-        name: {
-          contains: q,
-          mode: "insensitive",
-        },
+        name: { contains: q, mode: "insensitive" },
       }),
       ...(status === "active" && { active: true }),
       ...(status === "inactive" && { active: false }),
     };
 
-    /* -------------------- FETCH -------------------- */
-
     const [total, branches, salesTotals] = await Promise.all([
-
-      prisma.branch.count({
-        where,
-      }),
-
+      prisma.branch.count({ where }),
       prisma.branch.findMany({
-
         where,
-
-        orderBy: {
-          updatedAt: "desc",
-        },
-
+        orderBy: { updatedAt: "desc" },
         skip,
         take: pageSize,
-
         select: {
           id: true,
           organizationId: true,
@@ -130,68 +101,38 @@ export async function GET(
           deletedAt: true,
           createdAt: true,
           updatedAt: true,
-
           branchAssignments: {
+            where: { personnel: { deletedAt: null } },
             select: {
               role: true,
               personnel: {
-                select: {
-                  id: true,
-                  name: true,
-                  email: true,
-                },
+                select: { id: true, name: true, email: true },
               },
             },
           },
-
           _count: {
             select: {
-              personnel: {
-                where: { deletedAt: null },
-              },
-              branchProducts: {
-                where: { deletedAt: null },
-              },
-              orders: {
-                where: { deletedAt: null },
-              },
+              personnel: { where: { deletedAt: null } },
+              branchProducts: true,
+              orders: { where: { deletedAt: null } },
               receipts: true,
               notifications: true,
               activityLogs: true,
             },
           },
         },
-
       }),
-
       prisma.sale.groupBy({
         by: ["branchId"],
-        where: {
-          organizationId,
-          deletedAt: null,
-        },
-        _sum: {
-          total: true,
-        },
+        where: { organizationId, status: "COMPLETED" },
+        _sum: { total: true },
       }),
-
     ]);
 
-    /* -------------------- SALES MAP -------------------- */
-
     const salesMap = new Map<string, number>();
-
-    for (const s of salesTotals) {
-      salesMap.set(
-        s.branchId,
-        Number(s._sum.total ?? 0)
-      );
-    }
-
-    /* -------------------- TRANSFORM -------------------- */
+    salesTotals.forEach((s) => salesMap.set(s.branchId, Number(s._sum.total ?? 0)));
 
     const enrichedBranches: BranchDTO[] = branches.map((b) => ({
-
       id: b.id,
       organizationId: b.organizationId,
       name: b.name,
@@ -200,41 +141,98 @@ export async function GET(
       deletedAt: b.deletedAt,
       createdAt: b.createdAt,
       updatedAt: b.updatedAt,
-
-      personnel: b.branchAssignments.map((assignment) => ({
-        id: assignment.personnel.id,
-        name: assignment.personnel.name,
-        email: assignment.personnel.email,
-        role: assignment.role,
+      personnel: b.branchAssignments.map((ba) => ({
+        id: ba.personnel.id,
+        name: ba.personnel.name,
+        email: ba.personnel.email,
+        role: ba.role,
       })),
-
       personnelCount: b._count.personnel,
       productCount: b._count.branchProducts,
       orderCount: b._count.orders,
-
       salesTotal: salesMap.get(b.id) ?? 0,
-
       receiptsCount: b._count.receipts,
       notificationsCount: b._count.notifications,
       activityLogsCount: b._count.activityLogs,
-
     }));
 
-    /* -------------------- RESPONSE -------------------- */
+    return NextResponse.json({ branches: enrichedBranches, total, page, pageSize });
+  } catch (error: unknown) {
+    console.error("GET_BRANCHES_ERROR:", error);
+    return NextResponse.json({ error: "Internal server error" }, { status: 500 });
+  }
+}
 
-    return NextResponse.json({
-      branches: enrichedBranches,
-      total,
-      pageSize,
+/* -------------------- POST: CREATE BRANCH -------------------- */
+
+export async function POST(req: NextRequest) {
+  try {
+    const session = await getServerSession(authOptions);
+
+    if (!session || (session.user.role !== Role.ADMIN && !session.user.isOrgOwner)) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 403 });
+    }
+
+    const { name, location, personnel }: CreateBranchBody = await req.json();
+
+    if (!name) {
+      return NextResponse.json({ error: "Branch name is required" }, { status: 400 });
+    }
+
+    const newBranch = await prisma.$transaction(async (tx) => {
+      // 1. Create the Branch record
+      const branch = await tx.branch.create({
+        data: {
+          name,
+          location,
+          organizationId: session.user.organizationId,
+        },
+      });
+
+      // 2. Handle initial assignments if personnel provided
+      if (personnel && personnel.length > 0) {
+        // Create the pivot table entries
+        await tx.branchAssignment.createMany({
+          data: personnel.map((p) => ({
+            branchId: branch.id,
+            personnelId: p.personnelId,
+            role: p.role,
+          })),
+        });
+
+        // Update the primary branchId for personnel who are currently "floating" (null branch)
+        await tx.authorizedPersonnel.updateMany({
+          where: {
+            id: { in: personnel.map((p) => p.personnelId) },
+            branchId: null,
+          },
+          data: {
+            branchId: branch.id,
+          },
+        });
+      }
+
+      // 3. Log the system activity
+      await tx.activityLog.create({
+        data: {
+          organizationId: session.user.organizationId,
+          branchId: branch.id,
+          personnelId: session.user.id,
+          action: "BRANCH_CREATED",
+          critical: true,
+          metadata: { 
+            name, 
+            initialStaffCount: personnel?.length ?? 0 
+          },
+        },
+      });
+
+      return branch;
     });
 
-  } catch (error) {
-
-    console.error("GET /api/dashboard/branches error:", error);
-
-    return NextResponse.json(
-      { error: "Internal server error" },
-      { status: 500 }
-    );
+    return NextResponse.json(newBranch, { status: 201 });
+  } catch (error: unknown) {
+    console.error("POST_BRANCH_ERROR:", error);
+    return NextResponse.json({ error: "Internal server error" }, { status: 500 });
   }
 }

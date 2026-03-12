@@ -1,76 +1,114 @@
-import { NextRequest, NextResponse } from "next/server";
+"use server";
+
+import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
-import prisma from "@/lib/prisma";
 import { authOptions } from "@/lib/auth";
+import prisma from "@/lib/prisma";
 import { ApprovalStatus, Role } from "@prisma/client";
 
-export async function PATCH(
-  request: NextRequest,
+interface UpdateApprovalBody {
+  status: ApprovalStatus.APPROVED | ApprovalStatus.REJECTED;
+  rejectionNote?: string;
+}
+
+export async function GET(
+  request: Request,
   { params }: { params: { id: string } }
 ) {
+  const session = await getServerSession(authOptions);
+  if (!session) return new NextResponse("Unauthorized", { status: 401 });
+
   try {
-    const session = await getServerSession(authOptions);
-    if (!session?.user?.id) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-
-    const { status, rejectionNote } = await request.json(); // status: "APPROVED" or "REJECTED"
-
-    // 1. Verify Actor is Admin
-    const actor = await prisma.authorizedPersonnel.findUnique({
-      where: { id: session.user.id },
-      include: { branchAssignments: true }
+    const approval = await prisma.approvalRequest.findUnique({
+      where: { id: params.id },
+      include: {
+        requester: { select: { id: true, name: true, email: true, role: true } },
+        approver: { select: { id: true, name: true, email: true } },
+        organization: { select: { id: true, name: true } },
+      },
     });
 
-    const isAdmin = actor?.isOrgOwner || actor?.branchAssignments.some(a => a.role === Role.ADMIN);
-    if (!isAdmin) return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+    if (!approval || approval.organizationId !== session.user.organizationId) {
+      return new NextResponse("Not Found", { status: 404 });
+    }
 
-    // 2. Process Approval in Transaction
-    const result = await prisma.$transaction(async (tx) => {
-      const approval = await tx.approvalRequest.findUnique({
+    return NextResponse.json(approval);
+  } catch (error) {
+    console.error("GET_APPROVAL_ERROR", error);
+    return new NextResponse("Internal Server Error", { status: 500 });
+  }
+}
+
+export async function PATCH(
+  request: Request,
+  { params }: { params: { id: string } }
+) {
+  const session = await getServerSession(authOptions);
+  if (!session) return new NextResponse("Unauthorized", { status: 401 });
+
+  try {
+    const body: UpdateApprovalBody = await request.json();
+
+    const approval = await prisma.approvalRequest.findUnique({
+      where: { id: params.id },
+    });
+
+    if (!approval || approval.organizationId !== session.user.organizationId) {
+      return new NextResponse("Not Found", { status: 404 });
+    }
+
+    if (approval.status !== ApprovalStatus.PENDING) {
+      return new NextResponse("Request already processed", { status: 400 });
+    }
+
+    // Role verification: Admin or Org Owner can override; otherwise must match requiredRole
+    const canApprove =
+      session.user.isOrgOwner ||
+      session.user.role === Role.ADMIN ||
+      session.user.role === approval.requiredRole;
+
+    if (!canApprove) {
+      return new NextResponse(
+        "Insufficient permissions to approve/reject",
+        { status: 403 }
+      );
+    }
+
+    const updatedApproval = await prisma.$transaction(async (tx) => {
+      const updated = await tx.approvalRequest.update({
         where: { id: params.id },
-        include: { requester: true }
+        data: {
+          status: body.status,
+          approverId: session.user.id,
+          rejectionNote:
+            body.status === ApprovalStatus.REJECTED ? body.rejectionNote : null,
+          appliedAt:
+            body.status === ApprovalStatus.APPROVED ? new Date() : null,
+        },
       });
 
-      if (!approval || approval.status !== ApprovalStatus.PENDING) {
-        throw new Error("Request no longer pending");
-      }
+      // Log decision in ActivityLog
+      await tx.activityLog.create({
+        data: {
+          organizationId: session.user.organizationId,
+          branchId: session.user.branchId,
+          personnelId: session.user.id,
+          approvalId: updated.id,
+          action: `APPROVAL_DECISION_${body.status}`,
+          critical: true,
+          metadata: {
+            actionType: updated.actionType,
+            targetId: updated.targetId,
+          },
+        },
+      });
 
-      if (status === ApprovalStatus.APPROVED) {
-        const changes = approval.changes as any;
-
-        // COMMIT SENSITIVE CHANGES
-        await tx.authorizedPersonnel.update({
-          where: { id: approval.requesterId },
-          data: {
-            ...(changes.email && { email: changes.email }),
-            ...(changes.password && { password: changes.password }),
-          }
-        });
-
-        // UPDATE REQUEST STATUS
-        return await tx.approvalRequest.update({
-          where: { id: params.id },
-          data: { 
-            status: ApprovalStatus.APPROVED, 
-            approverId: session.user.id,
-            appliedAt: new Date() 
-          }
-        });
-      } else {
-        // REJECT REQUEST
-        return await tx.approvalRequest.update({
-          where: { id: params.id },
-          data: { 
-            status: ApprovalStatus.REJECTED, 
-            approverId: session.user.id,
-            rejectionNote 
-          }
-        });
-      }
+      return updated;
     });
 
-    return NextResponse.json({ success: true, data: result });
-
-  } catch (error: any) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    return NextResponse.json(updatedApproval);
+  } catch (error) {
+    console.error("PATCH_APPROVAL_ERROR", error);
+    return new NextResponse("Internal Server Error", { status: 500 });
   }
 }
