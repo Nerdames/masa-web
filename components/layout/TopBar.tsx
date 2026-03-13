@@ -68,7 +68,7 @@ export default function TopBar() {
                   </span>
 
                   {user.role && (
-                    <span className="text-xs text-green-700 truncate capitalize">
+                    <span className="text-xs text-blue-600 truncate capitalize">
                       ({user.role})
                     </span>
                   )}

@@ -10,7 +10,11 @@ import { useToast } from "@/components/feedback/ToastProvider";
 interface BranchAssignment {
   branchId: string;
   role: Role;
-  branch: { name: string };
+  isPrimary: boolean;
+  branch: {
+    id: string;
+    name: string;
+  };
 }
 
 interface Personnel {
@@ -39,9 +43,11 @@ interface Summary {
 interface ActivityLog {
   id: string;
   action: string;
-  personnelName: string;
-  performedBy: string;
-  time: string;
+  personnelName?: string;
+  performedBy?: string;
+  personnel?: { name: string };
+  time?: string;
+  createdAt: string | Date;
   details: string;
   critical: boolean;
 }
@@ -62,8 +68,9 @@ export default function PersonnelMissionControl() {
   const [isProvisioning, setIsProvisioning] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
 
-  // Activity Logs
+  // Activity Logs & Branches
   const [activityLogs, setActivityLogs] = useState<ActivityLog[]>([]);
+  const [branches, setBranches] = useState<{ id: string; name: string }[]>([]);
 
   /* -------------------------------------------------------
      DATA FETCHING
@@ -85,6 +92,9 @@ export default function PersonnelMissionControl() {
         if (result.recentLogs) {
           setActivityLogs(result.recentLogs);
         }
+        if (result.branches) {
+          setBranches(result.branches);
+        }
       }
     } catch (error) {
       console.error("Failed to fetch personnels", error);
@@ -104,10 +114,10 @@ export default function PersonnelMissionControl() {
 
   const handleUpdate = async (id: string, updates: Partial<Personnel>) => {
     try {
-      const res = await fetch(`/api/personnels/${id}`, {
+      const res = await fetch(`/api/personnels`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(updates),
+        body: JSON.stringify({ ...updates, id }),
       });
 
       if (!res.ok) throw new Error("Failed to update");
@@ -127,7 +137,8 @@ export default function PersonnelMissionControl() {
           id: Date.now().toString(),
           action: updates.isLocked !== undefined ? "SECURITY_LOCK_TOGGLE" : updates.disabled !== undefined ? "ACCESS_TOGGLE" : "PROFILE_UPDATE",
           personnelName: updatedData.name,
-          performedBy: "Current Admin", // Replace with actual user session data
+          performedBy: "Current Admin",
+          createdAt: new Date(),
           time: "Just Now",
           details: updates.isLocked !== undefined 
             ? `Account ${updates.isLocked ? "locked" : "unlocked"} manually.` 
@@ -171,14 +182,15 @@ export default function PersonnelMissionControl() {
           id: Date.now().toString(),
           action: "STAFF_PROVISIONED",
           personnelName: created.name,
-          performedBy: "Current Admin", // Replace with actual user session data
+          performedBy: "Current Admin",
+          createdAt: new Date(),
           time: "Just Now",
           details: `Provisioned with role: ${created.role}`,
           critical: false,
         },
         ...prev,
       ]);
-    } catch (error) {
+    } catch (error: unknown) {
       alert(error instanceof Error ? error.message : "Failed to provision staff.");
     }
   };
@@ -312,7 +324,7 @@ export default function PersonnelMissionControl() {
       <aside className="w-[340px] h-full bg-white border-l border-black/5 flex flex-col shadow-[-10px_0_20px_rgba(0,0,0,0.02)] z-20 flex-shrink-0 relative">
         <AnimatePresence mode="wait">
           {isProvisioning ? (
-            <ProvisionPanel key="provision" onClose={closePanels} onCreate={handleCreate} />
+            <ProvisionPanel key="provision" onClose={closePanels} onCreate={handleCreate} branches={branches} />
           ) : selectedPersonnel ? (
             <DetailsPanel key="details" personnel={selectedPersonnel} onClose={closePanels} onUpdate={handleUpdate} />
           ) : (
@@ -351,11 +363,11 @@ function PersonnelCard({ personnel, isSelected, onClick }: { personnel: Personne
         <div className={`w-10 h-10 sm:w-12 sm:h-12 rounded-xl flex items-center justify-center text-white font-bold text-base sm:text-lg shrink-0 transition-colors ${
           isSelected ? "bg-blue-600" : "bg-slate-900"
         }`}>
-          {personnel.name.charAt(0)}
+          {personnel.name?.charAt(0) || "U"}
         </div>
         <div className="min-w-0">
           <h3 className="font-bold text-sm sm:text-[15px] text-slate-900 truncate group-hover:text-blue-600 transition-colors">
-            {personnel.name}
+            {personnel.name || "Unknown User"}
           </h3>
           <p className="text-[10px] text-black/40 font-black uppercase tracking-widest truncate">
             {personnel.staffCode || "NO-CODE"}
@@ -495,13 +507,7 @@ function ActivityLogsPanel({ logs }: { logs: ActivityLog[] }) {
 interface DetailsPanelProps {
   personnel: Personnel;
   onClose: () => void;
-  onUpdate: (id: string, updates: Partial<Personnel>) => Promise<void>;
-}
-
-interface DetailsPanelProps {
-  personnel: Personnel;
-  onClose: () => void;
-  onUpdate: (id: string, updates: Partial<Personnel>) => Promise<void>;
+  onUpdate: (id: string, updates: Partial<Personnel> & { action?: string; branchId?: string }) => Promise<void>;
 }
 
 function DetailsPanel({ personnel, onClose, onUpdate }: DetailsPanelProps) {
@@ -510,16 +516,15 @@ function DetailsPanel({ personnel, onClose, onUpdate }: DetailsPanelProps) {
   const { addToast } = useToast();
 
   const [form, setForm] = useState({
-    name: personnel.name,
-    email: personnel.email,
+    name: personnel.name || "",
+    email: personnel.email || "",
     staffCode: personnel.staffCode || "",
   });
 
-  // Keep form in sync when the active personnel changes
   useEffect(() => {
     setForm({
-      name: personnel.name,
-      email: personnel.email,
+      name: personnel.name || "",
+      email: personnel.email || "",
       staffCode: personnel.staffCode || "",
     });
   }, [personnel]);
@@ -529,7 +534,7 @@ function DetailsPanel({ personnel, onClose, onUpdate }: DetailsPanelProps) {
       addToast({
         type: "error",
         title: "Validation Error",
-        message: "Staff code must follow 'STF-XXX' format (e.g., STF-001).",
+        message: "Format must be STF-XXX (e.g., STF-001).",
       });
       return;
     }
@@ -537,33 +542,25 @@ function DetailsPanel({ personnel, onClose, onUpdate }: DetailsPanelProps) {
     setIsSaving(true);
     try {
       await onUpdate(personnel.id, {
-        ...form,
+        name: form.name,
+        email: form.email,
         staffCode: form.staffCode.toUpperCase(),
       });
       addToast({
         type: "success",
-        title: "Update Successful",
-        message: `${form.name}'s profile has been updated.`,
+        title: "Profile Updated",
+        message: "The personnel record was saved successfully.",
       });
       setIsEditing(false);
-    } catch (err) {
+    } catch (err: unknown) {
       addToast({
         type: "error",
         title: "Update Failed",
-        message: "An unexpected error occurred while saving.",
+        message: "Database rejection or network error.",
       });
     } finally {
       setIsSaving(false);
     }
-  };
-
-  const handleCancel = () => {
-    setForm({
-      name: personnel.name,
-      email: personnel.email,
-      staffCode: personnel.staffCode || "",
-    });
-    setIsEditing(false);
   };
 
   const handleToggleSecurity = async (key: "isLocked" | "disabled", value: boolean) => {
@@ -572,13 +569,13 @@ function DetailsPanel({ personnel, onClose, onUpdate }: DetailsPanelProps) {
       addToast({
         type: "success",
         title: "Security Updated",
-        message: `${key === "isLocked" ? "Lock" : "Access"} status changed successfully.`,
+        message: `Account is now ${value ? (key === 'isLocked' ? 'Locked' : 'Disabled') : 'Active'}.`,
       });
-    } catch (err) {
+    } catch (err: unknown) {
       addToast({
         type: "error",
-        title: "Action Failed",
-        message: "Could not update security settings.",
+        title: "Update Failed",
+        message: "Check your permissions or connection.",
       });
     }
   };
@@ -589,12 +586,11 @@ function DetailsPanel({ personnel, onClose, onUpdate }: DetailsPanelProps) {
       initial="hidden"
       animate="visible"
       exit="exit"
-      className="h-full flex flex-col w-full absolute inset-0 bg-white z-10"
+      className="h-full flex flex-col w-full absolute inset-0 bg-white z-10 border-l border-black/5"
     >
+      {/* Header */}
       <div className="p-6 border-b border-black/5 flex justify-between items-center bg-white sticky top-0 z-10">
-        <h2 className="text-[10px] font-black uppercase tracking-[0.2em] text-black/40">
-          Inspector
-        </h2>
+        <h2 className="text-[10px] font-black uppercase tracking-[0.2em] text-black/40">Inspector</h2>
         <div className="flex gap-2">
           {!isEditing && (
             <button
@@ -604,33 +600,23 @@ function DetailsPanel({ personnel, onClose, onUpdate }: DetailsPanelProps) {
               <i className="bx bx-pencil" /> Edit
             </button>
           )}
-          <button
-            onClick={onClose}
-            className="w-8 h-8 rounded-full bg-black/5 hover:bg-black/10 flex items-center justify-center transition-colors"
-          >
+          <button onClick={onClose} className="w-8 h-8 rounded-full bg-black/5 hover:bg-black/10 flex items-center justify-center transition-colors">
             <i className="bx bx-x text-lg" />
           </button>
         </div>
       </div>
 
       <div className="flex-1 overflow-y-auto p-6 custom-scrollbar">
+        {/* Avatar & Profile */}
         <div className="mb-8">
-          <div className="w-20 h-20 rounded-[1.5rem] bg-blue-600 text-white flex items-center justify-center text-4xl font-black mb-6 shadow-lg shadow-blue-500/20">
-            {form.name.charAt(0) || "U"}
+          <div className="w-20 h-20 rounded-[1.5rem] bg-slate-900 text-white flex items-center justify-center text-4xl font-black mb-6 shadow-xl shadow-black/10">
+            {form.name?.charAt(0) || "U"}
           </div>
 
           <AnimatePresence mode="wait">
             {!isEditing ? (
-              <motion.div
-                key="read"
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                exit={{ opacity: 0 }}
-                className="space-y-1"
-              >
-                <h2 className="text-2xl font-black text-slate-900 leading-tight">
-                  {personnel.name}
-                </h2>
+              <motion.div key="read" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="space-y-1">
+                <h2 className="text-2xl font-black text-slate-900 leading-tight">{personnel.name}</h2>
                 <p className="text-black/50 font-medium">{personnel.email}</p>
                 <div className="pt-3">
                   <span className="px-2.5 py-1.5 bg-slate-100 text-slate-600 rounded-lg text-[10px] font-black uppercase tracking-widest border border-black/5">
@@ -639,113 +625,58 @@ function DetailsPanel({ personnel, onClose, onUpdate }: DetailsPanelProps) {
                 </div>
               </motion.div>
             ) : (
-              <motion.div
-                key="edit"
-                initial={{ opacity: 0, y: 10 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -10 }}
-                className="space-y-4 bg-[#FAFAFC] p-5 rounded-[1.5rem] border border-blue-500/20 shadow-inner"
-              >
-                <div>
-                  <label className="text-[9px] font-black uppercase tracking-widest text-black/40 pl-1">
-                    Full Name
-                  </label>
-                  <input
-                    autoFocus
-                    value={form.name}
-                    onChange={(e) => setForm({ ...form, name: e.target.value })}
-                    className="w-full bg-white border border-black/10 rounded-xl px-4 py-2.5 text-sm font-bold text-slate-900 focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 outline-none transition-all"
-                  />
-                </div>
-                <div>
-                  <label className="text-[9px] font-black uppercase tracking-widest text-black/40 pl-1">
-                    Email
-                  </label>
-                  <input
-                    value={form.email}
-                    onChange={(e) => setForm({ ...form, email: e.target.value })}
-                    className="w-full bg-white border border-black/10 rounded-xl px-4 py-2.5 text-sm font-bold text-slate-900 focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 outline-none transition-all"
-                  />
-                </div>
-                <div>
-                  <label className="text-[9px] font-black uppercase tracking-widest text-black/40 pl-1">
-                    Staff Code
-                  </label>
-                  <input
-                    value={form.staffCode}
-                    onChange={(e) => setForm({ ...form, staffCode: e.target.value })}
-                    placeholder="EMP-001"
-                    className="w-full bg-white border border-black/10 rounded-xl px-4 py-2.5 text-sm font-bold text-slate-900 focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 outline-none transition-all uppercase"
-                  />
-                </div>
-                <div className="flex gap-2 pt-2">
-                  <button
-                    onClick={handleSave}
-                    disabled={isSaving}
-                    className="flex-1 bg-slate-900 text-white rounded-xl py-3 text-[11px] font-black uppercase tracking-widest hover:bg-blue-600 transition-colors disabled:opacity-50 flex items-center justify-center gap-2"
-                  >
-                    {isSaving ? (
-                      <i className="bx bx-loader-alt animate-spin text-sm" />
-                    ) : (
-                      "Save"
-                    )}
-                  </button>
-                  <button
-                    onClick={handleCancel}
-                    disabled={isSaving}
-                    className="flex-1 bg-white border border-black/10 text-slate-600 rounded-xl py-3 text-[11px] font-black uppercase tracking-widest hover:bg-slate-50 transition-colors"
-                  >
-                    Cancel
-                  </button>
+              <motion.div key="edit" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }} className="space-y-4 bg-[#FAFAFC] p-5 rounded-[1.5rem] border border-black/5">
+                <div className="space-y-4">
+                  <div>
+                    <label className="text-[9px] font-black uppercase tracking-widest text-black/40 pl-1">Full Name</label>
+                    <input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} className="w-full bg-white border border-black/10 rounded-xl px-4 py-2.5 text-sm font-bold text-slate-900 focus:border-blue-500 outline-none transition-all" />
+                  </div>
+                  <div>
+                    <label className="text-[9px] font-black uppercase tracking-widest text-black/40 pl-1">Email</label>
+                    <input value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} className="w-full bg-white border border-black/10 rounded-xl px-4 py-2.5 text-sm font-bold text-slate-900 focus:border-blue-500 outline-none transition-all" />
+                  </div>
+                  <div>
+                    <label className="text-[9px] font-black uppercase tracking-widest text-black/40 pl-1">Staff Code</label>
+                    <input value={form.staffCode} onChange={(e) => setForm({ ...form, staffCode: e.target.value })} placeholder="STF-001" className="w-full bg-white border border-black/10 rounded-xl px-4 py-2.5 text-sm font-bold text-slate-900 focus:border-blue-500 outline-none transition-all uppercase" />
+                  </div>
+                  <div className="flex gap-2 pt-2">
+                    <button onClick={handleSave} disabled={isSaving} className="flex-1 bg-slate-900 text-white rounded-xl py-3 text-[11px] font-black uppercase tracking-widest hover:bg-blue-600 transition-colors disabled:opacity-50">
+                      {isSaving ? <i className="bx bx-loader-alt animate-spin" /> : "Save Changes"}
+                    </button>
+                    <button onClick={() => setIsEditing(false)} className="flex-1 bg-white border border-black/10 text-slate-600 rounded-xl py-3 text-[11px] font-black uppercase tracking-widest">Cancel</button>
+                  </div>
                 </div>
               </motion.div>
             )}
           </AnimatePresence>
         </div>
 
-        <motion.div
-          layout
-          animate={{
-            opacity: isEditing ? 0.3 : 1,
-            pointerEvents: isEditing ? "none" : "auto",
-          }}
-          className="space-y-8"
-        >
+        {/* Branch Assignments */}
+        <motion.div layout animate={{ opacity: isEditing ? 0.3 : 1, pointerEvents: isEditing ? "none" : "auto" }} className="space-y-8">
           <section>
-            <h4 className="text-[10px] font-black uppercase tracking-widest text-black/30 mb-3">
-              Branch Access
-            </h4>
+            <h4 className="text-[10px] font-black uppercase tracking-widest text-black/30 mb-3">Branch Access</h4>
             <div className="space-y-2">
               {personnel.branchAssignments.map((ba, i) => (
-                <div
-                  key={i}
-                  className="flex justify-between bg-[#F2F2F7] p-3.5 rounded-2xl text-sm font-bold"
-                >
-                  <span>{ba.branch.name}</span>
-                  <span className="text-blue-600 uppercase text-[10px] flex items-center">
-                    {ba.role}
-                  </span>
+                <div key={i} className="flex justify-between items-center bg-[#F2F2F7] p-3.5 rounded-2xl">
+                  <span className="text-sm font-bold text-slate-900">{ba.branch.name}</span>
+                  <div className="flex gap-2 items-center">
+                    {ba.isPrimary && <span className="text-[8px] bg-blue-600 text-white px-1.5 py-0.5 rounded-md font-black uppercase tracking-tighter">Primary</span>}
+                    <span className="text-blue-600 uppercase text-[10px] font-black tracking-widest">{ba.role}</span>
+                  </div>
                 </div>
               ))}
-              {personnel.branchAssignments.length === 0 && (
-                <p className="text-xs text-black/40 font-medium italic">
-                  No branches assigned.
-                </p>
-              )}
+              {personnel.branchAssignments.length === 0 && <p className="text-xs text-black/40 italic">No assigned branches.</p>}
             </div>
           </section>
 
+          {/* Security Controls */}
           <section>
-            <h4 className="text-[10px] font-black uppercase tracking-widest text-black/30 mb-3">
-              Security Controls
-            </h4>
+            <h4 className="text-[10px] font-black uppercase tracking-widest text-black/30 mb-3">Security & Status</h4>
             <div className="grid grid-cols-2 gap-3">
               <button
                 onClick={() => handleToggleSecurity("isLocked", !personnel.isLocked)}
                 className={`py-4 rounded-2xl text-[10px] font-black uppercase tracking-widest transition-all ${
-                  personnel.isLocked
-                    ? "bg-emerald-50 text-emerald-600 border border-emerald-100 hover:bg-emerald-100"
-                    : "bg-amber-50 text-amber-600 border border-amber-100 hover:bg-amber-100"
+                  personnel.isLocked ? "bg-emerald-50 text-emerald-600 border border-emerald-100" : "bg-amber-50 text-amber-600 border border-amber-100"
                 }`}
               >
                 {personnel.isLocked ? "Unlock Account" : "Lock Account"}
@@ -753,9 +684,7 @@ function DetailsPanel({ personnel, onClose, onUpdate }: DetailsPanelProps) {
               <button
                 onClick={() => handleToggleSecurity("disabled", !personnel.disabled)}
                 className={`py-4 rounded-2xl text-[10px] font-black uppercase tracking-widest transition-all ${
-                  personnel.disabled
-                    ? "bg-slate-900 text-white hover:bg-slate-800"
-                    : "bg-red-50 text-red-600 border border-red-100 hover:bg-red-100"
+                  personnel.disabled ? "bg-slate-900 text-white shadow-lg" : "bg-red-50 text-red-600 border border-red-100"
                 }`}
               >
                 {personnel.disabled ? "Enable Access" : "Disable Access"}
@@ -770,31 +699,51 @@ function DetailsPanel({ personnel, onClose, onUpdate }: DetailsPanelProps) {
 
 interface ProvisionPanelProps {
   onClose: () => void;
-  onCreate: (newStaff: Partial<Personnel>) => Promise<void>;
+  // Requires branchId and password for the transactional POST
+  onCreate: (newStaff: Partial<Personnel> & { 
+    password?: string; 
+    branchId: string; 
+    role: Role 
+  }) => Promise<void>;
+  branches: { id: string; name: string }[];
 }
 
-function ProvisionPanel({ onClose, onCreate }: ProvisionPanelProps) {
+function ProvisionPanel({ onClose, onCreate, branches }: ProvisionPanelProps) {
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [form, setForm] = useState({ name: "", email: "", staffCode: "", role: "CASHIER" });
+  const [form, setForm] = useState({ 
+    name: "", 
+    email: "", 
+    staffCode: "", 
+    role: "CASHIER" as Role,
+    password: "",
+    branchId: "" 
+  });
 
   const handleCreate = async () => {
-    if (!form.name || !form.email) {
-      setError("Name and Email are required.");
+    if (!form.name || !form.email || !form.password || !form.branchId) {
+      setError("Name, Email, Password, and Branch are required.");
       return;
     }
     if (form.staffCode && !/^STF-\d{3}$/.test(form.staffCode.toUpperCase())) {
-      setError("Staff code must follow 'STF-XXX' format (e.g., STF-001).");
+      setError("Staff code must follow 'STF-XXX' format.");
       return;
     }
+    
     setError(null);
     setIsSaving(true);
-    await onCreate({ ...form, staffCode: form.staffCode.toUpperCase() });
-    setIsSaving(false);
+    try {
+      await onCreate({ ...form, staffCode: form.staffCode.toUpperCase() });
+      onClose(); // Close only on success
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Failed to provision account.");
+    } finally {
+      setIsSaving(false);
+    }
   };
 
   return (
-    <motion.div variants={panelVariants} initial="hidden" animate="visible" exit="exit" className="h-full flex flex-col w-full absolute inset-0 bg-white z-10">
+    <motion.div variants={panelVariants} initial="hidden" animate="visible" exit="exit" className="h-full flex flex-col w-full absolute inset-0 bg-white z-20 border-l border-black/5">
       <div className="p-6 border-b border-black/5 flex justify-between items-center bg-white sticky top-0 z-10">
         <h2 className="text-[10px] font-black uppercase tracking-[0.2em] text-blue-600 flex items-center gap-2">
           <i className="bx bx-user-plus text-sm" /> Provision_Staff
@@ -807,8 +756,8 @@ function ProvisionPanel({ onClose, onCreate }: ProvisionPanelProps) {
       <div className="flex-1 overflow-y-auto p-8 custom-scrollbar space-y-6">
         <div>
           <h3 className="text-2xl font-black text-slate-900 mb-1">New Personnel</h3>
-          <p className="text-xs text-black/40 font-medium mb-6">Create a new account and assign initial credentials.</p>
-          
+          <p className="text-xs text-black/40 font-medium mb-6">Create a new system identity and initial branch link.</p>
+
           {error && (
             <div className="mb-6 p-4 bg-red-50 text-red-600 text-[10px] font-black uppercase tracking-widest rounded-2xl border border-red-100 flex items-center gap-2">
               <i className="bx bx-error-circle text-lg" /> {error}
@@ -816,35 +765,48 @@ function ProvisionPanel({ onClose, onCreate }: ProvisionPanelProps) {
           )}
 
           <div className="space-y-5">
-            <div>
-              <label className="text-[9px] font-black uppercase tracking-widest text-black/40 pl-1">Full Name</label>
-              <input value={form.name} onChange={(e) => setForm({...form, name: e.target.value})} placeholder="Jane Doe" className="w-full bg-[#F2F2F7] border-transparent rounded-2xl px-4 py-3.5 text-sm font-bold text-slate-900 focus:bg-white focus:border-blue-500 focus:ring-4 focus:ring-blue-500/10 outline-none transition-all" />
-            </div>
-            <div>
-              <label className="text-[9px] font-black uppercase tracking-widest text-black/40 pl-1">Email Address</label>
-              <input type="email" value={form.email} onChange={(e) => setForm({...form, email: e.target.value})} placeholder="jane@company.com" className="w-full bg-[#F2F2F7] border-transparent rounded-2xl px-4 py-3.5 text-sm font-bold text-slate-900 focus:bg-white focus:border-blue-500 focus:ring-4 focus:ring-blue-500/10 outline-none transition-all" />
-            </div>
             <div className="grid grid-cols-2 gap-4">
-              <div>
-                <label className="text-[9px] font-black uppercase tracking-widest text-black/40 pl-1">Staff Code</label>
-                <input value={form.staffCode} onChange={(e) => setForm({...form, staffCode: e.target.value})} placeholder="STF-001" className="w-full bg-[#F2F2F7] border-transparent rounded-2xl px-4 py-3.5 text-sm font-bold text-slate-900 focus:bg-white focus:border-blue-500 focus:ring-4 focus:ring-blue-500/10 outline-none transition-all uppercase" />
+              <div className="space-y-1.5">
+                <label className="text-[9px] font-black uppercase tracking-widest text-black/40 pl-1">Full Name</label>
+                <input value={form.name} onChange={(e) => setForm({...form, name: e.target.value})} className="w-full bg-[#F2F2F7] border-transparent rounded-2xl px-4 py-3.5 text-sm font-bold text-slate-900 focus:bg-white focus:ring-4 focus:ring-blue-500/10 outline-none transition-all" />
               </div>
-              <div>
-                <label className="text-[9px] font-black uppercase tracking-widest text-black/40 pl-1">System Role</label>
-                <select value={form.role} onChange={(e) => setForm({...form, role: e.target.value})} className="w-full bg-[#F2F2F7] border-transparent rounded-2xl px-4 py-3.5 text-[11px] font-black uppercase tracking-widest text-slate-900 focus:bg-white focus:border-blue-500 focus:ring-4 focus:ring-blue-500/10 outline-none transition-all appearance-none">
-                  <option value="CASHIER">Cashier</option>
-                  <option value="INVENTORY">Inventory</option>
-                  <option value="MANAGER">Manager</option>
-                  <option value="ADMIN">Admin</option>
+              <div className="space-y-1.5">
+                <label className="text-[9px] font-black uppercase tracking-widest text-black/40 pl-1">Email</label>
+                <input value={form.email} onChange={(e) => setForm({...form, email: e.target.value})} className="w-full bg-[#F2F2F7] border-transparent rounded-2xl px-4 py-3.5 text-sm font-bold text-slate-900 focus:bg-white focus:ring-4 focus:ring-blue-500/10 outline-none transition-all" />
+              </div>
+            </div>
+
+            <div className="space-y-1.5">
+              <label className="text-[9px] font-black uppercase tracking-widest text-black/40 pl-1">System Password</label>
+              <input type="password" value={form.password} onChange={(e) => setForm({...form, password: e.target.value})} className="w-full bg-[#F2F2F7] border-transparent rounded-2xl px-4 py-3.5 text-sm font-bold text-slate-900 focus:bg-white focus:ring-4 focus:ring-blue-500/10 outline-none transition-all" />
+            </div>
+
+            <div className="grid grid-cols-2 gap-4">
+              <div className="space-y-1.5">
+                <label className="text-[9px] font-black uppercase tracking-widest text-black/40 pl-1">Staff Code</label>
+                <input value={form.staffCode} onChange={(e) => setForm({...form, staffCode: e.target.value})} placeholder="STF-001" className="w-full bg-[#F2F2F7] border-transparent rounded-2xl px-4 py-3.5 text-sm font-bold text-slate-900 focus:bg-white outline-none transition-all uppercase" />
+              </div>
+              <div className="space-y-1.5">
+                <label className="text-[9px] font-black uppercase tracking-widest text-black/40 pl-1">Role</label>
+                <select value={form.role} onChange={(e) => setForm({...form, role: e.target.value as Role})} className="w-full bg-[#F2F2F7] border-transparent rounded-2xl px-4 py-3.5 text-[11px] font-black uppercase tracking-widest text-slate-900 focus:bg-white outline-none transition-all">
+                  {Object.values(Role).map(r => <option key={r} value={r}>{r}</option>)}
                 </select>
               </div>
+            </div>
+
+            <div className="space-y-1.5">
+              <label className="text-[9px] font-black uppercase tracking-widest text-black/40 pl-1">Assign Primary Branch</label>
+              <select value={form.branchId} onChange={(e) => setForm({...form, branchId: e.target.value})} className="w-full bg-[#F2F2F7] border-transparent rounded-2xl px-4 py-3.5 text-[11px] font-black uppercase tracking-widest text-slate-900 focus:bg-white outline-none transition-all">
+                <option value="">Select Branch...</option>
+                {branches.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
+              </select>
             </div>
           </div>
         </div>
       </div>
-      
+
       <div className="p-6 border-t border-black/5 bg-[#FAFAFC]">
-        <button onClick={handleCreate} disabled={isSaving} className="w-full bg-blue-600 text-white rounded-2xl py-4 text-[11px] font-black uppercase tracking-widest hover:bg-blue-700 shadow-lg shadow-blue-500/20 transition-all disabled:opacity-50 flex items-center justify-center gap-2">
+        <button onClick={handleCreate} disabled={isSaving} className="w-full bg-blue-600 text-white rounded-2xl py-4 text-[11px] font-black uppercase tracking-widest hover:bg-blue-700 shadow-xl shadow-blue-500/20 transition-all disabled:opacity-50 flex items-center justify-center gap-2">
           {isSaving ? <i className="bx bx-loader-alt animate-spin text-lg" /> : "Provision Account"}
         </button>
       </div>
