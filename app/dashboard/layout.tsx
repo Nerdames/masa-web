@@ -19,7 +19,7 @@ export default function DashboardRootLayout({
     <div className="flex flex-col h-screen bg-gradient-to-br from-[#FFD8B1] via-[#FFF5F0] to-[#D8FFE5] overflow-hidden">
       
       {/* TopBar */}
-      <div className="flex-shrink-0 relative z-[70]">
+      <div className="flex-shrink-0 relative z-[1000]">
         <TopBar />
 
         {status === "loading" && (

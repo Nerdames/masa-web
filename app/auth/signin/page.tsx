@@ -105,7 +105,7 @@ const SignInPage: React.FC = () => {
       <div className="w-full max-w-xs p-6 bg-white rounded-xl shadow-lg space-y-4">
         {/* Header */}
         <div className="space-y-2">
-          <h1 className="text-2xl font-bold text-center text-green-700">
+          <h1 className="text-2xl font-bold text-center text-blue-700">
             Sign In to MASA
           </h1>
           <p className="text-center text-gray-500 text-sm">
@@ -123,7 +123,7 @@ const SignInPage: React.FC = () => {
               placeholder="Email"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
-              className="pl-10 pr-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-green-700 w-full text-sm"
+              className="pl-10 pr-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 w-full text-sm"
               required
               autoFocus
               disabled={loading}
@@ -138,7 +138,7 @@ const SignInPage: React.FC = () => {
               placeholder="Password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
-              className="pl-10 pr-10 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-green-700 w-full text-sm"
+              className="pl-10 pr-10 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 w-full text-sm"
               required
               disabled={loading}
             />
@@ -159,7 +159,7 @@ const SignInPage: React.FC = () => {
             className={`w-full py-2 text-sm font-medium rounded-lg transition flex items-center justify-center ${
               loading
                 ? "bg-gray-400 cursor-not-allowed"
-                : "bg-green-700 text-white hover:bg-green-800"
+                : "bg-blue-500 text-white hover:bg-blue-700"
             }`}
           >
             {loading ? (
