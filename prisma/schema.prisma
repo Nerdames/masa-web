@@ -381,6 +381,7 @@ model ApprovalRequest {
 
   stockMovements StockMovement[] @relation("ApprovalStockMoves")
   activityLogs   ActivityLog[]   @relation("ApprovalLogs")
+  notifications  Notification[]
 
   @@index([organizationId, status])
   @@index([branchId, status])
@@ -1047,6 +1048,7 @@ model Notification {
   type           NotificationType
   title          String
   message        String
+  approvalId     String?
   deletedAt      DateTime?
 
   createdAt DateTime @default(now())
@@ -1054,11 +1056,13 @@ model Notification {
 
   organization Organization            @relation(fields: [organizationId], references: [id])
   branch       Branch?                 @relation(fields: [branchId], references: [id])
+  approval       ApprovalRequest? @relation(fields: [approvalId], references: [id])
   recipients   NotificationRecipient[]
 
   @@index([organizationId, branchId])
   @@index([type])
   @@index([deletedAt])
+  @@index([approvalId])
 }
 
 model NotificationRecipient {
@@ -1070,8 +1074,8 @@ model NotificationRecipient {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  notification Notification        @relation(fields: [notificationId], references: [id])
-  personnel    AuthorizedPersonnel @relation(fields: [personnelId], references: [id])
+  notification   Notification        @relation(fields: [notificationId], references: [id], onDelete: Cascade)
+  personnel      AuthorizedPersonnel @relation(fields: [personnelId], references: [id], onDelete: Cascade)
 
   @@unique([notificationId, personnelId])
   @@index([personnelId])

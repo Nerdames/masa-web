@@ -1,9 +1,10 @@
 "use client";
 
-import { ReactNode, useState } from "react";
+import { ReactNode } from "react";
 import { useSession } from "next-auth/react";
 import Sidebar from "@/components/layout/Sidebar";
 import TopBar from "@/components/layout/TopBar";
+import { usePusherNotifications } from "@/hooks/usePusherNotifications"; // Import the hook
 
 interface DashboardRootLayoutProps {
   children: ReactNode;
@@ -13,7 +14,12 @@ export default function DashboardRootLayout({
   children,
 }: DashboardRootLayoutProps) {
   const { status } = useSession({ required: true });
-  const [sidebarOpen, setSidebarOpen] = useState(false);
+
+  /** * Initialize Global Real-time Listeners
+   * This hook handles "critical-alert" events and pushes them to 
+   * your AlertProvider (toasts/banners) automatically.
+   */
+  usePusherNotifications();
 
   return (
     <div className="flex flex-col h-screen bg-gradient-to-br from-[#FFD8B1] via-[#FFF5F0] to-[#D8FFE5] overflow-hidden">
@@ -33,7 +39,7 @@ export default function DashboardRootLayout({
       <div className="flex flex-1 overflow-hidden relative z-0">
 
         {/* Sidebar */}
-        <Sidebar sidebarOpen={sidebarOpen} setSidebarOpen={setSidebarOpen} />
+        <Sidebar />
 
         {/* Main Content */}
         <main

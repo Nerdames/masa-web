@@ -2,7 +2,7 @@
 
 import React, { useState, useMemo } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
-import { useToast } from "@/components/feedback/ToastProvider";
+import { useAlerts } from "@/components/feedback/AlertProvider";
 import { CriticalAction } from "@prisma/client";
 
 interface PasswordChangeModalProps {
@@ -26,7 +26,7 @@ export default function PasswordChangeModal({
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [showPass, setShowPass] = useState(false);
 
-  const { addToast } = useToast();
+  const { dispatch } = useAlerts();
 
   // --- Password Strength & Criteria Logic ---
   const criteria = useMemo(() => {
@@ -58,8 +58,9 @@ export default function PasswordChangeModal({
     e.preventDefault();
 
     if (!isMatch) {
-      addToast({
-        type: "error",
+      dispatch({
+        kind: "TOAST",
+        type: "ERROR",
         title: "Mismatch",
         message: "Please ensure your new passwords match before submitting.",
       });
@@ -67,8 +68,9 @@ export default function PasswordChangeModal({
     }
 
     if (strengthScore < 3) {
-      addToast({
-        type: "warning",
+      dispatch({
+        kind: "TOAST",
+        type: "WARNING",
         title: "Password too weak",
         message: "Please meet more security criteria before submitting.",
       });
@@ -93,16 +95,18 @@ export default function PasswordChangeModal({
 
       if (!res.ok) throw new Error();
 
-      addToast({
-        type: "success",
+      dispatch({
+        kind: "TOAST",
+        type: "SUCCESS",
         title: "Request Sent",
         message: "Your request is now pending administrative review.",
       });
 
       handleClose();
     } catch {
-      addToast({
-        type: "error",
+      dispatch({
+        kind: "TOAST",
+        type: "ERROR",
         title: "System Error",
         message: "Failed to log security request. Please try again.",
       });

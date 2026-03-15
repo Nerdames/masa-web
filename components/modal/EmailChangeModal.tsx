@@ -3,7 +3,7 @@
 import React, { useState } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
 import { CriticalAction } from "@prisma/client";
-import { useToast } from "@/components/feedback/ToastProvider";
+import { useAlerts } from "@/components/feedback/AlertProvider";
 
 interface EmailChangeModalProps {
   isOpen: boolean;
@@ -23,7 +23,7 @@ export default function EmailChangeModal({
   const [newEmail, setNewEmail] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
 
-  const { addToast } = useToast();
+  const { dispatch } = useAlerts();
 
   const isValidEmail = (email: string) =>
     /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
@@ -39,8 +39,9 @@ export default function EmailChangeModal({
     const email = newEmail.trim().toLowerCase();
 
     if (!email || !isValidEmail(email)) {
-      addToast({
-        type: "error",
+      dispatch({
+        kind: "TOAST",
+        type: "ERROR",
         title: "Invalid Email",
         message: "Please enter a valid email address.",
       });
@@ -70,16 +71,18 @@ export default function EmailChangeModal({
         throw new Error("Request failed");
       }
 
-      addToast({
-        type: "success",
+      dispatch({
+        kind: "TOAST",
+        type: "SUCCESS",
         title: "Request Logged",
         message: "Your email change request is pending administrative review.",
       });
 
       handleClose();
     } catch {
-      addToast({
-        type: "error",
+      dispatch({
+        kind: "TOAST",
+        type: "ERROR",
         title: "System Error",
         message: "Failed to submit request. Please try again.",
       });

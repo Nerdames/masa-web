@@ -1,50 +1,92 @@
-// lib/quickActions.ts
+import { Role } from "@prisma/client";
+import { hasPagePermission } from "@/lib/security";
+
 export interface QuickActionType {
   label: string;
   href: string;
-  permission?: string; // optional permission key
 }
 
-// Map actions per role
-export const quickActionsMap: Record<string, QuickActionType[]> = {
+/**
+ * Quick actions mapped per role.
+ * Visibility is also filtered by page permissions.
+ */
+export const quickActionsMap: Record<Role, QuickActionType[]> = {
   ADMIN: [
-    { label: "Create Order", href: "/dashboard/orders", permission: "createOrder" },
-    { label: "Add Stock", href: "/dashboard/inventory", permission: "addStock" },
-    { label: "Record Sale", href: "/dashboard/sales", permission: "recordSale" },
-    { label: "Admin Panel", href: "/dashboard/settings", permission: "accessAdminPanel" },
+    { label: "Create Order", href: "/dashboard/orders" },
+    { label: "Add Stock", href: "/dashboard/inventory" },
+    { label: "Record Sale", href: "/dashboard/sales" },
+    { label: "Process Payment", href: "/dashboard/invoices" },
+    { label: "Manage Personnel", href: "/dashboard/personnels" },
   ],
+
+  MANAGER: [
+    { label: "Create Order", href: "/dashboard/orders" },
+    { label: "Add Stock", href: "/dashboard/inventory" },
+    { label: "Record Sale", href: "/dashboard/sales" },
+    { label: "Process Payment", href: "/dashboard/invoices" },
+  ],
+
   SALES: [
-    { label: "Create Order", href: "/dashboard/orders", permission: "createOrder" },
-    { label: "Record Sale", href: "/dashboard/sales", permission: "recordSale" },
+    { label: "Create Order", href: "/dashboard/orders" },
+    { label: "Record Sale", href: "/dashboard/sales" },
+    { label: "View Invoices", href: "/dashboard/invoices" },
   ],
+
   INVENTORY: [
-    { label: "Add Stock", href: "/dashboard/inventory", permission: "addStock" },
-    { label: "Update Stock", href: "/dashboard/inventory", permission: "updateStock" },
+    { label: "Add Stock", href: "/dashboard/inventory" },
+    { label: "View Vendors", href: "/dashboard/vendors" },
   ],
+
   CASHIER: [
-    { label: "Process Payment", href: "/dashboard/invoices", permission: "processPayment" },
+    { label: "Process Payment", href: "/dashboard/invoices" },
+    { label: "Record Sale", href: "/dashboard/sales" },
   ],
+
+  /**
+   * DEV actions are auto-generated below.
+   * Placeholder required to satisfy Record<Role,...>
+   */
+  DEV: [],
 };
 
-// DEV merges everything + extra actions
+/**
+ * DEV role receives all unique actions across roles
+ * plus developer-only utilities.
+ */
 quickActionsMap.DEV = (() => {
   const merged: QuickActionType[] = [];
-  Object.keys(quickActionsMap).forEach((role) => {
-    if (role === "DEV") return;
-    quickActionsMap[role].forEach((action) => {
-      if (!merged.some((a) => a.label === action.label)) merged.push(action);
+
+  Object.values(quickActionsMap).forEach((actions) => {
+    actions.forEach((action) => {
+      if (!merged.some((a) => a.label === action.label)) {
+        merged.push(action);
+      }
     });
   });
 
-  // Add extra DEV-specific actions with permissions
   merged.push(
-    { label: "Manage Users", href: "/dashboard/users", permission: "manageUsers" },
-    { label: "Manage Branches", href: "/dashboard/branches", permission: "manageBranches" },
-    { label: "View All Products", href: "/dashboard/products", permission: "viewProducts" },
-    { label: "Manage Customers", href: "/dashboard/customers", permission: "manageCustomers" },
-    { label: "View Invoices", href: "/dashboard/invoices", permission: "viewInvoices" },
-    { label: "Dashboard Stats", href: "/dashboard", permission: "viewDashboardStats" }
+    { label: "Manage Users", href: "/dashboard/personnels" },
+    { label: "Manage Branches", href: "/dashboard/branches" },
+    { label: "Manage Organizations", href: "/dashboard/organizations" },
+    { label: "View Customers", href: "/dashboard/customers" },
+    { label: "View Dashboard", href: "/dashboard" }
   );
 
   return merged;
 })();
+
+/**
+ * Returns actions a user can actually see
+ * after validating page permissions.
+ */
+export function getQuickActions(
+  role: Role,
+  pathname: string,
+  isOrgOwner: boolean = false
+): QuickActionType[] {
+  const actions = quickActionsMap[role] ?? [];
+
+  return actions.filter((action) =>
+    hasPagePermission(role, action.href, isOrgOwner)
+  );
+}

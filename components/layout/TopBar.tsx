@@ -3,6 +3,7 @@
 import { useSession } from "next-auth/react";
 import { useRouter } from "next/navigation";
 import { UserMenu } from "@/components/shared/UserMenu";
+import { NotificationsBell } from "@/components/shared/NotificationsBell"; // Adjust path as needed
 import { getInitials } from "@/lib/getInitials";
 
 export default function TopBar() {
@@ -23,8 +24,8 @@ export default function TopBar() {
 
   return (
     <header className="w-full h-10 flex justify-between items-center px-3 border-b border-gray-200 bg-white">
-
-      {/* Left - Logo */}
+      
+      {/* Left - Logo & Org Name */}
       <div
         onClick={() => router.push(user ? "/dashboard" : "/")}
         className="flex items-center gap-2 flex-shrink-0 cursor-pointer group"
@@ -42,39 +43,42 @@ export default function TopBar() {
         </span>
       </div>
 
-
-
-      {/* Right */}
-      <div className="flex items-center gap-2 flex-shrink-0">
+      {/* Right - Actions & Profile */}
+      <div className="flex items-center gap-3 flex-shrink-0">
         {user ? (
-          <UserMenu
-            trigger={
-              <div
-                className="flex items-center gap-2 cursor-pointer rounded-full py-0.5 pr-3
-                bg-gray-100 hover:bg-[#2A9D8F]/10 transition-colors"
-              >
+          <>
+            {/* Notifications Integrated Here */}
+            <NotificationsBell />
+
+            <UserMenu
+              trigger={
                 <div
-                  className="w-8 h-8 rounded-full text-white
-                  flex items-center justify-center font-semibold text-sm
-                  bg-blue-600"
+                  className="flex items-center gap-2 cursor-pointer rounded-full py-0.5 pr-3
+                  bg-gray-100 hover:bg-[#2A9D8F]/10 transition-colors"
                 >
-                  {getInitials(user.name)}
-                </div>
+                  <div
+                    className="w-8 h-8 rounded-full text-white
+                    flex items-center justify-center font-semibold text-sm
+                    bg-blue-600"
+                  >
+                    {getInitials(user.name)}
+                  </div>
 
-                <div className="hidden sm:flex items-baseline gap-1">
-                  <span className="text-sm font-medium truncate">
-                    {user.name}
-                  </span>
-
-                  {user.role && (
-                    <span className="text-xs text-blue-600 truncate capitalize">
-                      ({user.role})
+                  <div className="hidden sm:flex items-baseline gap-1">
+                    <span className="text-sm font-medium truncate">
+                      {user.name}
                     </span>
-                  )}
+
+                    {user.role && (
+                      <span className="text-xs text-blue-600 truncate capitalize">
+                        ({user.role.toLowerCase()})
+                      </span>
+                    )}
+                  </div>
                 </div>
-              </div>
-            }
-          />
+              }
+            />
+          </>
         ) : (
           <button
             onClick={() => router.push("/auth/signin")}
@@ -85,7 +89,6 @@ export default function TopBar() {
           </button>
         )}
       </div>
-
     </header>
   );
 }

@@ -2,13 +2,14 @@
 
 import { useState, useEffect, useCallback, useMemo } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { useToast } from "@/components/feedback/ToastProvider";
+import { useAlerts } from "@/components/feedback/AlertProvider";
 import { getInitials } from "@/lib/getInitials";
 
 // Modals & Forms
 import EmailChangeModal from "@/components/modal/EmailChangeModal";
 import PasswordChangeModal from "@/components/modal/PasswordChangeModal";
 import ContactForm from "@/components/forms/ContactForm";
+import React from "react";
 
 /* ================= TYPES ================= */
 
@@ -281,7 +282,7 @@ function ActivityLogsPanel({ logs }: { logs: ActivityLogDTO[] }) {
 function InspectorPanel({ profile, onClose, onUpdate }: { profile: ProfileDTO; onClose: () => void; onUpdate: () => void }) {
   const [name, setName] = useState(profile.name || "");
   const [saving, setSaving] = useState(false);
-  const { addToast } = useToast();
+  const { dispatch } = useAlerts();
 
   const handleSave = async () => {
     setSaving(true);
@@ -292,11 +293,21 @@ function InspectorPanel({ profile, onClose, onUpdate }: { profile: ProfileDTO; o
         body: JSON.stringify({ name })
       });
       if(!res.ok) throw new Error();
-      addToast({ type: 'success', message: 'Identity updated successfully' });
+        dispatch({
+          kind: "TOAST",
+          type: "SUCCESS",
+          title: "Profile Updated",
+          message: "Profile changes saved successfully."
+        });
       onUpdate();
       onClose();
     } catch {
-      addToast({ type: 'error', message: 'Failed to update identity' });
+      dispatch({
+        kind: "TOAST",
+        type: "ERROR",
+        title: "Failed to Update Profile",
+        message: "An error occurred while saving profile changes."
+      });
     } finally {
       setSaving(false);
     }
@@ -361,7 +372,7 @@ export default function ProfilePage() {
   const [showEmailModal, setShowEmailModal] = useState(false);
   const [showPasswordModal, setShowPasswordModal] = useState(false);
 
-  const { addToast } = useToast();
+  const { dispatch } = useAlerts();
 
   const loadProfile = useCallback(async () => {
     try {
@@ -370,11 +381,16 @@ export default function ProfilePage() {
       if (!res.ok) throw new Error();
       setProfile(data.profile);
     } catch {
-      addToast({ type: "error", message: "Failed to sync profile data" });
+      dispatch({
+        kind: "TOAST",
+        type: "ERROR",
+        title: "Failed to Sync Profile",
+        message: "An error occurred while fetching profile data."
+      });
     } finally {
       setLoading(false);
     }
-  }, [addToast]);
+  }, [dispatch]);
 
   useEffect(() => { loadProfile(); }, [loadProfile]);
 
@@ -459,7 +475,7 @@ export default function ProfilePage() {
               onEdit={() => setPanel("inspector")} 
               onCopy={() => {
                 navigator.clipboard.writeText(profile.name ?? "");
-                addToast({ type: "success", message: "Name copied" });
+                dispatch({ kind: "TOAST", type: "SUCCESS", title: "Name copied", message: "Name copied to clipboard" });
               }}
             />
 
@@ -471,7 +487,7 @@ export default function ProfilePage() {
               onEdit={() => setShowEmailModal(true)}
               onCopy={() => {
                 navigator.clipboard.writeText(profile.email);
-                addToast({ type: "success", message: "Email copied" });
+                dispatch({ kind: "TOAST", type: "SUCCESS", title: "Email copied", message: "Email copied to clipboard" });
               }}
               badge={profile.pendingEmail && (
                 <span className="text-[8px] px-1.5 py-0.5 bg-blue-50/80 text-blue-500/80 border border-blue-100/50 rounded-full font-black animate-pulse">
@@ -489,7 +505,7 @@ export default function ProfilePage() {
               onCopy={() => {
                 if (profile.staffCode) {
                   navigator.clipboard.writeText(profile.staffCode);
-                  addToast({ type: "success", message: "Staff code copied" });
+                  dispatch({ kind: "TOAST", type: "SUCCESS", title: "Staff code copied", message: "Staff code copied to clipboard" });
                 }
               }}
               badge={
@@ -571,7 +587,7 @@ export default function ProfilePage() {
                     branchId: primaryBranchId,
                     isAdmin: profile.role === "ADMIN" || profile.role === "DEV"
                   }}
-                  onSuccess={() => addToast({ type: "success", message: "Support protocol initiated." })}
+                  onSuccess={() => dispatch({ kind: "TOAST", type: "SUCCESS", title: "Support Protocol Initiated", message: "Support protocol initiated." })}
                   onCancel={() => {}}
                 />
             </section>
