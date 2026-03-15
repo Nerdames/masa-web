@@ -4,8 +4,11 @@ import { usePathname } from "next/navigation";
 import { Geist, Geist_Mono } from "next/font/google";
 import "boxicons/css/boxicons.min.css";
 import "./globals.css";
+
+// Providers & Hooks
 import { SessionProvider } from "./providers/SessionProvider";
-import { ToastProvider } from "@/components/feedback/ToastProvider";
+import { AlertProvider } from "@/components/feedback/AlertProvider";
+import { usePusherNotifications } from "@/hooks/usePusherNotifications";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -17,6 +20,15 @@ const geistMono = Geist_Mono({
   subsets: ["latin"],
 });
 
+/**
+ * RealTimeListener is a "headless" component that activates 
+ * our Pusher subscriptions once the session is available.
+ */
+function RealTimeListener(): null {
+  usePusherNotifications();
+  return null;
+}
+
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
 
@@ -24,33 +36,34 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   const isDashboard = pathname?.startsWith("/dashboard");
 
   return (
-    <html lang="en">
+    <html lang="en" className="scroll-smooth">
       <body
         className={`${geistSans.variable} ${geistMono.variable} antialiased 
         h-dvh w-full overflow-hidden 
         bg-gradient-to-br from-blue-50 via-white to-green-50 text-black`}
       >
         <SessionProvider>
-          <ToastProvider>
-            
+          <AlertProvider>
+            {/* Activates WebSocket listening for MASA alerts */}
+            <RealTimeListener />
+
             {/* App Layout Container */}
             <div className="flex flex-col h-full w-full">
 
               {/* Page Content: Occupies all space when footer is hidden */}
-              <main className="flex-1 flex flex-col overflow-hidden">
+              <main className="flex-1 flex flex-col overflow-hidden relative">
                 {children}
               </main>
 
               {/* Global Footer: Rendered conditionally */}
               {!isDashboard && (
-                <footer className="text-center text-xs text-gray-400 py-3 shrink-0 bg-white/30 backdrop-blur-sm border-t border-black/5">
-                  © {new Date().getFullYear()} MASA. All rights reserved.
+                <footer className="text-center text-[10px] font-bold tracking-widest text-slate-400 py-3 shrink-0 bg-white/30 backdrop-blur-sm border-t border-black/5 uppercase">
+                  © {new Date().getFullYear()} MASA Engine • All Systems Operational
                 </footer>
               )}
 
             </div>
-
-          </ToastProvider>
+          </AlertProvider>
         </SessionProvider>
       </body>
     </html>

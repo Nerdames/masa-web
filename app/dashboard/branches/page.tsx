@@ -3,7 +3,7 @@
 import React, { useState, useEffect, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Role } from "@prisma/client";
-import { useToast } from "@/components/feedback/ToastProvider";
+import { useAlerts } from "@/components/feedback/AlertProvider";
 
 /* ================= TYPES ================= */
 
@@ -483,7 +483,7 @@ interface DetailsPanelProps {
 function DetailsPanel({ branch, onClose, onUpdate }: DetailsPanelProps) {
   const [isEditing, setIsEditing] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
-  const { addToast } = useToast();
+  const { dispatch } = useAlerts();
 
   const [form, setForm] = useState({
     name: branch.name || "",
@@ -499,7 +499,12 @@ function DetailsPanel({ branch, onClose, onUpdate }: DetailsPanelProps) {
 
   const handleSave = async () => {
     if (!form.name.trim()) {
-      addToast({ type: "error", title: "Validation Error", message: "Branch name is required." });
+        dispatch({
+          kind: "TOAST",
+          type: "ERROR",
+          title: "Validation Error",
+          message: "Branch name is required."
+        });
       return;
     }
 
@@ -509,10 +514,19 @@ function DetailsPanel({ branch, onClose, onUpdate }: DetailsPanelProps) {
         name: form.name,
         location: form.location,
       });
-      addToast({ type: "success", title: "Branch Updated", message: "Infrastructure details saved." });
-      setIsEditing(false);
+      dispatch({
+        kind: "TOAST",
+        type: "SUCCESS",
+        title: "Branch Updated",
+        message: "Infrastructure details saved."
+      });
     } catch (err: unknown) {
-      addToast({ type: "error", title: "Update Failed", message: "Network or permission error." });
+      dispatch({
+        kind: "TOAST",
+        type: "ERROR",
+        title: "Update Failed",
+        message: "Network or permission error."
+      });
     } finally {
       setIsSaving(false);
     }
@@ -524,13 +538,19 @@ function DetailsPanel({ branch, onClose, onUpdate }: DetailsPanelProps) {
 
     try {
       await onUpdate(branch.id, { [key]: value });
-      addToast({
-        type: "success",
+      dispatch({
+        kind: "TOAST",
+        type: "SUCCESS",
         title: "Status Updated",
-        message: `Branch is now ${isDeleteAction ? 'Archived' : value ? 'Active' : 'Inactive'}.`,
+        message: `Branch is now ${isDeleteAction ? "Archived" : value ? "Active" : "Inactive"}.`
       });
     } catch (err: unknown) {
-      addToast({ type: "error", title: "Update Failed", message: "Could not change status." });
+      dispatch({
+        kind: "TOAST",
+        type: "ERROR",
+        title: "Update Failed",
+        message: "Could not change status."
+      });
     }
   };
 

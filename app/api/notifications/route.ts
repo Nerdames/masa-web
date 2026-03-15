@@ -1,169 +1,85 @@
-import { NextRequest, NextResponse } from "next/server";
+import { getServerSession } from "next-auth";
+import { authOptions } from "@/lib/auth";
 import prisma from "@/lib/prisma";
-import { getToken } from "next-auth/jwt";
-import { Role, NotificationType, Prisma } from "@prisma/client";
+import { NextRequest, NextResponse } from "next/server";
+import { ApprovalStatus } from "@prisma/client";
 
-const secret = process.env.NEXTAUTH_SECRET as string;
-
-/* --------------------------------
-   GET — Fetch notifications
-   Query params supported:
-     unread=true
-     type=INFO
-     branchId=<branchId>
---------------------------------- */
-export async function GET(req: NextRequest) {
-  try {
-    const token = await getToken({ req, secret });
-    if (!token || !token.organizationId) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
-
-    const url = new URL(req.url);
-    const unreadOnly = url.searchParams.get("unread") === "true";
-    const typeFilter = url.searchParams.get("type") as NotificationType | null;
-    const branchIdFilter = url.searchParams.get("branchId");
-
-    const personnelId = token.sub as string;
-
-    const notifications = await prisma.notification.findMany({
-      where: {
-        organizationId: token.organizationId as string,
-        ...(branchIdFilter ? { branchId: branchIdFilter } : {}),
-        ...(typeFilter ? { type: typeFilter } : {}),
-        recipients: {
-          some: {
-            personnelId,
-            ...(unreadOnly ? { read: false } : {}),
-          },
-        },
-        deletedAt: null,
-      },
-      include: {
-        recipients: {
-          where: { personnelId },
-          select: { read: true },
-        },
-        branch: true,
-      },
-      orderBy: { createdAt: "desc" },
-      take: 100,
-    });
-
-    return NextResponse.json(notifications);
-  } catch (error) {
-    console.error("GET /api/notifications error:", error);
-    return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
-  }
+interface ApprovalPayload {
+  approvalId: string;
+  decision: "APPROVED" | "REJECTED";
+  rejectionNote?: string;
 }
 
-/* --------------------------------
-   POST — Create notification
---------------------------------- */
 export async function POST(req: NextRequest) {
-  try {
-    const token = await getToken({ req, secret });
-    if (!token || !["DEV", "ADMIN", "MANAGER"].includes(token.role as string)) {
-      return NextResponse.json({ error: "Forbidden" }, { status: 403 });
-    }
-
-    const body: {
-      title: string;
-      message: string;
-      type?: NotificationType;
-      branchId?: string;
-      recipientIds: string[];
-      metadata?: Prisma.InputJsonValue;
-      sourceId?: string;
-      sourceType?: string;
-    } = await req.json();
-
-    if (!body.title || !body.message || !body.recipientIds?.length) {
-      return NextResponse.json({ error: "Missing title, message, or recipients" }, { status: 400 });
-    }
-
-    const notification = await prisma.notification.create({
-      data: {
-        organizationId: token.organizationId as string,
-        branchId: body.branchId || null,
-        type: body.type || NotificationType.INFO,
-        title: body.title,
-        message: body.message,
-        metadata: body.metadata || null,
-        recipients: {
-          createMany: {
-            data: body.recipientIds.map((id) => ({ personnelId: id })),
-          },
-        },
-      },
-      include: { recipients: true, branch: true },
-    });
-
-    return NextResponse.json(notification, { status: 201 });
-  } catch (error) {
-    console.error("POST /api/notifications error:", error);
-    return NextResponse.json({ error: "Failed to create notification" }, { status: 500 });
+  const session = await getServerSession(authOptions);
+  if (!session || !session.user) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
-}
 
-/* --------------------------------
-   PATCH — Mark notifications as read
---------------------------------- */
-export async function PATCH(req: NextRequest) {
   try {
-    const token = await getToken({ req, secret });
-    if (!token || !token.organizationId) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
+    const body = (await req.json()) as ApprovalPayload;
+    const { approvalId, decision, rejectionNote } = body;
 
-    const body: { id?: string; ids?: string[] } = await req.json();
-    const personnelId = token.sub as string;
+    const result = await prisma.$transaction(async (tx) => {
+      const request = await tx.approvalRequest.findUnique({
+        where: { id: approvalId },
+      });
 
-    const targetIds = body.id ? [body.id] : body.ids || [];
-    if (!targetIds.length) {
-      return NextResponse.json({ error: "No IDs provided" }, { status: 400 });
-    }
+      if (!request || request.status !== ApprovalStatus.PENDING) {
+        throw new Error("Request is no longer valid or has already been processed.");
+      }
 
-    const updated = await prisma.notificationRecipient.updateMany({
-      where: {
-        notificationId: { in: targetIds },
-        personnelId,
-        read: false,
-      },
-      data: { read: true },
+      const updatedRequest = await tx.approvalRequest.update({
+        where: { id: approvalId },
+        data: { 
+          status: decision,
+          approverId: session.user.id,
+          appliedAt: decision === "APPROVED" ? new Date() : null,
+          rejectionNote
+        }
+      });
+
+      if (decision === "APPROVED") {
+        const changes = request.changes as Record<string, unknown>;
+        
+        switch (request.actionType) {
+          case "USER_LOCK_UNLOCK":
+            await tx.authorizedPersonnel.update({
+              where: { id: String(request.targetId) },
+              data: { 
+                isLocked: Boolean(changes.isLocked), 
+                lockReason: changes.lockReason ? String(changes.lockReason) : null 
+              }
+            });
+            break;
+          case "PRICE_UPDATE":
+            await tx.branchProduct.update({
+              where: { id: String(request.targetId) },
+              data: { sellingPrice: Number(changes.newPrice) }
+            });
+            break;
+          // Extend with other CriticalActions (STOCK_ADJUST, VOID_INVOICE, etc.)
+        }
+      }
+
+      await tx.activityLog.create({
+        data: {
+          organizationId: request.organizationId,
+          action: `APPROVAL_${decision}_${request.actionType}`,
+          personnelId: session.user.id,
+          critical: false, // Set to true if you want processing actions to also trigger alerts
+          metadata: { requestId: approvalId }
+        }
+      });
+
+      return updatedRequest;
     });
 
-    return NextResponse.json({ success: true, count: updated.count });
-  } catch (error) {
-    console.error("PATCH /api/notifications error:", error);
-    return NextResponse.json({ error: "Update failed" }, { status: 500 });
-  }
-}
-
-/* --------------------------------
-   DELETE — Soft-delete notification
---------------------------------- */
-export async function DELETE(req: NextRequest) {
-  try {
-    const token = await getToken({ req, secret });
-    if (!token || !["DEV", "ADMIN"].includes(token.role as string)) {
-      return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+    return NextResponse.json(result);
+  } catch (error: unknown) {
+    if (error instanceof Error) {
+      return NextResponse.json({ error: error.message }, { status: 400 });
     }
-
-    const body: { id?: string; ids?: string[] } = await req.json();
-    const targetIds = body.id ? [body.id] : body.ids || [];
-    if (!targetIds.length) {
-      return NextResponse.json({ error: "No IDs provided" }, { status: 400 });
-    }
-
-    const deleted = await prisma.notification.updateMany({
-      where: { id: { in: targetIds }, organizationId: token.organizationId as string },
-      data: { deletedAt: new Date() },
-    });
-
-    return NextResponse.json({ success: true, count: deleted.count });
-  } catch (error) {
-    console.error("DELETE /api/notifications error:", error);
-    return NextResponse.json({ error: "Delete failed" }, { status: 500 });
+    return NextResponse.json({ error: "An unknown error occurred" }, { status: 500 });
   }
 }

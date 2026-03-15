@@ -3,7 +3,7 @@
 import React, { useState, useEffect, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Role } from "@prisma/client";
-import { useToast } from "@/components/feedback/ToastProvider";
+import { useAlerts } from "@/components/feedback/AlertProvider";
 
 /* ================= TYPES ================= */
 
@@ -81,7 +81,9 @@ export default function PersonnelMissionControl() {
   const [personnels, setPersonnels] = useState<Personnel[]>([]);
   const [summary, setSummary] = useState<Summary | null>(null);
   const [loading, setLoading] = useState(true);
-  const { addToast } = useToast();
+  
+  // Updated Hook Usage
+  const { dispatch } = useAlerts();
 
   const [search, setSearch] = useState("");
   const [activeTab, setActiveTab] = useState<"all" | "active" | "locked" | "disabled">("all");
@@ -91,7 +93,6 @@ export default function PersonnelMissionControl() {
   const [activityLogs, setActivityLogs] = useState<ActivityLog[]>([]);
   const [branches, setBranches] = useState<{ id: string; name: string }[]>([]);
 
-  // Mocked for client context - replace with actual session hook
   const isViewerAdminOrOwner = true; 
 
   const fetchPersonnels = useCallback(async () => {
@@ -140,7 +141,8 @@ export default function PersonnelMissionControl() {
       return result;
     } catch (error: unknown) {
       const msg = error instanceof Error ? error.message : "Unknown error";
-      addToast({ type: "error", title: "Action Denied", message: msg });
+      // Updated Alert Dispatch
+      dispatch({ kind: "TOAST", type: "ERROR", title: "Action Denied", message: msg });
       throw error;
     }
   };
@@ -156,18 +158,21 @@ export default function PersonnelMissionControl() {
       const result = await res.json();
       if (!res.ok) throw new Error(result.message || "Provisioning failed");
 
-      addToast({ type: "success", title: "Staff Provisioned", message: `${result.name} added. OTP sent to email.` });
+      // Updated Alert Dispatch
+      dispatch({ kind: "TOAST", type: "SUCCESS", title: "Staff Provisioned", message: `${result.name} added. OTP sent to email.` });
       setIsProvisioning(false);
       fetchPersonnels();
     } catch (error: unknown) {
       const msg = error instanceof Error ? error.message : "Unknown error";
-      addToast({ type: "error", title: "Provisioning Error", message: msg });
+      // Updated Alert Dispatch
+      dispatch({ kind: "TOAST", type: "ERROR", title: "Provisioning Error", message: msg });
       throw error;
     }
   };
 
   const handleExport = (type: "CSV" | "PDF") => {
-    addToast({ type: "success", title: "Export Started", message: `Generating ${type} audit report...` });
+    // Updated Alert Dispatch
+    dispatch({ kind: "TOAST", type: "SUCCESS", title: "Export Started", message: `Generating ${type} audit report...` });
   };
 
   const openDetails = (p: Personnel) => {
@@ -239,7 +244,7 @@ export default function PersonnelMissionControl() {
         </div>
       </main>
 
-      <aside className="hidden lg:flex w-[340px] h-full  bg-white border-l border-black/5 flex-col shadow-[-10px_0_20px_rgba(0,0,0,0.02)] z-20 shrink-0 relative">
+      <aside className="hidden lg:flex w-[340px] h-full bg-white border-l border-black/5 flex-col shadow-[-10px_0_20px_rgba(0,0,0,0.02)] z-20 shrink-0 relative">
         <AnimatePresence mode="wait">
           {isProvisioning ? (
             <ProvisionPanel key="provision" onClose={() => setIsProvisioning(false)} onCreate={handleCreate} branches={branches} />
@@ -259,14 +264,16 @@ export default function PersonnelMissionControl() {
 /* ================= SUB-COMPONENTS ================= */
 
 function PersonnelCard({ personnel, isSelected, onClick }: { personnel: Personnel, isSelected: boolean, onClick: () => void }) {
-  const { addToast } = useToast();
+  // Swapped to useAlerts
+  const { dispatch } = useAlerts();
   const status = personnel.isLocked ? "locked" : personnel.disabled ? "disabled" : "active";
 
   const copyCode = (e: React.MouseEvent) => {
     e.stopPropagation();
     if(personnel.staffCode) {
       navigator.clipboard.writeText(personnel.staffCode);
-      addToast({ type: "success", title: "Copied", message: "Staff code copied to clipboard." });
+      // Updated Alert Dispatch
+      dispatch({ kind: "TOAST", type: "SUCCESS", title: "Copied", message: "Staff code copied to clipboard." });
     }
   };
 
@@ -431,7 +438,9 @@ function ActivityLogsPanel({ logs }: { logs: ActivityLog[] }) {
 function DetailsPanel({ personnel, onClose, onUpdate, viewerCanResendOTP }: DetailsPanelProps) {
   const [isEditing, setIsEditing] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
-  const { addToast } = useToast();
+  
+  // Updated to new hook
+  const { dispatch } = useAlerts();
   
   const [form, setForm] = useState({ name: personnel.name, email: personnel.email, role: personnel.role });
 
@@ -439,29 +448,53 @@ function DetailsPanel({ personnel, onClose, onUpdate, viewerCanResendOTP }: Deta
 
   const handleCopy = (text: string) => {
     navigator.clipboard.writeText(text);
-    addToast({ type: "success", title: "Copied", message: "Saved to clipboard." });
+    // Updated Dispatch
+    dispatch({ 
+      kind: "TOAST", 
+      type: "SUCCESS", 
+      title: "Copied", 
+      message: "Saved to clipboard." 
+    });
   };
 
   const handleSave = async () => {
     setIsSaving(true);
     try {
       await onUpdate(personnel.id, { name: form.name, email: form.email, role: form.role });
-      addToast({ type: "success", title: "Saved", message: "Profile updated successfully." });
+      // Updated Dispatch
+      dispatch({ 
+        kind: "TOAST", 
+        type: "SUCCESS", 
+        title: "Saved", 
+        message: "Profile updated successfully." 
+      });
       setIsEditing(false);
     } finally { setIsSaving(false); }
   };
 
   const toggleSecurity = async (key: keyof UpdatePayload, val: boolean) => {
     await onUpdate(personnel.id, { [key]: val });
-    addToast({ type: "success", title: "Security Updated", message: `Account status changed.` });
+    // Updated Dispatch
+    dispatch({ 
+      kind: "TOAST", 
+      type: "SUCCESS", 
+      title: "Security Updated", 
+      message: "Account status changed successfully." 
+    });
   };
 
   const handleResendOTP = async () => {
     try {
       await onUpdate(personnel.id, { action: "RESEND_OTP" }); 
-      addToast({ type: "success", title: "Token Sent", message: "A new verification OTP has been emailed." });
+      // Updated Dispatch
+      dispatch({ 
+        kind: "TOAST", 
+        type: "SUCCESS", 
+        title: "Token Sent", 
+        message: "A new verification OTP has been emailed." 
+      });
     } catch (err) {
-      // Error handled in handleUpdate
+      // Error is caught and dispatched in handleUpdate
     }
   };
 
@@ -585,10 +618,20 @@ function ProvisionPanel({ onClose, onCreate, branches }: ProvisionPanelProps) {
   const [isSaving, setIsSaving] = useState(false);
 
   const handleSubmit = async () => {
-    if (!form.branchId || !form.name || !form.email) return alert("Please fill all required fields.");
+    if (!form.branchId || !form.name || !form.email) {
+      // Switched from native alert to MASA Warning Toast
+      return dispatch({
+        kind: "TOAST",
+        type: "WARNING",
+        title: "Missing Fields",
+        message: "Please fill all required fields to provision staff."
+      });
+    }
     setIsSaving(true);
     try { await onCreate(form); } finally { setIsSaving(false); }
   };
+
+  const { dispatch } = useAlerts();
 
   return (
     <motion.div variants={panelVariants} initial="hidden" animate="visible" exit="exit" className="h-full flex flex-col w-full absolute inset-0 bg-white z-20 border-l border-black/5">

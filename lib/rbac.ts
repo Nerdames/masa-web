@@ -59,6 +59,11 @@ export const PAGE_PERMISSIONS = {
     Role.CASHIER,
     Role.INVENTORY,
   ],
+
+  "/dashboard/personnels": [
+    Role.ADMIN,
+    Role.MANAGER,
+  ],
 } as const satisfies Record<string, readonly Role[]>;
 
 
@@ -67,7 +72,7 @@ export const PAGE_PERMISSIONS = {
  * Only ADMIN or OrgOwner allowed (blocked by proxy)
  */
 export const MANAGEMENT_ROUTES = [
-  "/dashboard/personnels",
+  
   "/dashboard/branches",
   "/dashboard/organizations",
 ] as const;

@@ -19,8 +19,8 @@ export default function Home() {
     datasets: [
       {
         data: [6500, 7800, 9200, 8700, 10500, 11200],
-        borderColor: "#FF6B35",
-        backgroundColor: "rgba(255,107,53,0.1)",
+        borderColor: "blue",
+        backgroundColor: "blue",
         tension: 0.3,
         pointRadius: 3,
         fill: true,
@@ -63,7 +63,7 @@ export default function Home() {
 
           <Link
             href="/auth/signin"
-            className="inline-block bg-orange-500 hover:bg-orange-600 text-white font-semibold px-8 py-3 rounded-lg shadow-lg transition"
+            className="inline-block bg-blue-500 hover:bg-blue-700 text-white font-semibold px-8 py-3 rounded-lg shadow-lg transition"
           >
             Login to MASA
           </Link>
@@ -115,7 +115,7 @@ export default function Home() {
 
             <div className="flex justify-between mb-3">
               <h2 className="font-semibold text-sm">Sales Overview</h2>
-              <span className="text-xs text-orange-500">Month</span>
+              <span className="text-xs text-blue-500">Month</span>
             </div>
 
             <div className="h-36">
