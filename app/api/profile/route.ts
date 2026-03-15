@@ -71,66 +71,96 @@ async function requirePersonnel(): Promise<PersonnelWithRelations | null> {
       branchAssignments: { include: { branch: true } },
       preferences: true,
       activityLogs: {
-        take: 10,
+        take: 50, // Increased to give the Live Audit Trail more data
         orderBy: { createdAt: "desc" },
       },
     },
   });
 }
 
-function resolveRoles(personnel: PersonnelWithRelations): Role[] {
-  const roles = new Set<Role>();
-  if (personnel.isOrgOwner) roles.add(Role.ADMIN);
-  personnel.branchAssignments.forEach((a) => roles.add(a.role));
-  return Array.from(roles);
-}
+// Maps backend relations to exact frontend ProfileDTO
+async function mapProfileDTO(personnel: PersonnelWithRelations) {
+  // 1. Fetch pending approvals to drive frontend badges
+  const pendingRequests = await prisma.approvalRequest.findMany({
+    where: { requesterId: personnel.id, status: ApprovalStatus.PENDING },
+  });
 
-function mapProfileDTO(personnel: PersonnelWithRelations) {
+  let pendingEmail = null;
+  let pendingPassword = null;
+
+  pendingRequests.forEach((req) => {
+    const changes = req.changes as Record<string, any>;
+    if (req.actionType === CriticalAction.EMAIL_CHANGE && changes?.email) {
+      pendingEmail = changes.email;
+    }
+    if (req.actionType === CriticalAction.PASSWORD_CHANGE) {
+      pendingPassword = "APPROVAL_REQUIRED";
+    }
+  });
+
+  // 2. Resolve primary role for UI styling
+  let primaryRole: Role = Role.CASHIER; // Fallback
+  if (personnel.isOrgOwner) {
+    primaryRole = Role.ADMIN;
+  } else {
+    const primaryAssignment = personnel.branchAssignments.find((a) => a.isPrimary) || personnel.branchAssignments[0];
+    if (primaryAssignment) primaryRole = primaryAssignment.role;
+  }
+
+  // 3. Check hard lock vs temporary lockout
+  const isTemporarilyLocked = personnel.lockoutUntil && personnel.lockoutUntil > new Date();
+
   return {
     id: personnel.id,
     name: personnel.name,
     email: personnel.email,
     staffCode: personnel.staffCode,
+    role: primaryRole,
     isOrgOwner: personnel.isOrgOwner,
-    isLocked: personnel.isLocked,
     disabled: personnel.disabled,
-    lastLogin: personnel.lastLogin,
-    lastActivityAt: personnel.lastActivityAt,
+    isLocked: personnel.isLocked || isTemporarilyLocked,
+    lockReason: isTemporarilyLocked ? "Temporary Security Lockout" : null,
+    
+    // Dates & Auth Metadata
+    lastLogin: personnel.lastLogin ? personnel.lastLogin.toISOString() : null,
+    lastActivityAt: personnel.lastActivityAt ? personnel.lastActivityAt.toISOString() : null,
+    // Note: Cast these using any or fallback if your schema doesn't have explicit IP/Device fields yet
+    lastLoginIp: (personnel as any).lastLoginIp || "0.0.0.0", 
+    lastLoginDevice: (personnel as any).lastLoginDevice || "System Interface",
+    
+    pendingEmail,
+    pendingPassword,
+    
     organization: {
       id: personnel.organization.id,
       name: personnel.organization.name,
-      active: personnel.organization.active,
     },
-    branch: personnel.branch
-      ? {
-          id: personnel.branch.id,
-          name: personnel.branch.name,
-          location: personnel.branch.location,
-          active: personnel.branch.active,
-        }
-      : null,
+    
     assignments: personnel.branchAssignments.map((a) => ({
+      id: a.id,
       branchId: a.branch.id,
       branchName: a.branch.name,
-      branchLocation: a.branch.location, // Crucial for frontend copy feature
+      branchLocation: a.branch.location,
       role: a.role,
+      isPrimary: a.isPrimary, // Required for frontend dot styling
     })),
-    activityLogs: personnel.activityLogs.map((log) => ({
-      id: log.id,
-      action: log.action.replace(/_/g, " "), // Format for UI: "PROFILE_UPDATED" -> "PROFILE UPDATED"
-      createdAt: log.createdAt,
-    })),
-    roles: resolveRoles(personnel),
-    preferences: personnel.preferences.map((p) => ({
-      id: p.id,
-      scope: p.scope,
-      category: p.category,
-      key: p.key,
-      target: p.target,
-      value: p.value,
-    })),
-    createdAt: personnel.createdAt,
-    updatedAt: personnel.updatedAt,
+    
+    activityLogs: personnel.activityLogs.map((log) => {
+      // Safely parse JSON metadata
+      let metadata = null;
+      try { metadata = log.meta ? JSON.parse(log.meta as string) : null; } catch { metadata = log.meta; }
+
+      return {
+        id: log.id,
+        action: log.action,
+        critical: log.action.includes("LOCK") || log.action.includes("PASSWORD") || log.action.includes("SECURITY"),
+        createdAt: log.createdAt.toISOString(),
+        ipAddress: (log as any).ipAddress || "0.0.0.0",
+        deviceInfo: (log as any).deviceInfo || "Internal Call",
+        personnel: { name: personnel.name }, // Contextualize the actor
+        metadata,
+      };
+    }),
   };
 }
 
@@ -142,13 +172,15 @@ export async function GET(): Promise<NextResponse> {
   try {
     const personnel = await requirePersonnel();
 
-    if (!personnel || personnel.disabled || personnel.isLocked) {
-      return NextResponse.json({ error: "Unauthorized or account locked" }, { status: 401 });
+    if (!personnel || personnel.disabled) {
+      return NextResponse.json({ error: "Unauthorized or account disabled" }, { status: 401 });
     }
+
+    const profileDTO = await mapProfileDTO(personnel);
 
     return NextResponse.json({
       success: true,
-      profile: mapProfileDTO(personnel),
+      profile: profileDTO,
     });
   } catch (error) {
     console.error("GET_PROFILE_ERROR", error);
@@ -167,11 +199,16 @@ export async function PATCH(request: NextRequest): Promise<NextResponse> {
   try {
     const personnel = await requirePersonnel();
 
-    if (!personnel || personnel.disabled || personnel.isLocked) {
+    if (!personnel || personnel.disabled) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    // 🔒 LOCKOUT CHECK
+    // 🔒 HARD LOCKOUT CHECK
+    if (personnel.isLocked) {
+        return NextResponse.json({ error: "Account is administratively locked." }, { status: 403 });
+    }
+
+    // ⏱️ TEMPORARY LOCKOUT CHECK
     if (personnel.lockoutUntil && personnel.lockoutUntil > new Date()) {
       return NextResponse.json(
         { error: `Security lockout active. Try again after ${personnel.lockoutUntil.toLocaleTimeString()}` },
@@ -185,8 +222,7 @@ export async function PATCH(request: NextRequest): Promise<NextResponse> {
     
     let requiresApproval = false;
     const approvalPayload: ProfileApprovalPayload = {};
-    const roles = resolveRoles(personnel);
-    const isAdmin = roles.includes(Role.ADMIN);
+    const isAdmin = personnel.isOrgOwner || personnel.branchAssignments.some(a => a.role === "ADMIN");
 
     ////////////////////////////////////////////////////////////
     // SENSITIVE CHANGE VALIDATION
@@ -217,7 +253,7 @@ export async function PATCH(request: NextRequest): Promise<NextResponse> {
           },
         });
 
-        return NextResponse.json({ error: "Invalid credentials." }, { status: 400 });
+        return NextResponse.json({ error: "Invalid security credentials." }, { status: 400 });
       }
 
       // Reset fails on valid password entry
@@ -229,10 +265,10 @@ export async function PATCH(request: NextRequest): Promise<NextResponse> {
     // PROCESS CHANGES
     ////////////////////////////////////////////////////////////
 
-    // Non-sensitive: Name
+    // Non-sensitive: Name (Triggers directly from InspectorPanel)
     if (body.name && body.name !== personnel.name) {
       updateData.name = body.name;
-      logActions.push("Name update");
+      logActions.push("PROFILE_IDENTITY_UPDATED");
     }
 
     // Sensitive: Email
@@ -246,16 +282,16 @@ export async function PATCH(request: NextRequest): Promise<NextResponse> {
       });
 
       if (existing) {
-        return NextResponse.json({ error: "This email is already in use" }, { status: 400 });
+        return NextResponse.json({ error: "This email is already in use by another personnel record" }, { status: 400 });
       }
 
       if (isAdmin) {
         updateData.email = body.email;
-        logActions.push("Email updated directly by Admin");
+        logActions.push("EMAIL_UPDATED_DIRECTLY");
       } else {
         requiresApproval = true;
         approvalPayload.email = body.email;
-        logActions.push("Email change approval requested");
+        logActions.push("EMAIL_CHANGE_REQUESTED");
       }
     }
 
@@ -264,16 +300,16 @@ export async function PATCH(request: NextRequest): Promise<NextResponse> {
       const hashedPass = await bcrypt.hash(body.newPassword, 12);
       if (isAdmin) {
         updateData.password = hashedPass;
-        logActions.push("Password updated directly by Admin");
+        logActions.push("PASSWORD_UPDATED_DIRECTLY");
       } else {
         requiresApproval = true;
         approvalPayload.password = hashedPass;
-        logActions.push("Password change approval requested");
+        logActions.push("PASSWORD_CHANGE_REQUESTED");
       }
     }
 
     if (Object.keys(updateData).length === 0 && !requiresApproval) {
-      return NextResponse.json({ error: "No changes detected" }, { status: 400 });
+      return NextResponse.json({ error: "No changes detected or submitted" }, { status: 400 });
     }
 
     ////////////////////////////////////////////////////////////
@@ -306,7 +342,7 @@ export async function PATCH(request: NextRequest): Promise<NextResponse> {
         const request = await tx.approvalRequest.create({
           data: {
             organizationId: personnel.organizationId,
-            branchId: personnel.branchId,
+            branchId: personnel.branchId, // Optional based on your schema
             requesterId: personnel.id,
             actionType,
             status: ApprovalStatus.PENDING,
@@ -323,7 +359,7 @@ export async function PATCH(request: NextRequest): Promise<NextResponse> {
             targetRole: Role.ADMIN,
             type: NotificationType.APPROVAL_REQUIRED,
             title: "Security Change Approval Required",
-            message: `${personnel.name || personnel.email} requested a security change.`,
+            message: `${personnel.name || personnel.email} requested a core security change.`,
           },
         });
 
@@ -334,37 +370,41 @@ export async function PATCH(request: NextRequest): Promise<NextResponse> {
             branchId: personnel.branchId,
             personnelId: personnel.id,
             approvalRequestId: request.id,
-            action: "PROFILE_CHANGE_REQUESTED",
-            meta: JSON.stringify({ fields: Object.keys(approvalPayload) }),
+            action: isEmailChange ? "SECURITY_EMAIL_REQUEST" : "SECURITY_PASSWORD_REQUEST",
+            meta: JSON.stringify({ fields: Object.keys(approvalPayload), status: "PENDING_ADMIN" }),
           },
         });
       }
 
-      // 5. General Activity Log
-      await tx.activityLog.create({
-        data: {
-          organizationId: personnel.organizationId,
-          branchId: personnel.branchId,
-          personnelId: personnel.id,
-          action: "PROFILE_PATCH_EXECUTED",
-          meta: logActions.join("; "),
-        },
-      });
+      // 5. General Activity Log for immediate changes (e.g., Name)
+      if (Object.keys(updateData).length > 0) {
+          await tx.activityLog.create({
+            data: {
+              organizationId: personnel.organizationId,
+              branchId: personnel.branchId,
+              personnelId: personnel.id,
+              action: logActions[0] || "PROFILE_UPDATE",
+              meta: JSON.stringify({ changes: Object.keys(updateData) }),
+            },
+          });
+      }
 
       return user;
     });
+
+    const updatedProfileDTO = await mapProfileDTO(result as PersonnelWithRelations);
 
     return NextResponse.json({
       success: true,
       requiresApproval,
       message: requiresApproval 
-        ? "Security changes are pending Admin approval." 
-        : "Profile updated successfully.",
-      profile: mapProfileDTO(result as PersonnelWithRelations),
+        ? "Security changes have been queued for Admin approval." 
+        : "Identity updated successfully.",
+      profile: updatedProfileDTO,
     });
 
   } catch (error) {
     console.error("PATCH_PROFILE_ERROR", error);
-    return NextResponse.json({ error: "Internal server error" }, { status: 500 });
+    return NextResponse.json({ error: "Internal server error during profile update" }, { status: 500 });
   }
 }

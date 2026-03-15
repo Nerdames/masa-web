@@ -10,6 +10,7 @@ const JWT_SECRET = process.env.NEXTAUTH_SECRET;
 
 async function getAuthContext(req: NextRequest) {
   const token = await getToken({ req, secret: JWT_SECRET });
+  // Ensure we have a valid session and organization context
   if (!token || typeof token.id !== "string" || token.expired) return null;
 
   return {
@@ -21,7 +22,7 @@ async function getAuthContext(req: NextRequest) {
   };
 }
 
-const CAN_MANAGE_PERSONNEL = [Role.ADMIN, Role.MANAGER];
+const CAN_MANAGE_PERSONNEL: Role[] = [Role.ADMIN, Role.MANAGER];
 
 /* -------------------- HELPERS -------------------- */
 
@@ -65,7 +66,7 @@ export async function GET(req: NextRequest) {
     const page = Math.max(Number(searchParams.get("page") ?? 1), 1);
     const pageSize = Math.min(Math.max(Number(searchParams.get("pageSize") ?? 10), 1), 100);
     const search = searchParams.get("search")?.trim() || "";
-    const status = searchParams.get("status"); // 'active', 'disabled', 'locked'
+    const status = searchParams.get("status"); 
 
     // Scoping query: Managers only see their branch, Admins/Owners see the whole Org
     const baseWhere: Prisma.AuthorizedPersonnelWhereInput = {
@@ -167,23 +168,20 @@ export async function POST(req: NextRequest) {
     const cleanEmail = email.toLowerCase().trim();
     const assignedRole = (role as Role) || Role.CASHIER;
     
-    // Default to the creator's branch if none is provided
+    // Auto-assign branch context if missing
     const assignedBranchId = branchId || auth.branchId || null;
 
     const hashedPassword = await bcrypt.hash(password, 12);
 
     const personnel = await prisma.$transaction(async (tx) => {
-      // 1. Conflict Detection
       const conflict = await tx.authorizedPersonnel.findFirst({
         where: { email: cleanEmail, organizationId: auth.organizationId, deletedAt: null }
       });
 
       if (conflict) throw new Error("Email already registered.");
 
-      // 2. Generate Staff Code
       const finalStaffCode = await generateStaffCode(tx, auth.organizationId, assignedBranchId, assignedRole);
 
-      // 3. Create Personnel
       const created = await tx.authorizedPersonnel.create({
         data: {
           name: name.trim(),
@@ -199,7 +197,6 @@ export async function POST(req: NextRequest) {
         },
       });
 
-      // 4. Branch Assignment Pivot Entry
       if (assignedBranchId) {
         await tx.branchAssignment.create({
           data: {
@@ -211,7 +208,6 @@ export async function POST(req: NextRequest) {
         });
       }
 
-      // 5. Activity Log
       await tx.activityLog.create({
         data: {
           organizationId: auth.organizationId,
@@ -225,7 +221,7 @@ export async function POST(req: NextRequest) {
             targetEmail: created.email,
             assignedRole: created.role,
             details: `Provisioned new account (${finalStaffCode})`
-          } as Prisma.JsonObject
+          } as Prisma.InputJsonValue
         }
       });
 
@@ -233,12 +229,13 @@ export async function POST(req: NextRequest) {
     });
 
     return NextResponse.json(personnel, { status: 201 });
-  } catch (error: any) {
-    if (error.message === "Email already registered.") {
-      return NextResponse.json({ message: error.message }, { status: 409 });
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : "Provisioning failed";
+    if (message === "Email already registered.") {
+      return NextResponse.json({ message }, { status: 409 });
     }
     console.error("Provisioning Error:", error);
-    return NextResponse.json({ message: "Provisioning failed" }, { status: 500 });
+    return NextResponse.json({ message }, { status: 500 });
   }
 }
 
@@ -268,31 +265,24 @@ export async function PATCH(req: NextRequest) {
 
     if (!targetUser) return NextResponse.json({ message: "Personnel not found" }, { status: 404 });
 
-    // --- SECURITY POLICY ENFORCEMENT ---
     const isTargetPrivileged = targetUser.role === Role.ADMIN || targetUser.isOrgOwner;
 
-    // 1. Protect Admins & Owners from lockout/disable
+    // Security Gatekeeping
     if (isTargetPrivileged && (disabled === true || isLocked === true)) {
       return NextResponse.json({ message: "Privileged accounts cannot be locked or disabled." }, { status: 403 });
     }
 
-    // 2. Manager Restrictions
     if (auth.role === Role.MANAGER) {
-      if (isTargetPrivileged) {
-        return NextResponse.json({ message: "Cannot modify superior roles." }, { status: 403 });
-      }
+      if (isTargetPrivileged) return NextResponse.json({ message: "Cannot modify superior roles." }, { status: 403 });
       if (targetUser.id === auth.userId && (disabled !== undefined || isLocked !== undefined)) {
-        return NextResponse.json({ message: "Managers cannot modify their own security status." }, { status: 403 });
+        return NextResponse.json({ message: "Security status must be managed by an Admin." }, { status: 403 });
       }
-      if (disabled !== undefined) {
-        return NextResponse.json({ message: "Managers are not authorized to disable accounts." }, { status: 403 });
-      }
+      if (disabled !== undefined) return NextResponse.json({ message: "Managers cannot disable accounts." }, { status: 403 });
     }
 
     const cleanEmail = email?.toLowerCase().trim();
 
     const updatedPersonnel = await prisma.$transaction(async (tx) => {
-      // 3. Email Conflict Check (if email is changing)
       if (cleanEmail && cleanEmail !== targetUser.email) {
         const conflict = await tx.authorizedPersonnel.findFirst({
           where: { email: cleanEmail, organizationId: auth.organizationId, id: { not: id }, deletedAt: null }
@@ -301,11 +291,10 @@ export async function PATCH(req: NextRequest) {
       }
 
       const updateData: Prisma.AuthorizedPersonnelUpdateInput = {};
-      const auditChanges: Record<string, any> = {};
+      const auditChanges: Record<string, unknown> = {};
       const actions: string[] = [];
       let notificationMessage: string | null = null;
 
-      // Profile updates
       if (name !== undefined && name.trim() !== targetUser.name) {
         updateData.name = name.trim();
         auditChanges.name = { from: targetUser.name, to: name.trim() };
@@ -319,7 +308,6 @@ export async function PATCH(req: NextRequest) {
         auditChanges.role = { from: targetUser.role, to: role };
       }
 
-      // Security Toggles
       if (disabled !== undefined && disabled !== targetUser.disabled) {
         updateData.disabled = disabled;
         auditChanges.disabled = { from: targetUser.disabled, to: disabled };
@@ -331,14 +319,13 @@ export async function PATCH(req: NextRequest) {
         updateData.isLocked = isLocked;
         updateData.lockReason = isLocked ? (lockReason || "Administratively locked") : null;
         auditChanges.isLocked = { from: targetUser.isLocked, to: isLocked };
-        
         if (!isLocked) {
           updateData.failedLoginAttempts = 0;
           updateData.lockoutUntil = null;
         }
         actions.push(isLocked ? "ACCOUNT_LOCKED" : "ACCOUNT_UNLOCKED");
-        if (!notificationMessage) { // Prioritize disable message if both happen
-           notificationMessage = isLocked ? `Your account has been locked. Reason: ${updateData.lockReason}` : "Your account has been unlocked.";
+        if (!notificationMessage) {
+           notificationMessage = isLocked ? `Account locked: ${updateData.lockReason}` : "Account unlocked.";
         }
       }
 
@@ -348,11 +335,9 @@ export async function PATCH(req: NextRequest) {
         actions.push("PASSWORD_RESET");
       }
 
-      // Multi-Branch Assignment Sync
       let branchesReassigned = false;
       if (branchAssignments && Array.isArray(branchAssignments)) {
         await tx.branchAssignment.deleteMany({ where: { personnelId: id } });
-
         if (branchAssignments.length > 0) {
           const primaryCount = branchAssignments.filter(ba => ba.isPrimary).length;
           if (primaryCount > 1) throw new Error("Only one branch can be marked as primary.");
@@ -377,11 +362,10 @@ export async function PATCH(req: NextRequest) {
         }
       }
 
-      if (Object.keys(auditChanges).filter(k => !['isLocked', 'disabled', 'password'].includes(k)).length > 0 && !actions.includes("PERSONNEL_UPDATED")) {
+      if (Object.keys(auditChanges).filter(k => !['isLocked', 'disabled', 'password'].includes(k)).length > 0) {
         actions.push("PERSONNEL_UPDATED");
       }
 
-      // Execute main update
       const updated = await tx.authorizedPersonnel.update({
         where: { id },
         data: updateData,
@@ -390,23 +374,19 @@ export async function PATCH(req: NextRequest) {
         }
       });
 
-      // Trigger Notification if security status changed
       if (notificationMessage) {
         await tx.notification.create({
           data: {
             organizationId: auth.organizationId,
             branchId: targetUser.branchId,
             type: NotificationType.SYSTEM,
-            title: "Security Status Update",
+            title: "Security Update",
             message: notificationMessage,
-            recipients: {
-              create: { personnelId: targetUser.id }
-            }
+            recipients: { create: { personnelId: targetUser.id } }
           }
         });
       }
 
-      // Comprehensive Activity Log Insert
       if (actions.length > 0) {
         await tx.activityLog.create({
           data: {
@@ -418,10 +398,9 @@ export async function PATCH(req: NextRequest) {
             metadata: {
               targetId: id,
               targetName: updated.name || updated.email,
-              targetEmail: updated.email,
               changes: auditChanges,
-              details: `Updates applied: ${Object.keys(auditChanges).join(', ')}${branchesReassigned ? ' + Branches' : ''}`
-            } as Prisma.JsonObject
+              details: `Updates: ${Object.keys(auditChanges).join(', ')}${branchesReassigned ? ' + Branches' : ''}`
+            } as Prisma.InputJsonValue
           }
         });
       }
@@ -430,12 +409,10 @@ export async function PATCH(req: NextRequest) {
     });
 
     return NextResponse.json(updatedPersonnel, { status: 200 });
-  } catch (error: any) {
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : "Update failed";
     console.error("PATCH Personnel Error:", error);
-    if (["Email already in use.", "Only one branch can be marked as primary."].includes(error.message)) {
-      return NextResponse.json({ message: error.message }, { status: 400 });
-    }
-    return NextResponse.json({ message: "Failed to update personnel" }, { status: 500 });
+    return NextResponse.json({ message }, { status: 400 });
   }
 }
 
@@ -452,10 +429,7 @@ export async function DELETE(req: NextRequest) {
     const id = searchParams.get("id");
 
     if (!id) return NextResponse.json({ message: "ID required" }, { status: 400 });
-
-    if (id === auth.userId) {
-      return NextResponse.json({ message: "Cannot delete your own account" }, { status: 400 });
-    }
+    if (id === auth.userId) return NextResponse.json({ message: "Cannot delete your own account" }, { status: 400 });
 
     const targetUser = await prisma.authorizedPersonnel.findUnique({
       where: { id, organizationId: auth.organizationId, deletedAt: null }
@@ -463,12 +437,8 @@ export async function DELETE(req: NextRequest) {
 
     if (!targetUser) return NextResponse.json({ message: "User not found" }, { status: 404 });
 
-    // IAM Safeguards for Deletion
-    if (targetUser.role === Role.ADMIN || targetUser.isOrgOwner) {
-       return NextResponse.json({ message: "Privileged accounts cannot be deleted." }, { status: 403 });
-    }
-    if (auth.role === Role.MANAGER) {
-       return NextResponse.json({ message: "Managers are not authorized to delete accounts." }, { status: 403 });
+    if (targetUser.role === Role.ADMIN || targetUser.isOrgOwner || auth.role === Role.MANAGER) {
+       return NextResponse.json({ message: "Unauthorized for this action." }, { status: 403 });
     }
 
     await prisma.$transaction(async (tx) => {
@@ -482,18 +452,16 @@ export async function DELETE(req: NextRequest) {
         },
       });
 
-      // Notify User
       await tx.notification.create({
         data: {
           organizationId: auth.organizationId,
           type: NotificationType.SYSTEM,
           title: "Account Deactivated",
-          message: "Your account has been permanently deactivated by an administrator.",
+          message: "Account permanently deactivated.",
           recipients: { create: { personnelId: targetUser.id } }
         }
       });
 
-      // Audit Log
       await tx.activityLog.create({
         data: {
           organizationId: auth.organizationId,
@@ -504,9 +472,8 @@ export async function DELETE(req: NextRequest) {
           metadata: {
             targetId: id,
             targetName: targetUser.name || targetUser.email,
-            targetEmail: targetUser.email,
             details: `Account softly deleted and locked.`
-          } as Prisma.JsonObject
+          } as Prisma.InputJsonValue
         }
       });
     });

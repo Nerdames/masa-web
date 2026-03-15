@@ -1,7 +1,6 @@
 "use client";
 
 import { useSession } from "next-auth/react";
-import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { UserMenu } from "@/components/shared/UserMenu";
 import { getInitials } from "@/lib/getInitials";

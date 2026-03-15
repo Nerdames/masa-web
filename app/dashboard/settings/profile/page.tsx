@@ -1,26 +1,39 @@
 "use client";
 
-import { useState, useEffect } from "react";
-import { AnimatePresence, motion } from "framer-motion";
+import { useState, useEffect, useCallback, useMemo } from "react";
+import { motion, AnimatePresence } from "framer-motion";
 import { useToast } from "@/components/feedback/ToastProvider";
-import { Tooltip } from "@/components/feedback/Tooltip";
-import ContactForm from "@/components/forms/ContactForm";
 import { getInitials } from "@/lib/getInitials";
 
-/** * TYPES & DTOs */
+// Modals & Forms
+import EmailChangeModal from "@/components/modal/EmailChangeModal";
+import PasswordChangeModal from "@/components/modal/PasswordChangeModal";
+import ContactForm from "@/components/forms/ContactForm";
+
+/* ================= TYPES ================= */
+
 type Role = "ADMIN" | "MANAGER" | "SALES" | "INVENTORY" | "CASHIER" | "DEV";
 
 interface BranchAssignmentDTO {
+  id: string;
   branchId: string;
   branchName: string;
   branchLocation: string | null;
   role: Role;
+  isPrimary: boolean;
 }
 
 interface ActivityLogDTO {
   id: string;
   action: string;
+  critical: boolean;
   createdAt: string;
+  ipAddress?: string;
+  deviceInfo?: string;
+  personnel?: { name: string | null };
+  branch?: { name: string | null };
+  approvalId?: string;
+  metadata?: Record<string, unknown> | string | null;
 }
 
 interface ProfileDTO {
@@ -28,614 +41,571 @@ interface ProfileDTO {
   name: string | null;
   email: string;
   staffCode: string | null;
+  role: Role;
   isOrgOwner: boolean;
   disabled: boolean;
+  isLocked: boolean;
+  lockReason: string | null;
   lastLogin: string | null;
   lastActivityAt: string | null;
-  organization: { name: string };
+  lastLoginIp: string | null;
+  lastLoginDevice: string | null;
+  pendingEmail: string | null;
+  pendingPassword: string | null;
+  organization: { id: string; name: string };
   assignments: BranchAssignmentDTO[];
   activityLogs: ActivityLogDTO[];
-  updatedAt: string;
 }
 
-interface UpdateProfilePayload {
-  name?: string;
-  email?: string;
-  currentPassword?: string;
-  newPassword?: string;
-}
-
-/** * UTILS */
-const formatDate = (date: string | null) =>
-  date
-    ? new Date(date).toLocaleString("en-US", {
-        dateStyle: "medium",
-        timeStyle: "short",
-      })
-    : "—";
-
-const getRoleStyles = (role: Role): string => {
-  const styles: Record<Role, string> = {
-    ADMIN: "bg-purple-50 text-purple-700 border-purple-100",
-    DEV: "bg-gray-900 text-white border-transparent",
-    MANAGER: "bg-blue-50 text-blue-700 border-blue-100",
-    SALES: "bg-emerald-50 text-emerald-700 border-emerald-100",
-    INVENTORY: "bg-orange-50 text-orange-700 border-orange-100",
-    CASHIER: "bg-cyan-50 text-cyan-700 border-cyan-100",
-  };
-  return styles[role] || "bg-gray-50 text-gray-600";
-};
-
-/** * SUB-COMPONENTS */
-const InfoRow = ({
-  icon,
-  label,
-  value,
-  editable,
-  onClick,
-  badge,
-  canCopy,
-}: {
+interface InfoRowProps {
   icon: string;
   label: string;
-  value: string;
-  editable?: boolean;
-  onClick?: () => void;
+  value: React.ReactNode;
+  onEdit?: () => void;
+  onCopy?: () => void;
   badge?: React.ReactNode;
-  canCopy?: boolean;
-}) => {
-  const { addToast } = useToast();
+  subValue?: string;
+}
 
-  const handleCopy = (e: React.MouseEvent) => {
-    e.stopPropagation();
-    navigator.clipboard.writeText(value);
-    addToast({ type: "success", message: `${label} copied` });
-  };
+/* ================= UTILS ================= */
 
-  return (
-    <div className="group flex items-center justify-between px-6 py-4 border-b border-gray-100 hover:bg-gray-50/50 transition-all text-left">
-      <div className="flex items-center gap-4 min-w-0">
-        <div className="w-8 h-8 flex items-center justify-center rounded bg-gray-50 text-gray-400 group-hover:text-blue-600 transition-colors shrink-0">
-          <i className={`bx ${icon} text-lg`} />
-        </div>
-        <div className="flex flex-col min-w-0">
-          <div className="flex items-center gap-2">
-            <span className="text-[10px] uppercase tracking-widest text-gray-400 font-black">
-              {label}
-            </span>
-            {badge}
-          </div>
-          <span className="text-sm text-gray-900 font-semibold truncate">
-            {value}
-          </span>
-        </div>
-      </div>
-      <div className="flex items-center gap-1 shrink-0">
-        {canCopy && (
-          <Tooltip content="Copy" side="top">
-            <button
-              onClick={handleCopy}
-              className="p-2 text-gray-400 hover:text-blue-600 hover:bg-blue-50 rounded transition-all"
-            >
-              <i className="bx bx-copy text-lg" />
-            </button>
-          </Tooltip>
-        )}
-        {editable && (
-          <Tooltip content="Edit" side="top">
-            <button
-              onClick={onClick}
-              className="p-2 text-gray-400 hover:text-blue-600 hover:bg-blue-50 rounded transition-all"
-            >
-              <i className="bx bx-pencil text-lg" />
-            </button>
-          </Tooltip>
-        )}
-      </div>
-    </div>
-  );
+const formatDate = (date: string | null) =>
+  date ? new Date(date).toLocaleString("en-US", { dateStyle: "medium", timeStyle: "short" }) : "Never";
+
+const formatMetadata = (metadata: unknown): string | null => {
+  if (!metadata) return null;
+  if (typeof metadata === "string") return metadata;
+  
+  if (typeof metadata === "object" && metadata !== null) {
+    const metaRecord = metadata as Record<string, unknown>;
+    const relevantInfo = metaRecord.reason || metaRecord.details || metaRecord.description;
+    
+    if (typeof relevantInfo === "string") return relevantInfo;
+    
+    if (metaRecord.changes && typeof metaRecord.changes === "object" && metaRecord.changes !== null) {
+      return `Modified: ${Object.keys(metaRecord.changes as Record<string, unknown>).join(", ")}`;
+    }
+  }
+  return null;
 };
 
-export default function ProfilePage() {
-  const [profile, setProfile] = useState<ProfileDTO | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [editing, setEditing] = useState<"name" | "email" | "password" | null>(
-    null
-  );
-  const [saving, setSaving] = useState(false);
-  const [showContactForm, setShowContactForm] = useState(false);
-  const [showAllLogs, setShowAllLogs] = useState(false);
-
-  const { addToast } = useToast();
-  const [form, setForm] = useState({ value: "", currentPass: "", newPass: "" });
-
-  useEffect(() => {
-    const loadData = async () => {
-      try {
-        const res = await fetch("/api/profile");
-        if (res.ok) {
-          const data = await res.json();
-          setProfile(data.profile);
-        }
-      } catch (err) {
-        addToast({ type: "error", message: "Failed to load profile" });
-      } finally {
-        setLoading(false);
-      }
-    };
-    loadData();
-  }, [addToast]);
-
-  const isAdmin = profile?.assignments.some(
-    (a) => a.role === "ADMIN" || a.role === "DEV"
-  );
-
-  const handleEditClick = (
-    type: "name" | "email" | "password",
-    currentVal: string = ""
-  ) => {
-    setForm({ value: currentVal, currentPass: "", newPass: "" });
-    setEditing(type);
+const getRoleStyles = (role: Role): string => {
+  const styles: Record<string, string> = {
+    ADMIN: "bg-purple-50/50 text-purple-700/80 border-purple-100/50",
+    DEV: "bg-gray-900/80 text-white/90 border-transparent",
+    MANAGER: "bg-blue-50/50 text-blue-700/80 border-blue-100/50",
+    SALES: "bg-emerald-50/50 text-emerald-700/80 border-emerald-100/50",
+    INVENTORY: "bg-orange-50/50 text-orange-700/80 border-orange-100/50",
+    CASHIER: "bg-cyan-50/50 text-cyan-700/80 border-cyan-100/50",
   };
+  return styles[role] || "bg-gray-50/50 text-gray-600/80";
+};
+
+const panelVariants = {
+  hidden: { opacity: 0, x: 20 },
+  visible: { opacity: 1, x: 0, transition: { duration: 0.2, ease: "easeOut" } },
+  exit: { opacity: 0, x: -20, transition: { duration: 0.15, ease: "easeIn" } }
+};
+
+/* ================= SUB-COMPONENTS ================= */
+
+const InfoRow = ({ icon, label, value, onEdit, onCopy, badge, subValue }: InfoRowProps) => (
+  <div className="group flex flex-col sm:flex-row sm:items-center justify-between px-6 py-4 border-b border-gray-100/50 hover:bg-gray-50/30 transition-all gap-4">
+    <div className="flex items-center gap-4 min-w-0">
+      <div className="w-9 h-9 flex items-center justify-center rounded-xl bg-gray-50/50 text-gray-400 group-hover:bg-white group-hover:shadow-sm transition-all shrink-0">
+        <i className={`bx ${icon} text-lg`} />
+      </div>
+      <div className="flex flex-col min-w-0 text-left">
+        <div className="flex items-center gap-2 flex-wrap">
+          <span className="text-[10px] uppercase tracking-widest text-gray-400/80 font-black">{label}</span>
+          {badge}
+        </div>
+        <span className="text-sm text-gray-800 font-bold truncate">{value}</span>
+        {subValue && <span className="text-[10px] text-gray-400/80 font-medium">{subValue}</span>}
+      </div>
+    </div>
+
+    {/* Right Action Area */}
+    <div className="flex items-center gap-1 self-end sm:self-auto shrink-0">
+      {onCopy && (
+        <button 
+          onClick={onCopy}
+          className="p-2 text-gray-300 hover:text-slate-500 hover:bg-gray-50/50 rounded-lg transition-all"
+          title="Copy to clipboard"
+        >
+          <i className="bx bx-copy-alt text-lg" />
+        </button>
+      )}
+      
+      {onEdit && (
+        <button 
+          onClick={onEdit} 
+          className="p-2 text-gray-400 hover:text-blue-500 hover:bg-blue-50/50 rounded-lg transition-all"
+        >
+          <i className="bx bx-edit-alt text-lg" />
+        </button>
+      )}
+    </div>
+  </div>
+);
+
+function LogFilter({ active, onFilterChange }: { active: string; onFilterChange: (action: string) => void }) {
+  const actions = ["ALL_ACTIONS", "PROVISION", "SECURITY", "UPDATE", "ACCOUNT_LOCKED"];
+  return (
+    <div className="flex gap-2 overflow-x-auto pb-2 scrollbar-hide" style={{ msOverflowStyle: 'none', scrollbarWidth: 'none' }}>
+      <style>{`.scrollbar-hide::-webkit-scrollbar { display: none; }`}</style>
+      {actions.map(a => (
+        <button
+          key={a}
+          onClick={() => onFilterChange(a)}
+          className={`shrink-0 px-3 py-1.5 rounded-full text-[8px] font-black uppercase tracking-tighter transition-all border ${
+            active === a 
+              ? "bg-slate-800/90 text-white/90 border-slate-800/90 shadow-sm" 
+              : "bg-white/50 text-black/30 border-black/5 hover:border-black/10 hover:text-black/50"
+          }`}
+        >
+          {a.replace(/_/g, " ")}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function ActivityLogsPanel({ logs }: { logs: ActivityLogDTO[] }) {
+  const [filter, setFilter] = useState("ALL_ACTIONS");
+
+  const filteredLogs = useMemo(() => {
+    if (filter === "ALL_ACTIONS") return logs;
+    return logs.filter(l => {
+      const action = l.action.toUpperCase();
+      if (filter === "SECURITY") return action.includes("LOCK") || action.includes("ACCESS") || action.includes("LOGIN") || action.includes("PASSWORD");
+      if (filter === "PROVISION") return action.includes("CREATE") || action.includes("ASSIGN");
+      if (filter === "UPDATE") return action.includes("UPDATE") || action.includes("PATCH") || action.includes("EDIT");
+      if (filter === "ACCOUNT_LOCKED") return action.includes("LOCKED");
+      return action.includes(filter);
+    });
+  }, [logs, filter]);
+
+  return (
+    <motion.div variants={panelVariants} initial="hidden" animate="visible" exit="exit" className="h-full flex flex-col w-full absolute inset-0 bg-[#FAFAFC]/80">
+      <div className="p-4 border-b border-black/5 bg-white/80 space-y-4">
+        <div className="flex justify-between items-center">
+          <h2 className="text-[10px] font-black uppercase tracking-[0.3em] text-black/30 flex items-center gap-2">
+            <span className="w-2 h-2 rounded-full bg-emerald-400/80 shadow-[0_0_8px_rgba(16,185,129,0.3)] animate-pulse" /> 
+            Live_Audit_Trail
+          </h2>
+          <span className="text-[9px] font-bold text-slate-400/80 bg-slate-50/80 px-2 py-0.5 rounded border border-slate-100/50 tabular-nums">
+            {filteredLogs.length}
+          </span>
+        </div>
+        <LogFilter active={filter} onFilterChange={setFilter} />
+      </div>
+
+      <div className="flex-1 overflow-y-auto p-2 space-y-3 [&::-webkit-scrollbar]:w-1 [&::-webkit-scrollbar-thumb]:bg-black/5">
+        {filteredLogs.map((log) => {
+          const performer = log.personnel?.name || "System Core";
+          const metaDetail = formatMetadata(log.metadata);
+          
+          return (
+            <motion.div 
+              key={log.id} 
+              initial={{ opacity: 0, x: -5 }} 
+              animate={{ opacity: 1, x: 0 }}
+              className="bg-white/80 border border-black/[0.02] rounded-xl p-4 shadow-sm hover:shadow-md transition-all group"
+            >
+              <div className="flex justify-between items-start mb-3">
+                <div className="space-y-1">
+                  <div className="flex items-center gap-2">
+                    <span className={`text-[8px] font-black uppercase tracking px-2 py-1 rounded ${
+                      log.critical ? 'bg-red-50/50 text-red-500/80' : 'bg-blue-50/50 text-blue-500/80'
+                    }`}>
+                      {log.action.replace(/_/g, " ")}
+                    </span>
+                    {log.approvalId && (
+                      <span className="text-[8px] font-bold bg-amber-50/50 text-amber-600/80 px-1.5 py-0.5 rounded border border-amber-100/50">
+                        VERIFIED_BY_ADMIN
+                      </span>
+                    )}
+                  </div>
+                  <p className="text-xs font-bold text-slate-700/90 text-left">
+                    {metaDetail || `Executed by ${performer}`}
+                  </p>
+                </div>
+                <span className="text-[9px] font-bold text-nowrap text-slate-400/80 tabular-nums">
+                  {new Date(log.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                </span>
+              </div>
+
+              <div className="grid grid-cols-2 gap-4 py-3 border-y border-black/[0.02] my-3">
+                <div className="space-y-1 text-left">
+                  <label className="text-[8px] font-black text-black/20 uppercase tracking-tighter">Initiator</label>
+                  <div className="flex items-center gap-2">
+                    <div className="w-4 h-4 rounded bg-slate-50 flex items-center justify-center text-[8px] font-bold text-slate-400">
+                      {performer.charAt(0)}
+                    </div>
+                    <span className="text-[10px] font-bold text-slate-500/90 truncate">{performer}</span>
+                  </div>
+                </div>
+                <div className="space-y-1 text-left">
+                  <label className="text-[8px] font-black text-black/20 uppercase tracking-tighter">Location Context</label>
+                  <p className="text-[10px] font-bold text-slate-500/90 flex items-center gap-1 truncate">
+                    <i className="bx bx-map-alt text-slate-300" />
+                    {log.branch?.name || "Global / Root"}
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex items-center justify-between opacity-50 group-hover:opacity-100 transition-opacity">
+                <div className="flex items-center gap-4">
+                  <div className="flex items-center gap-1">
+                    <i className="bx bx-shield-quarter text-slate-300 text-xs" />
+                    <span className="text-[9px] font-mono text-slate-400/80">{log.ipAddress || "0.0.0.0"}</span>
+                  </div>
+                  <div className="flex items-center gap-1">
+                    <i className="bx bx-laptop text-slate-300 text-xs" />
+                    <span className="text-[9px] font-mono text-slate-400/80 truncate max-w-[100px]">
+                      {log.deviceInfo || "System"}
+                    </span>
+                  </div>
+                </div>
+                <i className="bx bx-chevron-right text-slate-200" />
+              </div>
+            </motion.div>
+          );
+        })}
+      </div>
+    </motion.div>
+  );
+}
+
+function InspectorPanel({ profile, onClose, onUpdate }: { profile: ProfileDTO; onClose: () => void; onUpdate: () => void }) {
+  const [name, setName] = useState(profile.name || "");
+  const [saving, setSaving] = useState(false);
+  const { addToast } = useToast();
 
   const handleSave = async () => {
-    if (!profile || !editing) return;
     setSaving(true);
-
-    const payload: UpdateProfilePayload = {};
-    if (editing === "name") payload.name = form.value;
-    else if (editing === "email") {
-      payload.email = form.value;
-      payload.currentPassword = form.currentPass;
-    } else if (editing === "password") {
-      payload.currentPassword = form.currentPass;
-      payload.newPassword = form.newPass;
-    }
-
     try {
-      const res = await fetch("/api/profile", {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
+      const res = await fetch(`/api/profile`, { // Corrected endpoint from `/api/personnel/${profile.id}`
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name })
       });
-
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Update failed");
-
-      setProfile(data.profile);
-      addToast({
-        type: "success",
-        message: `${editing} updated successfully`,
-      });
-      setEditing(null);
-    } catch (err) {
-      addToast({
-        type: "error",
-        message: err instanceof Error ? err.message : "Save failed",
-      });
+      if(!res.ok) throw new Error();
+      addToast({ type: 'success', message: 'Identity updated successfully' });
+      onUpdate();
+      onClose();
+    } catch {
+      addToast({ type: 'error', message: 'Failed to update identity' });
     } finally {
       setSaving(false);
     }
   };
 
-  if (loading)
-    return (
-      <div className="min-h-screen flex flex-col items-center justify-center bg-[#F8F9FC]">
-        <div className="w-10 h-10 border-4 border-blue-100 border-t-blue-600 rounded-full animate-spin mb-4" />
-        <p className="text-[10px] font-black text-gray-400 uppercase tracking-widest">
-          Hydrating Session
-        </p>
+  return (
+    <motion.div variants={panelVariants} initial="hidden" animate="visible" exit="exit" className="h-full flex flex-col w-full absolute inset-0 bg-white/95 text-left">
+      <div className="p-6 border-b border-gray-50 flex justify-between items-center bg-[#FAFAFC]/50">
+        <h2 className="text-[10px] font-black uppercase tracking-widest text-blue-500/80">Personnel Inspector</h2>
+        <button onClick={onClose} className="w-8 h-8 flex items-center justify-center hover:bg-gray-100/80 rounded-full transition-colors shrink-0">
+          <i className="bx bx-x text-xl text-gray-400" />
+        </button>
       </div>
-    );
+      <div className="p-6 space-y-8 flex-1 overflow-y-auto">
+        <div className="space-y-3">
+          <label className="text-[10px] font-black text-gray-400/80 uppercase tracking-widest">Public Display Name</label>
+          <input 
+            value={name} 
+            onChange={(e) => setName(e.target.value)}
+            placeholder="Enter full name"
+            className="w-full bg-gray-50/50 border border-gray-200/50 rounded-xl px-4 py-3.5 focus:bg-white focus:border-blue-400/50 focus:ring-4 focus:ring-blue-50/30 outline-none transition-all text-sm font-bold text-gray-700/90"
+          />
+          <p className="text-[10px] text-gray-400/70 leading-relaxed">
+            This name will be visible on invoices, sales receipts, and activity logs across the organization.
+          </p>
+        </div>
+        
+        <div className="p-4 bg-blue-50/30 rounded-2xl border border-blue-100/30">
+          <h4 className="text-[10px] font-black text-blue-600/70 uppercase mb-3">System Metadata</h4>
+          <div className="space-y-3">
+            <div className="flex justify-between items-center text-[10px]">
+              <span className="text-blue-500/50 font-bold uppercase tracking-wider">Internal ID</span>
+              <span className="text-blue-800/80 font-mono bg-white/60 px-2 py-1 rounded border border-blue-100/50 shadow-sm">{profile.id}</span>
+            </div>
+            <div className="flex justify-between items-center text-[10px]">
+              <span className="text-blue-500/50 font-bold uppercase tracking-wider">Staff Code</span>
+              <span className="text-blue-800/80 font-mono bg-white/60 px-2 py-1 rounded border border-blue-100/50 shadow-sm">{profile.staffCode || 'UNASSIGNED'}</span>
+            </div>
+          </div>
+        </div>
+      </div>
+      
+      <div className="p-6 border-t border-gray-50 bg-gray-50/20">
+        <button 
+          onClick={handleSave}
+          disabled={saving || name === profile.name}
+          className="w-full bg-slate-800/90 text-white/90 font-black py-4 rounded-xl text-[10px] uppercase tracking-widest hover:bg-slate-900 disabled:opacity-40 disabled:cursor-not-allowed shadow-lg shadow-gray-200/50 transition-all active:scale-[0.98]"
+        >
+          {saving ? "Processing..." : "Commit Changes"}
+        </button>
+      </div>
+    </motion.div>
+  );
+}
 
-  if (!profile) return null;
+/* ================= MAIN PAGE ================= */
+
+export default function ProfilePage() {
+  const [profile, setProfile] = useState<ProfileDTO | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [panel, setPanel] = useState<"logs" | "inspector">("logs");
+  const [showEmailModal, setShowEmailModal] = useState(false);
+  const [showPasswordModal, setShowPasswordModal] = useState(false);
+
+  const { addToast } = useToast();
+
+  const loadProfile = useCallback(async () => {
+    try {
+      const res = await fetch("/api/profile");
+      const data = await res.json();
+      if (!res.ok) throw new Error();
+      setProfile(data.profile);
+    } catch {
+      addToast({ type: "error", message: "Failed to sync profile data" });
+    } finally {
+      setLoading(false);
+    }
+  }, [addToast]);
+
+  useEffect(() => { loadProfile(); }, [loadProfile]);
+
+  const primaryBranchId = useMemo(() => 
+    profile?.assignments.find(a => a.isPrimary)?.branchId || profile?.assignments[0]?.branchId || null
+  , [profile]);
+
+  if (loading || !profile) return (
+    <div className="h-screen flex items-center justify-center bg-white/95">
+      <div className="animate-pulse flex flex-col items-center gap-4">
+        <div className="w-12 h-12 bg-gray-50/80 rounded-full" />
+        <div className="h-2 w-24 bg-gray-50/80 rounded" />
+      </div>
+    </div>
+  );
 
   return (
-    <main className="min-h-screen py-12 px-4 sm:px-6">
-      <div className="max-w-5xl mx-auto space-y-6">
-        {/* Header Hero */}
-        <section className="bg-white rounded-xl p-8 shadow-sm border border-gray-100 flex flex-col md:flex-row md:items-center justify-between gap-6">
-          <div className="flex items-center gap-6">
-            <div className="w-20 h-20 rounded-3xl bg-gradient-to-br from-blue-600 to-indigo-700 flex items-center justify-center text-white text-3xl font-black shadow-xl shadow-blue-100 shrink-0">
-              {getInitials(profile.name || profile.email)}
-            </div>
-            <div className="text-left">
-              <h1 className="text-3xl font-black text-gray-900 tracking-tight">{profile.name || "Personnel"}</h1>
-              <p className="text-gray-500 font-medium">{profile.organization.name} • {profile.email}</p>
-            </div>
-          </div>
-          <div className="flex flex-wrap gap-2 justify-start md:justify-end">
-            {profile.isOrgOwner && (
-              <span className="px-4 py-1.5 bg-amber-50 text-amber-700 text-[10px] font-black rounded-xl border border-amber-100 flex items-center gap-2 tracking-widest whitespace-nowrap">
-                <i className="bx bxs-crown text-sm" /> OWNER
-              </span>
-            )}
-            <span className={`px-4 py-1.5 text-[10px] font-black rounded-xl border tracking-widest whitespace-nowrap ${profile.disabled ? 'bg-red-50 text-red-600 border-red-100' : 'bg-emerald-50 text-emerald-600 border-emerald-100'}`}>
-              {profile.disabled ? 'ACCOUNT DISABLED' : 'ACCOUNT ACTIVE'}
-            </span>
-          </div>
-        </section>
-
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-          <div className="lg:col-span-2 space-y-6">
-            {/* 2. Identity Section */}
-            <section className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
-              <div className="px-6 py-4 border-b border-gray-50 bg-gray-50/30 text-left">
-                <h3 className="font-black text-gray-400 text-[10px] tracking-[0.2em] uppercase">
-                  Identity
-                </h3>
-              </div>
-              <InfoRow
-                icon="bx-user"
-                label="Full Name"
-                value={profile.name ?? "N/A"}
-                canCopy
-                editable
-                onClick={() => handleEditClick("name", profile.name ?? "")}
-              />
-              <InfoRow
-                icon="bx-envelope"
-                label="Primary Email"
-                value={profile.email}
-                canCopy
-                editable
-                onClick={() => handleEditClick("email", profile.email)}
-              />
-              <InfoRow
-                icon="bx-barcode-reader"
-                label="Staff Code"
-                value={profile.staffCode ?? "Not Assigned"}
-              />
-            </section>
-
-            {/* 3. Security Section */}
-            <section className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
-              <div className="px-6 py-4 border-b border-gray-50 bg-gray-50/30 text-left">
-                <h3 className="font-black text-gray-400 text-[10px] tracking-[0.2em] uppercase">
-                  Security & Sessions
-                </h3>
-              </div>
-              <div className="group flex items-center justify-between px-6 py-5 border-b border-gray-100 hover:bg-gray-50/50 transition-all text-left">
-                <div className="flex items-center gap-4">
-                  <div className="w-8 h-8 flex items-center justify-center rounded bg-gray-50 text-gray-400 group-hover:text-red-600 transition-colors">
-                    <i className="bx bx-lock-alt text-lg" />
+    <div className="flex h-screen bg-[#F8F9FC]/80 overflow-hidden">
+      
+      <main className="flex-1 overflow-y-auto px-2 pb-10 no-scrollbar">
+        <div className="max-w-5xl mx-auto space-y-6">
+        <header className="px-8 py-4 flex flex-col sm:flex-row sm:items-center justify-between sticky top-0 bg-white/80 backdrop-blur-xl z-10 border-b border-black/[0.02] gap-4">
+          <h1 className="text-2xl font-bold tracking-tight text-slate-800/90">Profile</h1>
+        </header>
+          
+          {/* HERO SECTION */}
+          <section className="bg-white/90 rounded-2xl p-4 sm:p-6 shadow-sm border border-gray-100/50 flex items-center justify-between gap-4 overflow-hidden">
+            <div className="flex items-center gap-3 sm:gap-4 min-w-0">
+              <div className="relative shrink-0">
+                <div className="w-12 h-12 sm:w-16 sm:h-16 rounded-2xl bg-gradient-to-br from-slate-700/90 to-slate-800/90 flex items-center justify-center text-white/90 text-xl sm:text-2xl font-black shadow-sm">
+                  {getInitials(profile.name || "Welcome")}
+                </div>
+                {profile.isLocked && (
+                  <div className="absolute -bottom-1 -right-1 w-5 h-5 bg-red-400 border-2 border-white rounded-full flex items-center justify-center text-white">
+                    <i className="bx bxs-error-circle text-[8px]" />
                   </div>
-                  <div className="flex flex-col text-left">
-                    <span className="text-[10px] uppercase tracking-widest text-gray-400 font-black">
-                      Password
-                    </span>
-                    <span className="text-sm text-gray-900 font-semibold">
-                      ••••••••••••
-                    </span>
-                  </div>
-                </div>
-                <button
-                  onClick={() => handleEditClick("password")}
-                  className="text-[10px] font-black text-blue-600 hover:underline tracking-widest uppercase underline-offset-4"
-                >
-                  Change
-                </button>
+                )}
               </div>
-              <div className="px-6 py-4 bg-gray-50/20 flex flex-col gap-4">
-                <div className="flex flex-col text-left">
-                  <span className="text-[9px] text-gray-400 font-black  tracking-tighter">
-                    Last Login
+              
+              <div className="flex items-center gap-2 min-w-0">
+                <h1 className="text-lg sm:text-2xl font-black text-gray-800/90 tracking-tight truncate">
+                  {profile.name || "Personnel"}
+                </h1>
+                
+                <div className="flex items-center gap-1.5 shrink-0">
+                  <span className={`px-2 py-0.5 rounded text-[8px] sm:text-[9px] font-black border uppercase tracking-wider ${getRoleStyles(profile.role)}`}>
+                    {profile.role}
                   </span>
-                  <span className="text-xs text-gray-700 font-bold">
-                    {formatDate(profile.lastLogin)}
-                  </span>
-                </div>
-                <div className="flex flex-col text-left">
-                  <span className="text-[9px] text-gray-400 font-black tracking-tighter">
-                    Last Activity
-                  </span>
-                  <span className="text-xs text-gray-700 font-bold">
-                    {formatDate(profile.lastActivityAt)}
-                  </span>
+                  {profile.isOrgOwner && (
+                    <span className="px-2 py-0.5 bg-amber-50/50 text-amber-600/80 text-[8px] sm:text-[9px] font-black rounded border border-amber-100/50 flex items-center gap-1 tracking-widest uppercase">
+                      <i className="bx bxs-crown text-[10px]" /> OWNER
+                    </span>
+                  )}
                 </div>
               </div>
-            </section>
+            </div>
 
-            {/* 4. Branch Access Section */}
-            <section className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden text-left">
-              <div className="px-6 py-4 border-b border-gray-50 bg-gray-50/30">
-                <h3 className="font-black text-gray-400 text-[10px] tracking-[0.2em] uppercase">
-                  Branch Privileges
-                </h3>
+            <div className="shrink-0 whitespace-nowrap">
+              {profile.isLocked ? (
+                <span className="px-2 sm:px-3 py-1 bg-red-50/50 text-red-600/80 text-[8px] sm:text-[10px] font-black rounded-lg border border-red-100/50 flex items-center gap-1 tracking-widest uppercase">
+                  <i className="bx bxs-error-circle" /> LOCKED
+                </span>
+              ) : (
+                <span className={`px-2 sm:px-3 py-1 text-[8px] sm:text-[10px] font-black rounded-lg border tracking-widest uppercase ${profile.disabled ? "bg-gray-50/80 text-gray-400/80 border-gray-100/80" : "bg-emerald-50/50 text-emerald-500/80 border-emerald-100/50"}`}>
+                  {profile.disabled ? "DISABLED" : "ACTIVE"}
+                </span>
+              )}
+            </div>
+          </section>
+
+          {/* IDENTITY SECTION */}
+          <section className="bg-white/90 rounded-2xl shadow-sm border border-gray-100/50 overflow-hidden">
+            <div className="px-6 py-4 border-b border-gray-50/50 bg-gray-50/20 text-left">
+              <h3 className="font-black text-gray-400/70 text-[10px] tracking-[0.2em] uppercase">Identity & Contact</h3>
+            </div>
+
+            {/* Display Name Row */}
+            <InfoRow 
+              icon="bx-user" 
+              label="Display Name" 
+              value={profile.name ?? "Not Set"} 
+              onEdit={() => setPanel("inspector")} 
+              onCopy={() => {
+                navigator.clipboard.writeText(profile.name ?? "");
+                addToast({ type: "success", message: "Name copied" });
+              }}
+            />
+
+            {/* Primary Email Row */}
+            <InfoRow 
+              icon="bx-envelope" 
+              label="Primary Email" 
+              value={profile.email} 
+              onEdit={() => setShowEmailModal(true)}
+              onCopy={() => {
+                navigator.clipboard.writeText(profile.email);
+                addToast({ type: "success", message: "Email copied" });
+              }}
+              badge={profile.pendingEmail && (
+                <span className="text-[8px] px-1.5 py-0.5 bg-blue-50/80 text-blue-500/80 border border-blue-100/50 rounded-full font-black animate-pulse">
+                  PENDING UPDATE
+                </span>
+              )}
+              subValue={profile.pendingEmail ? `Updating to: ${profile.pendingEmail}` : undefined}
+            />
+
+            {/* Staff Code Row */}
+            <InfoRow 
+              icon="bx-barcode" 
+              label="Personnel Staff Code" 
+              value={profile.staffCode ?? "UNASSIGNED"} 
+              onCopy={() => {
+                if (profile.staffCode) {
+                  navigator.clipboard.writeText(profile.staffCode);
+                  addToast({ type: "success", message: "Staff code copied" });
+                }
+              }}
+              badge={
+                <span className="text-[8px] px-1.5 py-0.5 bg-slate-50/80 text-slate-400/80 border border-slate-100/80 rounded font-black uppercase tracking-tighter">
+                  System ID
+                </span>
+              }
+              subValue="Unique personnel identifier"
+            />
+          </section>
+
+          {/* SECURITY SECTION */}
+          <section className="bg-white/90 rounded-2xl shadow-sm border border-gray-100/50 overflow-hidden">
+            <div className="px-6 py-4 border-b border-gray-50/50 bg-gray-50/20 text-left">
+              <h3 className="font-black text-gray-400/70 text-[10px] tracking-[0.2em] uppercase">Security & Verification</h3>
+            </div>
+            <InfoRow 
+                icon="bx-shield-quarter" 
+                label="Authentication" 
+                value="••••••••••••" 
+                onEdit={() => setShowPasswordModal(true)} 
+                badge={profile.pendingPassword && <span className="text-[8px] px-1.5 py-0.5 bg-orange-50/80 text-orange-500/80 border border-orange-100/50 rounded-full font-black">APPROVAL REQ</span>}
+            />
+            <div className="px-6 py-5 bg-gray-50/10 grid grid-cols-1 md:grid-cols-2 gap-6 border-t border-gray-100/50">
+              <div className="flex flex-col text-left gap-1">
+                <span className="text-[9px] text-gray-400/70 font-black tracking-widest uppercase">Last Login Signature</span>
+                <span className="text-xs text-gray-600/90 font-bold">{formatDate(profile.lastLogin)}</span>
+                <span className="text-[10px] text-gray-400/80 flex items-center gap-1">
+                    <i className="bx bx-globe" /> {profile.lastLoginIp || "Unknown IP"} • {profile.lastLoginDevice || "Device"}
+                </span>
               </div>
-              <div className="divide-y divide-gray-50">
+              <div className="flex flex-col text-left gap-1">
+                <span className="text-[9px] text-gray-400/70 font-black tracking-widest uppercase">Latest Activity</span>
+                <span className="text-xs text-gray-600/90 font-bold">{formatDate(profile.lastActivityAt)}</span>
+                <span className="text-[10px] text-emerald-400/90 font-bold flex items-center gap-1 uppercase">
+                    <span className="w-1.5 h-1.5 bg-emerald-400/80 rounded-full animate-ping" /> Synchronized
+                </span>
+              </div>
+            </div>
+          </section>
+
+          {/* BRANCHES & SUPPORT */}
+          <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
+            <section className="bg-white/90 rounded-2xl shadow-sm border border-gray-100/50 overflow-hidden text-left h-full">
+              <div className="px-6 py-4 border-b border-gray-50/50 bg-gray-50/20 flex justify-between items-center">
+                <h3 className="font-black text-gray-400/70 text-[10px] tracking-[0.2em] uppercase">Branch Assignments</h3>
+                <span className="text-[9px] font-bold text-blue-500/80 bg-blue-50/50 border border-blue-100/30 px-2 py-0.5 rounded-md">
+                  {profile.assignments.length} Total
+                </span>
+              </div>
+              <div className="divide-y divide-gray-50/50">
                 {profile.assignments.map((a) => (
-                  <div
-                    key={a.branchId}
-                    className="flex justify-between items-center px-6 py-4 hover:bg-gray-50/50 group"
-                  >
-                    <div className="flex flex-col min-w-0">
-                      <span className="text-md font-bold text-gray-900">
-                        {a.branchName}
-                      </span>
-                      <div className="flex items-center gap-2">
-                        <span className="text-[12px] text-gray-400 flex items-center gap-1">
-                          <i className="bx bx-map-pin" />{" "}
-                          {a.branchLocation || "Address not set"}
-                        </span>
-                        {a.branchLocation && (
-                          <button
-                            onClick={() => {
-                              navigator.clipboard.writeText(a.branchLocation!);
-                              addToast({
-                                type: "success",
-                                message: "Address copied",
-                              });
-                            }}
-                            className="opacity-0 group-hover:opacity-100 text-gray-400 hover:text-blue-600 transition-all"
-                          >
-                            <i className="bx bx-copy text-[10px]" />
-                          </button>
-                        )}
+                  <div key={a.id} className="flex justify-between items-center px-6 py-4 hover:bg-gray-50/30 group transition-colors">
+                    <div className="flex items-center gap-4 min-w-0">
+                      <div className={`w-2 h-2 rounded-full shrink-0 ${a.isPrimary ? "bg-blue-400 shadow-[0_0_8px_rgba(96,165,250,0.4)]" : "bg-gray-200/80"}`} />
+                      <div className="flex flex-col min-w-0">
+                          <div className="flex items-center gap-2 flex-wrap">
+                              <span className="text-sm font-bold text-gray-800/90 truncate">{a.branchName}</span>
+                              {a.isPrimary && <span className="text-[8px] font-black text-blue-500/80 uppercase tracking-tighter">Primary</span>}
+                          </div>
+                          <span className="text-[11px] text-gray-400/80 flex items-center gap-1 mt-0.5 truncate">
+                              <i className="bx bx-map-pin" /> {a.branchLocation || "Remote"}
+                          </span>
                       </div>
                     </div>
-                    <span
-                      className={`px-2 py-1 rounded text-[9px] font-black tracking-widest border shrink-0 ${getRoleStyles(
-                        a.role
-                      )}`}
-                    >
+                    <span className={`px-2 py-1 rounded text-[9px] font-black tracking-widest border shrink-0 ${getRoleStyles(a.role)}`}>
                       {a.role}
                     </span>
                   </div>
                 ))}
               </div>
             </section>
-          </div>
 
-          <div className="space-y-6 flex flex-col">
-            {/* 5. Modification Log */}
-            <section className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden text-left flex flex-col h-fit">
-              <div className="px-6 py-4 border-b border-gray-50 bg-gray-50/30 flex justify-between items-center">
-                <h3 className="font-black text-gray-400 text-[10px] tracking-[0.2em] uppercase">
-                  Modification Log
-                </h3>
-                {profile.activityLogs.length > 5 && (
-                  <button
-                    onClick={() => setShowAllLogs(true)}
-                    className="text-[9px] font-black text-blue-600 tracking-widest hover:underline underline-offset-2"
-                  >
-                    View All
-                  </button>
-                )}
-              </div>
-              <div className="flex flex-col divide-y divide-gray-50">
-                {profile.activityLogs.slice(0, 5).map((log) => (
-                  <div key={log.id} className="px-6 py-4 flex flex-col gap-1">
-                    <p className="text-xs  text-gray-900 leading-tight">
-                      {log.action}
-                    </p>
-                    <p className="text-[9px] font-black text-gray-400  tracking-tighter">
-                      {formatDate(log.createdAt)}
-                    </p>
-                  </div>
-                ))}
-                {profile.activityLogs.length === 0 && (
-                  <div className="px-6 py-12 text-center">
-                    <div className="w-10 h-10 rounded bg-gray-50 flex items-center justify-center mx-auto mb-3">
-                      <i className="bx bx-history text-gray-300 text-xl" />
-                    </div>
-                    <span className="text-[10px] font-black text-gray-300 tracking-widest">
-                      No Records Found
-                    </span>
-                  </div>
-                )}
-              </div>
-            </section>
-
-            {/* Assistance Card */}
-            <section className="bg-blue-600 rounded-xl p-8 text-white shadow-xl shadow-blue-100 flex-grow flex flex-col text-left">
-              <div className="w-12 h-12 rounded-lg bg-white/10 flex items-center justify-center mb-6">
-                <i
-                  className={`bx ${
-                    isAdmin ? "bx-code-alt" : "bx-support"
-                  } text-2xl`}
+            <section className="bg-white/90 rounded-2xl shadow-sm border border-gray-100/50 overflow-hidden h-fit">
+                <ContactForm 
+                  user={{
+                    id: profile.id,
+                    organizationId: profile.organization.id,
+                    branchId: primaryBranchId,
+                    isAdmin: profile.role === "ADMIN" || profile.role === "DEV"
+                  }}
+                  onSuccess={() => addToast({ type: "success", message: "Support protocol initiated." })}
+                  onCancel={() => {}}
                 />
-              </div>
-              <h3 className="text-xl font-black mb-2 leading-tight">
-                {isAdmin || profile.isOrgOwner ? "Dev Support" : "Help Center"}
-              </h3>
-              <p className="text-sm text-blue-100 leading-relaxed mb-8 flex-grow">
-                {isAdmin
-                  ? "Contact engineering for system-level requests or API issues."
-                  : "Need permission updates? Contact your local administrator."}
-              </p>
-              <button
-                onClick={() => setShowContactForm(true)}
-                className="w-full py-4 bg-white text-blue-600 hover:bg-blue-50 rounded-lg text-xs font-black transition-all uppercase tracking-widest shadow-lg"
-              >
-                Contact Support
-              </button>
             </section>
           </div>
         </div>
-      </div>
+      </main>
 
-      <AnimatePresence>
-        {/* Support Modal */}
-        {showContactForm && (
-          <div className="fixed inset-0 z-[60] flex items-center justify-center p-4">
-            <motion.div
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm"
-              onClick={() => setShowContactForm(false)}
-            />
-            <motion.div
-              initial={{ scale: 0.95, opacity: 0 }}
-              animate={{ scale: 1, opacity: 1 }}
-              exit={{ scale: 0.95, opacity: 0 }}
-              className="relative z-10 w-full max-w-md"
-            >
-              <ContactForm
-                user={{
-                  id: profile.id,
-                  organizationId: profile.organization.name,
-                  branchId: profile.assignments[0]?.branchId || null,
-                  isAdmin: isAdmin || false,
-                }}
-                onSuccess={() => {
-                  setShowContactForm(false);
-                  addToast({ type: "success", message: "Message sent" });
-                }}
-                onCancel={() => setShowContactForm(false)}
-              />
-            </motion.div>
-          </div>
-        )}
+      {/* SIDEBAR PANEL */}
+      <aside className="hidden lg:flex w-[340px] h-full bg-white/95 border-l border-black/[0.02] flex-col shadow-[-10px_0_20px_rgba(0,0,0,0.01)] z-20 shrink-0 relative">
+        <AnimatePresence mode="wait">
+          {panel === "logs" ? (
+            <ActivityLogsPanel key="logs" logs={profile.activityLogs} />
+          ) : (
+            <InspectorPanel key="inspector" profile={profile} onClose={() => setPanel("logs")} onUpdate={loadProfile} />
+          )}
+        </AnimatePresence>
+      </aside>
 
-        {/* History Modal */}
-        {showAllLogs && (
-          <div className="fixed inset-0 z-[60] flex items-center justify-center p-4">
-            <motion.div
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm"
-              onClick={() => setShowAllLogs(false)}
-            />
-            <motion.div
-              initial={{ scale: 0.95, opacity: 0 }}
-              animate={{ scale: 1, opacity: 1 }}
-              exit={{ scale: 0.95, opacity: 0 }}
-              className="relative z-10 w-full max-w-lg bg-white rounded-2xl shadow-2xl overflow-hidden flex flex-col max-h-[80vh] text-left"
-            >
-              <div className="px-8 py-6 border-b border-gray-100 flex justify-between items-center shrink-0">
-                <h3 className="text-lg font-black text-gray-900 uppercase tracking-tight">Modification History</h3>
-                <button onClick={() => setShowAllLogs(false)} className="w-8 h-8 flex items-center justify-center rounded-full hover:bg-gray-100 transition-colors">
-                    <i className="bx bx-x text-2xl text-gray-400" />
-                </button>
-              </div>
-              <div className="overflow-y-auto flex-1 divide-y divide-gray-50 bg-gray-50/20">
-                {profile.activityLogs.map((log) => (
-                  <div key={log.id} className="px-8 py-5 flex items-start gap-4">
-                    <div className="w-2 h-2 rounded-full bg-blue-500 mt-1.5 shrink-0" />
-                    <div>
-                        <p className="text-sm font-bold text-gray-800">{log.action}</p>
-                        <p className="text-[10px] font-black text-gray-400 uppercase tracking-widest mt-1">{formatDate(log.createdAt)}</p>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </motion.div>
-          </div>
-        )}
+      {/* MODALS */}
+      <EmailChangeModal 
+        isOpen={showEmailModal} 
+        onClose={() => setShowEmailModal(false)} 
+        personnelId={profile.id}
+        organizationId={profile.organization.id}
+        branchId={primaryBranchId}
+      />
 
-        {/* Optimized SlideLayer */}
-        {editing && (
-          <>
-            <motion.div
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              className="fixed inset-0 bg-gray-900/40 backdrop-blur-sm z-[100]"
-              onClick={() => !saving && setEditing(null)}
-            />
-            <motion.div
-              initial={{ x: "100%" }}
-              animate={{ x: 0 }}
-              exit={{ x: "100%" }}
-              transition={{ type: "spring", damping: 25, stiffness: 200 }}
-              className="fixed right-0 top-0 h-full w-full max-w-[320px] bg-white z-[101] shadow-[-20px_0_60px_-15px_rgba(0,0,0,0.1)] flex flex-col text-left font-sans"
-            >
-              {/* Header */}
-              <div className="px-8 pt-14 border-b border-gray-50 shrink-0">
-                <div className="flex justify-between items-start">
-                  <h2 className="text-xl font-black text-gray-900 capitalize">
-                    Update {editing}
-                  </h2>
-                  <button
-                    onClick={() => setEditing(null)}
-                    className="w-8 h-8 flex items-center justify-center hover:bg-gray-100 rounded-full transition-all text-gray-400 hover:text-gray-900"
-                  >
-                    <i className="bx bx-x text-2xl" />
-                  </button>
-                </div>
-                <p className="text-xs text-gray-400 font-medium">
-                  Please verify your identity to proceed with this system
-                  change.
-                </p>
-              </div>
-
-              {/* Form Content */}
-              <div className="flex-1 px-8 py-10 space-y-8 overflow-y-auto bg-white">
-                {editing !== "password" && (
-                  <div className="space-y-2">
-                    <label className="text-[10px] font-black text-blue-600 uppercase tracking-widest">
-                      New {editing}
-                    </label>
-                    <input
-                      autoFocus
-                      className="w-full bg-gray-50 border border-gray-200 rounded-lg px-4 py-3 focus:bg-white focus:border-blue-500 outline-none transition-all text-gray-900 font-semibold"
-                      value={form.value}
-                      onChange={(e) =>
-                        setForm({ ...form, value: e.target.value })
-                      }
-                    />
-                  </div>
-                )}
-                {(editing === "password" || editing === "email") && (
-                  <div className="space-y-6 pt-2">
-                    <div className="space-y-2">
-                      <label className="text-[10px] font-black text-red-500 uppercase tracking-widest">
-                        Current Password
-                      </label>
-                      <input
-                        type="password"
-                        placeholder="Verify identity..."
-                        className="w-full bg-gray-50 border border-gray-200 rounded-lg px-4 py-3 focus:bg-white focus:border-blue-500 outline-none transition-all"
-                        value={form.currentPass}
-                        onChange={(e) =>
-                          setForm({ ...form, currentPass: e.target.value })
-                        }
-                      />
-                    </div>
-                    {editing === "password" && (
-                      <div className="space-y-2">
-                        <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest">
-                          New Password
-                        </label>
-                        <input
-                          type="password"
-                          placeholder="Min. 8 characters"
-                          className="w-full bg-gray-50 border border-gray-200 rounded-lg px-4 py-3 focus:bg-white focus:border-blue-500 outline-none transition-all"
-                          value={form.newPass}
-                          onChange={(e) =>
-                            setForm({ ...form, newPass: e.target.value })
-                          }
-                        />
-                      </div>
-                    )}
-                  </div>
-                )}
-              </div>
-
-              {/* Footer Button */}
-              <div className="p-8 border-t border-gray-50 bg-white shrink-0">
-                <button
-                  onClick={handleSave}
-                  disabled={saving}
-                  className="w-full bg-blue-600 hover:bg-blue-700 disabled:bg-gray-100 disabled:text-gray-400 text-white font-black py-4 rounded-lg transition-all flex items-center justify-center gap-3 uppercase tracking-widest text-xs shadow-lg shadow-blue-100"
-                >
-                  {saving ? (
-                    <>
-                      <div className="w-3 h-3 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                      <span>Applying...</span>
-                    </>
-                  ) : (
-                    "Confirm Changes"
-                  )}
-                </button>
-              </div>
-            </motion.div>
-          </>
-        )}
-      </AnimatePresence>
-    </main>
+      <PasswordChangeModal 
+        isOpen={showPasswordModal} 
+        onClose={() => setShowPasswordModal(false)} 
+        personnelId={profile.id}
+        organizationId={profile.organization.id}
+        branchId={primaryBranchId}
+      />
+    </div>
   );
 }

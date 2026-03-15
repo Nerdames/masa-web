@@ -2,14 +2,20 @@ import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import prisma from "@/lib/prisma";
 import { NextRequest, NextResponse } from "next/server";
-import { Role } from "@prisma/client";
+import { Role, Prisma } from "@prisma/client";
+
+interface RouteParams {
+  params: {
+    id: string;
+  };
+}
 
 /* -------------------- GET: SINGLE BRANCH -------------------- */
 
 export async function GET(
   req: NextRequest,
-  { params }: { params: { id: string } }
-) {
+  { params }: RouteParams
+): Promise<NextResponse> {
   try {
     const session = await getServerSession(authOptions);
 
@@ -21,19 +27,25 @@ export async function GET(
       where: {
         id: params.id,
         organizationId: session.user.organizationId,
-        deletedAt: null,
       },
       include: {
         branchAssignments: {
           include: {
             personnel: {
-              select: { id: true, name: true, email: true, role: true }
+              select: { 
+                id: true, 
+                name: true, 
+                email: true, 
+                role: true, 
+                staffCode: true 
+              }
             }
           }
         },
         _count: {
           select: {
             branchProducts: true,
+            personnel: { where: { deletedAt: null } },
             orders: { where: { deletedAt: null } },
             activityLogs: true,
           }
@@ -47,43 +59,8 @@ export async function GET(
 
     return NextResponse.json(branch);
   } catch (error: unknown) {
+    console.error("GET_SINGLE_BRANCH_ERROR:", error);
     return NextResponse.json({ error: "Internal server error" }, { status: 500 });
-  }
-}
-
-/* -------------------- PATCH: UPDATE BRANCH -------------------- */
-
-export async function PATCH(
-  req: NextRequest,
-  { params }: { params: { id: string } }
-) {
-  try {
-    const session = await getServerSession(authOptions);
-
-    // Both Admin and OrgOwner can edit
-    if (!session || (session.user.role !== Role.ADMIN && !session.user.isOrgOwner)) {
-      return NextResponse.json({ error: "Insufficient permissions" }, { status: 403 });
-    }
-
-    const body = await req.json();
-    const { name, location, active } = body;
-
-    const updatedBranch = await prisma.branch.update({
-      where: { 
-        id: params.id,
-        organizationId: session.user.organizationId 
-      },
-      data: {
-        ...(name && { name }),
-        ...(location !== undefined && { location }),
-        ...(active !== undefined && { active }),
-      }
-    });
-
-    return NextResponse.json(updatedBranch);
-  } catch (error: unknown) {
-    console.error("PATCH_BRANCH_ERROR:", error);
-    return NextResponse.json({ error: "Update failed" }, { status: 500 });
   }
 }
 
@@ -91,12 +68,11 @@ export async function PATCH(
 
 export async function DELETE(
   req: NextRequest,
-  { params }: { params: { id: string } }
-) {
+  { params }: RouteParams
+): Promise<NextResponse> {
   try {
     const session = await getServerSession(authOptions);
 
-    // Both Admin and OrgOwner can delete
     if (!session || (session.user.role !== Role.ADMIN && !session.user.isOrgOwner)) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 403 });
     }
@@ -109,7 +85,9 @@ export async function DELETE(
         where: { id: branchId, organizationId }
       });
 
-      if (!branch) throw new Error("Branch not found");
+      if (!branch) {
+        throw new Error("Branch not found");
+      }
 
       // 1. Clear assignments
       await tx.branchAssignment.deleteMany({
@@ -131,7 +109,12 @@ export async function DELETE(
         }
       });
 
-      // 4. Log
+      // 4. Log the action
+      const logMetadata: Prisma.JsonObject = { 
+        branchName: branch.name, 
+        deletedByRole: session.user.role 
+      };
+
       await tx.activityLog.create({
         data: {
           organizationId,
@@ -139,19 +122,23 @@ export async function DELETE(
           personnelId: session.user.id,
           action: "BRANCH_DELETED",
           critical: true,
-          metadata: { 
-            branchName: branch.name, 
-            deletedByRole: session.user.role 
-          }
+          metadata: logMetadata,
         }
       });
 
       return deletedBranch;
     });
 
-    return NextResponse.json({ message: "Branch successfully deleted", id: result.id });
+    return NextResponse.json({ 
+      message: "Branch successfully archived", 
+      id: result.id 
+    });
+
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : "Deletion failed";
-    return NextResponse.json({ error: message }, { status: 500 });
+    console.error("DELETE_BRANCH_ERROR:", message);
+    
+    const status = message === "Branch not found" ? 404 : 500;
+    return NextResponse.json({ error: message }, { status });
   }
 }

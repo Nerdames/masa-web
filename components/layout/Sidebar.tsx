@@ -42,7 +42,7 @@ const MAIN_ITEMS: SidebarItem[] = [
 ];
 
 const MANAGEMENT_ITEMS: SidebarItem[] = [
-  { key: "personnel", name: "Personnel", href: "/dashboard/personnels", icon: "bx-user" },
+  { key: "personnels", name: "Personnels", href: "/dashboard/personnels", icon: "bx-user" },
   { key: "branches", name: "Branches", href: "/dashboard/branches", icon: "bx-buildings" },
   { key: "organizations", name: "Organizations", href: "/dashboard/organizations", icon: "bx-globe" },
 ];

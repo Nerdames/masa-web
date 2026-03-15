@@ -11,10 +11,7 @@ interface BranchAssignment {
   branchId: string;
   role: Role;
   isPrimary: boolean;
-  branch: {
-    id: string;
-    name: string;
-  };
+  branch: { id: string; name: string; };
 }
 
 interface Personnel {
@@ -38,6 +35,7 @@ interface Summary {
   active: number;
   disabled: number;
   locked: number;
+  [key: string]: number; 
 }
 
 interface ActivityLog {
@@ -45,11 +43,36 @@ interface ActivityLog {
   action: string;
   personnelName?: string;
   performedBy?: string;
-  personnel?: { name: string };
-  time?: string;
+  personnel?: { name: string; email: string };
   createdAt: string | Date;
-  details: string;
+  time?: string;
+  details?: string;
+  metadata?: Record<string, unknown>;
   critical: boolean;
+}
+
+interface ProvisionPayload {
+  name: string;
+  email: string;
+  role: Role;
+  branchId: string;
+}
+
+interface UpdatePayload extends Partial<Personnel> {
+  action?: string;
+}
+
+interface DetailsPanelProps {
+  personnel: Personnel;
+  onClose: () => void;
+  onUpdate: (id: string, updates: UpdatePayload) => Promise<Personnel | void>;
+  viewerCanResendOTP: boolean;
+}
+
+interface ProvisionPanelProps {
+  onClose: () => void;
+  onCreate: (data: ProvisionPayload) => Promise<void>;
+  branches: { id: string; name: string }[];
 }
 
 /* ================= MAIN COMPONENT ================= */
@@ -58,61 +81,48 @@ export default function PersonnelMissionControl() {
   const [personnels, setPersonnels] = useState<Personnel[]>([]);
   const [summary, setSummary] = useState<Summary | null>(null);
   const [loading, setLoading] = useState(true);
-  
-  // UI State
+  const { addToast } = useToast();
+
   const [search, setSearch] = useState("");
   const [activeTab, setActiveTab] = useState<"all" | "active" | "locked" | "disabled">("all");
-  
-  // Side Panel State Management
   const [selectedPersonnel, setSelectedPersonnel] = useState<Personnel | null>(null);
   const [isProvisioning, setIsProvisioning] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
-
-  // Activity Logs & Branches
   const [activityLogs, setActivityLogs] = useState<ActivityLog[]>([]);
   const [branches, setBranches] = useState<{ id: string; name: string }[]>([]);
 
-  /* -------------------------------------------------------
-     DATA FETCHING
-  ------------------------------------------------------- */
-  
+  // Mocked for client context - replace with actual session hook
+  const isViewerAdminOrOwner = true; 
+
   const fetchPersonnels = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await fetch(`/api/personnels?${new URLSearchParams({
+      const params = new URLSearchParams({
         search,
         status: activeTab !== "all" ? activeTab : "",
-      }).toString()}`);
-      
+      });
+      const res = await fetch(`/api/personnels?${params.toString()}`);
       const result = await res.json();
-      
+
       if (res.ok) {
         setPersonnels(result.data);
         setSummary(result.summary);
-        if (result.recentLogs) {
-          setActivityLogs(result.recentLogs);
-        }
-        if (result.branches) {
-          setBranches(result.branches);
-        }
+        setActivityLogs(result.recentLogs || []);
+        setBranches(result.branchSummaries || []);
       }
     } catch (error) {
-      console.error("Failed to fetch personnels", error);
+      console.error("Fetch error:", error);
     } finally {
       setLoading(false);
     }
   }, [search, activeTab]);
 
   useEffect(() => {
-    const debounceTimer = setTimeout(fetchPersonnels, 300);
-    return () => clearTimeout(debounceTimer);
+    const timer = setTimeout(fetchPersonnels, 300);
+    return () => clearTimeout(timer);
   }, [fetchPersonnels]);
 
-  /* -------------------------------------------------------
-     ACTION HANDLERS
-  ------------------------------------------------------- */
-
-  const handleUpdate = async (id: string, updates: Partial<Personnel>) => {
+  const handleUpdate = async (id: string, updates: UpdatePayload) => {
     try {
       const res = await fetch(`/api/personnels`, {
         method: "PATCH",
@@ -120,199 +130,108 @@ export default function PersonnelMissionControl() {
         body: JSON.stringify({ ...updates, id }),
       });
 
-      if (!res.ok) throw new Error("Failed to update");
+      const result = await res.json();
+      if (!res.ok) throw new Error(result.message || "Update failed");
 
-      const updatedData: Personnel = await res.json();
-
-      setPersonnels((prev) => prev.map((p) => (p.id === id ? { ...p, ...updatedData } : p)));
-
-      if (selectedPersonnel?.id === id) {
-        setSelectedPersonnel((prev) => (prev ? { ...prev, ...updatedData } : null));
-      }
-
-      fetchPersonnels(); 
-
-      setActivityLogs((prev) => [
-        {
-          id: Date.now().toString(),
-          action: updates.isLocked !== undefined ? "SECURITY_LOCK_TOGGLE" : updates.disabled !== undefined ? "ACCESS_TOGGLE" : "PROFILE_UPDATE",
-          personnelName: updatedData.name,
-          performedBy: "Current Admin",
-          createdAt: new Date(),
-          time: "Just Now",
-          details: updates.isLocked !== undefined 
-            ? `Account ${updates.isLocked ? "locked" : "unlocked"} manually.` 
-            : updates.disabled !== undefined
-            ? `Access ${updates.disabled ? "disabled" : "enabled"} for this user.`
-            : "Profile information updated.",
-          critical: updatedData.isLocked || updatedData.disabled,
-        },
-        ...prev,
-      ]);
-    } catch (error) {
-      console.error("Update Error:", error);
-      alert("Failed to update personnel data.");
+      setPersonnels((prev) => prev.map((p) => (p.id === id ? { ...p, ...result } : p)));
+      if (selectedPersonnel?.id === id) setSelectedPersonnel((prev) => ({ ...prev!, ...result }));
+      
+      fetchPersonnels();
+      return result;
+    } catch (error: unknown) {
+      const msg = error instanceof Error ? error.message : "Unknown error";
+      addToast({ type: "error", title: "Action Denied", message: msg });
+      throw error;
     }
   };
 
-  const handleCreate = async (newStaff: Partial<Personnel>) => {
+  const handleCreate = async (newStaff: ProvisionPayload) => {
     try {
       const res = await fetch("/api/personnels", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          ...newStaff,
-          password: "TemporaryPassword123!", 
-        }),
+        body: JSON.stringify(newStaff),
       });
 
-      if (!res.ok) {
-        const errorData = await res.json();
-        throw new Error(errorData.message || "Provisioning failed");
-      }
+      const result = await res.json();
+      if (!res.ok) throw new Error(result.message || "Provisioning failed");
 
-      const created: Personnel = await res.json();
-
-      setPersonnels((prev) => [created, ...prev]);
+      addToast({ type: "success", title: "Staff Provisioned", message: `${result.name} added. OTP sent to email.` });
       setIsProvisioning(false);
-      fetchPersonnels(); 
-
-      setActivityLogs((prev) => [
-        {
-          id: Date.now().toString(),
-          action: "STAFF_PROVISIONED",
-          personnelName: created.name,
-          performedBy: "Current Admin",
-          createdAt: new Date(),
-          time: "Just Now",
-          details: `Provisioned with role: ${created.role}`,
-          critical: false,
-        },
-        ...prev,
-      ]);
+      fetchPersonnels();
     } catch (error: unknown) {
-      alert(error instanceof Error ? error.message : "Failed to provision staff.");
+      const msg = error instanceof Error ? error.message : "Unknown error";
+      addToast({ type: "error", title: "Provisioning Error", message: msg });
+      throw error;
     }
   };
 
-  /* -------------------------------------------------------
-     PANEL ROUTING LOGIC
-  ------------------------------------------------------- */
-  
-  const openProvisioning = () => {
-    setSelectedPersonnel(null);
-    setIsProvisioning(true);
+  const handleExport = (type: "CSV" | "PDF") => {
+    addToast({ type: "success", title: "Export Started", message: `Generating ${type} audit report...` });
   };
 
   const openDetails = (p: Personnel) => {
     setIsProvisioning(false);
-
-    setSelectedPersonnel((prev) => {
-      if (prev?.id === p.id) {
-        return null; 
-      }
-      return p; 
-    });
-  };
-
-  const closePanels = () => {
-    setIsProvisioning(false);
-    setSelectedPersonnel(null);
+    setSelectedPersonnel(prev => (prev?.id === p.id ? null : p));
   };
 
   return (
     <div className="flex h-screen bg-[#F2F2F7] overflow-hidden text-[#1d1d1f] font-sans">
-      
-      {/* 1. MAIN PANEL */}
       <main className="flex-1 flex flex-col min-w-0 bg-white relative">
-        <header className="px-4 py-2 flex items-center justify-between sticky top-0 bg-white/90 backdrop-blur-xl z-10 border-b border-black/5">
-          <div>
-            <h1 className="text-2xl font-bold tracking-tight">Personnels</h1>
-          </div>
-
-          <div className="flex items-center gap-4">
-            <div className="relative group">
+        <header className="px-8 py-4 flex flex-col sm:flex-row sm:items-center justify-between sticky top-0 bg-white/90 backdrop-blur-xl z-10 border-b border-black/5 gap-4">
+          <h1 className="text-2xl font-bold tracking-tight">Personnels</h1>
+          <div className="flex items-center gap-4 w-full sm:w-auto">
+            <div className="relative group flex-1 sm:flex-none">
               <i className="bx bx-search absolute left-4 top-1/2 -translate-y-1/2 text-black/30 text-lg group-focus-within:text-blue-500 transition-colors" />
               <input 
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
                 placeholder="Search name or staff code..." 
-                className="pl-11 pr-4 py-2.5 bg-[#F2F2F7] border-transparent rounded-2xl text-sm w-72 focus:bg-white focus:ring-4 focus:ring-blue-500/10 focus:border-blue-500/20 transition-all outline-none font-medium"
+                className="pl-11 pr-4 py-2.5 bg-[#F2F2F7] border-transparent rounded-2xl text-sm w-full sm:w-72 focus:bg-white focus:ring-4 focus:ring-blue-500/10 transition-all outline-none font-medium"
               />
             </div>
             <button 
-              onClick={openProvisioning}
-              className={`h-10 px-5 rounded-2xl text-xs font-bold shadow-lg transition-all ${isProvisioning ? "bg-blue-600 text-white shadow-blue-500/20" : "bg-slate-900 text-white shadow-black/10 hover:bg-blue-600"}`}
+              onClick={() => { setSelectedPersonnel(null); setIsProvisioning(true); }}
+              className={`h-10 px-5 rounded-2xl text-xs font-bold shadow-lg transition-all whitespace-nowrap ${isProvisioning ? "bg-blue-600 text-white shadow-blue-500/20" : "bg-slate-900 text-white hover:bg-blue-600 shadow-black/10"}`}
             >
               + Provision Staff
             </button>
-            <button 
-              onClick={() => setIsSettingsOpen(true)}
-              className="w-10 h-10 flex items-center justify-center rounded-2xl border border-black/10 hover:bg-[#F2F2F7] transition-all"
-            >
+            <button onClick={() => setIsSettingsOpen(true)} className="w-10 h-10 flex items-center justify-center rounded-2xl border border-black/10 hover:bg-[#F2F2F7] transition-all shrink-0">
               <i className="bx bx-cog text-xl text-black/60" />
             </button>
           </div>
         </header>
 
-        {/* FILTERS & EXPORT */}
-        <div className="px-8 pt-4 flex justify-between items-end border-b border-black/5 bg-white/50 relative z-0">
-          <div className="flex gap-8">
-            {(["all", "active", "locked", "disabled"] as const).map((tab) => {
-              const count = tab === "all" ? summary?.total || 0 : summary?.[tab] || 0;
-
-              return (
-                <button
-                  key={tab}
-                  onClick={() => setActiveTab(tab)}
-                  className={`text-[11px] font-black uppercase tracking-widest pb-3 transition-all relative flex items-center gap-2 ${
-                    activeTab === tab ? "text-blue-600" : "text-black/30 hover:text-black/60"
-                  }`}
-                >
-                  {tab}
-                  <span
-                    className={`text-[9px] px-2 py-0.5 rounded-full font-black ${
-                      activeTab === tab ? "bg-blue-600 text-white" : "bg-black/5 text-black/40"
-                    }`}
-                  >
-                    {count}
-                  </span>
-                  {activeTab === tab && (
-                    <motion.div
-                      layoutId="activeTab"
-                      className="absolute bottom-0 left-0 right-0 h-0.5 bg-blue-600 rounded-t-full"
-                    />
-                  )}
-                </button>
-              );
-            })}
+        <div className="px-8 pt-4 flex flex-wrap justify-between items-end border-b border-black/5 bg-white/50 relative z-0 gap-4">
+          <div className="flex gap-6 overflow-x-auto no-scrollbar">
+            {(["all", "active", "locked", "disabled"] as const).map((tab) => (
+              <button
+                key={tab}
+                onClick={() => setActiveTab(tab)}
+                className={`text-[11px] font-black uppercase tracking-widest pb-3 transition-all relative flex items-center gap-2 whitespace-nowrap ${activeTab === tab ? "text-blue-600" : "text-black/30 hover:text-black/60"}`}
+              >
+                {tab}
+                <span className={`text-[9px] px-2 py-0.5 rounded-full font-black ${activeTab === tab ? "bg-blue-600 text-white" : "bg-black/5 text-black/40"}`}>
+                  {tab === "all" ? summary?.total || 0 : summary?.[tab] || 0}
+                </span>
+                {activeTab === tab && <motion.div layoutId="activeTab" className="absolute bottom-0 left-0 right-0 h-0.5 bg-blue-600 rounded-t-full" />}
+              </button>
+            ))}
           </div>
-
           <div className="flex gap-4 pb-3">
-            <button className="text-[10px] font-black uppercase tracking-widest text-black/30 hover:text-slate-900 flex items-center gap-1.5 transition-colors">
-              <i className="bx bx-export text-sm" /> Export CSV
-            </button>
-            <button className="text-[10px] font-black uppercase tracking-widest text-black/30 hover:text-red-600 flex items-center gap-1.5 transition-colors">
-              <i className="bx bxs-file-pdf text-sm" /> Export PDF
-            </button>
+            <button onClick={() => handleExport("CSV")} className="text-[10px] font-black uppercase tracking-widest text-black/30 hover:text-slate-900 flex items-center gap-1.5 transition-colors"><i className="bx bx-export text-sm" /> CSV</button>
+            <button onClick={() => handleExport("PDF")} className="text-[10px] font-black uppercase tracking-widest text-black/30 hover:text-red-600 flex items-center gap-1.5 transition-colors"><i className="bx bxs-file-pdf text-sm" /> PDF</button>
           </div>
         </div>
 
-        <div className="flex-1 overflow-y-auto px-4 sm:px-8 pt-4 custom-scrollbar bg-[#FAFAFC]">
+        <div className="flex-1 overflow-y-auto px-4 sm:px-8 pt-6 custom-scrollbar bg-[#FAFAFC]">
           {loading ? (
-            <div className="flex items-center justify-center h-full text-black/20 font-black uppercase tracking-tighter text-4xl">
-              Loading...
-            </div>
+            <div className="flex items-center justify-center h-full text-black/10 font-black uppercase text-2xl tracking-widest">Loading...</div>
           ) : (
-            <div className="flex flex-col gap-3 max-w-5xl mx-auto"> 
+            <div className="flex flex-col gap-3 max-w-5xl mx-auto pb-10"> 
               <AnimatePresence mode="popLayout">
                 {personnels.map((p) => (
-                  <PersonnelCard 
-                    key={p.id} 
-                    personnel={p} 
-                    isSelected={selectedPersonnel?.id === p.id}
-                    onClick={() => openDetails(p)} 
-                  />
+                  <PersonnelCard key={p.id} personnel={p} isSelected={selectedPersonnel?.id === p.id} onClick={() => openDetails(p)} />
                 ))}
               </AnimatePresence>
             </div>
@@ -320,23 +239,19 @@ export default function PersonnelMissionControl() {
         </div>
       </main>
 
-      {/* 2. DYNAMIC SIDE PANEL */}
-      <aside className="w-[340px] h-full bg-white border-l border-black/5 flex flex-col shadow-[-10px_0_20px_rgba(0,0,0,0.02)] z-20 flex-shrink-0 relative">
+      <aside className="hidden lg:flex w-[340px] h-full  bg-white border-l border-black/5 flex-col shadow-[-10px_0_20px_rgba(0,0,0,0.02)] z-20 shrink-0 relative">
         <AnimatePresence mode="wait">
           {isProvisioning ? (
-            <ProvisionPanel key="provision" onClose={closePanels} onCreate={handleCreate} branches={branches} />
+            <ProvisionPanel key="provision" onClose={() => setIsProvisioning(false)} onCreate={handleCreate} branches={branches} />
           ) : selectedPersonnel ? (
-            <DetailsPanel key="details" personnel={selectedPersonnel} onClose={closePanels} onUpdate={handleUpdate} />
+            <DetailsPanel key="details" personnel={selectedPersonnel} onClose={() => setSelectedPersonnel(null)} onUpdate={handleUpdate} viewerCanResendOTP={isViewerAdminOrOwner} />
           ) : (
             <ActivityLogsPanel key="logs" logs={activityLogs} />
           )}
         </AnimatePresence>
       </aside>
 
-      {/* 3. SETTINGS MODAL */}
-      <AnimatePresence>
-        {isSettingsOpen && <SettingsModal onClose={() => setIsSettingsOpen(false)} />}
-      </AnimatePresence>
+      <AnimatePresence>{isSettingsOpen && <SettingsModal onClose={() => setIsSettingsOpen(false)} />}</AnimatePresence>
     </div>
   );
 }
@@ -344,8 +259,17 @@ export default function PersonnelMissionControl() {
 /* ================= SUB-COMPONENTS ================= */
 
 function PersonnelCard({ personnel, isSelected, onClick }: { personnel: Personnel, isSelected: boolean, onClick: () => void }) {
+  const { addToast } = useToast();
   const status = personnel.isLocked ? "locked" : personnel.disabled ? "disabled" : "active";
-  
+
+  const copyCode = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if(personnel.staffCode) {
+      navigator.clipboard.writeText(personnel.staffCode);
+      addToast({ type: "success", title: "Copied", message: "Staff code copied to clipboard." });
+    }
+  };
+
   return (
     <motion.div
       layoutId={`person-${personnel.id}`}
@@ -354,24 +278,21 @@ function PersonnelCard({ personnel, isSelected, onClick }: { personnel: Personne
       exit={{ opacity: 0, scale: 0.98 }}
       onClick={onClick}
       className={`group w-full bg-white rounded-2xl p-4 sm:p-5 transition-all cursor-pointer border-2 flex flex-col sm:flex-row sm:items-center justify-between gap-4 ${
-        isSelected 
-          ? "border-blue-500 shadow-lg shadow-blue-500/5 bg-blue-50/30" 
-          : "border-black/[0.04] hover:border-blue-500/20 hover:shadow-md"
+        isSelected ? "border-blue-500 shadow-lg shadow-blue-500/5 bg-blue-50/30" : "border-black/[0.04] hover:border-blue-500/20 hover:shadow-md"
       }`}
     >
       <div className="flex items-center gap-4 flex-1">
-        <div className={`w-10 h-10 sm:w-12 sm:h-12 rounded-xl flex items-center justify-center text-white font-bold text-base sm:text-lg shrink-0 transition-colors ${
-          isSelected ? "bg-blue-600" : "bg-slate-900"
-        }`}>
+        <div className={`w-10 h-10 sm:w-12 sm:h-12 rounded-xl flex items-center justify-center text-white font-bold text-base sm:text-lg shrink-0 transition-colors ${isSelected ? "bg-blue-600" : "bg-slate-900"}`}>
           {personnel.name?.charAt(0) || "U"}
         </div>
         <div className="min-w-0">
           <h3 className="font-bold text-sm sm:text-[15px] text-slate-900 truncate group-hover:text-blue-600 transition-colors">
             {personnel.name || "Unknown User"}
           </h3>
-          <p className="text-[10px] text-black/40 font-black uppercase tracking-widest truncate">
-            {personnel.staffCode || "NO-CODE"}
-          </p>
+          <div className="flex items-center gap-1.5 mt-0.5">
+            <p className="text-[10px] text-black/40 font-black uppercase tracking-widest truncate">{personnel.staffCode || "NO-CODE"}</p>
+            {personnel.staffCode && <button onClick={copyCode} className="text-black/20 hover:text-blue-600"><i className="bx bx-copy text-[10px]" /></button>}
+          </div>
         </div>
       </div>
 
@@ -382,7 +303,7 @@ function PersonnelCard({ personnel, isSelected, onClick }: { personnel: Personne
         </div>
         <div className="flex flex-col">
           <span className="text-[9px] font-black uppercase text-black/30 tracking-tighter">Primary Branch</span>
-          <span className="text-xs font-bold text-slate-600 truncate max-w-[120px]">
+          <span className="text-xs font-bold text-slate-600 truncate max-w-[120px] mt-0.5">
             {personnel.branch?.name || "Unassigned"}
           </span>
         </div>
@@ -393,9 +314,7 @@ function PersonnelCard({ personnel, isSelected, onClick }: { personnel: Personne
           <span className="sm:hidden text-[10px] font-bold text-black/30">Status:</span>
           <StatusBadge status={status} />
         </div>
-        <i className={`bx bx-chevron-right text-xl transition-transform ${
-          isSelected ? "translate-x-1 text-blue-500" : "text-black/20 group-hover:translate-x-1"
-        }`} />
+        <i className={`bx bx-chevron-right text-xl transition-transform ${isSelected ? "translate-x-1 text-blue-500" : "text-black/20 group-hover:translate-x-1"}`} />
       </div>
     </motion.div>
   );
@@ -416,11 +335,9 @@ function StatusBadge({ status }: { status: "active" | "locked" | "disabled" }) {
 
 function RoleBadge({ role, isOwner }: { role: string, isOwner: boolean }) {
   return (
-    <div className="flex gap-1.5">
-      {isOwner && (
-        <span className="px-2 py-1 bg-purple-50 text-purple-600 rounded-md text-[9px] font-black uppercase tracking-widest">Owner</span>
-      )}
-      <span className="px-2 py-1 bg-blue-50 text-blue-600 rounded-md text-[9px] font-black uppercase tracking-widest">{role}</span>
+    <div className="flex gap-1.5 mt-0.5">
+      {isOwner && <span className="px-2 py-0.5 bg-purple-50 text-purple-600 rounded-md text-[9px] font-black uppercase tracking-widest">Owner</span>}
+      <span className="px-2 py-0.5 bg-blue-50 text-blue-600 rounded-md text-[9px] font-black uppercase tracking-widest">{role}</span>
     </div>
   );
 }
@@ -433,44 +350,56 @@ const panelVariants = {
   exit: { opacity: 0, x: -20, transition: { duration: 0.15, ease: "easeIn" } }
 };
 
-function ActivityLogsPanel({ logs }: { logs: ActivityLog[] }) {
+function LogFilter({ onFilterChange }: { onFilterChange: (action: string) => void }) {
+  const actions = ["ALL_ACTIONS", "PROVISION", "SECURITY", "UPDATE", "ACCOUNT_LOCKED"];
+  const [active, setActive] = useState("ALL_ACTIONS");
+
   return (
-    <motion.div 
-      variants={panelVariants} 
-      initial="hidden" 
-      animate="visible" 
-      exit="exit" 
-      className="h-full flex flex-col w-full absolute inset-0 bg-white"
-    >
-      <div className="p-6 border-b border-black/5 bg-[#FAFAFC]">
+    <div className="flex gap-2 overflow-x-auto pb-2 scrollbar-hide" style={{ msOverflowStyle: 'none', scrollbarWidth: 'none' }}>
+      <style>{`.scrollbar-hide::-webkit-scrollbar { display: none; }`}</style>
+      {actions.map(a => (
+        <button
+          key={a}
+          onClick={() => { setActive(a); onFilterChange(a); }}
+          className={`shrink-0 px-3 py-1.5 rounded-full text-[8px] font-black uppercase tracking-tighter transition-all border ${
+            active === a ? "bg-slate-900 text-white border-slate-900 shadow-md" : "bg-white text-black/40 border-black/5 hover:border-black/20"
+          }`}
+        >
+          {a.replace(/_/g, " ")}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function ActivityLogsPanel({ logs }: { logs: ActivityLog[] }) {
+  const [filter, setFilter] = useState("ALL_ACTIONS");
+  const filteredLogs = filter === "ALL_ACTIONS" ? logs : logs.filter(l => l.action.includes(filter) || (filter === "SECURITY" && (l.action.includes("LOCK") || l.action.includes("ACCESS"))));
+
+  return (
+    <motion.div variants={panelVariants} initial="hidden" animate="visible" exit="exit" className="h-full flex flex-col w-full absolute inset-0 bg-white">
+      <div className="p-6 border-b border-black/5 bg-[#FAFAFC] space-y-4">
         <h2 className="text-[10px] font-black uppercase tracking-[0.2em] text-black/50 flex items-center gap-2">
-          <span className="w-2 h-2 rounded-full bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)] animate-pulse" />
-          Live_Activity_Logs
+          <span className="w-2 h-2 rounded-full bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)] animate-pulse" /> Live_Audit_Trail
         </h2>
+        <LogFilter onFilterChange={setFilter} />
       </div>
-      
+
       <div className="flex-1 overflow-y-auto p-5 space-y-4 custom-scrollbar bg-[#FAFAFC]">
-        {(!logs || logs.length === 0) && (
+        {(!filteredLogs || filteredLogs.length === 0) && (
           <div className="flex flex-col items-center justify-center h-40 text-center space-y-2">
             <i className="bx bx-receipt text-3xl text-black/10" />
-            <p className="text-[10px] font-bold text-black/30 tracking-widest uppercase">No Logs in Session</p>
+            <p className="text-[10px] font-bold text-black/30 tracking-widest uppercase">No Records Found</p>
           </div>
         )}
-        
-        {logs.map((log) => {
-          // Defensive variable extraction
+
+        {filteredLogs.map((log) => {
           const performerName = log.personnel?.name ?? "System";
-          const targetName = log.personnelName ?? "N/A";
-          
+          const targetName = log.personnelName ?? (log.metadata?.targetName as string) ?? "N/A";
+
           return (
-            <motion.div 
-              initial={{ opacity: 0, y: 10 }} 
-              animate={{ opacity: 1, y: 0 }} 
-              key={log.id} 
-              className="p-4 bg-white border border-black/[0.04] rounded-2xl shadow-sm hover:border-blue-500/20 hover:shadow-md transition-all relative overflow-hidden group"
-            >
+            <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} key={log.id} className="p-4 bg-white border border-black/[0.04] rounded-2xl shadow-sm hover:border-blue-500/20 hover:shadow-md transition-all relative overflow-hidden group">
               <div className={`absolute left-0 top-0 bottom-0 w-1 ${log.critical ? 'bg-amber-400' : 'bg-blue-500'} opacity-50 group-hover:opacity-100 transition-opacity`} />
-              
               <div className="pl-1">
                 <div className="flex justify-between items-center mb-3 border-b border-black/5 pb-2">
                   <div className="flex items-center gap-2">
@@ -483,17 +412,12 @@ function ActivityLogsPanel({ logs }: { logs: ActivityLog[] }) {
                     {log.time ?? new Date(log.createdAt).toLocaleTimeString()}
                   </span>
                 </div>
-                
                 <div>
                   <span className={`inline-block mb-1.5 text-[8px] font-black uppercase tracking-widest px-2 py-0.5 rounded ${log.critical ? 'bg-amber-50 text-amber-600' : 'bg-slate-100 text-slate-600'}`}>
                     {log.action.replace(/_/g, " ")}
                   </span>
-                  <p className="text-xs font-medium text-slate-600 leading-relaxed mb-1">
-                    {log.details ?? "No details provided"}
-                  </p>
-                  <p className="text-[10px] font-bold text-black/40">
-                    Target: <span className="text-slate-800">{targetName}</span>
-                  </p>
+                  <p className="text-xs font-medium text-slate-600 leading-relaxed mb-1">{(log.details || log.metadata?.details) as string || "Audit entry recorded."}</p>
+                  <p className="text-[10px] font-bold text-black/40">Target: <span className="text-slate-800">{targetName}</span></p>
                 </div>
               </div>
             </motion.div>
@@ -504,300 +428,206 @@ function ActivityLogsPanel({ logs }: { logs: ActivityLog[] }) {
   );
 }
 
-interface DetailsPanelProps {
-  personnel: Personnel;
-  onClose: () => void;
-  onUpdate: (id: string, updates: Partial<Personnel> & { action?: string; branchId?: string }) => Promise<void>;
-}
-
-function DetailsPanel({ personnel, onClose, onUpdate }: DetailsPanelProps) {
+function DetailsPanel({ personnel, onClose, onUpdate, viewerCanResendOTP }: DetailsPanelProps) {
   const [isEditing, setIsEditing] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const { addToast } = useToast();
+  
+  const [form, setForm] = useState({ name: personnel.name, email: personnel.email, role: personnel.role });
 
-  const [form, setForm] = useState({
-    name: personnel.name || "",
-    email: personnel.email || "",
-    staffCode: personnel.staffCode || "",
-  });
+  const isPrivileged = personnel.role === Role.ADMIN || personnel.isOrgOwner;
 
-  useEffect(() => {
-    setForm({
-      name: personnel.name || "",
-      email: personnel.email || "",
-      staffCode: personnel.staffCode || "",
-    });
-  }, [personnel]);
-
-  const handleSave = async () => {
-    if (form.staffCode && !/^STF-\d{3}$/.test(form.staffCode.toUpperCase())) {
-      addToast({
-        type: "error",
-        title: "Validation Error",
-        message: "Format must be STF-XXX (e.g., STF-001).",
-      });
-      return;
-    }
-
-    setIsSaving(true);
-    try {
-      await onUpdate(personnel.id, {
-        name: form.name,
-        email: form.email,
-        staffCode: form.staffCode.toUpperCase(),
-      });
-      addToast({
-        type: "success",
-        title: "Profile Updated",
-        message: "The personnel record was saved successfully.",
-      });
-      setIsEditing(false);
-    } catch (err: unknown) {
-      addToast({
-        type: "error",
-        title: "Update Failed",
-        message: "Database rejection or network error.",
-      });
-    } finally {
-      setIsSaving(false);
-    }
+  const handleCopy = (text: string) => {
+    navigator.clipboard.writeText(text);
+    addToast({ type: "success", title: "Copied", message: "Saved to clipboard." });
   };
 
-  const handleToggleSecurity = async (key: "isLocked" | "disabled", value: boolean) => {
+  const handleSave = async () => {
+    setIsSaving(true);
     try {
-      await onUpdate(personnel.id, { [key]: value });
-      addToast({
-        type: "success",
-        title: "Security Updated",
-        message: `Account is now ${value ? (key === 'isLocked' ? 'Locked' : 'Disabled') : 'Active'}.`,
-      });
-    } catch (err: unknown) {
-      addToast({
-        type: "error",
-        title: "Update Failed",
-        message: "Check your permissions or connection.",
-      });
+      await onUpdate(personnel.id, { name: form.name, email: form.email, role: form.role });
+      addToast({ type: "success", title: "Saved", message: "Profile updated successfully." });
+      setIsEditing(false);
+    } finally { setIsSaving(false); }
+  };
+
+  const toggleSecurity = async (key: keyof UpdatePayload, val: boolean) => {
+    await onUpdate(personnel.id, { [key]: val });
+    addToast({ type: "success", title: "Security Updated", message: `Account status changed.` });
+  };
+
+  const handleResendOTP = async () => {
+    try {
+      await onUpdate(personnel.id, { action: "RESEND_OTP" }); 
+      addToast({ type: "success", title: "Token Sent", message: "A new verification OTP has been emailed." });
+    } catch (err) {
+      // Error handled in handleUpdate
     }
   };
 
   return (
-    <motion.div
-      variants={panelVariants}
-      initial="hidden"
-      animate="visible"
-      exit="exit"
-      className="h-full flex flex-col w-full absolute inset-0 bg-white z-10 border-l border-black/5"
-    >
-      {/* Header */}
-      <div className="p-6 border-b border-black/5 flex justify-between items-center bg-white sticky top-0 z-10">
-        <h2 className="text-[10px] font-black uppercase tracking-[0.2em] text-black/40">Inspector</h2>
+    <motion.div variants={panelVariants} initial="hidden" animate="visible" exit="exit" className="h-full flex flex-col w-full absolute inset-0 bg-white z-10 border-l border-black/5">
+      <div className="p-6 border-b border-black/5 flex justify-between items-center sticky top-0 bg-white z-10">
+        <h2 className="text-[10px] font-black uppercase tracking-widest text-black/40">Inspector_v2</h2>
         <div className="flex gap-2">
-          {!isEditing && (
-            <button
-              onClick={() => setIsEditing(true)}
-              className="h-8 px-3 rounded-full bg-[#F2F2F7] hover:bg-blue-50 hover:text-blue-600 text-[9px] font-black uppercase tracking-widest transition-colors flex items-center gap-1.5"
-            >
-              <i className="bx bx-pencil" /> Edit
-            </button>
-          )}
-          <button onClick={onClose} className="w-8 h-8 rounded-full bg-black/5 hover:bg-black/10 flex items-center justify-center transition-colors">
-            <i className="bx bx-x text-lg" />
-          </button>
+          {!isEditing && <button onClick={() => setIsEditing(true)} className="h-8 px-3 rounded-full bg-[#F2F2F7] text-[9px] font-black uppercase transition-colors hover:bg-blue-600 hover:text-white"><i className="bx bx-pencil mr-1"/> Edit</button>}
+          <button onClick={onClose} className="w-8 h-8 rounded-full bg-black/5 hover:bg-black/10 transition-colors flex items-center justify-center"><i className="bx bx-x text-lg" /></button>
         </div>
       </div>
 
-      <div className="flex-1 overflow-y-auto p-6 custom-scrollbar">
-        {/* Avatar & Profile */}
-        <div className="mb-8">
-          <div className="w-20 h-20 rounded-[1.5rem] bg-slate-900 text-white flex items-center justify-center text-4xl font-black mb-6 shadow-xl shadow-black/10">
-            {form.name?.charAt(0) || "U"}
+      <div className="flex-1 overflow-y-auto p-6 custom-scrollbar space-y-8">
+        <div className="flex items-center gap-5">
+          <div className="w-20 h-20 rounded-3xl bg-slate-900 text-white flex items-center justify-center text-3xl font-black shadow-xl shrink-0">
+            {personnel.name.charAt(0)}
           </div>
-
-          <AnimatePresence mode="wait">
-            {!isEditing ? (
-              <motion.div key="read" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="space-y-1">
-                <h2 className="text-2xl font-black text-slate-900 leading-tight">{personnel.name}</h2>
-                <p className="text-black/50 font-medium">{personnel.email}</p>
-                <div className="pt-3">
-                  <span className="px-2.5 py-1.5 bg-slate-100 text-slate-600 rounded-lg text-[10px] font-black uppercase tracking-widest border border-black/5">
-                    CODE: {personnel.staffCode || "UNASSIGNED"}
-                  </span>
-                </div>
-              </motion.div>
-            ) : (
-              <motion.div key="edit" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }} className="space-y-4 bg-[#FAFAFC] p-5 rounded-[1.5rem] border border-black/5">
-                <div className="space-y-4">
-                  <div>
-                    <label className="text-[9px] font-black uppercase tracking-widest text-black/40 pl-1">Full Name</label>
-                    <input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} className="w-full bg-white border border-black/10 rounded-xl px-4 py-2.5 text-sm font-bold text-slate-900 focus:border-blue-500 outline-none transition-all" />
-                  </div>
-                  <div>
-                    <label className="text-[9px] font-black uppercase tracking-widest text-black/40 pl-1">Email</label>
-                    <input value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} className="w-full bg-white border border-black/10 rounded-xl px-4 py-2.5 text-sm font-bold text-slate-900 focus:border-blue-500 outline-none transition-all" />
-                  </div>
-                  <div>
-                    <label className="text-[9px] font-black uppercase tracking-widest text-black/40 pl-1">Staff Code</label>
-                    <input value={form.staffCode} onChange={(e) => setForm({ ...form, staffCode: e.target.value })} placeholder="STF-001" className="w-full bg-white border border-black/10 rounded-xl px-4 py-2.5 text-sm font-bold text-slate-900 focus:border-blue-500 outline-none transition-all uppercase" />
-                  </div>
-                  <div className="flex gap-2 pt-2">
-                    <button onClick={handleSave} disabled={isSaving} className="flex-1 bg-slate-900 text-white rounded-xl py-3 text-[11px] font-black uppercase tracking-widest hover:bg-blue-600 transition-colors disabled:opacity-50">
-                      {isSaving ? <i className="bx bx-loader-alt animate-spin" /> : "Save Changes"}
-                    </button>
-                    <button onClick={() => setIsEditing(false)} className="flex-1 bg-white border border-black/10 text-slate-600 rounded-xl py-3 text-[11px] font-black uppercase tracking-widest">Cancel</button>
-                  </div>
-                </div>
-              </motion.div>
-            )}
-          </AnimatePresence>
+          <div className="min-w-0">
+            <h3 className="text-2xl font-black text-slate-900 truncate leading-tight">{personnel.name}</h3>
+            <div className="flex flex-col gap-1 mt-1.5">
+              <RoleBadge role={personnel.role} isOwner={personnel.isOrgOwner} />
+              <span className="text-[9px] font-black text-black/30 uppercase tracking-widest mt-0.5 truncate">
+                Last Seen: {personnel.lastActivityAt ? new Date(personnel.lastActivityAt).toLocaleString() : "Never Active"}
+              </span>
+            </div>
+          </div>
         </div>
 
-        {/* Branch Assignments */}
-        <motion.div layout animate={{ opacity: isEditing ? 0.3 : 1, pointerEvents: isEditing ? "none" : "auto" }} className="space-y-8">
-          <section>
-            <h4 className="text-[10px] font-black uppercase tracking-widest text-black/30 mb-3">Branch Access</h4>
-            <div className="space-y-2">
-              {personnel.branchAssignments.map((ba, i) => (
-                <div key={i} className="flex justify-between items-center bg-[#F2F2F7] p-3.5 rounded-2xl">
-                  <span className="text-sm font-bold text-slate-900">{ba.branch.name}</span>
-                  <div className="flex gap-2 items-center">
-                    {ba.isPrimary && <span className="text-[8px] bg-blue-600 text-white px-1.5 py-0.5 rounded-md font-black uppercase tracking-tighter">Primary</span>}
-                    <span className="text-blue-600 uppercase text-[10px] font-black tracking-widest">{ba.role}</span>
-                  </div>
-                </div>
-              ))}
-              {personnel.branchAssignments.length === 0 && <p className="text-xs text-black/40 italic">No assigned branches.</p>}
+        <section className="space-y-4">
+          <div className="space-y-1.5">
+            <label className="text-[9px] font-black uppercase text-black/40 pl-1">Full Name</label>
+            <input 
+              readOnly={!isEditing} 
+              value={form.name} 
+              onChange={e => setForm({...form, name: e.target.value})} 
+              className={`w-full px-4 py-3.5 rounded-2xl text-sm font-bold outline-none transition-all ${isEditing ? "bg-[#F2F2F7] focus:bg-white ring-2 ring-blue-500/10" : "bg-transparent cursor-default"}`} 
+            />
+          </div>
+          <div className="space-y-1.5 group">
+            <label className="text-[9px] font-black uppercase text-black/40 pl-1 flex justify-between items-center">
+              Email Address
+              {!isEditing && <button onClick={() => handleCopy(form.email)} className="opacity-0 group-hover:opacity-100 transition-opacity text-blue-600 hover:text-blue-800"><i className="bx bx-copy" /> Copy</button>}
+            </label>
+            <input 
+              readOnly={!isEditing} 
+              value={form.email} 
+              onChange={e => setForm({...form, email: e.target.value})} 
+              className={`w-full px-4 py-3.5 rounded-2xl text-sm font-bold outline-none transition-all ${isEditing ? "bg-[#F2F2F7] focus:bg-white ring-2 ring-blue-500/10" : "bg-transparent cursor-default"}`} 
+            />
+          </div>
+          
+          <div className="grid grid-cols-2 gap-4">
+            <div className="space-y-1.5 group">
+              <label className="text-[9px] font-black uppercase text-black/40 pl-1 flex justify-between items-center">
+                Staff Code
+                {personnel.staffCode && <button onClick={() => handleCopy(personnel.staffCode!)} className="opacity-0 group-hover:opacity-100 transition-opacity text-blue-600 hover:text-blue-800"><i className="bx bx-copy" /> Copy</button>}
+              </label>
+              <div className="px-4 py-3.5 bg-black/5 rounded-2xl text-xs font-mono font-bold text-black/40 truncate">{personnel.staffCode || "PENDING"}</div>
             </div>
-          </section>
+            <div className="space-y-1.5">
+              <label className="text-[9px] font-black uppercase text-black/40 pl-1">Role</label>
+              <select 
+                disabled={!isEditing} 
+                value={form.role} 
+                onChange={e => setForm({...form, role: e.target.value as Role})} 
+                className={`w-full px-4 py-3.5 rounded-2xl text-[10px] font-black uppercase tracking-widest outline-none transition-all ${isEditing ? "bg-[#F2F2F7] cursor-pointer" : "bg-transparent appearance-none cursor-default"}`}
+              >
+                {Object.values(Role).map(r => <option key={r} value={r}>{r}</option>)}
+              </select>
+            </div>
+          </div>
 
-          {/* Security Controls */}
-          <section>
-            <h4 className="text-[10px] font-black uppercase tracking-widest text-black/30 mb-3">Security & Status</h4>
-            <div className="grid grid-cols-2 gap-3">
-              <button
-                onClick={() => handleToggleSecurity("isLocked", !personnel.isLocked)}
-                className={`py-4 rounded-2xl text-[10px] font-black uppercase tracking-widest transition-all ${
-                  personnel.isLocked ? "bg-emerald-50 text-emerald-600 border border-emerald-100" : "bg-amber-50 text-amber-600 border border-amber-100"
-                }`}
-              >
-                {personnel.isLocked ? "Unlock Account" : "Lock Account"}
+          {isEditing && (
+            <div className="flex gap-2 mt-4">
+              <button onClick={handleSave} disabled={isSaving} className="flex-[2] py-4 bg-slate-900 text-white rounded-2xl text-[10px] font-black uppercase tracking-widest hover:bg-blue-600 transition-all">
+                {isSaving ? "Syncing..." : "Apply Changes"}
               </button>
-              <button
-                onClick={() => handleToggleSecurity("disabled", !personnel.disabled)}
-                className={`py-4 rounded-2xl text-[10px] font-black uppercase tracking-widest transition-all ${
-                  personnel.disabled ? "bg-slate-900 text-white shadow-lg" : "bg-red-50 text-red-600 border border-red-100"
-                }`}
+              <button onClick={() => setIsEditing(false)} className="flex-1 py-4 bg-[#F2F2F7] text-slate-600 rounded-2xl text-[10px] font-black uppercase hover:bg-black/5 transition-all">Cancel</button>
+            </div>
+          )}
+        </section>
+
+        <section className="pt-6 border-t border-black/5">
+          <h4 className="text-[10px] font-black uppercase tracking-widest text-black/30 mb-4">Access_Security</h4>
+          
+          {viewerCanResendOTP && !personnel.lastActivityAt && (
+             <button onClick={handleResendOTP} className="w-full py-3.5 mb-3 bg-blue-50 text-blue-600 border border-blue-100 rounded-2xl text-[10px] font-black uppercase tracking-widest hover:bg-blue-100 transition-colors flex items-center justify-center gap-2">
+               <i className="bx bx-mail-send text-sm" /> Resend Verification OTP
+             </button>
+          )}
+
+          {isPrivileged ? (
+            <div className="p-4 bg-amber-50 text-amber-600 rounded-2xl text-[9px] font-black uppercase tracking-widest border border-amber-100 flex items-center gap-3">
+              <i className="bx bx-shield-quarter text-lg" /> Privileged account cannot be restricted.
+            </div>
+          ) : (
+            <div className="grid grid-cols-2 gap-3">
+              <button 
+                onClick={() => toggleSecurity("isLocked", !personnel.isLocked)}
+                className={`py-4 rounded-2xl text-[10px] font-black uppercase transition-all ${personnel.isLocked ? "bg-emerald-50 text-emerald-600 border border-emerald-100" : "bg-amber-50 text-amber-600 border border-amber-100 hover:bg-amber-100"}`}
               >
-                {personnel.disabled ? "Enable Access" : "Disable Access"}
+                {personnel.isLocked ? "Unlock Access" : "Lock Account"}
+              </button>
+              <button 
+                onClick={() => toggleSecurity("disabled", !personnel.disabled)}
+                className={`py-4 rounded-2xl text-[10px] font-black uppercase transition-all ${personnel.disabled ? "bg-slate-900 text-white hover:bg-slate-800" : "bg-red-50 text-red-600 border border-red-100 hover:bg-red-100"}`}
+              >
+                {personnel.disabled ? "Enable Account" : "Disable Account"}
               </button>
             </div>
-          </section>
-        </motion.div>
+          )}
+        </section>
       </div>
     </motion.div>
   );
 }
 
-interface ProvisionPanelProps {
-  onClose: () => void;
-  // Requires branchId and password for the transactional POST
-  onCreate: (newStaff: Partial<Personnel> & { 
-    password?: string; 
-    branchId: string; 
-    role: Role 
-  }) => Promise<void>;
-  branches: { id: string; name: string }[];
-}
-
 function ProvisionPanel({ onClose, onCreate, branches }: ProvisionPanelProps) {
+  const [form, setForm] = useState<ProvisionPayload>({ name: "", email: "", role: Role.CASHIER, branchId: "" });
   const [isSaving, setIsSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [form, setForm] = useState({ 
-    name: "", 
-    email: "", 
-    staffCode: "", 
-    role: "CASHIER" as Role,
-    password: "",
-    branchId: "" 
-  });
 
-  const handleCreate = async () => {
-    if (!form.name || !form.email || !form.password || !form.branchId) {
-      setError("Name, Email, Password, and Branch are required.");
-      return;
-    }
-    if (form.staffCode && !/^STF-\d{3}$/.test(form.staffCode.toUpperCase())) {
-      setError("Staff code must follow 'STF-XXX' format.");
-      return;
-    }
-    
-    setError(null);
+  const handleSubmit = async () => {
+    if (!form.branchId || !form.name || !form.email) return alert("Please fill all required fields.");
     setIsSaving(true);
-    try {
-      await onCreate({ ...form, staffCode: form.staffCode.toUpperCase() });
-      onClose(); // Close only on success
-    } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : "Failed to provision account.");
-    } finally {
-      setIsSaving(false);
-    }
+    try { await onCreate(form); } finally { setIsSaving(false); }
   };
 
   return (
     <motion.div variants={panelVariants} initial="hidden" animate="visible" exit="exit" className="h-full flex flex-col w-full absolute inset-0 bg-white z-20 border-l border-black/5">
-      <div className="p-6 border-b border-black/5 flex justify-between items-center bg-white sticky top-0 z-10">
-        <h2 className="text-[10px] font-black uppercase tracking-[0.2em] text-blue-600 flex items-center gap-2">
-          <i className="bx bx-user-plus text-sm" /> Provision_Staff
+      <div className="p-6 border-b border-black/5 flex justify-between items-center sticky top-0 bg-white z-10">
+        <h2 className="text-[10px] font-black uppercase tracking-widest text-blue-600 flex items-center gap-2">
+          <i className="bx bx-user-plus text-sm" /> Provision_New_Staff
         </h2>
-        <button onClick={onClose} className="w-8 h-8 rounded-full bg-black/5 hover:bg-black/10 flex items-center justify-center transition-colors">
-          <i className="bx bx-x text-lg" />
-        </button>
+        <button onClick={onClose} className="w-8 h-8 rounded-full bg-black/5 hover:bg-black/10 transition-colors flex items-center justify-center"><i className="bx bx-x text-lg" /></button>
       </div>
 
-      <div className="flex-1 overflow-y-auto p-8 custom-scrollbar space-y-6">
-        <div>
-          <h3 className="text-2xl font-black text-slate-900 mb-1">New Personnel</h3>
-          <p className="text-xs text-black/40 font-medium mb-6">Create a new system identity and initial branch link.</p>
+      <div className="flex-1 overflow-y-auto p-8 space-y-6 custom-scrollbar">
+        <div className="p-4 bg-emerald-50 text-emerald-700 rounded-2xl border border-emerald-100 flex gap-3">
+          <i className="bx bx-shield-check text-xl shrink-0" />
+          <p className="text-[10px] font-bold leading-relaxed">
+            Password generation is fully automated. Upon creation, a secure verification token (OTP) will be sent to the user's email for their first login.
+          </p>
+        </div>
 
-          {error && (
-            <div className="mb-6 p-4 bg-red-50 text-red-600 text-[10px] font-black uppercase tracking-widest rounded-2xl border border-red-100 flex items-center gap-2">
-              <i className="bx bx-error-circle text-lg" /> {error}
-            </div>
-          )}
+        <div className="space-y-4">
+          <div className="space-y-1.5">
+            <label className="text-[9px] font-black uppercase text-black/40 pl-1">Full Name</label>
+            <input placeholder="Ex: John Doe" onChange={e => setForm({...form, name: e.target.value})} className="w-full px-4 py-4 bg-[#F2F2F7] rounded-2xl text-sm font-bold focus:bg-white ring-blue-500/10 focus:ring-4 outline-none transition-all" />
+          </div>
+          <div className="space-y-1.5">
+            <label className="text-[9px] font-black uppercase text-black/40 pl-1">Email Address</label>
+            <input placeholder="john@company.com" onChange={e => setForm({...form, email: e.target.value})} className="w-full px-4 py-4 bg-[#F2F2F7] rounded-2xl text-sm font-bold focus:bg-white ring-blue-500/10 focus:ring-4 outline-none transition-all" />
+          </div>
 
-          <div className="space-y-5">
-            <div className="grid grid-cols-2 gap-4">
-              <div className="space-y-1.5">
-                <label className="text-[9px] font-black uppercase tracking-widest text-black/40 pl-1">Full Name</label>
-                <input value={form.name} onChange={(e) => setForm({...form, name: e.target.value})} className="w-full bg-[#F2F2F7] border-transparent rounded-2xl px-4 py-3.5 text-sm font-bold text-slate-900 focus:bg-white focus:ring-4 focus:ring-blue-500/10 outline-none transition-all" />
-              </div>
-              <div className="space-y-1.5">
-                <label className="text-[9px] font-black uppercase tracking-widest text-black/40 pl-1">Email</label>
-                <input value={form.email} onChange={(e) => setForm({...form, email: e.target.value})} className="w-full bg-[#F2F2F7] border-transparent rounded-2xl px-4 py-3.5 text-sm font-bold text-slate-900 focus:bg-white focus:ring-4 focus:ring-blue-500/10 outline-none transition-all" />
-              </div>
-            </div>
-
+          <div className="grid grid-cols-2 gap-4">
             <div className="space-y-1.5">
-              <label className="text-[9px] font-black uppercase tracking-widest text-black/40 pl-1">System Password</label>
-              <input type="password" value={form.password} onChange={(e) => setForm({...form, password: e.target.value})} className="w-full bg-[#F2F2F7] border-transparent rounded-2xl px-4 py-3.5 text-sm font-bold text-slate-900 focus:bg-white focus:ring-4 focus:ring-blue-500/10 outline-none transition-all" />
+              <label className="text-[9px] font-black uppercase text-black/40 pl-1">System Role</label>
+              <select onChange={e => setForm({...form, role: e.target.value as Role})} className="w-full px-4 py-4 bg-[#F2F2F7] rounded-2xl text-[10px] font-black uppercase tracking-widest outline-none cursor-pointer">
+                {Object.values(Role).map(r => <option key={r} value={r}>{r}</option>)}
+              </select>
             </div>
-
-            <div className="grid grid-cols-2 gap-4">
-              <div className="space-y-1.5">
-                <label className="text-[9px] font-black uppercase tracking-widest text-black/40 pl-1">Staff Code</label>
-                <input value={form.staffCode} onChange={(e) => setForm({...form, staffCode: e.target.value})} placeholder="STF-001" className="w-full bg-[#F2F2F7] border-transparent rounded-2xl px-4 py-3.5 text-sm font-bold text-slate-900 focus:bg-white outline-none transition-all uppercase" />
-              </div>
-              <div className="space-y-1.5">
-                <label className="text-[9px] font-black uppercase tracking-widest text-black/40 pl-1">Role</label>
-                <select value={form.role} onChange={(e) => setForm({...form, role: e.target.value as Role})} className="w-full bg-[#F2F2F7] border-transparent rounded-2xl px-4 py-3.5 text-[11px] font-black uppercase tracking-widest text-slate-900 focus:bg-white outline-none transition-all">
-                  {Object.values(Role).map(r => <option key={r} value={r}>{r}</option>)}
-                </select>
-              </div>
-            </div>
-
             <div className="space-y-1.5">
-              <label className="text-[9px] font-black uppercase tracking-widest text-black/40 pl-1">Assign Primary Branch</label>
-              <select value={form.branchId} onChange={(e) => setForm({...form, branchId: e.target.value})} className="w-full bg-[#F2F2F7] border-transparent rounded-2xl px-4 py-3.5 text-[11px] font-black uppercase tracking-widest text-slate-900 focus:bg-white outline-none transition-all">
-                <option value="">Select Branch...</option>
+              <label className="text-[9px] font-black uppercase text-black/40 pl-1">Branch Link</label>
+              <select onChange={e => setForm({...form, branchId: e.target.value})} className="w-full px-4 py-4 bg-[#F2F2F7] rounded-2xl text-[10px] font-black uppercase tracking-widest outline-none cursor-pointer">
+                <option value="">Select Branch</option>
                 {branches.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
               </select>
             </div>
@@ -806,8 +636,8 @@ function ProvisionPanel({ onClose, onCreate, branches }: ProvisionPanelProps) {
       </div>
 
       <div className="p-6 border-t border-black/5 bg-[#FAFAFC]">
-        <button onClick={handleCreate} disabled={isSaving} className="w-full bg-blue-600 text-white rounded-2xl py-4 text-[11px] font-black uppercase tracking-widest hover:bg-blue-700 shadow-xl shadow-blue-500/20 transition-all disabled:opacity-50 flex items-center justify-center gap-2">
-          {isSaving ? <i className="bx bx-loader-alt animate-spin text-lg" /> : "Provision Account"}
+        <button onClick={handleSubmit} disabled={isSaving} className="w-full py-5 bg-blue-600 text-white rounded-2xl text-[11px] font-black uppercase tracking-widest shadow-xl shadow-blue-500/20 hover:scale-[1.02] active:scale-[0.98] transition-all">
+          {isSaving ? "Provisioning..." : "Initialize Account"}
         </button>
       </div>
     </motion.div>
@@ -816,12 +646,12 @@ function ProvisionPanel({ onClose, onCreate, branches }: ProvisionPanelProps) {
 
 function SettingsModal({ onClose }: { onClose: () => void }) {
   return (
-    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 z-[110] bg-black/60 backdrop-blur-md flex items-center justify-center">
-      <div className="bg-white rounded-[40px] w-full max-w-2xl p-12 text-center shadow-2xl">
-        <i className="bx bx-shield-quarter text-6xl text-blue-600 mb-6" />
-        <h2 className="text-4xl font-black tracking-tighter mb-4">Security Policies</h2>
-        <p className="text-black/40 font-medium mb-10 max-w-md mx-auto">Global configurations for automated lockouts, password rotation, and MFA enforcement.</p>
-        <button onClick={onClose} className="px-12 py-4 bg-slate-900 text-white rounded-2xl font-black uppercase tracking-widest text-xs hover:bg-blue-600 transition-colors">Close Configuration</button>
+    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 z-[110] bg-black/60 backdrop-blur-md flex items-center justify-center p-4">
+      <div className="bg-white rounded-[40px] w-full max-w-lg p-10 text-center shadow-2xl">
+        <i className="bx bx-shield-quarter text-5xl text-blue-600 mb-4" />
+        <h2 className="text-3xl font-black tracking-tighter mb-3">Security Policies</h2>
+        <p className="text-black/40 font-medium mb-8 text-sm">Global configurations for automated lockouts, password rotation, and MFA enforcement are configured at the backend.</p>
+        <button onClick={onClose} className="px-10 py-3 bg-slate-900 text-white rounded-2xl font-black uppercase tracking-widest text-[10px] hover:bg-blue-600 transition-colors">Close</button>
       </div>
     </motion.div>
   );
