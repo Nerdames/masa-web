@@ -9,7 +9,6 @@ import { getInitials } from "@/lib/getInitials";
 import EmailChangeModal from "@/components/modal/EmailChangeModal";
 import PasswordChangeModal from "@/components/modal/PasswordChangeModal";
 import ContactForm from "@/components/forms/ContactForm";
-import React from "react";
 
 /* ================= TYPES ================= */
 
@@ -126,7 +125,6 @@ const InfoRow = ({ icon, label, value, onEdit, onCopy, badge, subValue }: InfoRo
       </div>
     </div>
 
-    {/* Right Action Area */}
     <div className="flex items-center gap-1 self-end sm:self-auto shrink-0">
       {onCopy && (
         <button 
@@ -290,7 +288,7 @@ function InspectorPanel({ profile, onClose, onUpdate }: { profile: ProfileDTO; o
       const res = await fetch(`/api/profile`, { // Corrected endpoint from `/api/personnel/${profile.id}`
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name })
+        body: JSON.stringify({ name: name.trim() })
       });
       if(!res.ok) throw new Error();
         dispatch({
@@ -474,7 +472,7 @@ export default function ProfilePage() {
               value={profile.name ?? "Not Set"} 
               onEdit={() => setPanel("inspector")} 
               onCopy={() => {
-                navigator.clipboard.writeText(profile.name ?? "");
+                navigator.clipboard?.writeText(profile.name ?? "");
                 dispatch({ kind: "TOAST", type: "SUCCESS", title: "Name copied", message: "Name copied to clipboard" });
               }}
             />
@@ -486,7 +484,7 @@ export default function ProfilePage() {
               value={profile.email} 
               onEdit={() => setShowEmailModal(true)}
               onCopy={() => {
-                navigator.clipboard.writeText(profile.email);
+                navigator.clipboard?.writeText(profile.email);
                 dispatch({ kind: "TOAST", type: "SUCCESS", title: "Email copied", message: "Email copied to clipboard" });
               }}
               badge={profile.pendingEmail && (
@@ -504,7 +502,7 @@ export default function ProfilePage() {
               value={profile.staffCode ?? "UNASSIGNED"} 
               onCopy={() => {
                 if (profile.staffCode) {
-                  navigator.clipboard.writeText(profile.staffCode);
+                  navigator.clipboard?.writeText(profile.staffCode);
                   dispatch({ kind: "TOAST", type: "SUCCESS", title: "Staff code copied", message: "Staff code copied to clipboard" });
                 }
               }}

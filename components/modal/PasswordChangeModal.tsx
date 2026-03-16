@@ -3,22 +3,18 @@
 import React, { useState, useMemo } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
 import { useAlerts } from "@/components/feedback/AlertProvider";
-import { CriticalAction } from "@prisma/client";
+import { useSession } from "next-auth/react"; // Added to update session
 
 interface PasswordChangeModalProps {
   isOpen: boolean;
   onClose: () => void;
-  personnelId: string;
-  organizationId: string;
-  branchId: string | null;
+  isMandatory?: boolean; // New prop to prevent bypassing
 }
 
 export default function PasswordChangeModal({
   isOpen,
   onClose,
-  personnelId,
-  organizationId,
-  branchId,
+  isMandatory = false,
 }: PasswordChangeModalProps) {
   const [currentPassword, setCurrentPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
@@ -27,17 +23,15 @@ export default function PasswordChangeModal({
   const [showPass, setShowPass] = useState(false);
 
   const { dispatch } = useAlerts();
+  const { update } = useSession(); // Used to refresh the JWT
 
-  // --- Password Strength & Criteria Logic ---
-  const criteria = useMemo(() => {
-    return {
-      length: newPassword.length >= 8,
-      uppercase: /[A-Z]/.test(newPassword),
-      lowercase: /[a-z]/.test(newPassword),
-      number: /[0-9]/.test(newPassword),
-      symbol: /[^A-Za-z0-9]/.test(newPassword),
-    };
-  }, [newPassword]);
+  // --- Password Strength & Criteria ---
+  const criteria = useMemo(() => ({
+    length: newPassword.length >= 8,
+    casing: /[A-Z]/.test(newPassword) && /[a-z]/.test(newPassword),
+    number: /[0-9]/.test(newPassword),
+    symbol: /[^A-Za-z0-9]/.test(newPassword),
+  }), [newPassword]);
 
   const strengthScore = Object.values(criteria).filter(Boolean).length;
 
@@ -49,7 +43,6 @@ export default function PasswordChangeModal({
     return { label: "Strong", color: "bg-emerald-500", width: "w-full" };
   }, [strengthScore, newPassword]);
 
-  // --- Match Validation Logic ---
   const isStarted = confirmPassword.length > 0;
   const isMatch = isStarted && newPassword === confirmPassword;
   const isMismatch = isStarted && newPassword !== confirmPassword;
@@ -80,35 +73,37 @@ export default function PasswordChangeModal({
     setIsSubmitting(true);
 
     try {
-      const res = await fetch("/api/approvals/request", {
-        method: "POST",
+      const res = await fetch("/api/profile", {
+        method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          actionType: CriticalAction.PASSWORD_CHANGE,
-          targetId: personnelId,
-          organizationId,
-          branchId,
-          changes: { newPassword },
-          metadata: { verification: currentPassword },
-        }),
+        body: JSON.stringify({ currentPassword, newPassword }),
       });
 
-      if (!res.ok) throw new Error();
+      if (!res.ok) {
+        const errorData = await res.json();
+        throw new Error(errorData.message || "Failed to update password");
+      }
+
+      // 1. Tell NextAuth to update the local session data
+      // This triggers the 'jwt' callback in authOptions with trigger: "update"
+      await update({
+        requiresPasswordChange: false,
+      });
 
       dispatch({
         kind: "TOAST",
         type: "SUCCESS",
-        title: "Request Sent",
-        message: "Your request is now pending administrative review.",
+        title: "Password Updated",
+        message: "Your password has been updated successfully.",
       });
 
       handleClose();
-    } catch {
+    } catch (err: any) {
       dispatch({
         kind: "TOAST",
         type: "ERROR",
-        title: "System Error",
-        message: "Failed to log security request. Please try again.",
+        title: "Error",
+        message: err.message || "Failed to update password. Please try again.",
       });
     } finally {
       setIsSubmitting(false);
@@ -116,6 +111,7 @@ export default function PasswordChangeModal({
   };
 
   const handleClose = () => {
+    if (isMandatory) return; // Prevent closing if it's a forced reset
     setCurrentPassword("");
     setNewPassword("");
     setConfirmPassword("");
@@ -124,32 +120,33 @@ export default function PasswordChangeModal({
   };
 
   return (
-    <Dialog.Root open={isOpen} onOpenChange={handleClose}>
+    <Dialog.Root open={isOpen} onOpenChange={isMandatory ? undefined : handleClose}>
       <Dialog.Portal>
         <Dialog.Overlay className="fixed inset-0 bg-slate-900/40 backdrop-blur-md z-[60] animate-in fade-in duration-300" />
-
-        <Dialog.Content className="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-full max-w-[440px] bg-white rounded-2xl shadow-2xl z-[70] outline-none overflow-hidden animate-in zoom-in-95 duration-200 flex flex-col max-h-[90vh]">
+        <Dialog.Content 
+          onPointerDownOutside={(e) => isMandatory && e.preventDefault()}
+          onEscapeKeyDown={(e) => isMandatory && e.preventDefault()}
+          className="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-full max-w-[440px] bg-white rounded-2xl shadow-2xl z-[70] outline-none overflow-hidden animate-in zoom-in-95 duration-200 flex flex-col max-h-[90vh]"
+        >
           
-          {/* Header */}
           <header className="px-8 pt-8 pb-4 shrink-0">
             <div className="flex items-center gap-3 mb-1">
               <div className="w-10 h-10 rounded-full bg-blue-50 flex items-center justify-center">
                 <i className="bx bx-shield-quarter text-blue-600 text-2xl"></i>
               </div>
               <Dialog.Title className="text-xl font-bold text-slate-900">
-                Update Password
+                {isMandatory ? "Secure Your Account" : "Update Password"}
               </Dialog.Title>
             </div>
             <Dialog.Description className="text-slate-500 text-sm leading-relaxed">
-              Create a strong password to secure your account.
+              {isMandatory 
+                ? "As this is your first login, you must update your password to continue." 
+                : "Create a strong password to secure your account."}
             </Dialog.Description>
           </header>
 
-          {/* Main Content Area */}
           <main className="px-8 pb-8 overflow-y-auto">
             <form onSubmit={handleSubmit} className="space-y-6">
-              
-              {/* Current Password */}
               <div className="group">
                 <label className="block text-[13px] font-semibold text-slate-700 mb-1.5 ml-1">
                   Current Password
@@ -158,25 +155,24 @@ export default function PasswordChangeModal({
                   <input
                     type={showPass ? "text" : "password"}
                     required
+                    autoFocus
                     value={currentPassword}
                     onChange={(e) => setCurrentPassword(e.target.value)}
                     className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:ring-4 focus:ring-blue-500/10 focus:border-blue-500 outline-none transition-all"
                     placeholder="Enter current password"
                   />
-                  <button 
+                  <button
                     type="button"
                     onClick={() => setShowPass(!showPass)}
                     className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 transition-colors p-1"
-                    aria-label={showPass ? "Hide password" : "Show password"}
                   >
-                    <i className={`bx ${showPass ? 'bx-hide' : 'bx-show'} text-xl`}></i>
+                    <i className={`bx ${showPass ? "bx-hide" : "bx-show"} text-xl`}></i>
                   </button>
                 </div>
               </div>
 
               <hr className="border-slate-100" />
 
-              {/* New Password & Strength */}
               <div className="space-y-3">
                 <div className="group">
                   <label className="block text-[13px] font-semibold text-slate-700 mb-1.5 ml-1">
@@ -192,7 +188,6 @@ export default function PasswordChangeModal({
                   />
                 </div>
 
-                {/* Strength Meter */}
                 {newPassword.length > 0 && (
                   <div className="space-y-1.5 animate-in fade-in slide-in-from-top-1">
                     <div className="flex justify-between items-center px-1">
@@ -213,16 +208,14 @@ export default function PasswordChangeModal({
                   </div>
                 )}
 
-                {/* Google-style Criteria List */}
                 <div className="bg-slate-50 rounded-xl p-4 border border-slate-100 grid grid-cols-2 gap-2 mt-2">
                   <CriteriaItem met={criteria.length} label="8+ characters" />
-                  <CriteriaItem met={criteria.uppercase || criteria.lowercase} label="Upper & lowercase" />
+                  <CriteriaItem met={criteria.casing} label="Upper & lowercase" />
                   <CriteriaItem met={criteria.number} label="At least 1 number" />
                   <CriteriaItem met={criteria.symbol} label="At least 1 symbol" />
                 </div>
               </div>
 
-              {/* Confirm Password with Visual Validation */}
               <div className="group space-y-1.5">
                 <label className="block text-[13px] font-semibold text-slate-700 ml-1">
                   Confirm New Password
@@ -240,7 +233,6 @@ export default function PasswordChangeModal({
                     `}
                     placeholder="Repeat new password"
                   />
-                  {/* Validation Icons */}
                   {isStarted && (
                     <div className="absolute right-3 top-1/2 -translate-y-1/2">
                       {isMatch ? (
@@ -258,26 +250,22 @@ export default function PasswordChangeModal({
                 )}
               </div>
 
-              {/* Footer Actions */}
               <footer className="flex flex-col-reverse sm:flex-row justify-end gap-3 pt-6 mt-4 border-t border-slate-100">
-                <button
-                  type="button"
-                  onClick={handleClose}
-                  className="px-5 py-2.5 text-sm font-bold text-slate-500 hover:bg-slate-50 rounded-xl transition-all"
-                >
-                  Cancel
-                </button>
-
+                {!isMandatory && (
+                  <button
+                    type="button"
+                    onClick={handleClose}
+                    className="px-5 py-2.5 text-sm font-bold text-slate-500 hover:bg-slate-50 rounded-xl transition-all"
+                  >
+                    Cancel
+                  </button>
+                )}
                 <button
                   type="submit"
                   disabled={isSubmitting || !isMatch || strengthScore < 3}
-                  className="px-6 py-2.5 bg-blue-600 hover:bg-blue-700 disabled:bg-slate-300 disabled:text-slate-500 text-white text-sm font-bold rounded-xl transition-all flex items-center justify-center gap-2 shadow-sm active:scale-95"
+                  className="px-6 py-2.5 bg-blue-600 hover:bg-blue-700 disabled:bg-slate-300 disabled:text-slate-500 text-white text-sm font-bold rounded-xl transition-all flex items-center justify-center gap-2 shadow-sm active:scale-95 w-full sm:w-auto"
                 >
-                  {isSubmitting ? (
-                    <i className="bx bx-loader-alt animate-spin text-lg"></i>
-                  ) : (
-                    "Submit Request"
-                  )}
+                  {isSubmitting ? <i className="bx bx-loader-alt animate-spin text-lg"></i> : "Update Password"}
                 </button>
               </footer>
             </form>
@@ -288,18 +276,13 @@ export default function PasswordChangeModal({
   );
 }
 
-// Helper component for the criteria checklist
 function CriteriaItem({ met, label }: { met: boolean; label: string }) {
   return (
     <div className="flex items-center gap-2 text-xs">
-      <div className={`flex items-center justify-center w-4 h-4 rounded-full transition-colors ${
-        met ? "bg-emerald-100 text-emerald-600" : "bg-slate-200 text-slate-400"
-      }`}>
+      <div className={`flex items-center justify-center w-4 h-4 rounded-full transition-colors ${met ? "bg-emerald-100 text-emerald-600" : "bg-slate-200 text-slate-400"}`}>
         <i className={`bx ${met ? 'bx-check' : 'bx-minus'} text-[10px] font-bold`}></i>
       </div>
-      <span className={`transition-colors ${met ? "text-slate-700 font-medium" : "text-slate-400"}`}>
-        {label}
-      </span>
+      <span className={`transition-colors ${met ? "text-slate-700 font-medium" : "text-slate-400"}`}>{label}</span>
     </div>
   );
 }

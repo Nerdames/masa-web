@@ -201,7 +201,7 @@ function Sidebar() {
   const accountRef = useRef<HTMLDivElement>(null);
 
   const isCollapsed = collapsed ?? false;
-  const sidebarWidth = isCollapsed ? 64 : 232;
+  const sidebarWidth = isCollapsed ? 52 : 200;
 
   useEffect(() => {
     const fetchPreference = async () => {

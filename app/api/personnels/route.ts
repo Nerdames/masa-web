@@ -10,7 +10,6 @@ const JWT_SECRET = process.env.NEXTAUTH_SECRET;
 
 async function getAuthContext(req: NextRequest) {
   const token = await getToken({ req, secret: JWT_SECRET });
-  // Ensure we have a valid session and organization context
   if (!token || typeof token.id !== "string" || token.expired) return null;
 
   return {
@@ -35,10 +34,6 @@ const ROLE_CODE: Record<Role, string> = {
   CASHIER: "05",
 };
 
-/**
- * Generates Staff Code in format: STF-NNRRBB
- * NN = Sequence number, RR = Role Code, BB = Branch ID suffix
- */
 async function generateStaffCode(
   tx: Omit<Prisma.TransactionClient, "$connect" | "$disconnect" | "$on" | "$transaction" | "$use" | "$extends">,
   organizationId: string,
@@ -66,9 +61,8 @@ export async function GET(req: NextRequest) {
     const page = Math.max(Number(searchParams.get("page") ?? 1), 1);
     const pageSize = Math.min(Math.max(Number(searchParams.get("pageSize") ?? 10), 1), 100);
     const search = searchParams.get("search")?.trim() || "";
-    const status = searchParams.get("status"); 
+    const status = searchParams.get("status");
 
-    // Scoping query: Managers only see their branch, Admins/Owners see the whole Org
     const baseWhere: Prisma.AuthorizedPersonnelWhereInput = {
       deletedAt: null,
       organizationId: auth.organizationId,
@@ -167,10 +161,7 @@ export async function POST(req: NextRequest) {
 
     const cleanEmail = email.toLowerCase().trim();
     const assignedRole = (role as Role) || Role.CASHIER;
-    
-    // Auto-assign branch context if missing
     const assignedBranchId = branchId || auth.branchId || null;
-
     const hashedPassword = await bcrypt.hash(password, 12);
 
     const personnel = await prisma.$transaction(async (tx) => {
@@ -194,6 +185,8 @@ export async function POST(req: NextRequest) {
           isOrgOwner: auth.isOrgOwner ? (isOrgOwner || false) : false,
           disabled: false,
           isLocked: false,
+          // Mandatory flag for first login
+          requiresPasswordChange: true, 
         },
       });
 
@@ -220,7 +213,7 @@ export async function POST(req: NextRequest) {
             targetName: created.name || created.email,
             targetEmail: created.email,
             assignedRole: created.role,
-            details: `Provisioned new account (${finalStaffCode})`
+            details: `Provisioned account (${finalStaffCode}). Force password reset enabled.`
           } as Prisma.InputJsonValue
         }
       });
@@ -234,7 +227,6 @@ export async function POST(req: NextRequest) {
     if (message === "Email already registered.") {
       return NextResponse.json({ message }, { status: 409 });
     }
-    console.error("Provisioning Error:", error);
     return NextResponse.json({ message }, { status: 500 });
   }
 }
@@ -267,7 +259,6 @@ export async function PATCH(req: NextRequest) {
 
     const isTargetPrivileged = targetUser.role === Role.ADMIN || targetUser.isOrgOwner;
 
-    // Security Gatekeeping
     if (isTargetPrivileged && (disabled === true || isLocked === true)) {
       return NextResponse.json({ message: "Privileged accounts cannot be locked or disabled." }, { status: 403 });
     }
@@ -329,9 +320,13 @@ export async function PATCH(req: NextRequest) {
         }
       }
 
+
+
+      // Logic updated: Admin password resets also force a user password change
       if (newPassword) {
         updateData.password = await bcrypt.hash(newPassword, 12);
-        auditChanges.password = "Reset by Admin";
+        updateData.requiresPasswordChange = true; 
+        auditChanges.password = "Reset by Admin (Forced change required)";
         actions.push("PASSWORD_RESET");
       }
 

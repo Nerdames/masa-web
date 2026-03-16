@@ -67,24 +67,30 @@ export default function EmailChangeModal({
         }),
       });
 
+      const data = await res.json();
+
       if (!res.ok) {
-        throw new Error("Request failed");
+        throw new Error(data?.error || "Request failed");
       }
 
       dispatch({
         kind: "TOAST",
         type: "SUCCESS",
         title: "Request Logged",
-        message: "Your email change request is pending administrative review.",
+        message:
+          "Your email change request is pending administrative review.",
       });
 
       handleClose();
-    } catch {
+    } catch (err: unknown) {
       dispatch({
         kind: "TOAST",
         type: "ERROR",
         title: "System Error",
-        message: "Failed to submit request. Please try again.",
+        message:
+          err instanceof Error
+            ? err.message
+            : "Failed to submit request. Please try again.",
       });
     } finally {
       setIsSubmitting(false);
@@ -97,7 +103,12 @@ export default function EmailChangeModal({
   };
 
   return (
-    <Dialog.Root open={isOpen} onOpenChange={handleClose}>
+    <Dialog.Root
+      open={isOpen}
+      onOpenChange={(open) => {
+        if (!open) handleClose();
+      }}
+    >
       <Dialog.Portal>
         <Dialog.Overlay className="fixed inset-0 bg-slate-900/40 backdrop-blur-md z-[60] animate-in fade-in duration-300" />
 
@@ -123,7 +134,6 @@ export default function EmailChangeModal({
           {/* Main Content Area */}
           <main className="px-8 pb-8 overflow-y-auto">
             <form onSubmit={handleSubmit} className="space-y-6">
-              
               {/* Context Notice */}
               <div
                 id="email-change-description"
@@ -131,7 +141,9 @@ export default function EmailChangeModal({
               >
                 <i className="bx bx-info-circle text-amber-600 text-lg mt-0.5"></i>
                 <p className="text-[13px] text-amber-800 leading-snug">
-                  This is a critical action. You will continue to log in and receive communications at your <strong>current</strong> email until this is approved.
+                  This is a critical action. You will continue to log in and
+                  receive communications at your <strong>current</strong> email
+                  until this is approved.
                 </p>
               </div>
 
@@ -143,24 +155,26 @@ export default function EmailChangeModal({
                   New Email Address
                 </label>
                 <div className="relative">
-                  <i className={`bx bx-at absolute left-4 top-1/2 -translate-y-1/2 text-lg transition-colors ${
-                    isStarted ? 'text-blue-500' : 'text-slate-400'
-                  }`}></i>
+                  <i
+                    className={`bx bx-at absolute left-4 top-1/2 -translate-y-1/2 text-lg transition-colors ${
+                      isStarted ? "text-blue-500" : "text-slate-400"
+                    }`}
+                  ></i>
 
                   <input
                     type="email"
                     required
                     value={newEmail}
-                    onChange={(e) => setNewEmail(e.target.value)}
+                    onChange={(e) => setNewEmail(e.target.value.trim())}
                     placeholder="name@domain.com"
                     autoComplete="email"
                     className={`w-full pl-11 pr-10 py-2.5 bg-white border rounded-xl outline-none transition-all
-                      ${!isStarted ? 'border-slate-200 focus:ring-4 focus:ring-blue-500/10 focus:border-blue-500' : ''}
-                      ${isEmailValid ? 'border-emerald-500 focus:ring-4 focus:ring-emerald-500/10' : ''}
-                      ${isEmailInvalid ? 'border-amber-500 focus:ring-4 focus:ring-amber-500/10' : ''}
+                      ${!isStarted ? "border-slate-200 focus:ring-4 focus:ring-blue-500/10 focus:border-blue-500" : ""}
+                      ${isEmailValid ? "border-emerald-500 focus:ring-4 focus:ring-emerald-500/10" : ""}
+                      ${isEmailInvalid ? "border-amber-500 focus:ring-4 focus:ring-amber-500/10" : ""}
                     `}
                   />
-                  
+
                   {/* Validation Icon */}
                   {isStarted && (
                     <div className="absolute right-3 top-1/2 -translate-y-1/2">

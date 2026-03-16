@@ -287,6 +287,7 @@ model AuthorizedPersonnel {
   pendingPassword String?
   isLocked        Boolean @default(false)
   lockReason      String?
+  requiresPasswordChange Boolean @default(true)
 
   failedLoginAttempts Int       @default(0)
   lockoutUntil        DateTime?
