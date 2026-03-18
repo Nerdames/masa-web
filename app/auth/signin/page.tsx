@@ -1,64 +1,72 @@
 "use client";
 
-import React, { useState, FormEvent, useEffect, Suspense } from "react";
+import React, { useState, FormEvent, Suspense, ChangeEvent } from "react";
 import { signIn } from "next-auth/react";
 import { useRouter, useSearchParams } from "next/navigation";
+import Link from "next/link";
+import { motion, useAnimation } from "framer-motion";
 import { useAlerts } from "@/components/feedback/AlertProvider";
 
-// Extracted the core logic into a sub-component so we can wrap it in Suspense.
-// This prevents Next.js from de-optimizing the entire page to client-side rendering
-// because of the useSearchParams hook.
+/* --- SHARED TACTICAL COMPONENTS --- */
+
+interface InputFieldProps extends React.InputHTMLAttributes<HTMLInputElement> {
+  label: string;
+  icon: string;
+}
+
+const InputField = ({ label, icon, ...props }: InputFieldProps) => (
+  <div className="space-y-1 group shrink-0">
+    <label className="text-[9px] font-black text-slate-400 uppercase tracking-[0.2em] ml-1 group-focus-within:text-blue-600 transition-colors">
+      {label}
+    </label>
+    <div className="relative flex items-center">
+      <i className={`${icon} absolute left-4 text-slate-300 group-focus-within:text-blue-600 transition-colors duration-300`} />
+      <input 
+        {...props} 
+        className="w-full pl-11 pr-4 py-2.5 bg-slate-50/50 border border-slate-200/60 rounded-xl text-sm font-semibold outline-none focus:bg-white focus:border-blue-600 transition-all placeholder:text-slate-300 text-slate-900" 
+      />
+    </div>
+  </div>
+);
+
+interface ActionProps {
+  label: string;
+  loading: boolean;
+  icon: string;
+  disabled: boolean;
+}
+
+const PrimaryAction = ({ label, loading, icon, disabled }: ActionProps) => (
+  <button 
+    type="submit"
+    disabled={disabled || loading}
+    className="w-full py-3.5 bg-slate-900 text-white rounded-xl text-[10px] font-black uppercase tracking-[0.2em] hover:bg-blue-600 disabled:opacity-20 transition-all flex items-center justify-center gap-3 shadow-xl shadow-slate-900/10 hover:shadow-blue-600/20 active:scale-[0.98] shrink-0"
+  >
+    {loading ? (
+      <i className="bx bx-loader-alt animate-spin text-lg" />
+    ) : (
+      <>
+        {label} <i className={`${icon} text-lg`} />
+      </>
+    )}
+  </button>
+);
+
+/* --- MAIN SIGN IN COMPONENT --- */
+
 const SignInForm = () => {
   const [email, setEmail] = useState<string>("");
   const [password, setPassword] = useState<string>("");
   const [showPassword, setShowPassword] = useState<boolean>(false);
   const [loading, setLoading] = useState<boolean>(false);
-
+  
+  const controls = useAnimation();
   const router = useRouter();
   const searchParams = useSearchParams();
-  
-  // 1. Initialize the new real-time alert system
   const { dispatch } = useAlerts();
 
-  const rawCallbackUrl = searchParams.get("callbackUrl");
-  const errorParam = searchParams.get("error");
+  const callbackUrl = searchParams.get("callbackUrl") || "/dashboard";
 
-  const callbackUrl = (
-    !rawCallbackUrl || 
-    rawCallbackUrl === "/" || 
-    rawCallbackUrl === "/auth/signin" || 
-    rawCallbackUrl === "%2F"
-  ) ? "/dashboard" : rawCallbackUrl;
-
-  // 2. Handle forced logout / session expired / account status errors
-  useEffect(() => {
-    if (!errorParam) return;
-
-    let message = "";
-    if (errorParam === "SessionExpired") {
-      message = "Your session has expired. Please sign in again.";
-    } else if (errorParam === "disabled") {
-      message = "Your account has been disabled. Contact your administrator.";
-    } else if (errorParam === "locked") {
-      message = "Your account is locked. Please contact your administrator.";
-    }
-
-    if (message) {
-      // Dispatch using the new strict alert format
-      dispatch({ 
-        kind: "TOAST", 
-        type: "ERROR", 
-        title: "Access Denied", 
-        message 
-      });
-
-      const newUrl = window.location.pathname + 
-        (rawCallbackUrl ? `?callbackUrl=${encodeURIComponent(rawCallbackUrl)}` : "");
-      window.history.replaceState({}, "", newUrl);
-    }
-  }, [errorParam, dispatch, rawCallbackUrl]);
-
-  // 3. Handle form submission
   const handleSignIn = async (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     if (loading) return;
@@ -67,152 +75,148 @@ const SignInForm = () => {
     try {
       const result = await signIn("credentials", {
         redirect: false,
-        email: email.trim(),
+        email: email.trim().toLowerCase(),
         password: password.trim(),
         callbackUrl,
       });
 
       if (result?.error) {
-        let message = "Login failed. Please try again.";
-
-        switch (result.error) {
-          case "CredentialsSignin":
-            message = "Invalid email or password.";
-            break;
-          case "disabled":
-            message = "Your account has been disabled. Contact your administrator.";
-            break;
-          case "locked":
-            message = "Your account is locked. Please contact your administrator.";
-            break;
-          case "temporary_lockout":
-            message = "Too many failed attempts. Please try again after 15 minutes.";
-            break;
-        }
-
-        dispatch({ 
-          kind: "TOAST", 
-          type: "ERROR", 
-          title: "Authentication Failed", 
-          message 
-        });
-      } else if (result?.ok) {
-        dispatch({ 
-          kind: "TOAST", 
-          type: "INFO", 
-          title: "Welcome Back", 
-          message: "Signed in successfully!" 
-        });
-        
+        await controls.start({ x: [-10, 10, -10, 10, 0], transition: { duration: 0.4 } });
+        dispatch({ kind: "TOAST", type: "ERROR", title: "Access Denied", message: "Invalid credentials." });
+      } else {
         router.replace(callbackUrl);
-        router.refresh(); 
+        router.refresh();
       }
-    } catch (err: unknown) {
-      console.error("SignIn Error:", err);
-      dispatch({
-        kind: "TOAST",
-        type: "ERROR",
-        title: "System Error",
-        message: "Something went wrong. Please try again.",
-      });
+    } catch {
+      dispatch({ kind: "TOAST", type: "ERROR", title: "System Fault", message: "Gateway timeout." });
     } finally {
       setLoading(false);
     }
   };
 
   return (
-    <div className="w-full max-w-xs p-6 bg-white rounded-xl shadow-lg space-y-4 relative z-10">
-      <div className="space-y-2">
-        <h1 className="text-2xl font-bold text-center text-blue-700">
-          Sign In to MASA
-        </h1>
-        <p className="text-center text-gray-500 text-sm">
-          Enter your credentials to access your dashboard
-        </p>
+    <motion.div 
+      animate={controls}
+      initial={{ opacity: 0, scale: 0.95 }}
+      animate={{ opacity: 1, scale: 1 }}
+      className="relative w-full max-w-sm flex flex-col bg-white rounded-[2.5rem] shadow-[0_40px_80px_-15px_rgba(0,0,0,0.12)] border border-white h-auto max-h-[90vh] overflow-hidden z-10"
+    >
+      <header className="shrink-0 p-8 pb-4 text-center border-b border-slate-50 relative overflow-hidden">
+        <div className="absolute top-0 right-0 p-4 opacity-5 pointer-events-none">
+            <i className="bx bx-shield-quarter text-6xl rotate-12" />
+        </div>
+        <div className="inline-flex items-center gap-2 px-3 py-1 bg-blue-50 text-blue-600 rounded-full text-[9px] font-black tracking-[0.2em] uppercase mb-4 relative z-10">
+          <div className="w-1.5 h-1.5 bg-blue-600 rounded-full animate-pulse" />
+          Terminal v3.0
+        </div>
+        <h1 className="text-3xl font-black tracking-tighter text-slate-900 relative z-10 leading-none">MASA</h1>
+        <p className="text-[10px] font-bold text-slate-400 uppercase tracking-[0.3em] mt-2">Identity Verification</p>
+      </header>
+
+      <div className="flex-1 p-8 flex flex-col justify-between overflow-hidden">
+        <form onSubmit={handleSignIn} className="space-y-4">
+          <InputField 
+            label="Security Identity" 
+            icon="bx bx-user-circle" 
+            type="email" 
+            placeholder="name@nexus.com" 
+            value={email}
+            onChange={(e: ChangeEvent<HTMLInputElement>) => setEmail(e.target.value)}
+            required
+          />
+          
+          <div className="relative">
+            <InputField 
+              label="Access Key" 
+              icon="bx bx-lock-open-alt" 
+              type={showPassword ? "text" : "password"} 
+              placeholder="••••••••" 
+              value={password}
+              onChange={(e: ChangeEvent<HTMLInputElement>) => setPassword(e.target.value)}
+              required
+            />
+            <button
+              type="button"
+              tabIndex={-1}
+              onClick={() => setShowPassword(!showPassword)}
+              className="absolute right-4 top-[29px] text-slate-300 hover:text-slate-600 transition-colors"
+            >
+              <i className={showPassword ? "bx bx-hide text-lg" : "bx bx-show text-lg"} />
+            </button>
+          </div>
+
+          <div className="pt-2">
+            <PrimaryAction 
+              label={loading ? "Verifying..." : "Authorize Access"} 
+              loading={loading}
+              icon="bx bx-right-arrow-alt"
+              disabled={!email || !password}
+            />
+          </div>
+        </form>
+
+        <div className="pt-4 border-t border-slate-100 flex items-center justify-between text-[10px] font-black uppercase tracking-widest shrink-0">
+            <span className="text-slate-400">New Node?</span>
+            <Link href="/auth/register" className="text-blue-600 hover:underline">
+              Initialize Entry
+            </Link>
+        </div>
       </div>
 
-      <form className="flex flex-col gap-3" onSubmit={handleSignIn}>
-        <div className="relative">
-          <i className="bx bx-envelope absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400"></i>
-          <input
-            type="email"
-            placeholder="Email"
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            className="pl-10 pr-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 w-full text-sm"
-            required
-            autoFocus
-            disabled={loading}
-          />
-        </div>
+      <footer className="shrink-0 px-8 py-5 bg-slate-50/50 border-t border-slate-100 flex items-center justify-between">
+         <div className="flex items-center gap-2 opacity-40">
+            <i className="bx bx-revision text-xs animate-spin-slow" />
+            <span className="text-[9px] font-bold uppercase tracking-[0.1em]">Core Sync: Active</span>
+         </div>
+         <span className="text-[9px] font-black text-slate-300 uppercase tracking-widest">
+           AES-256
+         </span>
+      </footer>
 
-        <div className="relative">
-          <i className="bx bx-lock-alt absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400"></i>
-          <input
-            type={showPassword ? "text" : "password"}
-            placeholder="Password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            className="pl-10 pr-10 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 w-full text-sm"
-            required
-            disabled={loading}
-          />
-          <button
-            type="button"
-            onClick={() => setShowPassword(!showPassword)}
-            aria-label={showPassword ? "Hide password" : "Show password"}
-            className="absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-500 hover:text-gray-700"
-          >
-            <i className={showPassword ? "bx bx-show" : "bx bx-hide"}></i>
-          </button>
-        </div>
-
-        <button
-          type="submit"
-          disabled={loading}
-          className={`w-full py-2 text-sm font-medium rounded-lg transition flex items-center justify-center ${
-            loading
-              ? "bg-gray-400 cursor-not-allowed"
-              : "bg-blue-500 text-white hover:bg-blue-700"
-          }`}
-        >
-          {loading ? (
-            <svg className="animate-spin h-5 w-5 text-white" viewBox="0 0 24 24">
-              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
-              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z" />
-            </svg>
-          ) : (
-            "Sign In"
-          )}
-        </button>
-      </form>
-
-      <p className="text-center text-xs text-gray-400">
-        Securely access your MASA dashboard and manage your organization seamlessly.
-      </p>
-    </div>
+      <style jsx global>{`
+        @keyframes spin-slow {
+          from { transform: rotate(0deg); }
+          to { transform: rotate(360deg); }
+        }
+        .animate-spin-slow { animation: spin-slow 8s linear infinite; }
+      `}</style>
+    </motion.div>
   );
 };
 
-const SignInPage: React.FC = () => {
+export default function SignInPage() {
   return (
-    <main className="flex flex-col min-h-screen items-center justify-center px-4 relative">
-      {/* Moved the background styling here to span the whole screen appropriately */}
-      <div className="absolute inset-0 bg-gradient-to-br from-blue-50 via-white to-green-50 -z-10" />
+    <main className="flex-1 flex items-center justify-center p-6 relative overflow-hidden font-sans select-none h-dvh">
       
-      {/* Wrapped in Suspense to safely useSearchParams without de-optimizing the build */}
-      <Suspense fallback={
-        <div className="w-full max-w-xs p-6 bg-white rounded-xl shadow-lg flex justify-center py-12">
-           <svg className="animate-spin h-8 w-8 text-blue-500" viewBox="0 0 24 24">
-              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
-              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z" />
-            </svg>
-        </div>
-      }>
+      {/* SLANT BACKGROUND GRADIENT */}
+      <div className="absolute inset-0 z-0 flex overflow-hidden pointer-events-none">
+        <div className="w-full h-full bg-[#F8FAFC]" />
+        <div 
+          className="absolute inset-y-0 right-0 w-[60%] bg-gradient-to-br from-blue-50/50 to-indigo-100/40 transform -skew-x-12 translate-x-24 border-l border-blue-100/20"
+        />
+      </div>
+
+      {/* GRID OVERLAY */}
+      <div className="absolute inset-0 z-0 pointer-events-none opacity-[0.04]">
+        <div className="h-full w-full bg-[linear-gradient(to_right,#80808012_1px,transparent_1px),linear-gradient(to_bottom,#80808012_1px,transparent_1px)] bg-[size:40px_40px]" />
+        <motion.div 
+          animate={{ y: ["0%", "100%"] }} 
+          transition={{ duration: 12, repeat: Infinity, ease: "linear" }}
+          className="absolute top-0 left-0 w-full h-[2px] bg-gradient-to-r from-transparent via-blue-400/20 to-transparent" 
+        />
+      </div>
+
+      <Suspense fallback={null}>
         <SignInForm />
       </Suspense>
+
+      <Link
+        href="/auth/support"
+        className="fixed bottom-8 right-8 flex items-center gap-3 px-5 py-3 bg-white/90 backdrop-blur-xl border border-slate-200 shadow-2xl rounded-full text-[9px] font-black uppercase tracking-widest text-slate-500 hover:text-blue-600 transition-all active:scale-95 z-50"
+      >
+        <i className="bx bx-question-mark text-lg" />
+        Support
+      </Link>
     </main>
   );
-};
-
-export default SignInPage;
+}

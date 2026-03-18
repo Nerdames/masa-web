@@ -21,8 +21,7 @@ const geistMono = Geist_Mono({
 });
 
 /**
- * RealTimeListener is a "headless" component that activates 
- * our Pusher subscriptions once the session is available.
+ * RealTimeListener activates Pusher subscriptions once the session is available.
  */
 function RealTimeListener(): null {
   usePusherNotifications();
@@ -36,11 +35,11 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   const isDashboard = pathname?.startsWith("/dashboard");
 
   return (
-    <html lang="en" className="scroll-smooth">
+    <html lang="en" className="scroll-smooth h-full overflow-hidden">
       <body
         className={`${geistSans.variable} ${geistMono.variable} antialiased 
         h-dvh w-full overflow-hidden 
-        bg-gradient-to-br from-blue-50 via-white to-green-50 text-black`}
+        bg-gradient-to-br from-blue-50 via-white to-green-50 text-black flex flex-col`}
       >
         <SessionProvider>
           <AlertProvider>
@@ -48,16 +47,16 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             <RealTimeListener />
 
             {/* App Layout Container */}
-            <div className="flex flex-col h-full w-full">
+            <div className="flex flex-col h-full w-full overflow-hidden">
 
-              {/* Page Content: Occupies all space when footer is hidden */}
+              {/* Page Content */}
               <main className="flex-1 flex flex-col overflow-hidden relative">
                 {children}
               </main>
 
               {/* Global Footer: Rendered conditionally */}
               {!isDashboard && (
-                <footer className="text-center text-[10px] font-bold tracking-widest text-slate-400 py-3 shrink-0 bg-white/30 backdrop-blur-sm border-t border-black/5 uppercase">
+                <footer className="text-center text-[10px] font-black tracking-[0.3em] text-slate-400 py-3 shrink-0 bg-white/30 backdrop-blur-sm border-t border-black/5 uppercase z-50">
                   © {new Date().getFullYear()} MASA Engine • All Systems Operational
                 </footer>
               )}

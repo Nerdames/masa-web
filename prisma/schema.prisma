@@ -24,23 +24,6 @@ enum Role {
   DEV
 }
 
-enum ApprovalStatus {
-  PENDING
-  APPROVED
-  REJECTED
-  EXPIRED
-}
-
-enum CriticalAction {
-  EMAIL_CHANGE
-  PASSWORD_CHANGE
-  PRICE_UPDATE
-  STOCK_ADJUST
-  STOCK_TRANSFER
-  VOID_INVOICE
-  USER_LOCK_UNLOCK
-}
-
 enum CustomerType {
   BUYER
   PARTNER
@@ -110,12 +93,29 @@ enum ExpenseType {
 }
 
 enum NotificationType {
-  INFO
-  WARNING
-  ERROR
-  SYSTEM
-  APPROVAL_REQUIRED
-  APPROVAL_DECISION
+  SECURITY          // Password/Email changes, Lock/Unlock
+  INVENTORY         // Stock added, Stock adjust, Price update
+  APPROVAL          // Approval required or Decision made
+  SYSTEM            // Table preferences, UI updates, Layout changes
+  TRANSACTIONAL     // Invoices, Sales, Refunds
+  INFO              // General announcements
+}
+
+enum CriticalAction {
+  EMAIL_CHANGE
+  PASSWORD_CHANGE
+  PRICE_UPDATE
+  STOCK_ADJUST
+  STOCK_TRANSFER
+  VOID_INVOICE
+  USER_LOCK_UNLOCK
+}
+
+enum ApprovalStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  EXPIRED
 }
 
 enum SaleStatus {
@@ -272,7 +272,7 @@ model AuthorizedPersonnel {
   name      String?
   email     String
   password  String
-  staffCode String?   @unique
+  staffCode String?
   role      Role      @default(CASHIER)
   disabled  Boolean   @default(false)
   deletedAt DateTime?
@@ -343,6 +343,7 @@ model AuthorizedPersonnel {
 
   @@unique([organizationId, email])
   @@index([branchId])
+  @@unique([organizationId, staffCode])
   @@index([lastLogin])
   @@index([lastActivityAt])
   @@index([failedLoginAttempts])
@@ -488,7 +489,7 @@ model Product {
   organizationId String
   name           String
   sku            String
-  barcode        String? @unique
+  barcode        String?
   description    String?
   categoryId     String?
   costPrice      Decimal   @db.Decimal(18, 2)
@@ -625,6 +626,7 @@ model Order {
   branchId       String
   salespersonId  String
   customerId     String?
+  orderNumber    String?
 
   total     Decimal     @db.Decimal(18, 2)
   currency  String      @default("NGN")
@@ -650,6 +652,7 @@ model Order {
   @@index([branchId, createdAt])
   @@index([salespersonId])
   @@index([customerId])
+  @@unique([organizationId, orderNumber])
 }
 
 model OrderItem {
@@ -682,6 +685,7 @@ model Invoice {
   organizationId String
   branchId       String
   orderId        String @unique
+  invoiceNumber  String?
 
   issuedById  String
   updatedById String?
@@ -717,6 +721,7 @@ model Invoice {
   @@index([organizationId, branchId, status])
   @@index([issuedAt])
   @@index([organizationId, deletedAt])
+  @@unique([organizationId, invoiceNumber])
 }
 
 model Payment {
@@ -923,6 +928,7 @@ model StockTransfer {
   approvedById   String?
   approvedAt     DateTime?
   deletedAt      DateTime?
+  transferNumber String?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -940,6 +946,7 @@ model StockTransfer {
   @@index([toBranchId])
   @@index([status])
   @@index([deletedAt])
+  @@unique([organizationId, transferNumber])
 }
 
 model StockTransferItem {
@@ -976,6 +983,7 @@ model Receipt {
   invoiceId       String?
   branchProductId String?
   posSessionId    String?
+  receiptNumber   String?
 
   amount    Decimal   @db.Decimal(18, 2)
   currency  String    @default("NGN")
@@ -1003,6 +1011,7 @@ model Receipt {
   @@index([branchProductId])
   @@index([deletedAt])
   @@index([updatedById])
+  @@unique([organizationId, receiptNumber])
 }
 
 ////////////////////////////////////
@@ -1029,6 +1038,7 @@ model ActivityLog {
   branch       Branch?              @relation(fields: [branchId], references: [id])
   personnel    AuthorizedPersonnel? @relation(fields: [personnelId], references: [id])
   approval     ApprovalRequest?     @relation("ApprovalLogs", fields: [approvalId], references: [id])
+  notifications  Notification[]
 
   @@index([organizationId, branchId])
   @@index([personnelId])
@@ -1047,23 +1057,30 @@ model Notification {
   organizationId String
   branchId       String?
   type           NotificationType
+  
+  // High Efficiency: Link directly to the triggering action/log
+  actionTrigger  CriticalAction?  // Points to your existing CriticalAction enum
+  activityLogId  String?          // The source ActivityLog for details
+  
   title          String
   message        String
   approvalId     String?
   deletedAt      DateTime?
 
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
 
-  organization Organization            @relation(fields: [organizationId], references: [id])
-  branch       Branch?                 @relation(fields: [branchId], references: [id])
+  // Relations
+  organization   Organization     @relation(fields: [organizationId], references: [id])
+  branch         Branch?          @relation(fields: [branchId], references: [id])
   approval       ApprovalRequest? @relation(fields: [approvalId], references: [id])
-  recipients   NotificationRecipient[]
+  activity       ActivityLog?     @relation(fields: [activityLogId], references: [id])
+  recipients     NotificationRecipient[]
 
   @@index([organizationId, branchId])
   @@index([type])
+  @@index([actionTrigger])
   @@index([deletedAt])
-  @@index([approvalId])
 }
 
 model NotificationRecipient {
@@ -1071,9 +1088,10 @@ model NotificationRecipient {
   notificationId String
   personnelId    String
   read           Boolean @default(false)
-
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  
+  // Helpful for cleanup or prioritizing recent push notifications
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
 
   notification   Notification        @relation(fields: [notificationId], references: [id], onDelete: Cascade)
   personnel      AuthorizedPersonnel @relation(fields: [personnelId], references: [id], onDelete: Cascade)
@@ -1088,14 +1106,18 @@ model NotificationSetting {
   organizationId   String
   personnelId      String?
   notificationType NotificationType
-  enabled          Boolean          @default(true)
+  
+  // Delivery Channels: Makes push logic very efficient
+  inAppEnabled     Boolean          @default(true)
+  pushEnabled      Boolean          @default(false)
+  emailEnabled     Boolean          @default(false)
+  
   deletedAt        DateTime?
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
 
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  organization Organization         @relation(fields: [organizationId], references: [id])
-  personnel    AuthorizedPersonnel? @relation(fields: [personnelId], references: [id])
+  organization     Organization     @relation(fields: [organizationId], references: [id])
+  personnel        AuthorizedPersonnel? @relation(fields: [personnelId], references: [id])
 
   @@unique([organizationId, personnelId, notificationType])
   @@index([organizationId])

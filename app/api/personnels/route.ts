@@ -34,18 +34,17 @@ const ROLE_CODE: Record<Role, string> = {
   CASHIER: "05",
 };
 
+// UPDATED: Scoped uniqueness generation
 async function generateStaffCode(
-  tx: Omit<Prisma.TransactionClient, "$connect" | "$disconnect" | "$on" | "$transaction" | "$use" | "$extends">,
+  tx: Prisma.TransactionClient,
   organizationId: string,
-  branchId: string | null,
   role: Role
 ) {
   const count = await tx.authorizedPersonnel.count({ where: { organizationId } });
-  const nn = (count + 1).toString().padStart(2, "0");
+  const nn = (count + 1).toString().padStart(3, "0");
   const rr = ROLE_CODE[role] || "99";
-  const bb = branchId ? branchId.slice(-2).toUpperCase() : "00";
 
-  return `STF-${nn}${rr}${bb}`;
+  return `STF-${nn}-${rr}`;
 }
 
 /* -------------------- GET: LIST & ANALYTICS -------------------- */
@@ -169,9 +168,9 @@ export async function POST(req: NextRequest) {
         where: { email: cleanEmail, organizationId: auth.organizationId, deletedAt: null }
       });
 
-      if (conflict) throw new Error("Email already registered.");
+      if (conflict) throw new Error("Email already registered in this organization.");
 
-      const finalStaffCode = await generateStaffCode(tx, auth.organizationId, assignedBranchId, assignedRole);
+      const finalStaffCode = await generateStaffCode(tx, auth.organizationId, assignedRole);
 
       const created = await tx.authorizedPersonnel.create({
         data: {
@@ -185,7 +184,6 @@ export async function POST(req: NextRequest) {
           isOrgOwner: auth.isOrgOwner ? (isOrgOwner || false) : false,
           disabled: false,
           isLocked: false,
-          // Mandatory flag for first login
           requiresPasswordChange: true, 
         },
       });
@@ -223,11 +221,11 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json(personnel, { status: 201 });
   } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : "Provisioning failed";
-    if (message === "Email already registered.") {
-      return NextResponse.json({ message }, { status: 409 });
+    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
+      return NextResponse.json({ message: "A user with this email or staff code already exists." }, { status: 409 });
     }
-    return NextResponse.json({ message }, { status: 500 });
+    const message = error instanceof Error ? error.message : "Provisioning failed";
+    return NextResponse.json({ message }, { status: message.includes("registered") ? 409 : 500 });
   }
 }
 
@@ -242,11 +240,7 @@ export async function PATCH(req: NextRequest) {
   try {
     const body = await req.json();
     const {
-      id,
-      name, email, role,
-      disabled, isLocked, lockReason,
-      newPassword,
-      branchAssignments
+      id, name, email, role, disabled, isLocked, lockReason, newPassword, branchAssignments
     } = body;
 
     if (!id) return NextResponse.json({ message: "Target ID is required" }, { status: 400 });
@@ -278,7 +272,7 @@ export async function PATCH(req: NextRequest) {
         const conflict = await tx.authorizedPersonnel.findFirst({
           where: { email: cleanEmail, organizationId: auth.organizationId, id: { not: id }, deletedAt: null }
         });
-        if (conflict) throw new Error("Email already in use.");
+        if (conflict) throw new Error("Email already in use in this organization.");
       }
 
       const updateData: Prisma.AuthorizedPersonnelUpdateInput = {};
@@ -320,9 +314,6 @@ export async function PATCH(req: NextRequest) {
         }
       }
 
-
-
-      // Logic updated: Admin password resets also force a user password change
       if (newPassword) {
         updateData.password = await bcrypt.hash(newPassword, 12);
         updateData.requiresPasswordChange = true; 
@@ -405,6 +396,9 @@ export async function PATCH(req: NextRequest) {
 
     return NextResponse.json(updatedPersonnel, { status: 200 });
   } catch (error: unknown) {
+    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
+      return NextResponse.json({ message: "A user with this email already exists." }, { status: 409 });
+    }
     const message = error instanceof Error ? error.message : "Update failed";
     console.error("PATCH Personnel Error:", error);
     return NextResponse.json({ message }, { status: 400 });

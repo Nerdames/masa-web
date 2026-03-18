@@ -2,6 +2,8 @@
 
 import React, { useState, useEffect, useMemo, useCallback, createContext, useContext, useRef } from "react";
 import { motion, AnimatePresence } from "framer-motion";
+import { useRouter } from "next/navigation";
+import { useSidePanel } from "@/components/layout/SidePanelContext";
 
 /* ==========================================================================
    1. TYPES & INTERFACES (STRICT TYPESCRIPT)
@@ -36,24 +38,13 @@ export interface Personnel {
   role: Role;
   disabled: boolean;
   isLocked: boolean;
+  lockReason?: string | null;
   lastActivityAt: string | null;
   branchId: string | null;
   branch: { id: string; name: string } | null;
   branchAssignments: BranchAssignment[];
 }
 
-export interface ActivityLog {
-  id: string;
-  action: string;
-  critical: boolean;
-  createdAt: string;
-  details?: string | null;
-  time?: string;
-  personnel?: { name: string; email: string };
-  performedBy?: string;
-  personnelName?: string;
-  metadata?: Record<string, unknown>;
-}
 
 export interface ProvisionPayload {
   name: string;
@@ -70,7 +61,8 @@ export interface UpdatePayload {
   role?: Role;
   disabled?: boolean;
   isLocked?: boolean;
-  action?: "RESEND_OTP";
+  lockReason?: string | null;
+  newPassword?: string;
 }
 
 export interface SummaryStats {
@@ -90,17 +82,53 @@ export interface PaginatedResponse {
   recentLogs: ActivityLog[];
 }
 
-/* ==========================================================================
-   2. CONSTANTS & UTILITIES
+/* ==========================================================================\
+   TYPES & CONSTANTS
    ========================================================================== */
+interface ActivityLogDTO {
+  id: string;
+  action: string;
+  critical: boolean;
+  createdAt: string;
+  time?: string;
+  details?: string;
+  ipAddress?: string;
+  deviceInfo?: string;
+  approvalId?: string;
+  personnel?: { name: string; email: string };
+  performedBy?: string;
+  personnelName?: string;
+  branch?: { name: string };
+  metadata?: Record<string, any>;
+}
+
+const parseDevice = (ua?: string) => {
+  if (!ua) return "Internal System";
+  if (ua.includes("Windows")) return "Windows PC";
+  if (ua.includes("iPhone")) return "iPhone";
+  if (ua.includes("Android")) return "Android Device";
+  if (ua.includes("Macintosh")) return "MacBook / iMac";
+  if (ua.includes("Postman") || ua.includes("curl")) return "API Client";
+  return ua.split(" ")[0]; // Fallback to first part of UA string
+};
 
 const LOG_TABS = {
   ALL: "ALL_ACTIONS",
-  PROVISION: "PROVISION",
   SECURITY: "SECURITY",
+  PROVISION: "PROVISION",
   UPDATE: "UPDATE",
-  LOCKED: "ACCOUNT_LOCKED"
-} as const;
+  LOCKED: "ACCOUNT_LOCKED",
+};
+
+/* ==========================================================================\
+   HELPER: Format Metadata
+   ========================================================================== */
+const formatMetadata = (metadata?: Record<string, any>): string | null => {
+  if (!metadata) return null;
+  if (metadata.details) return metadata.details;
+  if (metadata.targetName) return `Target: ${metadata.targetName}`;
+  return null;
+};
 
 function getDepartmentColor(name: string): string {
   const hash = name.split("").reduce((acc, char) => char.charCodeAt(0) + ((acc << 5) - acc), 0);
@@ -125,7 +153,7 @@ async function copyToClipboard(text: string, dispatch: (action: AlertAction) => 
     } else {
       throw new Error("Clipboard API unavailable");
     }
-  } catch (err) {
+  } catch (err: unknown) {
     const textArea = document.createElement("textarea");
     textArea.value = text;
     document.body.appendChild(textArea);
@@ -133,7 +161,7 @@ async function copyToClipboard(text: string, dispatch: (action: AlertAction) => 
     try {
       document.execCommand('copy');
       dispatch({ kind: "TOAST", type: "SUCCESS", title: "Copied", message: "Password copied to clipboard!" });
-    } catch (fallbackErr) {
+    } catch (fallbackErr: unknown) {
       dispatch({ kind: "TOAST", type: "ERROR", title: "Copy Failed", message: "Please manually copy the password." });
     }
     document.body.removeChild(textArea);
@@ -250,34 +278,27 @@ function StatusGridBadge({ status }: { status: "active" | "locked" | "disabled" 
 function PropertyRow({ icon, label, value }: { icon: string, label: string, value: React.ReactNode }) {
   return (
     <div className="flex items-center text-[13px] group">
-       <div className="w-32 shrink-0 flex items-center gap-2 text-slate-400 font-medium">
-         <i className={`${icon} text-slate-300 group-hover:text-slate-500 transition-colors`} /> {label}
-       </div>
-       <div className="text-slate-800 flex-1 min-w-0">{value}</div>
+      <div className="w-32 shrink-0 flex items-center gap-2 text-slate-400 font-medium">
+        <i className={`${icon} text-slate-300 group-hover:text-slate-500 transition-colors`} /> {label}
+      </div>
+      <div className="text-slate-800 flex-1 min-w-0">{value}</div>
     </div>
   );
 }
 
-const panelVariants = {
-  hidden: { opacity: 0, x: 20 },
-  visible: { opacity: 1, x: 0, transition: { duration: 0.25, ease: "easeOut" } },
-  exit: { opacity: 0, x: 10, transition: { duration: 0.2, ease: "easeIn" } }
-};
-
 /* ==========================================================================
-   5. SIDE PANELS
+   5. SIDE PANELS (Injected into Global Context)
    ========================================================================== */
 
 interface DetailsPanelProps {
   personnel: Personnel;
   onClose: () => void;
   onUpdate: (id: string, payload: UpdatePayload) => Promise<void>;
-  viewerRole: Role;     // Add this
-  isOrgOwner: boolean;  // Add this
+  onDelete: (id: string) => Promise<void>;
+  dispatch: (action: AlertAction) => void;
 }
 
-function DetailsPanel({ personnel, onClose, onUpdate, viewerRole, isOrgOwner }: DetailsPanelProps) {
-  const { dispatch } = useAlerts();
+function DetailsPanel({ personnel, onClose, onUpdate, onDelete, dispatch }: DetailsPanelProps) {
   const [isEditing, setIsEditing] = useState(false);
   const [form, setForm] = useState({ name: personnel.name, role: personnel.role });
 
@@ -286,23 +307,26 @@ function DetailsPanel({ personnel, onClose, onUpdate, viewerRole, isOrgOwner }: 
       await onUpdate(personnel.id, form);
       dispatch({ kind: "TOAST", type: "SUCCESS", title: "Saved", message: "Profile updated successfully." });
       setIsEditing(false);
-    } catch (e) {
-      // Errors handled by parent handleUpdate
+    } catch (e: unknown) {
+      // Errors handled by parent
     }
   };
 
   const toggleSecurity = async (key: keyof UpdatePayload, val: boolean) => {
     try {
-      await onUpdate(personnel.id, { [key]: val });
+      const payload: UpdatePayload = { [key]: val };
+      if (key === 'isLocked' && val) payload.lockReason = prompt("Reason for locking account?") || "Administratively locked";
+      
+      await onUpdate(personnel.id, payload);
       dispatch({ kind: "TOAST", type: "SUCCESS", title: "Security Updated", message: "Account access status modified." });
-    } catch (e) {}
+    } catch (e: unknown) {}
   };
 
   return (
-    <motion.div variants={panelVariants} initial="hidden" animate="visible" exit="exit" className="h-full flex flex-col w-full bg-white relative">
+    <div className="h-full flex flex-col w-full bg-white relative">
       <div className="p-4 border-b border-black/[0.04] flex justify-between items-center bg-white shrink-0 z-10">
         <div className="flex items-center gap-2 px-2 text-[11px] font-semibold text-slate-500 uppercase tracking-wider">
-           <i className="bx bx-sidebar" /> Inspector
+          <i className="bx bx-sidebar" /> Inspector
         </div>
         <div className="flex gap-2">
           {!isEditing && (
@@ -361,37 +385,40 @@ function DetailsPanel({ personnel, onClose, onUpdate, viewerRole, isOrgOwner }: 
 
         {isEditing && (
           <div className="flex gap-2 pt-4">
-             <button onClick={handleSave} className="flex-1 py-2 bg-slate-900 text-white text-[12px] font-semibold rounded-lg hover:bg-slate-800 transition-colors">Save Changes</button>
-             <button onClick={() => setIsEditing(false)} className="flex-1 py-2 bg-slate-100 text-slate-700 text-[12px] font-semibold rounded-lg hover:bg-slate-200 transition-colors">Cancel</button>
+            <button onClick={handleSave} className="flex-1 py-2 bg-slate-900 text-white text-[12px] font-semibold rounded-lg hover:bg-slate-800 transition-colors">Save Changes</button>
+            <button onClick={() => setIsEditing(false)} className="flex-1 py-2 bg-slate-100 text-slate-700 text-[12px] font-semibold rounded-lg hover:bg-slate-200 transition-colors">Cancel</button>
           </div>
         )}
 
         {!isEditing && (
           <div className="pt-8 border-t border-black/5 space-y-2 pb-6">
-             <h4 className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider mb-3">Access Security</h4>
-             {(viewerRole === Role.ADMIN || isOrgOwner) && !personnel.lastActivityAt && (
-               <button onClick={() => onUpdate(personnel.id, { action: "RESEND_OTP" })} className="w-full flex items-center justify-center gap-2 px-3 py-2.5 text-[12px] font-medium text-blue-600 bg-blue-50 border border-blue-100 hover:bg-blue-100 rounded-lg transition-colors">
-                  <i className="bx bx-mail-send text-base" /> Resend Verification OTP
-               </button>
-             )}
-             <div className="grid grid-cols-2 gap-2">
-               <button
-                  onClick={() => toggleSecurity("isLocked", !personnel.isLocked)}
-                  className={`flex items-center justify-center gap-1.5 px-3 py-2.5 text-[12px] font-medium border rounded-lg transition-colors ${personnel.isLocked ? "bg-emerald-50 text-emerald-600 border-emerald-100 hover:bg-emerald-100" : "bg-amber-50 text-amber-600 border-amber-100 hover:bg-amber-100"}`}
-                >
-                  <i className={`bx ${personnel.isLocked ? "bx-lock-open" : "bx-lock-alt"} text-sm`} /> {personnel.isLocked ? "Unlock" : "Lock"}
-               </button>
-               <button
-                  onClick={() => toggleSecurity("disabled", !personnel.disabled)}
-                  className={`flex items-center justify-center gap-1.5 px-3 py-2.5 text-[12px] font-medium border rounded-lg transition-colors ${personnel.disabled ? "bg-slate-900 text-white border-slate-900 hover:bg-slate-800" : "bg-red-50 text-red-600 border-red-100 hover:bg-red-100"}`}
-                >
-                  <i className={`bx ${personnel.disabled ? "bx-check-circle" : "bx-minus-circle"} text-sm`} /> {personnel.disabled ? "Enable" : "Disable"}
-               </button>
-             </div>
+            <h4 className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider mb-3">Access Security</h4>
+            <div className="grid grid-cols-2 gap-2">
+              <button
+                onClick={() => toggleSecurity("isLocked", !personnel.isLocked)}
+                className={`flex items-center justify-center gap-1.5 px-3 py-2.5 text-[12px] font-medium border rounded-lg transition-colors ${personnel.isLocked ?
+                "bg-emerald-50 text-emerald-600 border-emerald-100 hover:bg-emerald-100" : "bg-amber-50 text-amber-600 border-amber-100 hover:bg-amber-100"}`}
+              >
+                <i className={`bx ${personnel.isLocked ? "bx-lock-open" : "bx-lock-alt"} text-sm`} /> {personnel.isLocked ? "Unlock" : "Lock"}
+              </button>
+              <button
+                onClick={() => toggleSecurity("disabled", !personnel.disabled)}
+                className={`flex items-center justify-center gap-1.5 px-3 py-2.5 text-[12px] font-medium border rounded-lg transition-colors ${personnel.disabled ?
+                "bg-slate-900 text-white border-slate-900 hover:bg-slate-800" : "bg-red-50 text-red-600 border-red-100 hover:bg-red-100"}`}
+              >
+                <i className={`bx ${personnel.disabled ? "bx-check-circle" : "bx-minus-circle"} text-sm`} /> {personnel.disabled ? "Enable" : "Disable"}
+              </button>
+            </div>
+            
+            <div className="pt-4 border-t border-black/5 space-y-2 mt-4">
+              <button onClick={() => onDelete(personnel.id)} className="w-full flex items-center justify-center gap-2 px-3 py-2.5 text-[12px] font-medium border border-red-100 text-red-600 bg-red-50 rounded-lg hover:bg-red-100 transition-colors">
+                 <i className="bx bx-trash" /> Deactivate Account
+              </button>
+            </div>
           </div>
         )}
       </div>
-    </motion.div>
+    </div>
   );
 }
 
@@ -399,9 +426,10 @@ interface ProvisionPanelProps {
   onClose: () => void;
   onCreate: (payload: ProvisionPayload) => Promise<void>;
   branches: Branch[];
+  dispatch: (action: AlertAction) => void;
 }
 
-function ProvisionPanel({ onClose, onCreate, branches }: ProvisionPanelProps) {
+function ProvisionPanel({ onClose, onCreate, branches, dispatch }: ProvisionPanelProps) {
   const [form, setForm] = useState<ProvisionPayload>({
     name: "",
     email: "",
@@ -411,7 +439,6 @@ function ProvisionPanel({ onClose, onCreate, branches }: ProvisionPanelProps) {
   });
   const [isSaving, setIsSaving] = useState(false);
   const [successCredentials, setSuccessCredentials] = useState<string | null>(null);
-  const { dispatch } = useAlerts();
 
   const handleGeneratePassword = () => {
     const newPass = generateSecurePassword();
@@ -434,7 +461,7 @@ function ProvisionPanel({ onClose, onCreate, branches }: ProvisionPanelProps) {
     try {
       await onCreate(sanitizedPayload);
       setSuccessCredentials(sanitizedPayload.password ?? "");
-    } catch (err) {
+    } catch (err: unknown) {
       // Handled by parent
     } finally {
       setIsSaving(false);
@@ -442,13 +469,13 @@ function ProvisionPanel({ onClose, onCreate, branches }: ProvisionPanelProps) {
   };
 
   return (
-    <motion.div variants={panelVariants} initial="hidden" animate="visible" exit="exit" className="h-full flex flex-col w-full bg-white relative">
-       <div className="p-4 border-b border-black/[0.04] flex justify-between items-center bg-white shrink-0 z-10">
+    <div className="h-full flex flex-col w-full bg-white relative">
+      <div className="p-4 border-b border-black/[0.04] flex justify-between items-center bg-white shrink-0 z-10">
         <div className="flex items-center gap-2 px-2 text-[11px] font-semibold text-slate-500 uppercase tracking-wider">
-           <i className="bx bx-user-plus" /> Provision Staff
+          <i className="bx bx-user-plus" /> Provision Staff
         </div>
         <button onClick={onClose} className="w-7 h-7 rounded hover:bg-red-50 hover:text-red-500 flex items-center justify-center text-slate-500 transition-colors">
-            <i className="bx bx-x text-lg" />
+          <i className="bx bx-x text-lg" />
         </button>
       </div>
 
@@ -457,7 +484,7 @@ function ProvisionPanel({ onClose, onCreate, branches }: ProvisionPanelProps) {
           <div className="space-y-6">
             <div className="p-5 bg-emerald-50 border border-emerald-100 rounded-xl flex flex-col gap-2">
               <div className="flex items-center gap-2 text-emerald-700 font-semibold mb-2">
-                  <i className="bx bx-check-circle text-xl" /> Account Provisioned
+                <i className="bx bx-check-circle text-xl" /> Account Provisioned
               </div>
               <p className="text-[13px] text-emerald-800/80 leading-relaxed font-medium">The account has been created successfully. Ensure the user receives this temporary password.</p>
             </div>
@@ -479,7 +506,8 @@ function ProvisionPanel({ onClose, onCreate, branches }: ProvisionPanelProps) {
           <>
             <div className="p-4 bg-slate-50 border border-black/5 rounded-xl flex gap-3 text-slate-600">
               <i className="bx bx-info-circle text-lg shrink-0 text-blue-500" />
-              <p className="text-[12px] font-medium leading-relaxed">Provide a temporary password or use the generator. The user will update this upon their first entry to <b>MASA</b>.</p>
+              <p className="text-[12px] font-medium leading-relaxed">Provide a temporary password or use the generator.
+              The user will update this upon their first entry to <b>MASA</b>.</p>
             </div>
             <div className="space-y-4">
               <div className="space-y-1.5">
@@ -526,77 +554,114 @@ function ProvisionPanel({ onClose, onCreate, branches }: ProvisionPanelProps) {
           </button>
         </div>
       )}
-    </motion.div>
+    </div>
   );
 }
 
-function ActivityLogsPanel({ logs, onClose }: { logs: ActivityLog[], onClose: () => void }) {
+export function ActivityLogsPanel({ logs, onClose }: { logs: ActivityLogDTO[], onClose: () => void }) {
   const [filter, setFilter] = useState<string>(LOG_TABS.ALL);
+  const router = useRouter();
+
   const filteredLogs = useMemo(() => {
     if (filter === LOG_TABS.ALL) return logs;
     return logs.filter((l) => {
       const action = l.action.toUpperCase();
-      if (filter === LOG_TABS.SECURITY) return action.includes("LOCK") || action.includes("ACCESS") || action.includes("LOGIN") || action.includes("PASSWORD");
-      if (filter === LOG_TABS.PROVISION) return action.includes("CREATE") || action.includes("ASSIGN");
-      if (filter === LOG_TABS.UPDATE) return action.includes("UPDATE") || action.includes("PATCH") || action.includes("EDIT");
-      if (filter === LOG_TABS.LOCKED) return action.includes("LOCKED");
+      if (filter === LOG_TABS.SECURITY) return /LOCK|ACCESS|LOGIN|PASSWORD|AUTH/.test(action);
+      if (filter === LOG_TABS.PROVISION) return /CREATE|ASSIGN|DELETED/.test(action);
+      if (filter === LOG_TABS.UPDATE) return /UPDATE|PATCH|EDIT|ENABLED|DISABLED/.test(action);
       return action.includes(filter);
     });
   }, [logs, filter]);
 
   return (
-    <motion.div variants={panelVariants} initial="hidden" animate="visible" exit="exit" className="h-full flex flex-col w-full bg-[#FAFAFC] relative">
-      <div className="p-6 border-b border-black/5 bg-white/80 space-y-4 shrink-0">
+    <div className="h-full flex flex-col w-full bg-[#FAFAFC] relative">
+      {/* HEADER */}
+      <div className="p-5 border-b border-black/5 bg-white shrink-0 space-y-5">
         <div className="flex justify-between items-center">
-          <h2 className="text-[10px] font-black uppercase tracking-[0.2em] text-black/50 flex items-center gap-2">
-            <span className="w-2 h-2 rounded-full bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)] animate-pulse" /> Live_Audit_Trail
+          <h2 className="text-[10px] font-black uppercase tracking-[0.25em] text-black/40 flex items-center gap-2">
+            <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" /> 
+            Live_Audit_Trail
           </h2>
-          <div className="flex items-center gap-3">
-             <span className="text-[9px] font-bold text-slate-400 bg-slate-50 px-2 py-0.5 rounded border border-slate-100 tabular-nums">{filteredLogs.length}</span>
-             <button onClick={onClose} className="w-6 h-6 rounded hover:bg-black/5 flex items-center justify-center text-slate-400 transition-colors"><i className="bx bx-x text-base" /></button>
-          </div>
+          <button onClick={onClose} className="w-6 h-6 rounded-full hover:bg-black/5 flex items-center justify-center text-slate-400 transition-colors">
+            <i className="bx bx-x text-lg" />
+          </button>
         </div>
-       <div className="flex gap-2 overflow-x-auto pb-2 scrollbar-hide" style={{ msOverflowStyle: 'none', scrollbarWidth: 'none' }}>
+
+        <div className="flex gap-2 overflow-x-auto pb-1 scrollbar-hide">
           {Object.values(LOG_TABS).map((a) => (
-            <button key={a} onClick={() => setFilter(a)} className={`shrink-0 px-3 py-1.5 rounded-full text-[8px] font-black uppercase tracking-tighter transition-all border ${filter === a ? "bg-slate-900 text-white border-slate-900 shadow-md" : "bg-white text-black/40 border-black/5 hover:border-black/20 hover:text-black/60"}`}>
+            <button 
+              key={a} 
+              onClick={() => setFilter(a)} 
+              className={`shrink-0 px-3.5 py-1.5 rounded-full text-[8px] font-black uppercase tracking-tight transition-all border ${
+                filter === a ? "bg-slate-900 text-white border-slate-900 shadow-md" : "bg-white text-black/30 border-black/5 hover:border-black/20"
+              }`}
+            >
               {a.replace(/_/g, " ")}
             </button>
           ))}
         </div>
       </div>
-      <div className="flex-1 overflow-y-auto p-2 space-y-4 custom-scrollbar">
-        {filteredLogs.length === 0 ? (
-          <div className="flex flex-col items-center justify-center h-40 text-center space-y-2 opacity-50">
-            <i className="bx bx-receipt text-3xl text-black/20" />
-            <p className="text-[10px] font-bold tracking-widest uppercase">No Records Found</p>
-          </div>
-        ) : (
-          filteredLogs.map((log) => {
-            const performerName = log.personnel?.name ?? log.performedBy ?? "System";
-            const targetName = log.personnelName ?? (log.metadata?.targetName as string) ?? "N/A";
-            return (
-              <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} key={log.id} className="p-4 bg-white border border-black/[0.04] rounded-2xl shadow-sm hover:border-blue-500/20 hover:shadow-md transition-all relative overflow-hidden group">
-                <div className={`absolute left-0 top-0 bottom-0 w-1 ${log.critical ? 'bg-amber-400' : 'bg-blue-500'} opacity-50 group-hover:opacity-100 transition-opacity`} />
-                <div className="pl-2">
-                  <div className="flex justify-between items-center mb-3 border-b border-black/5 pb-2">
-                    <div className="flex items-center gap-2">
-                      <div className={`w-5 h-5 rounded-full flex items-center justify-center text-[9px] font-bold text-white ${log.critical ? 'bg-amber-600' : 'bg-blue-600'}`}>{performerName.charAt(0).toUpperCase()}</div>
-                      <span className="text-[10px] font-bold text-slate-800">{performerName}</span>
-                    </div>
-                    <span className="text-[9px] font-black tracking-widest uppercase text-black/30">{log.time ?? new Date(log.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+
+      {/* LOG LIST */}
+      <div className="flex-1 overflow-y-auto p-3 space-y-3 custom-scrollbar">
+        {filteredLogs.map((log) => {
+          const performerName = log.personnel?.name ?? log.performedBy ?? "System";
+          const targetName = log.personnelName ?? (log.metadata?.targetName as string) ?? "N/A";
+          
+          const dateStr = new Date(log.createdAt).toLocaleString('en-US', { 
+            month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' 
+          });
+          
+          const deviceName = parseDevice(log.deviceInfo);
+          const techString = `${dateStr} :: ${log.ipAddress || "127.0.0.1"} • ${deviceName}`;
+
+          return (
+            <motion.div 
+              initial={{ opacity: 0, y: 5 }} 
+              animate={{ opacity: 1, y: 0 }} 
+              key={log.id} 
+              onClick={() => router.push(`/dashboard/activity/${log.id}`)}
+              className="p-4 bg-white border border-black/[0.04] rounded-2xl cursor-pointer hover:border-black/20 hover:shadow-xl transition-all group active:scale-[0.98]"
+            >
+              {/* 1. Header: Initials & Action */}
+              <div className="flex justify-between items-center mb-3">
+                <div className="flex items-center gap-2.5">
+                  <div className={`w-6 h-6 rounded-lg flex items-center justify-center text-[10px] font-bold text-white shadow-sm ${log.critical ? 'bg-amber-500' : 'bg-slate-900'}`}>
+                    {performerName.split(' ').map(n => n[0]).join('').toUpperCase().slice(0, 2)}
                   </div>
-                  <div>
-                    <span className={`inline-block mb-1.5 text-[8px] font-black uppercase tracking-widest px-2 py-0.5 rounded ${log.critical ? 'bg-amber-50 text-amber-600' : 'bg-slate-100 text-slate-600'}`}>{log.action.replace(/_/g, " ")}</span>
-                    <p className="text-xs font-medium text-slate-600 leading-relaxed mb-1">{log.details || "Audit entry recorded."}</p>
-                    <p className="text-[10px] font-bold text-black/40">Target: <span className="text-slate-800 truncate block max-w-full">{targetName}</span></p>
-                  </div>
+                  <span className="text-[10px] font-black text-slate-800 uppercase tracking-tighter">{performerName}</span>
                 </div>
-              </motion.div>
-           );
-        })
-        )}
+                <span className={`text-[7px] font-black uppercase px-2 py-0.5 rounded-md tracking-widest ${log.critical ? 'bg-amber-50 text-amber-600' : 'bg-slate-100 text-slate-500'}`}>
+                  {log.action.replace(/_/g, " ")}
+                </span>
+              </div>
+
+              {/* 2. Body: Description & Target */}
+              <div className="pl-8.5 space-y-2">
+                <p className="text-[11px] font-semibold text-slate-600 leading-snug">
+                  {log.details || (log.metadata?.details as string) || "Activity record generated."}
+                </p>
+                
+                <div className="flex items-center gap-2 py-1.5 px-2 bg-slate-50 rounded-lg border border-black/[0.02]">
+                  <span className="text-[8px] font-black text-black/20 uppercase tracking-tighter">Target</span>
+                  <span className="text-[9px] font-bold text-slate-800 truncate">{targetName}</span>
+                </div>
+              </div>
+
+              {/* 3. Footer: System String */}
+              <div className="mt-4 pt-3 border-t border-black/[0.03]">
+                <div className="flex justify-between items-center">
+                  <p className="text-[8px] font-bold text-slate-400 font-mono tracking-tighter opacity-60 group-hover:opacity-100 transition-opacity">
+                    {techString}
+                  </p>
+                  <i className="bx bx-chevron-right text-slate-300 opacity-0 group-hover:opacity-100 transition-all transform group-hover:translate-x-1" />
+                </div>
+              </div>
+            </motion.div>
+          );
+        })}
       </div>
-    </motion.div>
+    </div>
   );
 }
 
@@ -620,7 +685,8 @@ function PersonnelRow({ personnel, isSelected, onClick }: { personnel: Personnel
       <motion.div layoutId={`person-${personnel.id}`} onClick={onClick} className={`flex items-center px-4 md:px-8 py-3 transition-colors cursor-pointer text-[13px] ${isSelected ? "bg-blue-50/50" : "hover:bg-slate-50/80"}`}>
         <div className="w-[120px] md:w-[140px] shrink-0 flex items-center gap-2 relative">
           <button onClick={hasMultipleAssignments ? toggleExpand : undefined} className={`w-5 h-5 flex items-center justify-center rounded hover:bg-black/5 shrink-0 ${!hasMultipleAssignments && 'opacity-30 cursor-default'}`}>
-            {hasMultipleAssignments ? <i className={`bx bx-caret-right text-[10px] text-slate-400 transition-transform ${isExpanded ? 'rotate-90' : ''}`} /> : <span className="w-1 h-1 rounded-full bg-slate-300" />}
+            {hasMultipleAssignments ? <i className={`bx bx-caret-right text-[10px] text-slate-400 transition-transform ${isExpanded ?
+              'rotate-90' : ''}`} /> : <span className="w-1 h-1 rounded-full bg-slate-300" />}
           </button>
           <span className="font-mono text-slate-600 font-medium tracking-tight truncate">{personnel.staffCode || "PENDING"}</span>
           {!personnel.lastActivityAt && <div className="absolute right-4 md:right-6 top-1.5 w-0 h-0 border-l-[4px] border-r-[4px] border-b-[4px] border-l-transparent border-r-transparent border-b-amber-400 rotate-45 shrink-0" title="Pending OTP Verification" />}
@@ -633,7 +699,7 @@ function PersonnelRow({ personnel, isSelected, onClick }: { personnel: Personnel
         </div>
         <div className="flex-1 min-w-[100px] text-slate-500 truncate pr-4 hidden sm:block">{personnel.email}</div>
         <div className="w-[90px] md:w-[120px] shrink-0 pr-2">
-           <span className="text-[10px] md:text-[11px] font-semibold text-slate-600 bg-slate-100 px-2 py-0.5 rounded uppercase tracking-wider truncate block w-fit max-w-full">{personnel.role}</span>
+          <span className="text-[10px] md:text-[11px] font-semibold text-slate-600 bg-slate-100 px-2 py-0.5 rounded uppercase tracking-wider truncate block w-fit max-w-full">{personnel.role}</span>
         </div>
         <div className="flex-1 min-w-[120px] text-slate-800 font-medium truncate pr-4">{personnel.name}</div>
         <div className="w-[80px] md:w-[100px] shrink-0"><StatusGridBadge status={status} /></div>
@@ -643,15 +709,15 @@ function PersonnelRow({ personnel, isSelected, onClick }: { personnel: Personnel
           <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }} exit={{ height: 0, opacity: 0 }} className="bg-slate-50/50 flex flex-col w-full border-t border-black/[0.02] shadow-inner overflow-hidden">
             {personnel.branchAssignments.map((assignment, idx) => (
               <div key={idx} className="flex items-center px-4 md:px-8 py-2 border-b border-black/[0.02] last:border-none text-[12px] pl-[32px] md:pl-[144px]">
-                 <div className="w-[120px] md:w-[160px] shrink-0 flex items-center pr-2">
-                    <div className="flex items-center gap-2 px-2 py-0.5 opacity-80 max-w-full truncate">
-                      <span className={`w-1 h-1 shrink-0 rounded-full ${getDepartmentColor(assignment.branch.name)}`} />
-                      <span className="text-[11px] font-medium text-slate-600 truncate">{assignment.branch.name}</span>
-                    </div>
-                 </div>
-                 <div className="flex-1 min-w-[100px] text-slate-400 italic text-[11px] hidden sm:block truncate pr-2">Secondary Assignment</div>
-                 <div className="w-[90px] md:w-[120px] shrink-0"><span className="text-[10px] font-semibold text-slate-400 bg-black/5 px-1.5 py-0.5 rounded uppercase tracking-wider truncate block w-fit max-w-full">{assignment.role}</span></div>
-                 <div className="flex-1 min-w-[120px]" /><div className="w-[80px] md:w-[100px] shrink-0" />
+                <div className="w-[120px] md:w-[160px] shrink-0 flex items-center pr-2">
+                  <div className="flex items-center gap-2 px-2 py-0.5 opacity-80 max-w-full truncate">
+                    <span className={`w-1 h-1 shrink-0 rounded-full ${getDepartmentColor(assignment.branch.name)}`} />
+                    <span className="text-[11px] font-medium text-slate-600 truncate">{assignment.branch.name}</span>
+                  </div>
+                </div>
+                <div className="flex-1 min-w-[100px] text-slate-400 italic text-[11px] hidden sm:block truncate pr-2">Secondary Assignment</div>
+                <div className="w-[90px] md:w-[120px] shrink-0"><span className="text-[10px] font-semibold text-slate-400 bg-black/5 px-1.5 py-0.5 rounded uppercase tracking-wider truncate block w-fit max-w-full">{assignment.role}</span></div>
+                <div className="flex-1 min-w-[120px]" /><div className="w-[80px] md:w-[100px] shrink-0" />
               </div>
             ))}
           </motion.div>
@@ -665,31 +731,31 @@ function PersonnelRow({ personnel, isSelected, onClick }: { personnel: Personnel
    7. MAIN PAGE COMPONENT
    ========================================================================== */
 
-type PanelState = "none" | "provision" | "details" | "logs";
-
 function PersonnelManagementInner() {
   const { dispatch } = useAlerts();
+  const { openPanel, closePanel, isOpen } = useSidePanel();
+  
   const [personnelList, setPersonnelList] = useState<Personnel[]>([]);
   const [branches, setBranches] = useState<Branch[]>([]);
   const [logs, setLogs] = useState<ActivityLog[]>([]);
   const [summary, setSummary] = useState<SummaryStats>({ total: 0, active: 0, disabled: 0, locked: 0 });
   const [isLoading, setIsLoading] = useState(true);
-  const [activePanel, setActivePanel] = useState<PanelState>("none");
-  const [selectedPerson, setSelectedPerson] = useState<Personnel | null>(null);
+  
+  const [selectedPersonId, setSelectedPersonId] = useState<string | null>(null);
   const [searchTerm, setSearchTerm] = useState("");
   const [filterStatus, setFilterStatus] = useState("all");
-  
+
   const abortControllerRef = useRef<AbortController | null>(null);
 
-  const handleOpenPanel = (panel: PanelState, person?: Personnel) => {
-    if (person) setSelectedPerson(person);
-    setActivePanel(panel);
-  };
+  const handleClosePanel = useCallback(() => {
+    closePanel();
+    setSelectedPersonId(null);
+  }, [closePanel]);
 
-  const handleClosePanel = () => {
-    setActivePanel("none");
-    setSelectedPerson(null);
-  };
+  // Ensure panels are cleared when page is unmounted
+  useEffect(() => {
+    return () => closePanel();
+  }, [closePanel]);
 
   const fetchPersonnel = useCallback(async () => {
     if (abortControllerRef.current) abortControllerRef.current.abort();
@@ -706,7 +772,7 @@ function PersonnelManagementInner() {
       setSummary(json.summary || { total: 0, active: 0, disabled: 0, locked: 0 });
       setBranches(json.branchSummaries || []);
       setLogs(json.recentLogs || []);
-    } catch (err) {
+    } catch (err: unknown) {
       if (err instanceof Error && err.name === 'AbortError') return;
       dispatch({ kind: "TOAST", type: "ERROR", title: "Sync Failed", message: "Unable to load data." });
     } finally {
@@ -734,10 +800,9 @@ function PersonnelManagementInner() {
   };
 
   const handleUpdate = async (id: string, payload: UpdatePayload) => {
-    // Optimistic Update
     const originalList = [...personnelList];
     setPersonnelList(prev => prev.map(p => p.id === id ? { ...p, ...payload } : p));
-    
+
     try {
       const res = await fetch("/api/personnels", {
         method: "PATCH",
@@ -747,91 +812,118 @@ function PersonnelManagementInner() {
       const data = await res.json();
       if (!res.ok) throw new Error(data.message || "Failed to update");
       await fetchPersonnel();
-      setSelectedPerson(prev => prev && prev.id === id ? { ...prev, ...data } : prev);
-    } catch (err) {
-      setPersonnelList(originalList); // Rollback
+      
+      // Keep panel in sync if it's currently open
+      const updatedPerson = { ...(personnelList.find(p => p.id === id)), ...data };
+      if (isOpen && selectedPersonId === id) {
+        openPanel(<DetailsPanel personnel={updatedPerson} onClose={handleClosePanel} onUpdate={handleUpdate} onDelete={handleDelete} dispatch={dispatch} />);
+      }
+    } catch (err: unknown) {
+      setPersonnelList(originalList); 
       dispatch({ kind: "TOAST", type: "ERROR", title: "Update Failed", message: err instanceof Error ? err.message : "Persistence failed." });
     }
   };
 
+  const handleDelete = async (id: string) => {
+    if (!confirm("Are you absolutely sure you want to delete this account? This action will softly deactivate it.")) return;
+    try {
+      const res = await fetch(`/api/personnels?id=${id}`, { method: "DELETE" });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.message || "Failed to deactivate account");
+      
+      dispatch({ kind: "TOAST", type: "SUCCESS", title: "Deactivated", message: "Personnel record soft-deleted successfully." });
+      handleClosePanel();
+      await fetchPersonnel();
+    } catch (error: unknown) {
+      dispatch({ kind: "TOAST", type: "ERROR", title: "Action Failed", message: error instanceof Error ? error.message : "Deletion failed." });
+    }
+  };
+
+  const handleOpenDetails = (person: Personnel) => {
+    setSelectedPersonId(person.id);
+    openPanel(<DetailsPanel personnel={person} onClose={handleClosePanel} onUpdate={handleUpdate} onDelete={handleDelete} dispatch={dispatch} />);
+  };
+
+  const handleOpenProvision = () => {
+    setSelectedPersonId(null);
+    openPanel(<ProvisionPanel branches={branches} onClose={handleClosePanel} onCreate={handleCreate} dispatch={dispatch} />);
+  };
+
+  const handleOpenLogs = () => {
+    setSelectedPersonId(null);
+    openPanel(<ActivityLogsPanel logs={logs} onClose={handleClosePanel} />);
+  };
+
   return (
-    <div className="flex h-screen w-full bg-white overflow-hidden text-slate-900 font-sans">
-      <main className="flex-1 min-w-0 flex flex-col h-full bg-white relative z-0 shrink">
-        <header className="pl-8 p-4 shrink-0 border-b border-black/[0.04]">
-          <div className="flex flex-col md:flex-row md:items-end justify-between gap-4">
-            <div>
-              <h1 className="text-2xl font-semibold tracking-tight text-slate-900">Personnel Operations</h1>
-              <p className="text-[13px] text-slate-500 mt-1">Manage global branch access, security parameters, and roles.</p>
-            </div>
-            <div className="flex items-center gap-3">
-              <button onClick={() => handleOpenPanel("logs")} className={`px-4 py-2 text-[12px] font-semibold border rounded-lg transition-colors flex items-center gap-2 ${activePanel === 'logs' ? 'bg-slate-100 border-black/10 text-slate-800' : 'bg-white border-black/5 text-slate-500 hover:bg-slate-50 hover:text-slate-800'}`}>
-                <i className="bx bx-history text-sm" /> Audit Trail
-              </button>
-              <button onClick={() => handleOpenPanel("provision")} className="px-5 py-2 bg-slate-900 text-white text-[12px] font-semibold rounded-lg shadow-sm hover:bg-slate-800 transition-all flex items-center gap-2">
-                <i className="bx bx-plus text-sm" /> Provision Access
-              </button>
-            </div>
-          </div>
-          <div className="flex gap-6 mt-6 pt-4 border-t border-black/5 overflow-x-auto custom-scrollbar">
-            <div className="flex flex-col"><span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Total Staff</span><span className="text-xl font-medium text-slate-800">{summary.total}</span></div>
-            <div className="w-px h-8 bg-black/5 self-center" />
-            <div className="flex flex-col"><span className="text-[10px] font-bold text-emerald-500 uppercase tracking-widest">Active Accounts</span><span className="text-xl font-medium text-slate-800">{summary.active}</span></div>
-            <div className="w-px h-8 bg-black/5 self-center" />
-            <div className="flex flex-col"><span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Disabled</span><span className="text-xl font-medium text-slate-800">{summary.disabled}</span></div>
-            <div className="w-px h-8 bg-black/5 self-center" />
-            <div className="flex flex-col"><span className="text-[10px] font-bold text-amber-500 uppercase tracking-widest">Locked Out</span><span className="text-xl font-medium text-slate-800">{summary.locked}</span></div>
-          </div>
-        </header>
+    <div className="flex flex-col h-full w-full bg-white relative z-0">
 
-        <div className="px-6 md:px-10 py-3 shrink-0 flex items-center gap-4 bg-slate-50/50 border-b border-black/[0.04]">
-          <div className="relative w-64 shrink-0">
-            <i className="bx bx-search absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 text-lg" />
-            <input type="text" placeholder="Search ID, name, or email..." value={searchTerm} onChange={e => setSearchTerm(e.target.value)} className="w-full pl-9 pr-4 py-1.5 bg-white border border-black/5 rounded-md text-[12px] outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500/30 transition-all" />
+      {/* Adjusting the left padding on the header to clear the back button space */}
+      <header className="px-4 py-4 shrink-0 border-b border-black/[0.04]">
+        <div className="flex flex-col md:flex-row md:items-end justify-between gap-4">
+          <div>
+            <h1 className="text-2xl font-semibold tracking-tight text-slate-900">Personnel Operations</h1>
+            <p className="text-[13px] text-slate-500 mt-1">Manage global branch access, security parameters, and roles.</p>
           </div>
-          <div className="h-4 w-px bg-black/10" />
-          <div className="flex gap-1 overflow-x-auto custom-scrollbar">
-            {["all", "active", "locked", "disabled"].map(status => (
-              <button key={status} onClick={() => setFilterStatus(status)} className={`px-3 py-1 rounded text-[11px] font-semibold capitalize transition-colors ${filterStatus === status ? "bg-white border shadow-sm text-slate-800" : "text-slate-500 hover:text-slate-800 hover:bg-black/5"}`}>{status}</button>
-            ))}
+          <div className="flex items-center gap-3">
+            <button onClick={handleOpenLogs} className="px-4 py-2 text-[12px] font-semibold border rounded-lg transition-colors flex items-center gap-2 bg-white border-black/5 text-slate-500 hover:bg-slate-50 hover:text-slate-800">
+              <i className="bx bx-history text-sm" /> Audit Trail
+            </button>
+            <button onClick={handleOpenProvision} className="px-5 py-2 bg-slate-900 text-white text-[12px] font-semibold rounded-lg shadow-sm hover:bg-slate-800 transition-all flex items-center gap-2">
+              <i className="bx bx-plus text-sm" /> Provision Access
+            </button>
           </div>
         </div>
-
-        <div className="px-4 md:px-8 py-2 shrink-0 flex items-center text-[10px] font-bold text-slate-400 uppercase tracking-widest border-b border-black/[0.04] bg-white">
-           <div className="w-[120px] md:w-[140px] shrink-0">Staff ID</div>
-           <div className="w-[120px] md:w-[160px] shrink-0">Primary Branch</div>
-           <div className="flex-1 min-w-[100px] hidden sm:block">Email Address</div>
-           <div className="w-[90px] md:w-[120px] shrink-0">Role</div>
-           <div className="flex-1 min-w-[120px]">Personnel Name</div>
-           <div className="w-[80px] md:w-[100px] shrink-0">Access</div>
+        <div className="flex gap-6 mt-6 pt-4 border-t border-black/5 overflow-x-auto custom-scrollbar">
+          <div className="flex flex-col"><span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Total Staff</span><span className="text-xl font-medium text-slate-800">{summary.total}</span></div>
+          <div className="w-px h-8 bg-black/5 self-center" />
+          <div className="flex flex-col"><span className="text-[10px] font-bold text-emerald-500 uppercase tracking-widest">Active Accounts</span><span className="text-xl font-medium text-slate-800">{summary.active}</span></div>
+          <div className="w-px h-8 bg-black/5 self-center" />
+          <div className="flex flex-col"><span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Disabled</span><span className="text-xl font-medium text-slate-800">{summary.disabled}</span></div>
+          <div className="w-px h-8 bg-black/5 self-center" />
+          <div className="flex flex-col"><span className="text-[10px] font-bold text-amber-500 uppercase tracking-widest">Locked Out</span><span className="text-xl font-medium text-slate-800">{summary.locked}</span></div>
         </div>
+      </header>
 
-        <div className="flex-1 overflow-y-auto custom-scrollbar bg-white relative">
-          {isLoading && personnelList.length === 0 ? (
-            <div className="absolute inset-0 flex items-center justify-center bg-white/50 backdrop-blur-sm z-10"><i className="bx bx-loader-alt animate-spin text-3xl text-blue-500" /></div>
-          ) : personnelList.length === 0 ? (
-            <div className="flex flex-col items-center justify-center h-full text-center space-y-3 opacity-50 p-6"><i className="bx bx-group text-4xl text-black/20" /><p className="text-[12px] font-bold tracking-widest uppercase">No Personnel Found</p></div>
-          ) : (
-            personnelList.map(person => (
-              <PersonnelRow key={person.id} personnel={person} isSelected={selectedPerson?.id === person.id} onClick={() => handleOpenPanel("details", person)} />
-            ))
-          )}
+      <div className="px-6 md:px-10 py-3 shrink-0 flex items-center gap-4 bg-slate-50/50 border-b border-black/[0.04]">
+        <div className="relative w-64 shrink-0">
+          <i className="bx bx-search absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 text-lg" />
+          <input type="text" placeholder="Search ID, name, or email..." value={searchTerm} onChange={e => setSearchTerm(e.target.value)} className="w-full pl-9 pr-4 py-1.5 bg-white border border-black/5 rounded-md text-[12px] outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500/30 transition-all" />
         </div>
-      </main>
+        <div className="h-4 w-px bg-black/10" />
+        <div className="flex gap-1 overflow-x-auto custom-scrollbar">
+          {["all", "active", "locked", "disabled"].map(status => (
+            <button key={status} onClick={() => setFilterStatus(status)} className={`px-3 py-1 rounded text-[11px] font-semibold capitalize transition-colors ${filterStatus === status ?
+              "bg-white border shadow-sm text-slate-800" : "text-slate-500 hover:text-slate-800 hover:bg-black/5"}`}>{status}</button>
+          ))}
+        </div>
+      </div>
 
-      <AnimatePresence>
-        {activePanel !== "none" && (
-          <motion.aside initial={{ width: 0, opacity: 0 }} animate={{ width: 340, opacity: 1 }} exit={{ width: 0, opacity: 0 }} transition={{ duration: 0.3, ease: "easeInOut" }} className="shrink-0 h-full border-l border-black/5 bg-white relative z-10 overflow-hidden hidden md:block">
-            <div className="w-[340px] h-full absolute top-0 left-0 bg-white">
-               <AnimatePresence mode="wait">
-                 {activePanel === "provision" && <ProvisionPanel key="provision" onClose={handleClosePanel} onCreate={handleCreate} branches={branches} />}
-                 {activePanel === "details" && selectedPerson && <DetailsPanel key="details" personnel={selectedPerson} onClose={handleClosePanel} onUpdate={handleUpdate} viewerCanResendOTP={true} />}
-                 {activePanel === "logs" && <ActivityLogsPanel key="logs" logs={logs} onClose={handleClosePanel} />}
-               </AnimatePresence>
-            </div>
-          </motion.aside>
+      <div className="px-4 md:px-8 py-2 shrink-0 flex items-center text-[10px] font-bold text-slate-400 uppercase tracking-widest border-b border-black/[0.04] bg-white">
+        <div className="w-[120px] md:w-[140px] shrink-0">Staff ID</div>
+        <div className="w-[120px] md:w-[160px] shrink-0">Primary Branch</div>
+        <div className="flex-1 min-w-[100px] hidden sm:block">Email Address</div>
+        <div className="w-[90px] md:w-[120px] shrink-0">Role</div>
+        <div className="flex-1 min-w-[120px]">Personnel Name</div>
+        <div className="w-[80px] md:w-[100px] shrink-0">Access</div>
+      </div>
+
+      <div className="flex-1 overflow-y-auto custom-scrollbar bg-white relative">
+        {isLoading && personnelList.length === 0 ? (
+          <div className="absolute inset-0 flex items-center justify-center bg-white/50 backdrop-blur-sm z-10"><i className="bx bx-loader-alt animate-spin text-3xl text-blue-500" /></div>
+        ) : personnelList.length === 0 ? (
+          <div className="flex flex-col items-center justify-center h-full text-center space-y-3 opacity-50 p-6"><i className="bx bx-group text-4xl text-black/20" /><p className="text-[12px] font-bold tracking-widest uppercase">No Personnel Found</p></div>
+        ) : (
+          personnelList.map(person => (
+            <PersonnelRow 
+              key={person.id} 
+              personnel={person} 
+              isSelected={selectedPersonId === person.id} 
+              onClick={() => handleOpenDetails(person)} 
+            />
+          ))
         )}
-      </AnimatePresence>
-     
+      </div>
+
     </div>
   );
 }

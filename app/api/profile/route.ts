@@ -1,5 +1,3 @@
-"use server";
-
 import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import bcrypt from "bcryptjs";
@@ -330,7 +328,7 @@ export async function PATCH(request: NextRequest): Promise<NextResponse> {
       const existing = await prisma.authorizedPersonnel.findFirst({
         where: {
           organizationId: personnel.organizationId,
-          email: body.email,
+          email: body.email.toLowerCase().trim(),
           deletedAt: null,
           id: { not: personnel.id },
         },
@@ -344,10 +342,10 @@ export async function PATCH(request: NextRequest): Promise<NextResponse> {
       }
 
       if (isAdmin) {
-        updateData.email = body.email;
+        updateData.email = body.email.toLowerCase().trim();
         logActions.push("EMAIL_UPDATED_DIRECTLY");
       } else {
-        emailApproval = { email: body.email };
+        emailApproval = { email: body.email.toLowerCase().trim() };
         logActions.push("EMAIL_CHANGE_REQUESTED");
       }
     }
@@ -486,7 +484,7 @@ export async function PATCH(request: NextRequest): Promise<NextResponse> {
             branchId: personnel.branchId,
             personnelId: personnel.id,
             action,
-            metadata: { changes: Object.keys(updateData) },
+            metadata: { changes: Object.keys(updateData) } as Prisma.InputJsonValue,
           },
         });
       }

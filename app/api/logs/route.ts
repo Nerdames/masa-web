@@ -15,28 +15,46 @@ import { applyActionDirectly } from "@/lib/actions";
 import { createNotification } from "@/lib/notifications";
 
 /* -------------------------------------------------- */
-/* CONFIG */
+/* CONFIG & TYPES */
 /* -------------------------------------------------- */
 
 const MAX_META_BYTES = 32 * 1024;
 const MAX_ACTION_LENGTH = 200;
-
 const RATE_LIMIT_WINDOW_MS = 10_000;
 const RATE_LIMIT_MAX = 30;
-
 const SYSTEM_HMAC_SECRET = process.env.LOG_SYSTEM_HMAC_SECRET || "";
 
+/**
+ * Validates that the metadata is a serializable JSON object
+ */
+const JsonSchema = z.record(z.unknown());
+
+const postBodySchema = z.object({
+  action: z.string().min(1).max(MAX_ACTION_LENGTH),
+  organizationId: z.string().optional(),
+  branchId: z.string().optional(),
+  personnelId: z.string().optional(),
+  approvalId: z.string().optional(),
+  meta: JsonSchema.optional(),
+  systemHmac: z.string().optional(),
+});
+
+type PostBody = z.infer<typeof postBodySchema>;
+
 /* -------------------------------------------------- */
-/* RATE LIMITER */
+/* RATE LIMITER (In-Memory) */
 /* -------------------------------------------------- */
 
 const rateMap = new Map<string, number[]>();
 
-function checkRateLimit(key: string) {
+/**
+ * Basic in-memory rate limiting. 
+ * For multi-instance production, consider Redis/Upstash.
+ */
+function checkRateLimit(key: string): boolean {
   const now = Date.now();
-  const arr = rateMap.get(key) ?? [];
-
-  const filtered = arr.filter((t) => now - t <= RATE_LIMIT_WINDOW_MS);
+  const timestamps = rateMap.get(key) ?? [];
+  const filtered = timestamps.filter((t) => now - t <= RATE_LIMIT_WINDOW_MS);
 
   if (filtered.length >= RATE_LIMIT_MAX) {
     rateMap.set(key, filtered);
@@ -45,37 +63,18 @@ function checkRateLimit(key: string) {
 
   filtered.push(now);
   rateMap.set(key, filtered);
-
   return true;
 }
-
-/* -------------------------------------------------- */
-/* VALIDATION */
-/* -------------------------------------------------- */
-
-const postBodySchema = z.object({
-  action: z.string().min(1).max(MAX_ACTION_LENGTH),
-
-  organizationId: z.string().optional(),
-  branchId: z.string().optional(),
-
-  personnelId: z.string().optional(),
-  approvalId: z.string().optional(),
-
-  meta: z.any().optional(),
-
-  systemHmac: z.string().optional(),
-});
 
 /* -------------------------------------------------- */
 /* HELPERS */
 /* -------------------------------------------------- */
 
 function jsonError(message: string, status = 400) {
-  return NextResponse.json({ message }, { status });
+  return NextResponse.json({ message, success: false }, { status });
 }
 
-function verifySystemHmac(payload: string, hmac: string) {
+function verifySystemHmac(payload: string, hmac: string): boolean {
   if (!SYSTEM_HMAC_SECRET) return false;
 
   const mac = crypto
@@ -90,13 +89,28 @@ function verifySystemHmac(payload: string, hmac: string) {
   }
 }
 
+/**
+ * Fetches relevant admins/managers to notify within an organization
+ */
+async function getNotificationRecipients(organizationId: string) {
+  const staff = await prisma.authorizedPersonnel.findMany({
+    where: {
+      organizationId,
+      role: { in: [Role.ADMIN, Role.MANAGER] },
+      status: "ACTIVE",
+    },
+    select: { id: true },
+  });
+  return staff.map((s) => s.id);
+}
+
 /* ==================================================
-   POST /api/log
+    POST /api/log
 ================================================== */
 
 export async function POST(req: NextRequest) {
   try {
-    const ip = req.headers.get("x-forwarded-for") ?? "unknown";
+    const ip = req.headers.get("x-forwarded-for")?.split(",")[0] ?? "unknown";
     const device = req.headers.get("user-agent") ?? "unknown";
 
     if (!checkRateLimit(`log_post:${ip}`)) {
@@ -104,19 +118,17 @@ export async function POST(req: NextRequest) {
     }
 
     const raw = await req.text();
-
-    let parsedBody: unknown;
+    let jsonBody: unknown;
 
     try {
-      parsedBody = JSON.parse(raw);
+      jsonBody = JSON.parse(raw);
     } catch {
       return jsonError("Invalid JSON body", 400);
     }
 
-    const parsed = postBodySchema.safeParse(parsedBody);
-
-    if (!parsed.success) {
-      return jsonError("Invalid payload", 400);
+    const result = postBodySchema.safeParse(jsonBody);
+    if (!result.success) {
+      return jsonError("Invalid payload schema", 400);
     }
 
     const {
@@ -127,225 +139,169 @@ export async function POST(req: NextRequest) {
       approvalId,
       meta,
       systemHmac,
-    } = parsed.data;
+    } = result.data;
 
-    /* ---------------- Meta Size Validation ---------------- */
+    /* ---------------- Validation ---------------- */
 
-    if (meta !== undefined) {
+    if (meta) {
       const metaStr = JSON.stringify(meta);
-
       if (Buffer.byteLength(metaStr, "utf8") > MAX_META_BYTES) {
         return jsonError("Meta payload too large", 413);
       }
     }
 
-    /* ---------------- System Event Verification ---------------- */
-
-    const isSystemEvent = Boolean(systemHmac);
-
-    if (isSystemEvent && !verifySystemHmac(raw, systemHmac!)) {
+    if (systemHmac && !verifySystemHmac(raw, systemHmac)) {
       return jsonError("Invalid system HMAC", 401);
     }
 
-    /* ---------------- Get Requester ---------------- */
-
     const session = await getServerSession(authOptions);
+    const requester = session?.user;
 
-    const requester = session?.user ?? null;
+    /* ---------------- Role Authorization ---------------- */
 
-    /* --------------------------------------------------
-       Determine required role
-    -------------------------------------------------- */
-
-    const requiredRole = ACTION_REQUIREMENTS[action];
+    const requiredRole = ACTION_REQUIREMENTS[action as keyof typeof ACTION_REQUIREMENTS];
+    const userRole = requester?.role as Role | undefined;
 
     const requesterMeetsRequirement =
-      requester &&
-      (!requiredRole ||
-        ROLE_WEIGHT[requester.role as Role] >= ROLE_WEIGHT[requiredRole]);
+      !!requester &&
+      (!requiredRole || (userRole && ROLE_WEIGHT[userRole] >= ROLE_WEIGHT[requiredRole]));
 
-    /* --------------------------------------------------
-       If requester lacks permission → create approval
-    -------------------------------------------------- */
+    const targetOrgId = organizationId ?? requester?.organizationId;
 
-    if (!requesterMeetsRequirement && requester) {
-      const approval = await prisma.approvalRequest.create({
-        data: {
-          organizationId: organizationId ?? requester.organizationId,
-          branchId: branchId ?? null,
+    if (!targetOrgId) {
+      return jsonError("Organization Context Missing", 400);
+    }
 
-          requesterId: requester.id,
+    /* ---------------- CASE 1: Requires Approval ---------------- */
 
-          actionType: action as any,
-
-          changes: meta ?? {},
-
-          status: "PENDING",
-        },
-      });
-
-      await prisma.activityLog.create({
-        data: {
-          organizationId: approval.organizationId,
-          branchId: approval.branchId,
-
-          personnelId: requester.id,
-
-          action: `REQUEST_APPROVAL_${action}`,
-
-          critical: false,
-
-          ipAddress: ip,
-          deviceInfo: device,
-
-          metadata: {
-            approvalId: approval.id,
-            payload: meta ?? null,
-          } as Prisma.InputJsonValue,
-
-          approvalId: approval.id,
-        },
-      });
-
-      /* ---------------- Notifications ---------------- */
-
-      try {
-        const approvers = await prisma.authorizedPersonnel.findMany({
-          where: {
-            organizationId: approval.organizationId,
-            OR: [{ role: "ADMIN" }, { role: "MANAGER" }],
+    if (requester && !requesterMeetsRequirement) {
+      const approvalResult = await prisma.$transaction(async (tx) => {
+        const approval = await tx.approvalRequest.create({
+          data: {
+            organizationId: targetOrgId,
+            branchId: branchId ?? null,
+            requesterId: requester.id,
+            actionType: action,
+            changes: (meta as Prisma.InputJsonValue) ?? {},
+            status: "PENDING",
           },
-          select: { id: true },
         });
 
-        const recipientIds = approvers.map((a) => a.id);
-
-        if (recipientIds.length) {
-          await createNotification({
-            title: `Approval required`,
-            message: `${requester.name} requested ${action}`,
-            type: "APPROVAL_REQUIRED",
-            organizationId: approval.organizationId,
-            branchId: approval.branchId,
+        await tx.activityLog.create({
+          data: {
+            organizationId: targetOrgId,
+            branchId: branchId ?? null,
+            personnelId: requester.id,
+            action: `REQUEST_APPROVAL_${action}`,
+            critical: false,
+            ipAddress: ip,
+            deviceInfo: device,
+            metadata: {
+              approvalId: approval.id,
+              payload: meta ?? null,
+            } as Prisma.InputJsonValue,
             approvalId: approval.id,
+          },
+        });
+
+        return approval;
+      });
+
+      // Background notification
+      getNotificationRecipients(targetOrgId).then((recipientIds) => {
+        if (recipientIds.length) {
+          createNotification({
+            title: "Approval Required",
+            message: `${requester.name} requested permission for: ${action}`,
+            type: "APPROVAL_REQUIRED",
+            organizationId: targetOrgId,
+            branchId: branchId ?? null,
+            approvalId: approvalResult.id,
             recipientIds,
           });
         }
-      } catch (err) {
-        console.error("[APPROVAL_NOTIFICATION]", err);
-      }
+      }).catch(err => console.error("[NOTIFY_APPROVAL_ERR]", err));
 
       return NextResponse.json(
         {
           success: true,
-          approvalId: approval.id,
+          approvalId: approvalResult.id,
           status: "PENDING",
         },
         { status: 202 }
       );
     }
 
-    /* --------------------------------------------------
-       Direct execution for authorized requester
-    -------------------------------------------------- */
+    /* ---------------- CASE 2: Authorized Execution ---------------- */
 
     if (requester && requesterMeetsRequirement) {
-      const result = await prisma.$transaction(async (tx) => {
-        const operation = await applyActionDirectly(
+      const executionResult = await prisma.$transaction(async (tx) => {
+        const opResult = await applyActionDirectly(
           tx,
-          action as any,
+          action,
           personnelId ?? "",
-          meta ?? {},
+          (meta as Record<string, unknown>) ?? {},
           requester.id,
-          organizationId ?? requester.organizationId,
+          targetOrgId,
           branchId ?? null
         );
 
         await tx.activityLog.create({
           data: {
-            organizationId: organizationId ?? requester.organizationId,
+            organizationId: targetOrgId,
             branchId: branchId ?? null,
-
             personnelId: requester.id,
-
             action: `EXECUTE_${action}`,
-
             critical: true,
-
             ipAddress: ip,
             deviceInfo: device,
-
-            metadata: {
-              changes: meta ?? {},
-            } as Prisma.InputJsonValue,
+            metadata: { changes: meta ?? {} } as Prisma.InputJsonValue,
           },
         });
 
-        return operation;
+        return opResult;
       });
 
-      /* ---------------- Execution Notifications ---------------- */
-
-      try {
-        const orgId = organizationId ?? requester.organizationId;
-
-        const admins = await prisma.authorizedPersonnel.findMany({
-          where: {
-            organizationId: orgId,
-            OR: [{ role: "ADMIN" }, { role: "MANAGER" }],
-          },
-          select: { id: true },
-        });
-
-        const recipientIds = admins.map((a) => a.id);
-
+      // Background notification
+      getNotificationRecipients(targetOrgId).then((recipientIds) => {
         if (recipientIds.length) {
-          await createNotification({
-            title: `Action executed`,
-            message: `${requester.name} executed ${action}`,
+          createNotification({
+            title: "Action Executed",
+            message: `${requester.name} performed: ${action}`,
             type: "SYSTEM",
-            organizationId: orgId,
-            branchId,
+            organizationId: targetOrgId,
+            branchId: branchId ?? null,
             recipientIds,
           });
         }
-      } catch (err) {
-        console.error("[EXEC_NOTIFICATION]", err);
-      }
+      }).catch(err => console.error("[NOTIFY_EXEC_ERR]", err));
 
-      return NextResponse.json({ success: true, result });
+      return NextResponse.json({ success: true, result: executionResult });
     }
 
-    /* --------------------------------------------------
-       Fallback simple log
-    -------------------------------------------------- */
+    /* ---------------- CASE 3: Standard Logging Fallback ---------------- */
 
-    const created = await prisma.activityLog.create({
+    const logEntry = await prisma.activityLog.create({
       data: {
         action,
-        organizationId: organizationId ?? "",
+        organizationId: targetOrgId,
         branchId: branchId ?? null,
-
         personnelId: personnelId ?? null,
-
         approvalId: approvalId ?? null,
-
         critical: false,
-
         ipAddress: ip,
         deviceInfo: device,
-
-        metadata: meta ?? null,
+        metadata: (meta as Prisma.InputJsonValue) ?? null,
       },
     });
 
     return NextResponse.json({
       success: true,
-      id: created.id,
+      id: logEntry.id,
     });
-  } catch (err) {
-    console.error("[LOG_POST]", err);
 
-    return jsonError("Failed to create log entry", 500);
+  } catch (err) {
+    console.error("[LOG_POST_FATAL]", err);
+    return jsonError("Internal server error during log processing", 500);
   }
 }
