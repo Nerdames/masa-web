@@ -3,18 +3,27 @@
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { useRouter } from "next/navigation";
 import useSWR from "swr";
-import { useMemo, useState, useEffect } from "react";
+import { useMemo, useState, useEffect, useRef } from "react";
 import { Tooltip } from "@/components/feedback/Tooltip";
 import { useSession } from "next-auth/react";
 import { getPusherClient } from "@/lib/pusher";
 import { formatDistanceToNow } from "date-fns";
+
+// Aligned with your Prisma Enums
+type NotificationType = 
+  | "SECURITY" 
+  | "INVENTORY" 
+  | "APPROVAL" 
+  | "SYSTEM" 
+  | "TRANSACTIONAL" 
+  | "INFO";
 
 interface Notification {
   id: string;
   read: boolean;
   title: string;
   message: string;
-  type: "SECURITY" | "INFO" | "SUCCESS" | "WARNING" | "ERROR";
+  type: NotificationType;
   createdAt: string;
   approvalId?: string;
 }
@@ -29,17 +38,21 @@ const fetcher = async (url: string): Promise<{ notifications: Notification[] }> 
   return res.json();
 };
 
-const TYPE_CONFIG = {
+const TYPE_CONFIG: Record<NotificationType, { icon: string; color: string; bg: string }> = {
   SECURITY: { icon: "bx-shield-quarter", color: "text-red-600", bg: "bg-red-50" },
-  WARNING: { icon: "bx-error", color: "text-amber-600", bg: "bg-amber-50" },
-  SUCCESS: { icon: "bx-check-circle", color: "text-emerald-600", bg: "bg-emerald-50" },
-  ERROR: { icon: "bx-x-circle", color: "text-rose-600", bg: "bg-rose-50" },
+  INVENTORY: { icon: "bx-package", color: "text-orange-600", bg: "bg-orange-50" },
+  APPROVAL: { icon: "bx-lock-open", color: "text-amber-600", bg: "bg-amber-50" },
+  SYSTEM: { icon: "bx-cog", color: "text-slate-600", bg: "bg-slate-100" },
+  TRANSACTIONAL: { icon: "bx-receipt", color: "text-emerald-600", bg: "bg-emerald-50" },
   INFO: { icon: "bx-info-circle", color: "text-blue-600", bg: "bg-blue-50" },
 };
 
 export function NotificationsBell({ onUnreadChange }: Props) {
   const router = useRouter();
   const { data: session } = useSession();
+  const [open, setOpen] = useState(false);
+  const closeTimerRef = useRef<NodeJS.Timeout | null>(null);
+
   const { data, mutate, isValidating } = useSWR<{ notifications: Notification[] }>(
     "/api/notifications",
     fetcher,
@@ -51,17 +64,12 @@ export function NotificationsBell({ onUnreadChange }: Props) {
 
   useEffect(() => {
     if (!session?.user?.organizationId) return;
-
     const pusher = getPusherClient();
     const channel = pusher.subscribe(`org-${session.user.organizationId}`);
     const handleUpdate = () => mutate();
-
     channel.bind("critical-alert", handleUpdate);
     channel.bind("new-notification", handleUpdate);
-
-    return () => {
-      pusher.unsubscribe(`org-${session.user.organizationId}`);
-    };
+    return () => { pusher.unsubscribe(`org-${session.user.organizationId}`); };
   }, [session?.user?.organizationId, mutate]);
 
   useEffect(() => {
@@ -71,11 +79,28 @@ export function NotificationsBell({ onUnreadChange }: Props) {
   const latest = useMemo(() => notifications.slice(0, 8), [notifications]);
   const [loadingMarkAll, setLoadingMarkAll] = useState(false);
 
+  /* --- Interaction Logic --- */
+
+  const handleMouseEnter = () => {
+    if (closeTimerRef.current) clearTimeout(closeTimerRef.current);
+  };
+
+  const handleMouseLeave = () => {
+    // Closes the menu automatically if the user leaves the card area for 1.2s
+    closeTimerRef.current = setTimeout(() => {
+      setOpen(false);
+    }, 1200);
+  };
+
   const handleMarkRead = async (id: string, approvalId?: string) => {
+    // Optimistic UI update
     mutate(
       { notifications: notifications.map((n) => (n.id === id ? { ...n, read: true } : n)) },
       false
     );
+
+    // Auto-close dropdown when a card is clicked
+    setOpen(false);
 
     try {
       await fetch("/api/notifications", {
@@ -87,11 +112,7 @@ export function NotificationsBell({ onUnreadChange }: Props) {
       console.error("Sync error:", err);
     }
 
-    if (approvalId) {
-      router.push(`/dashboard/notifications?selected=${id}`);
-    } else {
-      router.push(`/dashboard/notifications?selected=${id}`);
-    }
+    router.push(`/dashboard/notifications?selected=${id}`);
   };
 
   const handleMarkAllRead = async () => {
@@ -114,7 +135,7 @@ export function NotificationsBell({ onUnreadChange }: Props) {
   };
 
   return (
-    <DropdownMenu.Root>
+    <DropdownMenu.Root open={open} onOpenChange={setOpen}>
       <Tooltip side="bottom" content={unreadCount > 0 ? `${unreadCount} unread alerts` : "Notifications"}>
         <DropdownMenu.Trigger asChild>
           <button className="relative w-8 h-8 rounded-lg bg-gray-100 flex items-center justify-center hover:bg-slate-200 transition-all group outline-none focus:ring-2 focus:ring-blue-500/20">
@@ -130,6 +151,8 @@ export function NotificationsBell({ onUnreadChange }: Props) {
         <DropdownMenu.Content
           align="end"
           sideOffset={8}
+          onMouseEnter={handleMouseEnter}
+          onMouseLeave={handleMouseLeave}
           className="w-[380px] bg-white rounded-2xl shadow-2xl border border-slate-100 flex flex-col overflow-hidden z-[100] animate-in fade-in zoom-in-95 duration-200"
         >
           <div className="px-5 py-4 border-b border-slate-50 flex items-center justify-between bg-slate-50/50">
@@ -194,7 +217,7 @@ export function NotificationsBell({ onUnreadChange }: Props) {
                         {n.message}
                       </p>
                       
-                      {n.approvalId && !n.read && (
+                      {n.type === "APPROVAL" && !n.read && (
                         <div className="mt-2.5 flex items-center gap-1.5 text-[9px] font-black uppercase text-amber-600 tracking-widest bg-amber-50 w-fit px-2 py-0.5 rounded-md">
                           <i className="bx bxs-lock-open animate-pulse" />
                           Auth Required
@@ -209,7 +232,10 @@ export function NotificationsBell({ onUnreadChange }: Props) {
 
           <div className="p-3 bg-slate-50 border-t border-slate-100">
             <button
-              onClick={() => router.push("/dashboard/notifications")}
+              onClick={() => {
+                setOpen(false);
+                router.push("/dashboard/notifications");
+              }}
               className="w-full py-2 rounded-lg bg-white border border-slate-200 text-[10px] font-black uppercase tracking-widest text-slate-500 hover:text-blue-600 hover:border-blue-200 transition-all shadow-sm"
             >
               View Analysis Dashboard

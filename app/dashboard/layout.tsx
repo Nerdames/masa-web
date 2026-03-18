@@ -37,7 +37,7 @@ export default function DashboardRootLayout({ children }: DashboardRootLayoutPro
           {/* Core Content Container */}
           <div className="flex flex-1 min-w-0 overflow-hidden relative">
             <main
-              className={`flex-1 min-w-0 overflow-y-auto transition-opacity duration-500 ${
+              className={`flex-1 min-w-0 overflow-y-auto overflow-x-hidden transition-opacity duration-500 ${
                 status === "loading" ? "opacity-0" : "opacity-100"
               }`}
             >

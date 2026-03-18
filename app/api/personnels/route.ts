@@ -34,7 +34,6 @@ const ROLE_CODE: Record<Role, string> = {
   CASHIER: "05",
 };
 
-// UPDATED: Scoped uniqueness generation
 async function generateStaffCode(
   tx: Prisma.TransactionClient,
   organizationId: string,
@@ -137,7 +136,7 @@ export async function GET(req: NextRequest) {
         id: b.id,
         name: b.name,
         count: b._count.personnel
-      })),
+       })),
       recentLogs
     });
   } catch (error) {
@@ -245,6 +244,11 @@ export async function PATCH(req: NextRequest) {
 
     if (!id) return NextResponse.json({ message: "Target ID is required" }, { status: 400 });
 
+    // CRITICAL: Prevent self-modification for security status
+    if (id === auth.userId && (disabled !== undefined || isLocked !== undefined)) {
+      return NextResponse.json({ message: "You cannot lock or disable your own account." }, { status: 403 });
+    }
+
     const targetUser = await prisma.authorizedPersonnel.findFirst({
       where: { id, organizationId: auth.organizationId, deletedAt: null }
     });
@@ -253,16 +257,17 @@ export async function PATCH(req: NextRequest) {
 
     const isTargetPrivileged = targetUser.role === Role.ADMIN || targetUser.isOrgOwner;
 
+    // Security constraints for Privileged Accounts
     if (isTargetPrivileged && (disabled === true || isLocked === true)) {
-      return NextResponse.json({ message: "Privileged accounts cannot be locked or disabled." }, { status: 403 });
+      return NextResponse.json({ message: "Privileged accounts cannot be locked or disabled for security reasons." }, { status: 403 });
     }
 
+    // Role-specific constraints
     if (auth.role === Role.MANAGER) {
       if (isTargetPrivileged) return NextResponse.json({ message: "Cannot modify superior roles." }, { status: 403 });
-      if (targetUser.id === auth.userId && (disabled !== undefined || isLocked !== undefined)) {
-        return NextResponse.json({ message: "Security status must be managed by an Admin." }, { status: 403 });
+      if (disabled !== undefined || isLocked !== undefined) {
+        return NextResponse.json({ message: "Managers cannot modify account security status (Lock/Disable)." }, { status: 403 });
       }
-      if (disabled !== undefined) return NextResponse.json({ message: "Managers cannot disable accounts." }, { status: 403 });
     }
 
     const cleanEmail = email?.toLowerCase().trim();
@@ -297,7 +302,7 @@ export async function PATCH(req: NextRequest) {
         updateData.disabled = disabled;
         auditChanges.disabled = { from: targetUser.disabled, to: disabled };
         actions.push(disabled ? "ACCOUNT_DISABLED" : "ACCOUNT_ENABLED");
-        notificationMessage = disabled ? "Your account has been disabled." : "Your account access has been restored.";
+        notificationMessage = disabled ? "Your account has been disabled by an administrator." : "Your account access has been restored.";
       }
 
       if (isLocked !== undefined && isLocked !== targetUser.isLocked) {
@@ -325,12 +330,12 @@ export async function PATCH(req: NextRequest) {
       if (branchAssignments && Array.isArray(branchAssignments)) {
         await tx.branchAssignment.deleteMany({ where: { personnelId: id } });
         if (branchAssignments.length > 0) {
-          const primaryCount = branchAssignments.filter(ba => ba.isPrimary).length;
+          const primaryCount = branchAssignments.filter((ba: { isPrimary: boolean }) => ba.isPrimary).length;
           if (primaryCount > 1) throw new Error("Only one branch can be marked as primary.");
           if (primaryCount === 0) branchAssignments[0].isPrimary = true;
 
           await tx.branchAssignment.createMany({
-            data: branchAssignments.map(ba => ({
+            data: branchAssignments.map((ba: { branchId: string; role: Role; isPrimary: boolean }) => ({
               personnelId: id,
               branchId: ba.branchId,
               role: ba.role || targetUser.role,
@@ -338,7 +343,7 @@ export async function PATCH(req: NextRequest) {
             }))
           });
 
-          const primaryBranch = branchAssignments.find(ba => ba.isPrimary);
+          const primaryBranch = branchAssignments.find((ba: { isPrimary: boolean }) => ba.isPrimary);
           updateData.branchId = primaryBranch ? primaryBranch.branchId : null;
           branchesReassigned = true;
           actions.push("BRANCH_REASSIGNED");
@@ -418,7 +423,11 @@ export async function DELETE(req: NextRequest) {
     const id = searchParams.get("id");
 
     if (!id) return NextResponse.json({ message: "ID required" }, { status: 400 });
-    if (id === auth.userId) return NextResponse.json({ message: "Cannot delete your own account" }, { status: 400 });
+    
+    // CRITICAL: Prevent self-deletion
+    if (id === auth.userId) {
+      return NextResponse.json({ message: "Security Violation: You cannot deactivate your own account." }, { status: 400 });
+    }
 
     const targetUser = await prisma.authorizedPersonnel.findUnique({
       where: { id, organizationId: auth.organizationId, deletedAt: null }
@@ -426,8 +435,14 @@ export async function DELETE(req: NextRequest) {
 
     if (!targetUser) return NextResponse.json({ message: "User not found" }, { status: 404 });
 
-    if (targetUser.role === Role.ADMIN || targetUser.isOrgOwner || auth.role === Role.MANAGER) {
-       return NextResponse.json({ message: "Unauthorized for this action." }, { status: 403 });
+    // CRITICAL: Admins and Owners cannot be deleted through this interface
+    if (targetUser.role === Role.ADMIN || targetUser.isOrgOwner) {
+       return NextResponse.json({ message: "Administrative accounts cannot be deactivated. Please contact support or downgrade the role first." }, { status: 403 });
+    }
+
+    // Manager constraints
+    if (auth.role === Role.MANAGER) {
+        return NextResponse.json({ message: "Managers do not have permission to deactivate personnel." }, { status: 403 });
     }
 
     await prisma.$transaction(async (tx) => {
@@ -437,7 +452,7 @@ export async function DELETE(req: NextRequest) {
           deletedAt: new Date(),
           disabled: true,
           isLocked: true,
-          lockReason: "Account deactivated/deleted"
+          lockReason: "Account deactivated/deleted by administrator"
         },
       });
 
@@ -446,7 +461,7 @@ export async function DELETE(req: NextRequest) {
           organizationId: auth.organizationId,
           type: NotificationType.SYSTEM,
           title: "Account Deactivated",
-          message: "Account permanently deactivated.",
+          message: "Your account has been permanently deactivated by an administrator.",
           recipients: { create: { personnelId: targetUser.id } }
         }
       });
@@ -461,7 +476,7 @@ export async function DELETE(req: NextRequest) {
           metadata: {
             targetId: id,
             targetName: targetUser.name || targetUser.email,
-            details: `Account softly deleted and locked.`
+            details: `Account softly deleted and locked for security auditing.`
           } as Prisma.InputJsonValue
         }
       });

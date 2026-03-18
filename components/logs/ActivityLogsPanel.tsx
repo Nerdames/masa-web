@@ -100,16 +100,13 @@ export function ActivityLogsPanel({
             <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.3)]" /> 
             {title}
           </h2>
-          <button 
-            onClick={onClose} 
-            className="w-7 h-7 rounded-full hover:bg-black/5 flex items-center justify-center text-slate-400 transition-all active:scale-90"
-          >
-            <i className="bx bx-x text-xl" />
-          </button>
+        <button onClick={onClose} className="w-7 h-7 rounded hover:bg-red-50 hover:text-red-500 flex items-center justify-center text-slate-500 transition-colors">
+          <i className="bx bx-x text-lg" />
+        </button>
         </div>
 
         {/* Filters */}
-        <div className="flex gap-2 overflow-x-auto pb-1 scrollbar-hide">
+        <div className="flex gap-2 overflow-x-auto pb-2 scrollbar-hide" style={{ msOverflowStyle: 'none', scrollbarWidth: 'none' }}>
           {Object.values(LOG_TABS).map((tab) => (
             <button 
               key={tab} 
@@ -183,9 +180,13 @@ export function ActivityLogsPanel({
                     {log.details || (log.metadata as any)?.details || "Audit sequence completed successfully."}
                   </p>
                   
-                  <div className="flex items-center gap-2 py-1.5 px-2.5 bg-slate-50 rounded-xl border border-black/[0.02] group-hover:bg-blue-50 group-hover:border-blue-100 transition-colors">
-                    <span className="text-[8px] font-black text-black/20 uppercase tracking-tighter">Target_Object</span>
-                    <span className="text-[9px] font-bold text-slate-800 truncate">{targetName}</span>
+                  <div className="flex items-center gap-1.5 py-1 scrollbar-hide overflow-x-auto">
+                    <span className="text-[8px] font-black text-slate-400 uppercase tracking-tighter shrink-0">
+                      Target :
+                    </span>
+                    <span className="text-[9px] font-bold text-slate-700 truncate group-hover:text-blue-600 transition-colors">
+                      {targetName}
+                    </span>
                   </div>
                 </div>
 
