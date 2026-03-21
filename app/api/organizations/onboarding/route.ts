@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import prisma from "@/lib/prisma"; // Adjust path
+import prisma from "@/lib/prisma"; // Ensure this points to your singleton prisma client
 import bcrypt from "bcryptjs";
 import { Prisma, Role } from "@prisma/client";
 import { z } from "zod";
@@ -21,12 +21,17 @@ const OnboardingSchema = z.object({
 /* STAFF CODE GENERATOR (Scoped to Tenant) */
 /* ------------------------------------------------ */
 
+/**
+ * Mapping roles to specific segment codes as per MASA Terminal v3.0 specs.
+ * Includes the new AUDITOR role from your updated schema.
+ */
 const ROLE_CODE: Record<Role, string> = {
   ADMIN: "01",
   MANAGER: "02",
   SALES: "03",
   INVENTORY: "04",
   CASHIER: "05",
+  AUDITOR: "06", // Synced with schema Turn 2 updates
   DEV: "99",
 };
 
@@ -35,15 +40,15 @@ async function generateStaffCode(
   organizationId: string,
   role: Role
 ) {
-  // Safe scoped count
+  // Scoped count to ensure sequential codes within this specific organization
   const personnelCount = await tx.authorizedPersonnel.count({
     where: { organizationId },
   });
 
   const seq = (personnelCount + 1).toString().padStart(3, "0");
-  const roleCode = ROLE_CODE[role];
+  const roleCode = ROLE_CODE[role] || "00";
 
-  // Output: STF-001-01 (Unique within the Organization)
+  // Format: STF-001-01 (Unique within the Organization)
   return `STF-${seq}-${roleCode}`;
 }
 
@@ -55,7 +60,7 @@ const rateLimitMap = new Map<string, number>();
 
 function isRateLimited(ip: string) {
   const now = Date.now();
-  const window = 30000; // 30 seconds
+  const window = 30000; // 30-second security cooldown
   const lastRequest = rateLimitMap.get(ip);
 
   if (lastRequest && now - lastRequest < window) {
@@ -73,20 +78,22 @@ function getClientIp(req: NextRequest) {
 }
 
 /* ------------------------------------------------ */
-/* POST HANDLER */
+/* POST HANDLER - INFRASTRUCTURE PROVISIONING */
 /* ------------------------------------------------ */
 
 export async function POST(req: NextRequest) {
   try {
     const ip = getClientIp(req);
 
+    // 1. Rate Limit Check
     if (isRateLimited(ip)) {
       return NextResponse.json(
-        { error: "Too many requests. Please wait 30 seconds." },
+        { error: "Security Throttle: Please wait 30 seconds." },
         { status: 429 }
       );
     }
 
+    // 2. Body Parsing & Validation
     const body = await req.json();
     const parsed = OnboardingSchema.safeParse(body);
 
@@ -111,27 +118,28 @@ export async function POST(req: NextRequest) {
 
     const email = ownerEmail.toLowerCase().trim();
 
-    // FIXED: Removed the invalid { not: undefined } filter
-    // Check if the email already exists in the entire system.
-    const existingEmail = await prisma.authorizedPersonnel.findFirst({
+    // 3. Global Email Uniqueness Check 
+    // (Crucial for the Terminal Sign-In page to resolve the correct account)
+    const existingPersonnel = await prisma.authorizedPersonnel.findFirst({
       where: { email },
     });
 
-    if (existingEmail) {
+    if (existingPersonnel) {
       return NextResponse.json(
-        { error: "This email is already registered." },
+        { error: "This email identifier is already provisioned in the MASA network." },
         { status: 409 }
       );
     }
 
+    // 4. Secure Credential Hashing
     const passwordHash = await bcrypt.hash(ownerPassword, 12);
 
     /* ------------------------------------------------ */
-    /* ATOMIC TRANSACTION */
+    /* ATOMIC TRANSACTION - "ALL OR NOTHING" */
     /* ------------------------------------------------ */
 
     const result = await prisma.$transaction(async (tx) => {
-      // 1. Create Organization
+      // Step A: Create the Organization (ownerId left null temporarily)
       const organization = await tx.organization.create({
         data: {
           name: orgName,
@@ -139,7 +147,7 @@ export async function POST(req: NextRequest) {
         },
       });
 
-      // 2. Create Primary Branch
+      // Step B: Create the Initial Branch
       const branch = await tx.branch.create({
         data: {
           name: branchName,
@@ -148,14 +156,15 @@ export async function POST(req: NextRequest) {
         },
       });
 
-      // 3. Generate AuthCode
+      // Step C: Generate the first Staff Code (STF-001-01)
       const staffCode = await generateStaffCode(
         tx,
         organization.id,
         Role.ADMIN
       );
 
-      // 4. Create Owner (Personnel)
+      // Step D: Provision the Owner (AuthorizedPersonnel)
+      // Note: requiresPasswordChange is set to false as they just set it.
       const owner = await tx.authorizedPersonnel.create({
         data: {
           name: ownerName,
@@ -164,13 +173,14 @@ export async function POST(req: NextRequest) {
           role: Role.ADMIN,
           staffCode,
           organizationId: organization.id,
-          branchId: branch.id,
+          branchId: branch.id, // Linking primary branch directly
           isOrgOwner: true,
           requiresPasswordChange: false,
+          lastLoginIp: ip,
         },
       });
 
-      // 5. Create Primary Branch Assignment
+      // Step E: Establish Branch Assignment (RBAC/ABAC link)
       await tx.branchAssignment.create({
         data: {
           personnelId: owner.id,
@@ -180,13 +190,13 @@ export async function POST(req: NextRequest) {
         },
       });
 
-      // 6. Link Owner back to Organization
+      // Step F: Solve Circular Relation (Assign owner to Organization)
       await tx.organization.update({
         where: { id: organization.id },
         data: { ownerId: owner.id },
       });
 
-      // 7. Log Activity
+      // Step G: Create Critical System Audit Log
       await tx.activityLog.create({
         data: {
           organizationId: organization.id,
@@ -195,42 +205,50 @@ export async function POST(req: NextRequest) {
           action: "SYSTEM_INITIALIZED",
           critical: true,
           ipAddress: ip,
-          metadata: { staffCode },
+          metadata: { 
+            staffCode, 
+            provisioning_version: "3.0",
+            event: "PRIMARY_NODE_ACTIVE" 
+          },
         },
       });
 
       return {
         orgId: organization.id,
         staffCode,
+        email: owner.email,
       };
+    }, {
+        timeout: 15000 // Extended timeout for infra provisioning
     });
 
     return NextResponse.json(
       {
         success: true,
-        message: "Infrastructure provisioned.",
+        message: "Infrastructure provisioned successfully. Terminal active.",
         data: result,
       },
       { status: 201 }
     );
+
   } catch (error: unknown) {
-    // Advanced error logging for Prisma crashes
+    // Advanced Error Resolution for Production
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
-      console.error("[PRISMA_ERROR]", error.code, error.meta);
+      console.error("[PRISMA_INFRA_ERROR]", { code: error.code, meta: error.meta });
       
-      // Specifically catch P2002 (Unique constraint failed)
+      // P2002: Unique constraint failed (e.g., race condition on staffCode)
       if (error.code === 'P2002') {
          return NextResponse.json(
-          { error: "A unique identifier conflict occurred. Please try again." },
+          { error: "A unique identifier conflict occurred. This node might have been provisioned simultaneously." },
           { status: 409 }
         );
       }
     } else {
-      console.error("[ONBOARDING_CRITICAL_ERROR]", error);
+      console.error("[ONBOARDING_CRITICAL_FAILURE]", error);
     }
 
     return NextResponse.json(
-      { error: "Internal Server Error during provisioning." },
+      { error: "Internal System Fault during infrastructure provisioning." },
       { status: 500 }
     );
   }

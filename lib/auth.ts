@@ -2,11 +2,11 @@ import CredentialsProvider from "next-auth/providers/credentials";
 import type { NextAuthOptions, DefaultSession, DefaultUser } from "next-auth";
 import type { JWT } from "next-auth/jwt";
 import bcrypt from "bcryptjs";
-import prisma from "./prisma"; // Adjust path to your Prisma client
+import prisma from "./prisma"; // Ensure this points to your Prisma client instance
 import { Role } from "@prisma/client";
 
 /* ------------------------------------------
- * Module augmentation for NextAuth
+ * Module Augmentation
  * ------------------------------------------ */
 declare module "next-auth" {
   interface Session {
@@ -61,10 +61,10 @@ declare module "next-auth/jwt" {
 }
 
 /* ------------------------------------------
- * Constants
+ * Constants & Security Config
  * ------------------------------------------ */
-const INACTIVITY_TIMEOUT_MS = 60 * 60 * 1000; // 1 hour
-const DB_UPDATE_THROTTLE_MS = 5 * 60 * 1000; // 5 minutes
+const INACTIVITY_TIMEOUT_MS = 60 * 60 * 1000; // 1 Hour Auto-Logout
+const DB_UPDATE_THROTTLE_MS = 5 * 60 * 1000;  // 5 Minutes Heartbeat Sync
 const MAX_FAILED_ATTEMPTS = 5;
 
 /* ------------------------------------------
@@ -73,163 +73,155 @@ const MAX_FAILED_ATTEMPTS = 5;
 export const authOptions: NextAuthOptions = {
   session: {
     strategy: "jwt",
-    maxAge: 24 * 60 * 60, // 24 hours
+    maxAge: 24 * 60 * 60, // 24 Hours Session Duration
   },
 
   providers: [
     CredentialsProvider({
-      name: "Credentials",
+      id: "credentials",
+      name: "MASA ERP Secure Access",
       credentials: {
-        email: { label: "Email", type: "email" },
+        // We use "identifier" to allow either Email or Staff Code
+        identifier: { label: "Email or Staff Code", type: "text" },
         password: { label: "Password", type: "password" },
       },
       async authorize(credentials, req) {
-        if (!credentials?.email || !credentials?.password) return null;
+        if (!credentials?.identifier || !credentials?.password) return null;
 
-        const ipAddress = (req?.headers?.["x-forwarded-for"] as string) || "Unknown IP";
+        const ipAddress = (req?.headers?.["x-forwarded-for"] as string) || "127.0.0.1";
         const deviceInfo = (req?.headers?.["user-agent"] as string) || "Unknown Device";
+        const input = credentials.identifier.trim();
 
+        // 1. Dual-Path Lookup: Find user by Email OR Staff Code
         const personnel = await prisma.authorizedPersonnel.findFirst({
           where: {
-            email: credentials.email.trim().toLowerCase(),
+            OR: [
+              { email: input.toLowerCase() },
+              { staffCode: input }
+            ],
             deletedAt: null,
           },
           include: {
             organization: true,
             branch: true,
             branchAssignments: {
-              where: { isPrimary: true }, // Optimization: Only fetch the primary branch
-              include: {
-                branch: true,
-              },
+              where: { isPrimary: true },
+              include: { branch: true },
             },
           },
         });
 
         const now = new Date();
 
-        // 1. Handle Unknown User
+        // 2. Handle Unknown User (Generic error for security)
         if (!personnel) {
-          console.warn(`[AUTH] Failed login attempt for unknown email: ${credentials.email}`);
+          console.warn(`[AUTH_WARN] Attempted login for non-existent identifier: ${input}`);
           return null;
         }
 
-        // 2. Organization Check (Ensure Org is active)
-        // Note: Assumes `active` or similar boolean exists on Organization model. If named differently, adjust here.
+        // 3. Organization Shield (Kill-switch check)
+        // If your Organization model doesn't have an 'active' field yet, 
+        // you should add it to your schema for subscription management.
         if (personnel.organization && 'active' in personnel.organization && !personnel.organization.active) {
-            console.warn(`[AUTH] Login blocked for user in inactive organization: ${personnel.organizationId}`);
-            throw new Error("organization_inactive");
+          throw new Error("ORGANIZATION_SUSPENDED");
         }
 
-        // 3. Check Security Status (Disabled or Locked)
+        // 4. Security Checks (Disabled / Locked / Temporary Lockout)
         const isTemporaryLocked = personnel.lockoutUntil && personnel.lockoutUntil > now;
 
         if (personnel.disabled || personnel.isLocked || isTemporaryLocked) {
-          const lockReason = personnel.disabled
-            ? "disabled"
-            : personnel.isLocked
-            ? personnel.lockReason ?? "locked"
-            : "temporary_lockout";
+          const reason = personnel.disabled ? "ACCOUNT_DISABLED" : 
+                         personnel.isLocked ? (personnel.lockReason || "ACCOUNT_LOCKED") : 
+                         "TEMPORARY_LOCKOUT";
 
           await prisma.activityLog.create({
             data: {
               organizationId: personnel.organizationId,
-              branchId: personnel.branchId,
               personnelId: personnel.id,
-              action: "LOGIN_FAILED_LOCKED",
+              action: "LOGIN_FAILED_SECURITY_BLOCK",
               critical: true,
               ipAddress,
               deviceInfo,
-              metadata: { reason: lockReason },
-              createdAt: now,
+              metadata: { reason, attemptedIdentifier: input },
+            },
+          });
+          throw new Error(reason);
+        }
+
+        // 5. Password Verification
+        const isPasswordValid = await bcrypt.compare(credentials.password, personnel.password);
+
+        if (!isPasswordValid) {
+          const attempts = personnel.failedLoginAttempts + 1;
+          const shouldLock = attempts >= MAX_FAILED_ATTEMPTS;
+          
+          await prisma.authorizedPersonnel.update({
+            where: { id: personnel.id },
+            data: {
+              failedLoginAttempts: attempts,
+              isLocked: shouldLock ? true : personnel.isLocked,
+              lockReason: shouldLock ? "EXCESSIVE_FAILED_ATTEMPTS" : personnel.lockReason,
+              lockoutUntil: shouldLock ? new Date(now.getTime() + 15 * 60 * 1000) : null, // 15 min cool-off
             },
           });
 
-          throw new Error(lockReason);
+          await prisma.activityLog.create({
+            data: {
+              organizationId: personnel.organizationId,
+              personnelId: personnel.id,
+              action: "LOGIN_FAILED_PASSWORD",
+              critical: shouldLock,
+              ipAddress,
+              deviceInfo,
+              metadata: { attemptCount: attempts, locked: shouldLock },
+            },
+          });
+          
+          throw new Error("INVALID_CREDENTIALS");
         }
 
-        // 4. Password Verification
-        const isValid = await bcrypt.compare(credentials.password, personnel.password);
-
-        if (!isValid) {
-          const attempts = personnel.failedLoginAttempts + 1;
-          const isNowLocked = attempts >= MAX_FAILED_ATTEMPTS;
-          const lockout = isNowLocked ? new Date(now.getTime() + 15 * 60 * 1000) : null;
-
-          await Promise.all([
-            prisma.authorizedPersonnel.update({
-              where: { id: personnel.id },
-              data: {
-                failedLoginAttempts: attempts,
-                lockoutUntil: lockout,
-                isLocked: isNowLocked ? true : personnel.isLocked,
-                lockReason: isNowLocked ? "EXCESSIVE_FAILED_ATTEMPTS" : personnel.lockReason
-              },
-            }),
-            prisma.activityLog.create({
-              data: {
-                organizationId: personnel.organizationId,
-                branchId: personnel.branchId,
-                personnelId: personnel.id,
-                action: "LOGIN_FAILED",
-                critical: isNowLocked,
-                ipAddress,
-                deviceInfo,
-                metadata: { failedAttempts: attempts },
-                createdAt: now,
-              },
-            }),
-          ]);
-
-          throw new Error("CredentialsSignin");
-        }
-
-        // 5. Resolve Effective Role and Active Branch
+        // 6. Role & Branch Resolution (Hierarchical Logic)
         let effectiveRole: Role = personnel.role;
         let activeBranchId: string | null = personnel.branchId;
         let activeBranchName: string | null = personnel.branch?.name ?? null;
 
+        // Owner/Admin Override
         if (personnel.isOrgOwner) {
           effectiveRole = Role.ADMIN;
-          // For owners, still check if they have a primary assignment, else fallback to standard branch
-          if (personnel.branchAssignments.length > 0) {
-            const primaryAssignment = personnel.branchAssignments[0];
-            activeBranchId = primaryAssignment.branchId;
-            activeBranchName = primaryAssignment.branch?.name ?? null;
-          }
-        } else if (personnel.branchAssignments.length > 0) {
-          const primaryAssignment = personnel.branchAssignments[0];
-          effectiveRole = primaryAssignment.role;
-          activeBranchId = primaryAssignment.branchId;
-          activeBranchName = primaryAssignment.branch?.name ?? null;
         }
 
-        // 6. Success Updates
-        await Promise.all([
-          prisma.authorizedPersonnel.update({
-            where: { id: personnel.id },
-            data: {
-              lastLogin: now,
-              lastActivityAt: now,
-              failedLoginAttempts: 0,
-              lockoutUntil: null,
-              lastLoginIp: ipAddress,
-              lastLoginDevice: deviceInfo,
-            },
-          }),
-          prisma.activityLog.create({
-            data: {
-              organizationId: personnel.organizationId,
-              branchId: activeBranchId,
-              personnelId: personnel.id,
-              action: "LOGIN_SUCCESS",
-              ipAddress,
-              deviceInfo,
-              metadata: { role: effectiveRole, assignedBranchId: activeBranchId },
-              createdAt: now,
-            },
-          }),
-        ]);
+        // Primary Branch Assignment Logic
+        if (personnel.branchAssignments.length > 0) {
+          const primary = personnel.branchAssignments[0];
+          effectiveRole = primary.role; 
+          activeBranchId = primary.branchId;
+          activeBranchName = primary.branch?.name ?? null;
+        }
+
+        // 7. Success Audit & Heartbeat Update
+        await prisma.authorizedPersonnel.update({
+          where: { id: personnel.id },
+          data: {
+            lastLogin: now,
+            lastActivityAt: now,
+            failedLoginAttempts: 0,
+            lockoutUntil: null,
+            lastLoginIp: ipAddress,
+            lastLoginDevice: deviceInfo,
+          },
+        });
+
+        await prisma.activityLog.create({
+          data: {
+            organizationId: personnel.organizationId,
+            branchId: activeBranchId,
+            personnelId: personnel.id,
+            action: "LOGIN_SUCCESS",
+            ipAddress,
+            deviceInfo,
+            metadata: { loginType: input.includes("@") ? "email" : "staff_code" },
+          },
+        });
 
         return {
           id: personnel.id,
@@ -251,19 +243,14 @@ export const authOptions: NextAuthOptions = {
     }),
   ],
 
-  pages: {
-    signIn: "/auth/signin",
-    error: "/auth/signin",
-  },
-
   callbacks: {
     async jwt({ token, user, trigger, session }): Promise<JWT> {
       const now = Date.now();
 
+      // Initial Sign In
       if (user) {
         return {
           ...token,
-          sub: user.id, // Explicitly set sub for consistency
           id: user.id,
           role: user.role,
           isOrgOwner: user.isOrgOwner,
@@ -279,18 +266,22 @@ export const authOptions: NextAuthOptions = {
         };
       }
 
+      // Handle profile/session updates (e.g. changing branches)
       if (trigger === "update" && session) {
         return { ...token, ...session };
       }
 
+      // Heartbeat Logic & Inactivity Timeout
       if (token.id) {
         const lastActivity = (token.lastActivityAt as number) || 0;
         const idleTime = now - lastActivity;
 
+        // Force logout if inactive for 1 hour
         if (idleTime > INACTIVITY_TIMEOUT_MS) {
           return { ...token, expired: true } as JWT;
         }
 
+        // Throttle DB update to every 5 minutes to save performance
         if (idleTime > DB_UPDATE_THROTTLE_MS) {
           try {
             await prisma.authorizedPersonnel.update({
@@ -298,8 +289,8 @@ export const authOptions: NextAuthOptions = {
               data: { lastActivityAt: new Date(now) },
             });
             token.lastActivityAt = now;
-          } catch (error) {
-            console.error("Auth: Failed to sync activity heartbeat", error);
+          } catch (e) {
+            console.error("[AUTH_SYNC_ERROR] Heartbeat failed", e);
           }
         }
       }
@@ -317,17 +308,20 @@ export const authOptions: NextAuthOptions = {
         session.user.branchId = token.branchId;
         session.user.branchName = token.branchName;
         session.user.lastLogin = token.lastLogin;
-        session.user.lastActivityAt = token.lastActivityAt
-          ? new Date(token.lastActivityAt).toISOString()
-          : null;
-        session.user.disabled = token.disabled ?? false;
-        session.user.locked = token.locked ?? false;
-        session.user.requiresPasswordChange = token.requiresPasswordChange ?? false;
-        session.user.expired = token.expired ?? false;
+        session.user.lastActivityAt = new Date(token.lastActivityAt).toISOString();
+        session.user.disabled = token.disabled;
+        session.user.locked = token.locked;
+        session.user.requiresPasswordChange = token.requiresPasswordChange;
+        session.user.expired = token.expired || false;
       }
       return session;
     },
   },
 
+  pages: {
+    signIn: "/auth/signin",
+    error: "/auth/signin",
+  },
+  
   secret: process.env.NEXTAUTH_SECRET,
 };
