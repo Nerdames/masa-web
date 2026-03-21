@@ -3,12 +3,12 @@
 import React, { useState, useMemo } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
 import { useAlerts } from "@/components/feedback/AlertProvider";
-import { useSession } from "next-auth/react"; // Added to update session
+import { useSession } from "next-auth/react";
 
 interface PasswordChangeModalProps {
   isOpen: boolean;
   onClose: () => void;
-  isMandatory?: boolean; // New prop to prevent bypassing
+  isMandatory?: boolean; 
 }
 
 export default function PasswordChangeModal({
@@ -23,9 +23,9 @@ export default function PasswordChangeModal({
   const [showPass, setShowPass] = useState(false);
 
   const { dispatch } = useAlerts();
-  const { update } = useSession(); // Used to refresh the JWT
+  const { update } = useSession();
 
-  // --- Password Strength & Criteria ---
+  // --- Logic: Security Criteria ---
   const criteria = useMemo(() => ({
     length: newPassword.length >= 8,
     casing: /[A-Z]/.test(newPassword) && /[a-z]/.test(newPassword),
@@ -39,7 +39,7 @@ export default function PasswordChangeModal({
     if (newPassword.length === 0) return { label: "", color: "bg-slate-200", width: "w-0" };
     if (strengthScore <= 2) return { label: "Weak", color: "bg-red-500", width: "w-1/4" };
     if (strengthScore === 3) return { label: "Fair", color: "bg-amber-500", width: "w-2/4" };
-    if (strengthScore === 4) return { label: "Good", color: "bg-blue-500", width: "w-3/4" };
+    if (strengthScore === 4) return { label: "Good", color: "bg-blue-600", width: "w-3/4" };
     return { label: "Strong", color: "bg-emerald-500", width: "w-full" };
   }, [strengthScore, newPassword]);
 
@@ -47,28 +47,12 @@ export default function PasswordChangeModal({
   const isMatch = isStarted && newPassword === confirmPassword;
   const isMismatch = isStarted && newPassword !== confirmPassword;
 
+  // Global Check: Disable submission unless all core protocols are met
+  const canSubmit = isMatch && strengthScore >= 3 && currentPassword.length > 0 && !isSubmitting;
+
   const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
-
-    if (!isMatch) {
-      dispatch({
-        kind: "TOAST",
-        type: "ERROR",
-        title: "Mismatch",
-        message: "Please ensure your new passwords match before submitting.",
-      });
-      return;
-    }
-
-    if (strengthScore < 3) {
-      dispatch({
-        kind: "TOAST",
-        type: "WARNING",
-        title: "Password too weak",
-        message: "Please meet more security criteria before submitting.",
-      });
-      return;
-    }
+    if (!canSubmit) return;
 
     setIsSubmitting(true);
 
@@ -79,22 +63,17 @@ export default function PasswordChangeModal({
         body: JSON.stringify({ currentPassword, newPassword }),
       });
 
-      if (!res.ok) {
-        const errorData = await res.json();
-        throw new Error(errorData.message || "Failed to update password");
-      }
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.message || "Failed to update security credentials.");
 
-      // 1. Tell NextAuth to update the local session data
-      // This triggers the 'jwt' callback in authOptions with trigger: "update"
-      await update({
-        requiresPasswordChange: false,
-      });
+      // Refresh JWT to clear mandatory change flags
+      await update({ requiresPasswordChange: false });
 
       dispatch({
         kind: "TOAST",
         type: "SUCCESS",
-        title: "Password Updated",
-        message: "Your password has been updated successfully.",
+        title: "Protocol Success",
+        message: "Credentials updated. Session state refreshed.",
       });
 
       handleClose();
@@ -102,8 +81,8 @@ export default function PasswordChangeModal({
       dispatch({
         kind: "TOAST",
         type: "ERROR",
-        title: "Error",
-        message: err.message || "Failed to update password. Please try again.",
+        title: "Update Failed",
+        message: err.message,
       });
     } finally {
       setIsSubmitting(false);
@@ -111,165 +90,139 @@ export default function PasswordChangeModal({
   };
 
   const handleClose = () => {
-    if (isMandatory) return; // Prevent closing if it's a forced reset
+    if (isMandatory) return;
     setCurrentPassword("");
     setNewPassword("");
     setConfirmPassword("");
-    setShowPass(false);
     onClose();
   };
 
   return (
     <Dialog.Root open={isOpen} onOpenChange={isMandatory ? undefined : handleClose}>
       <Dialog.Portal>
-        <Dialog.Overlay className="fixed inset-0 bg-slate-900/40 backdrop-blur-md z-[60] animate-in fade-in duration-300" />
+        <Dialog.Overlay className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm z-[60] animate-in fade-in duration-300" />
         <Dialog.Content 
           onPointerDownOutside={(e) => isMandatory && e.preventDefault()}
           onEscapeKeyDown={(e) => isMandatory && e.preventDefault()}
-          className="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-full max-w-[440px] bg-white rounded-2xl shadow-2xl z-[70] outline-none overflow-hidden animate-in zoom-in-95 duration-200 flex flex-col max-h-[90vh]"
+          className="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-[calc(100%-32px)] max-w-[420px] bg-white rounded-3xl shadow-2xl z-[70] outline-none overflow-hidden animate-in zoom-in-95 fade-in duration-200"
         >
-          
-          <header className="px-8 pt-8 pb-4 shrink-0">
-            <div className="flex items-center gap-3 mb-1">
-              <div className="w-10 h-10 rounded-full bg-blue-50 flex items-center justify-center">
-                <i className="bx bx-shield-quarter text-blue-600 text-2xl"></i>
+          <header className="p-8 pb-4">
+            <div className="flex items-center gap-3 mb-2">
+              <div className="w-10 h-10 rounded-2xl bg-slate-900 flex items-center justify-center text-white shadow-lg shadow-slate-900/20">
+                <i className="bx bxs-lock-open text-xl"></i>
               </div>
-              <Dialog.Title className="text-xl font-bold text-slate-900">
-                {isMandatory ? "Secure Your Account" : "Update Password"}
+              <Dialog.Title className="text-xl font-black uppercase tracking-tight text-slate-900">
+                {isMandatory ? "Initial Security" : "Update Credentials"}
               </Dialog.Title>
             </div>
-            <Dialog.Description className="text-slate-500 text-sm leading-relaxed">
+            <Dialog.Description className="text-slate-500 text-[13px] font-medium leading-relaxed">
               {isMandatory 
-                ? "As this is your first login, you must update your password to continue." 
-                : "Create a strong password to secure your account."}
+                ? "First-time login detected. You must establish a new security protocol." 
+                : "Modify your access credentials to maintain account integrity."}
             </Dialog.Description>
           </header>
 
-          <main className="px-8 pb-8 overflow-y-auto">
-            <form onSubmit={handleSubmit} className="space-y-6">
-              <div className="group">
-                <label className="block text-[13px] font-semibold text-slate-700 mb-1.5 ml-1">
-                  Current Password
-                </label>
-                <div className="relative">
-                  <input
-                    type={showPass ? "text" : "password"}
-                    required
-                    autoFocus
-                    value={currentPassword}
-                    onChange={(e) => setCurrentPassword(e.target.value)}
-                    className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:ring-4 focus:ring-blue-500/10 focus:border-blue-500 outline-none transition-all"
-                    placeholder="Enter current password"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => setShowPass(!showPass)}
-                    className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 transition-colors p-1"
-                  >
-                    <i className={`bx ${showPass ? "bx-hide" : "bx-show"} text-xl`}></i>
-                  </button>
-                </div>
+          <form onSubmit={handleSubmit} className="px-8 pb-8 space-y-5">
+            {/* Current Password */}
+            <div className="space-y-1.5">
+              <label className="text-[10px] font-black text-slate-400 uppercase tracking-[0.15em] ml-1">Current Protocol</label>
+              <div className="relative">
+                <input
+                  type={showPass ? "text" : "password"}
+                  required
+                  value={currentPassword}
+                  onChange={(e) => setCurrentPassword(e.target.value)}
+                  className="w-full px-4 py-3 bg-slate-50 border border-black/[0.06] rounded-xl text-sm font-bold focus:ring-4 focus:ring-slate-900/5 focus:border-slate-900 outline-none transition-all"
+                  placeholder="••••••••"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowPass(!showPass)}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-900 transition-colors"
+                >
+                  <i className={`bx ${showPass ? "bx-hide" : "bx-show"} text-lg`}></i>
+                </button>
+              </div>
+            </div>
+
+            <div className="h-px bg-slate-100" />
+
+            {/* New Password */}
+            <div className="space-y-3">
+              <div className="space-y-1.5">
+                <label className="text-[10px] font-black text-slate-400 uppercase tracking-[0.15em] ml-1">New Credential</label>
+                <input
+                  type={showPass ? "text" : "password"}
+                  required
+                  value={newPassword}
+                  onChange={(e) => setNewPassword(e.target.value)}
+                  className="w-full px-4 py-3 bg-slate-50 border border-black/[0.06] rounded-xl text-sm font-bold focus:ring-4 focus:ring-slate-900/5 focus:border-slate-900 outline-none transition-all"
+                />
               </div>
 
-              <hr className="border-slate-100" />
-
-              <div className="space-y-3">
-                <div className="group">
-                  <label className="block text-[13px] font-semibold text-slate-700 mb-1.5 ml-1">
-                    New Password
-                  </label>
-                  <input
-                    type={showPass ? "text" : "password"}
-                    required
-                    value={newPassword}
-                    onChange={(e) => setNewPassword(e.target.value)}
-                    className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:ring-4 focus:ring-blue-500/10 focus:border-blue-500 outline-none transition-all"
-                    placeholder="Create new password"
-                  />
+              {/* Strength Visualizer */}
+              {newPassword.length > 0 && (
+                <div className="space-y-2 animate-in slide-in-from-top-2 duration-300">
+                  <div className="h-1.5 w-full bg-slate-100 rounded-full overflow-hidden">
+                    <div className={`h-full transition-all duration-500 ${strengthDetails.color} ${strengthDetails.width}`} />
+                  </div>
+                  <div className="flex justify-between items-center px-1">
+                    <span className="text-[10px] font-bold uppercase text-slate-400 tracking-wider">Complexity: {strengthDetails.label}</span>
+                    <span className="text-[10px] font-black text-slate-900">{strengthScore}/4</span>
+                  </div>
                 </div>
+              )}
 
-                {newPassword.length > 0 && (
-                  <div className="space-y-1.5 animate-in fade-in slide-in-from-top-1">
-                    <div className="flex justify-between items-center px-1">
-                      <span className="text-xs font-medium text-slate-500">Password strength</span>
-                      <span className={`text-xs font-bold ${
-                        strengthScore <= 2 ? 'text-red-500' :
-                        strengthScore === 3 ? 'text-amber-500' :
-                        strengthScore === 4 ? 'text-blue-500' : 'text-emerald-500'
-                      }`}>
-                        {strengthDetails.label}
-                      </span>
-                    </div>
-                    <div className="h-1.5 w-full bg-slate-100 rounded-full overflow-hidden">
-                      <div 
-                        className={`h-full transition-all duration-300 ease-out ${strengthDetails.color} ${strengthDetails.width}`}
-                      />
-                    </div>
+              {/* Criteria Grid */}
+              <div className="grid grid-cols-2 gap-2 p-3 bg-slate-50 rounded-xl border border-black/[0.03]">
+                <CriteriaItem met={criteria.length} label="8+ Chars" />
+                <CriteriaItem met={criteria.casing} label="A/a Case" />
+                <CriteriaItem met={criteria.number} label="Number" />
+                <CriteriaItem met={criteria.symbol} label="Symbol" />
+              </div>
+            </div>
+
+            {/* Confirm Password */}
+            <div className="space-y-1.5">
+              <label className="text-[10px] font-black text-slate-400 uppercase tracking-[0.15em] ml-1">Verify Credential</label>
+              <div className="relative">
+                <input
+                  type={showPass ? "text" : "password"}
+                  required
+                  value={confirmPassword}
+                  onChange={(e) => setConfirmPassword(e.target.value)}
+                  className={`w-full px-4 py-3 bg-white border rounded-xl text-sm font-bold outline-none transition-all
+                    ${!isStarted ? 'border-black/[0.06]' : isMatch ? 'border-emerald-500 ring-4 ring-emerald-500/5' : 'border-red-500 ring-4 ring-red-500/5'}
+                  `}
+                />
+                {isStarted && (
+                  <div className="absolute right-3 top-1/2 -translate-y-1/2">
+                    <i className={`bx ${isMatch ? 'bx-check-circle text-emerald-500' : 'bx-error-circle text-red-500'} text-xl animate-in zoom-in`} />
                   </div>
                 )}
-
-                <div className="bg-slate-50 rounded-xl p-4 border border-slate-100 grid grid-cols-2 gap-2 mt-2">
-                  <CriteriaItem met={criteria.length} label="8+ characters" />
-                  <CriteriaItem met={criteria.casing} label="Upper & lowercase" />
-                  <CriteriaItem met={criteria.number} label="At least 1 number" />
-                  <CriteriaItem met={criteria.symbol} label="At least 1 symbol" />
-                </div>
               </div>
+            </div>
 
-              <div className="group space-y-1.5">
-                <label className="block text-[13px] font-semibold text-slate-700 ml-1">
-                  Confirm New Password
-                </label>
-                <div className="relative">
-                  <input
-                    type={showPass ? "text" : "password"}
-                    required
-                    value={confirmPassword}
-                    onChange={(e) => setConfirmPassword(e.target.value)}
-                    className={`w-full px-4 py-2.5 bg-white border rounded-xl outline-none transition-all pr-10
-                      ${!isStarted ? 'border-slate-200 focus:ring-4 focus:ring-blue-500/10 focus:border-blue-500' : ''}
-                      ${isMatch ? 'border-emerald-500 focus:ring-4 focus:ring-emerald-500/10' : ''}
-                      ${isMismatch ? 'border-red-500 focus:ring-4 focus:ring-red-500/10' : ''}
-                    `}
-                    placeholder="Repeat new password"
-                  />
-                  {isStarted && (
-                    <div className="absolute right-3 top-1/2 -translate-y-1/2">
-                      {isMatch ? (
-                        <i className="bx bx-check-circle text-emerald-500 text-xl animate-in zoom-in"></i>
-                      ) : (
-                        <i className="bx bx-x-circle text-red-500 text-xl animate-in zoom-in"></i>
-                      )}
-                    </div>
-                  )}
-                </div>
-                {isMismatch && (
-                  <p className="text-xs text-red-500 font-medium ml-1 animate-in slide-in-from-top-1 fade-in">
-                    Passwords do not match
-                  </p>
-                )}
-              </div>
-
-              <footer className="flex flex-col-reverse sm:flex-row justify-end gap-3 pt-6 mt-4 border-t border-slate-100">
-                {!isMandatory && (
-                  <button
-                    type="button"
-                    onClick={handleClose}
-                    className="px-5 py-2.5 text-sm font-bold text-slate-500 hover:bg-slate-50 rounded-xl transition-all"
-                  >
-                    Cancel
-                  </button>
-                )}
+            <footer className="pt-4 flex flex-col gap-3">
+              <button
+                type="submit"
+                disabled={!canSubmit}
+                className="w-full py-3.5 bg-slate-900 text-white text-[13px] font-black uppercase tracking-widest rounded-2xl shadow-xl shadow-slate-900/20 hover:bg-slate-800 disabled:opacity-20 disabled:grayscale transition-all active:scale-[0.98] flex items-center justify-center gap-2"
+              >
+                {isSubmitting ? <i className="bx bx-loader-alt animate-spin text-lg" /> : "Authorize Change"}
+              </button>
+              
+              {!isMandatory && (
                 <button
-                  type="submit"
-                  disabled={isSubmitting || !isMatch || strengthScore < 3}
-                  className="px-6 py-2.5 bg-blue-600 hover:bg-blue-700 disabled:bg-slate-300 disabled:text-slate-500 text-white text-sm font-bold rounded-xl transition-all flex items-center justify-center gap-2 shadow-sm active:scale-95 w-full sm:w-auto"
+                  type="button"
+                  onClick={handleClose}
+                  className="w-full py-2 text-[11px] font-bold text-slate-400 hover:text-slate-600 transition-colors"
                 >
-                  {isSubmitting ? <i className="bx bx-loader-alt animate-spin text-lg"></i> : "Update Password"}
+                  Dismiss Protocol
                 </button>
-              </footer>
-            </form>
-          </main>
+              )}
+            </footer>
+          </form>
         </Dialog.Content>
       </Dialog.Portal>
     </Dialog.Root>
@@ -278,11 +231,13 @@ export default function PasswordChangeModal({
 
 function CriteriaItem({ met, label }: { met: boolean; label: string }) {
   return (
-    <div className="flex items-center gap-2 text-xs">
-      <div className={`flex items-center justify-center w-4 h-4 rounded-full transition-colors ${met ? "bg-emerald-100 text-emerald-600" : "bg-slate-200 text-slate-400"}`}>
-        <i className={`bx ${met ? 'bx-check' : 'bx-minus'} text-[10px] font-bold`}></i>
+    <div className="flex items-center gap-2">
+      <div className={`w-3.5 h-3.5 rounded-full flex items-center justify-center transition-all ${met ? "bg-emerald-500 text-white" : "bg-slate-200 text-slate-400"}`}>
+        <i className={`bx ${met ? 'bx-check' : 'bx-minus'} text-[10px] font-black`} />
       </div>
-      <span className={`transition-colors ${met ? "text-slate-700 font-medium" : "text-slate-400"}`}>{label}</span>
+      <span className={`text-[10px] font-bold uppercase tracking-tight ${met ? "text-slate-700" : "text-slate-400"}`}>
+        {label}
+      </span>
     </div>
   );
 }

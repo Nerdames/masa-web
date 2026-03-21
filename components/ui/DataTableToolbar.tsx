@@ -33,18 +33,14 @@ interface DataTableToolbarProps<
   search: string;
   onSearchChange: (value: string) => void;
   searchPlaceholder?: string;
-
   onRefresh: () => void;
   refreshing?: boolean;
-
   filters?: readonly FilterConfig<TFilter>[];
   sortOrder?: TSort;
   onSortChange?: (value: TSort) => void;
   sortOptions?: readonly SortOption<TSort>[];
-
   exportData?: readonly T[];
   exportFileName?: string;
-
   onAdd?: () => void;
 }
 
@@ -71,7 +67,7 @@ function DataTableToolbarInner<
 >({
   search,
   onSearchChange,
-  searchPlaceholder = "Search",
+  searchPlaceholder = "Search for category, name, company, etc",
   onRefresh,
   refreshing = false,
   filters = [],
@@ -83,11 +79,9 @@ function DataTableToolbarInner<
   onAdd,
 }: DataTableToolbarProps<T, TSort, TFilter>) {
   const [filtersOpen, setFiltersOpen] = useState(false);
-  const [sortOpen, setSortOpen] = useState(false);
   const [exportOpen, setExportOpen] = useState(false);
 
-  /* ================= Draft Filters State ================= */
-
+  /* ================= Logic Restored: Draft Filters ================= */
   const [draftFilters, setDraftFilters] = useState<Record<string, any>>({});
 
   useEffect(() => {
@@ -98,18 +92,14 @@ function DataTableToolbarInner<
 
   const toggleDraftValue = (filter: FilterConfig<TFilter>, optionValue: TFilter) => {
     const isMulti = Array.isArray(filter.value);
-    
     setDraftFilters((prev) => {
       const current = prev[filter.label];
-
       if (isMulti) {
         const arr = Array.isArray(current) ? current : [];
         const exists = arr.includes(optionValue);
         return {
           ...prev,
-          [filter.label]: exists 
-            ? arr.filter((v) => v !== optionValue) 
-            : [...arr, optionValue],
+          [filter.label]: exists ? arr.filter((v) => v !== optionValue) : [...arr, optionValue],
         };
       } else {
         return { ...prev, [filter.label]: optionValue };
@@ -127,33 +117,19 @@ function DataTableToolbarInner<
     setFiltersOpen(false);
   }, [filters]);
 
-  /* ================= EXPORT ================= */
-
+  /* ================= Logic Restored: Export Columns ================= */
   const [selectedColumns, setSelectedColumns] = useState<string[]>([]);
-
   useEffect(() => {
     if (exportData?.length) setSelectedColumns(Object.keys(exportData[0]));
     else setSelectedColumns([]);
   }, [exportData]);
 
-  const toggleColumn = (col: string) => {
-    setSelectedColumns((prev) =>
-      prev.includes(col) ? prev.filter((c) => c !== col) : [...prev, col]
-    );
-  };
-
   const handleExport = useCallback(() => {
     if (!exportData?.length || !selectedColumns.length) return;
-
-    const csv =
-      "\uFEFF" +
-      [
-        selectedColumns.map(escapeCsvCell).join(","),
-        ...exportData.map((row) =>
-          selectedColumns.map((h) => escapeCsvCell(row[h])).join(",")
-        ),
-      ].join("\n");
-
+    const csv = "\uFEFF" + [
+      selectedColumns.map(escapeCsvCell).join(","),
+      ...exportData.map((row) => selectedColumns.map((h) => escapeCsvCell(row[h])).join(",")),
+    ].join("\n");
     const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
@@ -163,251 +139,168 @@ function DataTableToolbarInner<
     URL.revokeObjectURL(url);
   }, [exportData, selectedColumns, exportFileName]);
 
-  /* ================= Styles ================= */
-
-  const baseControl =
-    "h-9 text-sm rounded-md border border-black/10 dark:border-white/10 backdrop-blur transition hover:bg-white/10";
-
-  const iconButton =
-    "w-9 h-9 flex items-center justify-center rounded-md border border-black/10 " +
-    "bg-white/40 dark:bg-white/10 backdrop-blur transition hover:bg-white/80 dark:hover:bg-white/20 " +
-    "active:scale-95";
-
-  const dropdownItem =
-    "flex items-center justify-between px-3 py-2 text-sm rounded-md transition " +
-    "hover:bg-black/5 dark:hover:bg-white/5 active:scale-[0.98]";
-
-  const badgeStyle =
-    "flex items-center gap-2 px-3 py-1 rounded-full text-xs font-medium " +
-    "bg-white/70 dark:bg-white/10 border border-black/10 dark:border-white/10 " +
-    "backdrop-blur truncate max-w-[220px]";
-
-  /* ================= Active Badges Logic ================= */
-
+  /* ================= Logic Restored: Active Badges ================= */
   const activeBadges = useMemo(() => {
     const tokens: { label: string; value: string; onRemove?: () => void }[] = [];
-
-    // 1. Search (Only show badge if there is actual input)
     if (search) {
-      tokens.push({ 
-        label: "Search", 
-        value: search, 
-        onRemove: () => onSearchChange("") 
-      });
+      tokens.push({ label: "Search", value: search, onRemove: () => onSearchChange("") });
     }
-
-    // 2. Filters (Always show)
     filters.forEach((f) => {
       const isMulti = Array.isArray(f.value);
       const isDefault = isMulti 
         ? f.value.length === 0 || JSON.stringify(f.value) === JSON.stringify(f.defaultValue)
         : f.value === f.defaultValue;
 
-      const displayValue = isMulti 
-        ? (f.value.length === 0 ? "None" : (f.value as TFilter[]).join(", ")) 
-        : String(f.value);
-
-      tokens.push({
-        label: f.label,
-        value: displayValue,
-        // Only allow "removal" if it's not already default
-        onRemove: !isDefault ? () => f.onChange(f.defaultValue) : undefined,
-      });
-    });
-
-    // 3. Sort (Always show)
-    if (sortOrder && onSortChange && sortOptions.length > 0) {
-      const currentSort = sortOptions.find(o => o.value === sortOrder);
-      const isDefaultSort = sortOrder === sortOptions[0].value;
-
-      if (currentSort) {
+      if (!isDefault) {
         tokens.push({
-          label: "Sort",
-          value: currentSort.label,
-          onRemove: !isDefaultSort ? () => onSortChange(sortOptions[0].value as TSort) : undefined,
+          label: f.label,
+          value: isMulti ? (f.value as TFilter[]).join(", ") : String(f.value),
+          onRemove: () => f.onChange(f.defaultValue),
         });
       }
-    }
-
+    });
     return tokens;
-  }, [filters, search, sortOrder, onSearchChange, onSortChange, sortOptions]);
+  }, [filters, search, onSearchChange]);
 
-  const hasBadges = activeBadges.length > 0;
-
-  const clearAll = () => {
-    onSearchChange("");
-    filters.forEach((f) => f.onChange(f.defaultValue));
-    if (onSortChange && sortOptions.length > 0) {
-      onSortChange(sortOptions[0].value as TSort);
-    }
-  };
+  /* ================= Styles (Aligned to Images) ================= */
+  const labelStyle = "text-[11px] font-bold text-slate-500 mb-1.5 ml-1 block uppercase tracking-tight";
+  const inputBase = "h-11 rounded-xl bg-slate-50 border border-slate-200 px-4 text-sm transition-all outline-none focus:ring-2 focus:ring-[#3D5AFE]/10 focus:border-[#3D5AFE]/40";
+  const primaryBtn = "h-11 px-8 rounded-xl bg-[#3D5AFE] hover:bg-[#2A48E0] text-white text-[11px] font-bold tracking-widest transition-all active:scale-95 uppercase shadow-md shadow-blue-500/20";
+  const ghostIconBtn = "w-10 h-10 flex items-center justify-center rounded-full hover:bg-slate-100 transition-colors text-slate-400";
+  const badgeStyle = "flex items-center gap-2 px-3 py-1 rounded-lg text-[10px] font-bold uppercase bg-slate-100 border border-slate-200 text-slate-600";
 
   return (
-    <>
-      <div className="sticky top-0 z-30 backdrop-blur-xl bg-white/60 dark:bg-neutral-900/60 border-b border-black/10 dark:border-white/10">
-        <div className="flex items-center justify-between gap-4 px-5 py-3">
-          
-          <div className="flex items-center gap-2">
-            {onAdd && (
-              <button onClick={onAdd} className={iconButton} title="Add New">
-                <span className="text-lg">+</span>
-              </button>
-            )}
-            <button 
-              onClick={onRefresh} 
-              disabled={refreshing} 
-              className={iconButton} 
-              title="Refresh Data"
-            >
-              <i className={`bx bx-refresh text-lg ${refreshing ? "bx-spin" : ""}`} />
+    <div className="w-full bg-white rounded-2xl shadow-sm border border-slate-100 mb-4 overflow-hidden">
+      
+      {/* Top Header: Image 1 Reference */}
+      <div className="flex items-center justify-between px-6 py-4 border-b border-slate-50">
+        <h2 className="text-lg font-bold text-slate-800 tracking-tight">Product Summary</h2>
+        <div className="flex items-center gap-4">
+          <div className="flex items-center gap-2 text-[11px] font-bold text-slate-400 uppercase tracking-wider">
+            Show 
+            <button className="flex items-center gap-2 px-3 py-1.5 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50">
+              ALL COLUMN <i className="bx bx-chevron-down text-sm" />
             </button>
           </div>
-
-          <div className="flex items-center gap-2 flex-1 justify-end">
-            <input
-              value={search}
-              onChange={(e) => onSearchChange(e.target.value)}
-              placeholder={searchPlaceholder}
-              className="h-9 w-48 md:w-64 rounded-md bg-white/60 dark:bg-white/10 border border-black/10 dark:border-white/10 text-sm px-4 outline-none focus:ring-1 focus:ring-blue-500/50 transition-all"
-            />
-
-            {filters.length > 0 && (
-              <Popover.Root open={filtersOpen} onOpenChange={setFiltersOpen}>
-                <Popover.Trigger asChild>
-                  <button className={`${baseControl} px-4 bg-white/40 dark:bg-white/10 flex items-center gap-2`}>
-                    Filters
-                    {filters.some(f => JSON.stringify(f.value) !== JSON.stringify(f.defaultValue)) && (
-                      <span className="w-2 h-2 rounded-full bg-blue-500" />
-                    )}
-                  </button>
-                </Popover.Trigger>
-
-                <Popover.Content
-                  sideOffset={10}
-                  align="end"
-                  className="w-[260px] z-50 rounded-xl bg-white dark:bg-neutral-900 shadow-2xl border border-black/10 dark:border-white/10 p-4 flex flex-col"
-                >
-                  <div className="flex-1 overflow-y-auto space-y-4 max-h-[60vh]">
-                    {filters.map((filter) => (
-                      <div key={filter.label}>
-                        <div className="text-[10px] uppercase tracking-wider font-bold text-gray-400 mb-2">
-                          {filter.label}
-                        </div>
-                        <div className="flex flex-col gap-1">
-                          {filter.options.map((opt) => {
-                            const isMulti = Array.isArray(draftFilters[filter.label]);
-                            const active = isMulti 
-                              ? draftFilters[filter.label]?.includes(opt.value)
-                              : draftFilters[filter.label] === opt.value;
-                            
-                            return (
-                              <button
-                                key={opt.value}
-                                onClick={() => toggleDraftValue(filter, opt.value)}
-                                className={`${dropdownItem} ${active ? "bg-blue-500/10 text-blue-600 dark:text-blue-400 font-medium" : "text-gray-600 dark:text-gray-300"}`}
-                              >
-                                <span className="truncate">{opt.label}</span>
-                                {active && <span className="text-xs">✓</span>}
-                              </button>
-                            );
-                          })}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-
-                  <div className="flex justify-between pt-3 mt-3 border-t border-black/5 dark:border-white/10">
-                    <button onClick={resetFilters} className="text-xs text-gray-500 hover:text-red-500 transition-colors">
-                      Reset
-                    </button>
-                    <button onClick={applyFilters} className="px-3 py-1 rounded-md bg-blue-500 text-white text-xs font-semibold hover:bg-blue-600 transition-colors">
-                      Apply
-                    </button>
-                  </div>
-                </Popover.Content>
-              </Popover.Root>
-            )}
-
-            {onSortChange && sortOptions.length > 0 && (
-              <Popover.Root open={sortOpen} onOpenChange={setSortOpen}>
-                <Popover.Trigger asChild>
-                  <button className={`${baseControl} px-4 bg-white/40 dark:bg-white/10`}>
-                    Sort
-                  </button>
-                </Popover.Trigger>
-                <Popover.Content align="end" sideOffset={10} className="w-48 z-50 rounded-xl bg-white dark:bg-neutral-900 shadow-2xl border border-black/10 dark:border-white/10 p-2">
-                  {sortOptions.map((opt) => (
-                    <button
-                      key={opt.value}
-                      onClick={() => { onSortChange(opt.value); setSortOpen(false); }}
-                      className={`${dropdownItem} ${sortOrder === opt.value ? "text-blue-500 font-bold" : ""}`}
-                    >
-                      {opt.label}
-                    </button>
-                  ))}
-                </Popover.Content>
-              </Popover.Root>
-            )}
-
-            {exportData && (
+          <button onClick={onAdd} className={primaryBtn}>
+            DISPATCH SELECTED
+          </button>
+          <div className="flex items-center border-l border-slate-100 ml-2 pl-4 gap-1">
+             <button onClick={onRefresh} className={ghostIconBtn} title="Refresh">
+                <i className={`bx bx-refresh text-2xl ${refreshing ? "bx-spin" : ""}`} />
+             </button>
+             {exportData && (
               <Popover.Root open={exportOpen} onOpenChange={setExportOpen}>
                 <Popover.Trigger asChild>
-                  <button className={iconButton} title="Export CSV">⬇</button>
+                  <button className={ghostIconBtn} title="Export CSV">
+                    <i className="bx bx-download text-xl" />
+                  </button>
                 </Popover.Trigger>
-                <Popover.Content sideOffset={10} align="end" className="w-64 z-50 rounded-xl bg-white dark:bg-neutral-900 shadow-2xl border border-black/10 dark:border-white/10 p-4">
-                  <div className="text-xs font-bold text-gray-400 uppercase tracking-widest mb-3">Columns</div>
-                  <div className="space-y-2 max-h-48 overflow-y-auto mb-4">
+                <Popover.Content align="end" className="w-64 z-50 rounded-xl bg-white shadow-2xl border border-slate-200 p-4">
+                  <div className="text-[10px] font-bold text-slate-400 uppercase mb-3">Columns to Export</div>
+                  <div className="space-y-1 max-h-48 overflow-y-auto mb-4 pr-2">
                     {exportData.length > 0 && Object.keys(exportData[0]).map((col) => (
-                      <label key={col} className="flex items-center gap-3 text-sm cursor-pointer hover:bg-black/5 dark:hover:bg-white/5 p-1 rounded transition-colors">
+                      <label key={col} className="flex items-center gap-3 text-sm cursor-pointer p-1.5 hover:bg-slate-50 rounded-lg">
                         <input
                           type="checkbox"
-                          className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                          className="rounded border-slate-300 text-[#3D5AFE]"
                           checked={selectedColumns.includes(col)}
-                          onChange={() => toggleColumn(col)}
+                          onChange={() => setSelectedColumns(prev => prev.includes(col) ? prev.filter(c => c !== col) : [...prev, col])}
                         />
-                        <span className="truncate">{col}</span>
+                        <span className="truncate text-slate-600">{col}</span>
                       </label>
                     ))}
                   </div>
-                  <button
-                    onClick={() => { handleExport(); setExportOpen(false); }}
-                    className="w-full py-2 rounded-md bg-blue-500 text-white text-xs font-bold hover:bg-blue-600 transition-colors"
-                  >
+                  <button onClick={() => { handleExport(); setExportOpen(false); }} className="w-full py-2.5 rounded-lg bg-[#3D5AFE] text-white text-xs font-bold shadow-lg">
                     Download CSV
                   </button>
                 </Popover.Content>
               </Popover.Root>
-            )}
+             )}
           </div>
         </div>
       </div>
 
-      {/* ACTIVE BADGES AREA */}
-      {hasBadges && (
-        <div className="px-5 py-2 flex flex-wrap items-center gap-2 border-b border-black/5 dark:border-white/5 bg-white/20 dark:bg-black/10">
-          <button
-            onClick={clearAll}
-            className="px-2 py-1 rounded text-[10px] font-bold uppercase tracking-tighter bg-red-500/10 text-red-600 hover:bg-red-500 hover:text-white transition-all mr-1"
-          >
-            Clear All
-          </button>
-          {activeBadges.map((badge, idx) => (
-            <span key={idx} className={badgeStyle}>
-              <span className="opacity-50 font-normal">{badge.label}:</span>
-              <span className="truncate">{badge.value}</span>
-              {badge.onRemove && (
-                <button onClick={badge.onRemove} className="ml-1 hover:text-red-500 transition-colors">
-                  ×
+      {/* Main Toolbar: Image 2 Reference */}
+      <div className="p-6 flex flex-wrap items-end gap-4 bg-white">
+        <div className="flex-1 min-w-[280px]">
+          <label className={labelStyle}>What are you looking for?</label>
+          <div className="relative">
+            <i className="bx bx-search absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" />
+            <input
+              value={search}
+              onChange={(e) => onSearchChange(e.target.value)}
+              placeholder={searchPlaceholder}
+              className={`${inputBase} w-full pl-11`}
+            />
+          </div>
+        </div>
+
+        {/* Dynamic Filter Selects */}
+        {filters.map((filter) => (
+          <div key={filter.label} className="w-48">
+            <label className={labelStyle}>{filter.label}</label>
+            <Popover.Root>
+              <Popover.Trigger asChild>
+                <button className={`${inputBase} w-full flex items-center justify-between text-slate-600`}>
+                  <span className="truncate">{Array.isArray(filter.value) ? (filter.value.length ? filter.value.join(", ") : "All") : filter.value || "All"}</span>
+                  <i className="bx bx-chevron-down text-slate-300" />
                 </button>
-              )}
+              </Popover.Trigger>
+              <Popover.Content align="start" className="w-56 z-50 rounded-xl bg-white shadow-2xl border border-slate-100 p-2">
+                <div className="max-h-60 overflow-y-auto">
+                   {filter.options.map((opt) => {
+                      const active = Array.isArray(draftFilters[filter.label]) 
+                        ? draftFilters[filter.label]?.includes(opt.value) 
+                        : draftFilters[filter.label] === opt.value;
+                      return (
+                        <button
+                          key={opt.value}
+                          onClick={() => toggleDraftValue(filter, opt.value)}
+                          className={`w-full text-left px-3 py-2 text-sm rounded-lg mb-1 transition-colors ${active ? 'bg-blue-50 text-[#3D5AFE] font-medium' : 'hover:bg-slate-50 text-slate-600'}`}
+                        >
+                          {opt.label}
+                        </button>
+                      )
+                   })}
+                </div>
+                <div className="flex gap-2 pt-2 mt-2 border-t border-slate-50">
+                   <button onClick={resetFilters} className="flex-1 py-1.5 text-[10px] font-bold text-slate-400 hover:text-red-500 uppercase">Reset</button>
+                   <button onClick={applyFilters} className="flex-1 py-1.5 bg-[#3D5AFE] text-white text-[10px] font-bold rounded-md uppercase">Apply</button>
+                </div>
+              </Popover.Content>
+            </Popover.Root>
+          </div>
+        ))}
+
+        {/* Action Buttons */}
+        <div className="flex items-center gap-3">
+          <button className="w-11 h-11 flex items-center justify-center rounded-full border border-slate-200 bg-white text-slate-400 hover:bg-slate-50 shadow-sm transition-all">
+            <i className="bx bx-chevrons-down" />
+          </button>
+          <button className={primaryBtn}>
+            SEARCH
+          </button>
+        </div>
+      </div>
+
+      {/* Active Badges Area (Restored Logic) */}
+      {activeBadges.length > 0 && (
+        <div className="px-6 pb-4 flex flex-wrap items-center gap-2">
+           <button onClick={() => { onSearchChange(""); resetFilters(); }} className="text-[10px] font-black text-red-500 uppercase tracking-tighter mr-2 hover:underline">
+             Clear All
+           </button>
+           {activeBadges.map((badge, idx) => (
+            <span key={idx} className={badgeStyle}>
+              <span className="opacity-40">{badge.label}:</span> {badge.value}
+              <button onClick={badge.onRemove} className="ml-1.5 text-slate-400 hover:text-red-500 text-sm leading-none">×</button>
             </span>
-          ))}
+           ))}
         </div>
       )}
-    </>
+    </div>
   );
 }
 
 const DataTableToolbar = React.memo(DataTableToolbarInner) as typeof DataTableToolbarInner;
-
 export default DataTableToolbar;

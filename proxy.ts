@@ -3,6 +3,9 @@ import { getToken } from "next-auth/jwt";
 import { Role } from "@prisma/client";
 import { PAGE_PERMISSIONS, MANAGEMENT_ROUTES, PERSONAL_ROUTES } from "@/lib/security";
 
+/* ------------------------------------------
+ * Constants & Configuration
+ * ------------------------------------------ */
 const PUBLIC_PATHS = [
   "/favicon.ico",
   "/robots.txt",
@@ -14,6 +17,9 @@ const PUBLIC_PATHS = [
 const INACTIVITY_TIMEOUT_MS = 60 * 60 * 1000; // 1 hour
 const DB_UPDATE_THROTTLE_MS = 5 * 60 * 1000; // 5 minutes
 
+/* ------------------------------------------
+ * Security Proxy Logic
+ * ------------------------------------------ */
 export async function proxy(req: NextRequest) {
   const { pathname } = req.nextUrl;
   const origin = req.nextUrl.origin;
@@ -23,9 +29,9 @@ export async function proxy(req: NextRequest) {
     return NextResponse.next();
   }
 
-  // 2. ✅ CRITICAL: allow auth routes without session check
-  // This includes your reset-password page if it lives under /auth
-  if (pathname.startsWith("/auth")) {
+  // 2. ✅ CRITICAL FIX: Allow auth pages AND API routes
+  // Without /api/auth, NextAuth cannot fetch sessions or providers, causing 404s
+  if (pathname.startsWith("/auth") || pathname.startsWith("/api/auth")) {
     return NextResponse.next();
   }
 
@@ -37,18 +43,22 @@ export async function proxy(req: NextRequest) {
   const now = Date.now();
   const lastActivity = Number(token?.lastActivityAt || 0);
 
-  // 3. Basic Session & Status Validation
+  // 3. Session Validation Logic
+  // Check for existence, security flags, manual inactivity, and the new 'expired' flag
+  const isInactive = lastActivity && now - lastActivity > INACTIVITY_TIMEOUT_MS;
   const needsSignIn =
     !token?.id ||
     token.disabled ||
     token.locked ||
-    (lastActivity && now - lastActivity > INACTIVITY_TIMEOUT_MS);
+    token.expired || // Handled by JWT heartbeat logic
+    isInactive;
 
   if (needsSignIn) {
     const url = new URL("/auth/signin", origin);
 
     if (!token?.id) {
       url.searchParams.set("callbackUrl", pathname);
+      // Only log if not heading to signin already to prevent loops
       logSecurityEvent(origin, "SESSION_INVALID_NO_TOKEN", { path: pathname });
     } else {
       const errorType = token.disabled
@@ -68,28 +78,24 @@ export async function proxy(req: NextRequest) {
     return NextResponse.redirect(url);
   }
 
-  // 4. ✅ NEW: Force Password Change Logic
-  // If the token flag is set, redirect to the reset page
-  if (token.requiresPasswordChange) {
-    // Only redirect if they aren't already heading to the reset page
-    if (pathname !== "/auth/reset-password") {
-      logSecurityEvent(origin, "FORCE_PASSWORD_CHANGE_REDIRECT", {
-        personnelId: token.id as string,
-        path: pathname,
-      });
-      return NextResponse.redirect(new URL("/auth/reset-password", origin));
-    }
+  // 4. Force Password Change Logic
+  if (token.requiresPasswordChange && pathname !== "/auth/reset-password") {
+    logSecurityEvent(origin, "FORCE_PASSWORD_CHANGE_REDIRECT", {
+      personnelId: token.id as string,
+      path: pathname,
+    });
+    return NextResponse.redirect(new URL("/auth/reset-password", origin));
   }
 
   const role = token.role as Role | undefined;
-
   if (!role) {
     return NextResponse.redirect(new URL("/auth/signin", origin));
   }
 
-  // 5. Update activity periodically (Throttled)
+  // 5. Throttled Heartbeat Logging
+  // Note: Actual DB update happens in the JWT callback; this is for external security monitoring
   if (token.id && now - lastActivity > DB_UPDATE_THROTTLE_MS) {
-    logSecurityEvent(origin, "LAST_ACTIVITY_UPDATE", {
+    logSecurityEvent(origin, "LAST_ACTIVITY_HEARTBEAT", {
       personnelId: token.id as string,
       organizationId: token.organizationId as string,
       branchId: token.branchId as string,
@@ -100,27 +106,27 @@ export async function proxy(req: NextRequest) {
    * ROLE-BASED ACCESS CONTROL (RBAC)
    * -------------------------------------------------------------------------- */
 
-  // Super access
+  // Organization Owners and Admins have full access
   if (token.isOrgOwner || role === Role.ADMIN) {
     return NextResponse.next();
   }
 
-  // DEV role blocked from dashboard
+  // Block DEV role from accessing production dashboard interfaces
   if (role === Role.DEV) {
     return NextResponse.redirect(new URL("/feedback/access-denied", origin));
   }
 
-  // Personal routes allowed
+  // Allow standard Personal routes (Profile, Settings, etc.)
   if (PERSONAL_ROUTES.some((p) => pathname === p || pathname.startsWith(`${p}/`))) {
     return NextResponse.next();
   }
 
-  // Management routes blocked for non-admins
+  // Protect Management routes from non-admins
   if (MANAGEMENT_ROUTES.some((p) => pathname === p || pathname.startsWith(`${p}/`))) {
     return NextResponse.redirect(new URL("/feedback/access-denied", origin));
   }
 
-  // Specific Page permissions check
+  // Specific Permission check based on security config
   const pageEntry = Object.entries(PAGE_PERMISSIONS).find(
     ([path]) => pathname === path || pathname.startsWith(`${path}/`)
   );
@@ -129,7 +135,7 @@ export async function proxy(req: NextRequest) {
     return NextResponse.redirect(new URL("/feedback/access-denied", origin));
   }
 
-  // Prevent unknown dashboard routes (Ghost Route Protection)
+  // Ghost Route Protection: Prevent access to dashboard routes not defined in config
   if (pathname.startsWith("/dashboard")) {
     const knownRoutes = [
       ...Object.keys(PAGE_PERMISSIONS),
@@ -151,18 +157,23 @@ export async function proxy(req: NextRequest) {
 }
 
 /**
- * Helper to keep the proxy logic clean
+ * Server-side Logging Helper
  */
 function logSecurityEvent(origin: string, action: string, meta: Record<string, unknown>) {
+  // Uses absolute URL as required by Edge Runtime
   fetch(`${origin}/api/logs`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ action, ...meta }),
+    body: JSON.stringify({ action, ...meta, timestamp: new Date().toISOString() }),
   }).catch(() => {
-    // Silent fail for logs to prevent blocking the user
+    // Fail silently to ensure middleware never blocks the user path
   });
 }
 
+/* ------------------------------------------
+ * Middleware Matcher
+ * ------------------------------------------ */
 export const config = {
-  matcher: ["/dashboard/:path*"], 
+  // Protect all dashboard and auth-related logic
+  matcher: ["/dashboard/:path*", "/auth/:path*", "/api/auth/:path*"], 
 };

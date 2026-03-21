@@ -1,192 +1,114 @@
 "use client";
 
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { useSession } from "next-auth/react";
-import { useToast } from "@/components/feedback/ToastProvider";
+import { usePathname } from "next/navigation";
+import { useAlerts } from "@/components/feedback/AlertProvider";
 
-export interface DataTablePrefs {
-  row_density: "compact" | "standard";
-  table_font_size: "sm" | "md" | "lg";
-  table_wrap_cells: boolean;
-}
+const HUB_SETTINGS = [
+  { key: "row_density", defaultValue: "standard" },
+  { key: "table_font_size", defaultValue: "md" },
+  { key: "table_wrap_cells", defaultValue: false },
+  { key: "table_sticky_header", defaultValue: true },
+  { key: "table_row_numbers", defaultValue: false },
+  { key: "table_highlight_hover", defaultValue: true },
+  { key: "table_group_dates", defaultValue: true },
+  { key: "table_rows_per_page", defaultValue: 10 },
+  { key: "table_tooltips", defaultValue: true },
+] as const;
 
-export interface DataTablePreferenceOptions {
-  tableId: string;
-  columnKeys: string[];
-  defaultTooltipPrefs?: Record<string, boolean>;
-  defaultTablePrefs?: Partial<DataTablePrefs>;
-  debounceMs?: number;
-}
-
-/**
- * Hook to manage table-specific preferences: column order, tooltips, and general table prefs
- */
-export function useDataTablePreference({
-  tableId,
-  columnKeys,
-  defaultTooltipPrefs = {},
-  defaultTablePrefs,
-  debounceMs = 600,
-}: DataTablePreferenceOptions) {
+export function useDataTablePreference(tableId: string, initialColumnKeys: string[]) {
   const { data: session } = useSession();
-  const { addToast } = useToast();
+  const { dispatch } = useAlerts();
+  const pathname = usePathname();
 
-  // Column order
-  const [columnOrder, setColumnOrder] = useState<string[]>([...columnKeys]);
-  const [tooltipPrefs, setTooltipPrefs] = useState<Record<string, boolean>>({ ...defaultTooltipPrefs });
-  const [tablePrefs, setTablePrefs] = useState<DataTablePrefs>({
-    row_density: "standard",
-    table_font_size: "md",
-    table_wrap_cells: false,
-    ...defaultTablePrefs,
-  });
+  const pageKey = useMemo(() => {
+    if (!pathname) return "unknown-page";
+    const segments = pathname.split("/").filter(Boolean);
+    let key = segments[segments.length - 1] || "overview";
+    if (key.length > 20) key = key.slice(0, 20);
+    return `${key}-page`;
+  }, [pathname]);
 
+  const preferenceKey = `columnOrder:${pageKey}`;
+
+  const defaultTablePrefs = useMemo(() => {
+    return HUB_SETTINGS.reduce((acc, s) => {
+      acc[s.key] = s.defaultValue;
+      return acc;
+    }, {} as Record<string, unknown>);
+  }, []);
+
+  const [tablePrefs, setTablePrefs] = useState<Record<string, unknown>>(defaultTablePrefs);
+  const [columnOrder, setColumnOrder] = useState<string[]>(initialColumnKeys);
   const saveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const preferenceColumnKey = `columnOrder:${tableId}`;
-  const preferenceTooltipKey = `tooltipPrefs:${tableId}`;
 
-  /* ================= Load Preferences ================= */
-  const loadPreferences = useCallback(async () => {
+  useEffect(() => {
     if (!session?.user) return;
+    const controller = new AbortController();
 
-    try {
-      // Column order
-      const colRes = await fetch(`/api/preferences?category=TABLE&key=${preferenceColumnKey}&target=${tableId}`, { cache: "no-store" });
-      if (colRes.ok) {
-        const colJson: any = await colRes.json();
-        if (Array.isArray(colJson.preference)) {
-          const validOrder = colJson.preference.filter((k: string) => columnKeys.includes(k));
-          setColumnOrder([...validOrder, ...columnKeys.filter(k => !validOrder.includes(k))]);
+    const loadPreferences = async () => {
+      try {
+        const orderRes = await fetch(
+          `/api/preferences?category=TABLE&key=${preferenceKey}&target=${tableId}`,
+          { signal: controller.signal }
+        );
+        if (orderRes.ok) {
+          const json = await orderRes.json();
+          if (Array.isArray(json.preference)) setColumnOrder(json.preference);
         }
-      }
 
-      // Tooltip preferences
-      const tipRes = await fetch(`/api/preferences?category=TABLE&key=${preferenceTooltipKey}&target=${tableId}`, { cache: "no-store" });
-      if (tipRes.ok) {
-        const tipJson: any = await tipRes.json();
-        if (tipJson.preference && typeof tipJson.preference === "object") {
-          setTooltipPrefs(tipJson.preference);
+        const prefsRes = await fetch(`/api/preferences?category=TABLE&all=true`, { cache: "no-store" });
+        if (prefsRes.ok) {
+          const json = await prefsRes.json();
+          if (Array.isArray(json.preferences)) {
+            const mapped = json.preferences.reduce((acc: Record<string, unknown>, p: { key: string; value: unknown }) => {
+              acc[p.key] = p.value;
+              return acc;
+            }, {});
+            setTablePrefs((prev) => ({ ...prev, ...mapped }));
+          }
         }
+      } catch (err) {
+        if (err instanceof DOMException && err.name === "AbortError") return;
+        dispatch({ kind: "TOAST", type: "ERROR", title: "Load Failed", message: "Could not load table preferences." });
       }
+    };
 
-      // Table prefs
-      const tableRes = await fetch(`/api/preferences?category=TABLE&key=tablePrefs&target=${tableId}`, { cache: "no-store" });
-      if (tableRes.ok) {
-        const tableJson: any = await tableRes.json();
-        if (tableJson.preference && typeof tableJson.preference === "object") {
-          setTablePrefs(prev => ({ ...prev, ...tableJson.preference }));
-        }
-      }
-    } catch (error) {
-      // optional: addToast({ type: "error", title: "Load Failed", message: "Could not load table preferences" });
-    }
-  }, [tableId, preferenceColumnKey, preferenceTooltipKey, columnKeys, session]);
+    loadPreferences();
+    return () => controller.abort();
+  }, [session, tableId, preferenceKey, dispatch]);
 
-  /* ================= Save Preferences ================= */
-  const savePreferences = useCallback(
-    (newColumnOrder?: string[], newTooltipPrefs?: Record<string, boolean>, newTablePrefs?: Partial<DataTablePrefs>) => {
+  const saveColumnOrder = useCallback(
+    (newOrder: string[]) => {
+      setColumnOrder(newOrder);
       if (!session?.user) return;
-
       if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
 
       saveTimeoutRef.current = setTimeout(async () => {
         try {
-          const requests: Promise<any>[] = [];
-
-          if (newColumnOrder) {
-            requests.push(
-              fetch("/api/preferences", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                  key: preferenceColumnKey,
-                  target: tableId,
-                  category: "TABLE",
-                  value: newColumnOrder,
-                  scope: "USER",
-                  organizationId: session.user.organizationId,
-                  branchId: session.user.branchId,
-                  personnelId: session.user.id,
-                }),
-              })
-            );
-          }
-
-          if (newTooltipPrefs) {
-            requests.push(
-              fetch("/api/preferences", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                  key: preferenceTooltipKey,
-                  target: tableId,
-                  category: "TABLE",
-                  value: newTooltipPrefs,
-                  scope: "USER",
-                  organizationId: session.user.organizationId,
-                  branchId: session.user.branchId,
-                  personnelId: session.user.id,
-                }),
-              })
-            );
-          }
-
-          if (newTablePrefs) {
-            requests.push(
-              fetch("/api/preferences", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                  key: "tablePrefs",
-                  target: tableId,
-                  category: "TABLE",
-                  value: newTablePrefs,
-                  scope: "USER",
-                  organizationId: session.user.organizationId,
-                  branchId: session.user.branchId,
-                  personnelId: session.user.id,
-                }),
-              })
-            );
-          }
-
-          await Promise.all(requests);
-          window.dispatchEvent(new Event("preference-update"));
-        } catch {
-          addToast?.({ type: "error", title: "Save Failed", message: "Could not save table preferences" });
+          await fetch("/api/preferences", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              scope: "USER",
+              category: "TABLE",
+              key: preferenceKey,
+              target: tableId,
+              value: newOrder,
+              // Note: Ensure your session object types align with these properties
+              organizationId: (session.user as Record<string, unknown>).organizationId,
+              branchId: (session.user as Record<string, unknown>).branchId,
+              personnelId: session.user.id,
+            }),
+          });
+        } catch (error) {
+          dispatch({ kind: "TOAST", type: "ERROR", title: "Save Failed", message: "Could not save column order." });
         }
-      }, debounceMs);
+      }, 600);
     },
-    [session, tableId, preferenceColumnKey, preferenceTooltipKey, debounceMs, addToast]
+    [preferenceKey, tableId, session, dispatch]
   );
 
-  /* ================= Listen for global updates ================= */
-  useEffect(() => {
-    loadPreferences();
-    const handler = () => loadPreferences();
-    window.addEventListener("preference-update", handler);
-    return () => {
-      window.removeEventListener("preference-update", handler);
-      if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
-    };
-  }, [loadPreferences]);
-
-  return {
-    columnOrder,
-    setColumnOrder: (newOrder: string[]) => {
-      setColumnOrder(newOrder);
-      savePreferences(newOrder, undefined, undefined);
-    },
-    tooltipPrefs,
-    setTooltipPrefs: (prefs: Record<string, boolean>) => {
-      setTooltipPrefs(prefs);
-      savePreferences(undefined, prefs, undefined);
-    },
-    tablePrefs,
-    setTablePrefs: (prefs: Partial<DataTablePrefs>) => {
-      setTablePrefs(prev => ({ ...prev, ...prefs }));
-      savePreferences(undefined, undefined, prefs);
-    },
-    reload: loadPreferences,
-  };
+  return { tablePrefs, columnOrder, saveColumnOrder };
 }

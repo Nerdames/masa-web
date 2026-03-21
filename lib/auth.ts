@@ -114,7 +114,14 @@ export const authOptions: NextAuthOptions = {
           return null;
         }
 
-        // 2. Check Security Status (Disabled or Locked)
+        // 2. Organization Check (Ensure Org is active)
+        // Note: Assumes `active` or similar boolean exists on Organization model. If named differently, adjust here.
+        if (personnel.organization && 'active' in personnel.organization && !personnel.organization.active) {
+            console.warn(`[AUTH] Login blocked for user in inactive organization: ${personnel.organizationId}`);
+            throw new Error("organization_inactive");
+        }
+
+        // 3. Check Security Status (Disabled or Locked)
         const isTemporaryLocked = personnel.lockoutUntil && personnel.lockoutUntil > now;
 
         if (personnel.disabled || personnel.isLocked || isTemporaryLocked) {
@@ -141,7 +148,7 @@ export const authOptions: NextAuthOptions = {
           throw new Error(lockReason);
         }
 
-        // 3. Password Verification
+        // 4. Password Verification
         const isValid = await bcrypt.compare(credentials.password, personnel.password);
 
         if (!isValid) {
@@ -177,13 +184,19 @@ export const authOptions: NextAuthOptions = {
           throw new Error("CredentialsSignin");
         }
 
-        // 4. Resolve Effective Role and Active Branch
+        // 5. Resolve Effective Role and Active Branch
         let effectiveRole: Role = personnel.role;
         let activeBranchId: string | null = personnel.branchId;
         let activeBranchName: string | null = personnel.branch?.name ?? null;
 
         if (personnel.isOrgOwner) {
           effectiveRole = Role.ADMIN;
+          // For owners, still check if they have a primary assignment, else fallback to standard branch
+          if (personnel.branchAssignments.length > 0) {
+            const primaryAssignment = personnel.branchAssignments[0];
+            activeBranchId = primaryAssignment.branchId;
+            activeBranchName = primaryAssignment.branch?.name ?? null;
+          }
         } else if (personnel.branchAssignments.length > 0) {
           const primaryAssignment = personnel.branchAssignments[0];
           effectiveRole = primaryAssignment.role;
@@ -191,7 +204,7 @@ export const authOptions: NextAuthOptions = {
           activeBranchName = primaryAssignment.branch?.name ?? null;
         }
 
-        // 5. Success Updates
+        // 6. Success Updates
         await Promise.all([
           prisma.authorizedPersonnel.update({
             where: { id: personnel.id },
@@ -250,6 +263,7 @@ export const authOptions: NextAuthOptions = {
       if (user) {
         return {
           ...token,
+          sub: user.id, // Explicitly set sub for consistency
           id: user.id,
           role: user.role,
           isOrgOwner: user.isOrgOwner,

@@ -22,6 +22,30 @@ enum Role {
   INVENTORY
   CASHIER
   DEV
+  AUDITOR // Added for Premium Audit access
+}
+
+enum PermissionAction {
+  CREATE
+  READ
+  UPDATE
+  DELETE
+  VOID
+  APPROVE
+  EXPORT
+}
+
+enum TaxType {
+  VAT
+  SALES_TAX
+  EXCISE
+  NONE
+}
+
+enum DiscountType {
+  PERCENTAGE
+  FIXED_AMOUNT
+  BOGO // Buy One Get One
 }
 
 enum CustomerType {
@@ -93,12 +117,12 @@ enum ExpenseType {
 }
 
 enum NotificationType {
-  SECURITY          // Password/Email changes, Lock/Unlock
-  INVENTORY         // Stock added, Stock adjust, Price update
-  APPROVAL          // Approval required or Decision made
-  SYSTEM            // Table preferences, UI updates, Layout changes
-  TRANSACTIONAL     // Invoices, Sales, Refunds
-  INFO              // General announcements
+  SECURITY // Password/Email changes, Lock/Unlock
+  INVENTORY // Stock added, Stock adjust, Price update
+  APPROVAL // Approval required or Decision made
+  SYSTEM // Table preferences, UI updates, Layout changes
+  TRANSACTIONAL // Invoices, Sales, Refunds
+  INFO // General announcements
 }
 
 enum CriticalAction {
@@ -134,6 +158,20 @@ enum POSSessionStatus {
   CLOSED
 }
 
+enum POStatus {
+  DRAFT
+  ISSUED
+  PARTIALLY_RECEIVED
+  FULFILLED
+  CANCELLED
+}
+
+enum GRNStatus {
+  PENDING
+  RECEIVED
+  REJECTED
+}
+
 enum PreferenceScope {
   USER
   BRANCH
@@ -162,6 +200,7 @@ model Organization {
 
   approvalRequests ApprovalRequest[] @relation("OrgApprovals")
 
+  // Existing relations...
   financeAccounts      FinanceAccount[]
   personnel            AuthorizedPersonnel[]  @relation("OrgMembers")
   branches             Branch[]
@@ -181,12 +220,20 @@ model Organization {
   preferences          Preference[]
   notificationSettings NotificationSetting[]
   stockMovements       StockMovement[]
+  categories           Category[]
+  vendors              Vendor[]
+  expenses             Expense[]
+  draftSales           DraftSale[]            @relation("OrgDraftSales")
+  stockTransfers       StockTransfer[]        @relation("OrgStockTransfers")
+  purchaseOrders       PurchaseOrder[]        @relation("OrgPurchaseOrders")
+  grns                 GoodsReceiptNote[]     @relation("OrgGRNs")
 
-  categories     Category[]
-  vendors        Vendor[]
-  expenses       Expense[]
-  draftSales     DraftSale[]     @relation("OrgDraftSales")
-  stockTransfers StockTransfer[] @relation("OrgStockTransfers")
+  // --- PREMIUM UPGRADE RELATIONS ---
+  taxRates    TaxRate[]
+  uoms        UnitOfMeasure[]
+  refunds     Refund[]
+  stockTakes  StockTake[]
+  permissions Permission[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -208,6 +255,7 @@ model Branch {
   organization     Organization      @relation(fields: [organizationId], references: [id])
   approvalRequests ApprovalRequest[] @relation("BranchApprovals")
 
+  // Existing relations...
   financeAccounts   FinanceAccount[]
   personnel         AuthorizedPersonnel[]
   branchProducts    BranchProduct[]
@@ -226,41 +274,15 @@ model Branch {
   transfersFrom     StockTransfer[]        @relation("BranchTransfersFrom")
   transfersTo       StockTransfer[]        @relation("BranchTransfersTo")
   expenses          Expense[]
+  purchaseOrders    PurchaseOrder[]        @relation("BranchPurchaseOrders") // Corrected based on your comment
+  grns              GoodsReceiptNote[]     @relation("BranchGRNs") // Corrected based on your comment
+
+  // --- PREMIUM UPGRADE RELATIONS ---
+  refunds    Refund[]
+  stockTakes StockTake[]
 
   @@index([organizationId])
   @@index([organizationId, deletedAt])
-}
-
-////////////////////////////////////
-// POS SESSION 
-////////////////////////////////////
-
-model POSSession {
-  id             String           @id @default(cuid())
-  organizationId String
-  branchId       String
-  cashierId      String
-  
-  openedAt       DateTime         @default(now())
-  closedAt       DateTime?
-  openingBalance Decimal          @db.Decimal(18, 2)
-  closingBalance Decimal?         @db.Decimal(18, 2)
-  status         POSSessionStatus @default(OPEN)
-
-  organization Organization        @relation("OrgPOSSessions", fields: [organizationId], references: [id])
-  branch       Branch              @relation("BranchPOSSessions", fields: [branchId], references: [id])
-  cashier      AuthorizedPersonnel @relation("CashierPOSSessions", fields: [cashierId], references: [id])
-  
-  receipts   Receipt[]   @relation("POSSessionReceipts")
-  draftSales DraftSale[] @relation("POSSessionDraftSales")
-
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  @@index([branchId])
-  @@index([cashierId])
-  @@index([cashierId, status])
-  @@index([status])
 }
 
 ////////////////////////////////////
@@ -268,6 +290,7 @@ model POSSession {
 ////////////////////////////////////
 
 model AuthorizedPersonnel {
+  // ... (Keep all your existing scalar fields like email, password, lockReason, etc.)
   id        String    @id @default(cuid())
   name      String?
   email     String
@@ -281,12 +304,11 @@ model AuthorizedPersonnel {
   organizationId String
   branchId       String?
 
-  isOrgOwner Boolean @default(false)
-
-  pendingEmail    String?
-  pendingPassword String?
-  isLocked        Boolean @default(false)
-  lockReason      String?
+  isOrgOwner             Boolean @default(false)
+  pendingEmail           String?
+  pendingPassword        String?
+  isLocked               Boolean @default(false)
+  lockReason             String?
   requiresPasswordChange Boolean @default(true)
 
   failedLoginAttempts Int       @default(0)
@@ -299,13 +321,12 @@ model AuthorizedPersonnel {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  requestsCreated  ApprovalRequest[] @relation("Requester")
-  requestsApproved ApprovalRequest[] @relation("Approver")
-  authAccounts     AuthAccount[]
-
-  organization Organization @relation("OrgMembers", fields: [organizationId], references: [id])
-  branch       Branch?      @relation(fields: [branchId], references: [id])
-
+  // ... (Keep all your existing relations)
+  requestsCreated        ApprovalRequest[]       @relation("Requester")
+  requestsApproved       ApprovalRequest[]       @relation("Approver")
+  authAccounts           AuthAccount[]
+  organization           Organization            @relation("OrgMembers", fields: [organizationId], references: [id])
+  branch                 Branch?                 @relation(fields: [branchId], references: [id])
   posSessions            POSSession[]            @relation("CashierPOSSessions")
   branchAssignments      BranchAssignment[]
   orders                 Order[]                 @relation("SalespersonOrders")
@@ -324,26 +345,36 @@ model AuthorizedPersonnel {
   draftSales             DraftSale[]             @relation("CashierDraftSales")
   createdStockTransfers  StockTransfer[]         @relation("CreatedStockTransfers")
   approvedStockTransfers StockTransfer[]         @relation("ApprovedStockTransfers")
+  productsCreated        Product[]               @relation("ProductCreatedBy")
+  productsUpdated        Product[]               @relation("ProductUpdatedBy")
+  categoriesCreated      Category[]              @relation("CategoryCreatedBy")
+  categoriesUpdated      Category[]              @relation("CategoryUpdatedBy")
+  vendorsCreated         Vendor[]                @relation("VendorCreatedBy")
+  vendorsUpdated         Vendor[]                @relation("VendorUpdatedBy")
+  customersCreated       Customer[]              @relation("CustomerCreatedBy")
+  customersUpdated       Customer[]              @relation("CustomerUpdatedBy")
+  invoicesUpdated        Invoice[]               @relation("InvoiceUpdatedBy")
+  paymentsUpdated        Payment[]               @relation("PaymentUpdatedBy")
+  stockMovementsUpdated  StockMovement[]         @relation("StockMovementUpdatedBy")
+  receiptsUpdated        Receipt[]               @relation("ReceiptUpdatedBy")
+  expensesCreated        Expense[]               @relation("ExpenseCreatedBy")
+  expensesUpdated        Expense[]               @relation("ExpenseUpdatedBy")
+  posCreated             PurchaseOrder[]         @relation("POCreatedBy")
+  posApproved            PurchaseOrder[]         @relation("POApprovedBy")
+  grnsReceived           GoodsReceiptNote[]      @relation("GRNReceivedBy")
+  grnsApproved           GoodsReceiptNote[]      @relation("GRNApprovedBy")
+  transactions           Transaction[]           @relation("HandledTransactions")
 
-  // Master Data Audit Relations
-  productsCreated   Product[]  @relation("ProductCreatedBy")
-  productsUpdated   Product[]  @relation("ProductUpdatedBy")
-  categoriesCreated Category[] @relation("CategoryCreatedBy")
-  categoriesUpdated Category[] @relation("CategoryUpdatedBy")
-  vendorsCreated    Vendor[]   @relation("VendorCreatedBy")
-  vendorsUpdated    Vendor[]   @relation("VendorUpdatedBy")
-  customersCreated  Customer[] @relation("CustomerCreatedBy")
-  customersUpdated  Customer[] @relation("CustomerUpdatedBy")
-  invoicesUpdated   Invoice[]  @relation("InvoiceUpdatedBy")
-  paymentsUpdated   Payment[]  @relation("PaymentUpdatedBy")
-  stockMovementsUpdated StockMovement[] @relation("StockMovementUpdatedBy")
-  receiptsUpdated Receipt[] @relation("ReceiptUpdatedBy")
-  expensesCreated Expense[] @relation("ExpenseCreatedBy")
-  expensesUpdated Expense[] @relation("ExpenseUpdatedBy")
+  // --- PREMIUM UPGRADE RELATIONS ---
+  refundsProcessed   Refund[]            @relation("RefundProcessedBy")
+  refundsApproved    Refund[]            @relation("RefundApprovedBy")
+  stockTakesStarted  StockTake[]         @relation("StockTakeStartedBy")
+  stockTakesApproved StockTake[]         @relation("StockTakeApprovedBy")
+  reconciliationLogs ReconciliationLog[]
 
   @@unique([organizationId, email])
-  @@index([branchId])
   @@unique([organizationId, staffCode])
+  @@index([branchId])
   @@index([lastLogin])
   @@index([lastActivityAt])
   @@index([failedLoginAttempts])
@@ -363,22 +394,23 @@ model ApprovalRequest {
   requesterId    String
   approverId     String?
 
-  actionType   CriticalAction
-  status       ApprovalStatus @default(PENDING)
-  requiredRole Role           @default(MANAGER)
-  changes      Json
+  actionType    CriticalAction
+  status        ApprovalStatus @default(PENDING)
+  requiredRole  Role           @default(MANAGER)
+  changes       Json
   rejectionNote String?
 
   targetType String?
   targetId   String?
+  expense    Expense?
 
   expiresAt DateTime?
   appliedAt DateTime?
   createdAt DateTime  @default(now())
   updatedAt DateTime  @updatedAt
 
-  organization Organization        @relation("OrgApprovals", fields: [organizationId], references: [id])
-  requester    AuthorizedPersonnel @relation("Requester", fields: [requesterId], references: [id])
+  organization Organization         @relation("OrgApprovals", fields: [organizationId], references: [id])
+  requester    AuthorizedPersonnel  @relation("Requester", fields: [requesterId], references: [id])
   approver     AuthorizedPersonnel? @relation("Approver", fields: [approverId], references: [id])
 
   stockMovements StockMovement[] @relation("ApprovalStockMoves")
@@ -402,9 +434,154 @@ model BranchAssignment {
 
   @@unique([personnelId, branchId])
   // This unique index prevents a user from having two primary branches
-  @@unique([personnelId, isPrimary], map: "one_primary_branch_per_personnel") 
+  @@unique([personnelId, isPrimary], map: "one_primary_branch_per_personnel")
   @@index([personnelId])
   @@index([branchId])
+}
+
+// NEW: Granular Permissions for RBAC/ABAC
+model Permission {
+  id             String           @id @default(cuid())
+  role           Role
+  action         PermissionAction
+  resource       String // e.g., "INVOICE", "STOCK_ADJUST"
+  organizationId String
+  organization   Organization     @relation(fields: [organizationId], references: [id])
+
+  @@unique([organizationId, role, action, resource])
+}
+
+////////////////////////////////////
+// PREMIUM ENGINES (UoM, Tax, Returns, Audits)
+////////////////////////////////////
+
+model UnitOfMeasure {
+  id             String   @id @default(cuid())
+  organizationId String
+  name           String // e.g., "Kilogram", "Piece"
+  abbreviation   String // e.g., "kg", "pcs"
+  active         Boolean  @default(true)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  organization   Organization    @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  products       Product[]
+  branchProducts BranchProduct[]
+
+  @@unique([organizationId, abbreviation])
+  @@index([organizationId])
+}
+
+model TaxRate {
+  id             String   @id @default(cuid())
+  organizationId String
+  name           String // e.g., "VAT 7.5%"
+  rate           Decimal  @db.Decimal(5, 2)
+  active         Boolean  @default(true)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  orderItems   OrderItem[]
+  sales        Sale[]
+
+  @@unique([organizationId, name])
+  @@index([organizationId])
+}
+
+model Refund {
+  id             String  @id @default(cuid())
+  organizationId String
+  branchId       String
+  invoiceId      String
+  refundNumber   String?
+
+  totalRefunded Decimal        @db.Decimal(18, 2)
+  reason        String?
+  status        ApprovalStatus @default(PENDING)
+
+  processedById String
+  approvedById  String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  organization Organization         @relation(fields: [organizationId], references: [id])
+  branch       Branch               @relation(fields: [branchId], references: [id])
+  invoice      Invoice              @relation(fields: [invoiceId], references: [id])
+  processedBy  AuthorizedPersonnel  @relation("RefundProcessedBy", fields: [processedById], references: [id])
+  approvedBy   AuthorizedPersonnel? @relation("RefundApprovedBy", fields: [approvedById], references: [id])
+
+  items       RefundItem[]
+  transaction Transaction?
+
+  @@unique([organizationId, refundNumber])
+  @@index([organizationId, branchId])
+  @@index([invoiceId])
+  @@index([status])
+}
+
+model RefundItem {
+  id              String @id @default(cuid())
+  refundId        String
+  saleId          String
+  branchProductId String
+
+  quantity     Int
+  refundAmount Decimal @db.Decimal(18, 2)
+  restocked    Boolean @default(true) // Tracks if item went back to inventory
+
+  refund         Refund          @relation(fields: [refundId], references: [id], onDelete: Cascade)
+  sale           Sale            @relation(fields: [saleId], references: [id])
+  branchProduct  BranchProduct   @relation(fields: [branchProductId], references: [id])
+  stockMovements StockMovement[]
+
+  @@index([refundId])
+  @@index([saleId])
+  @@index([branchProductId])
+}
+
+model StockTake {
+  id             String         @id @default(cuid())
+  organizationId String
+  branchId       String
+  status         ApprovalStatus @default(PENDING)
+  notes          String?
+
+  startedById  String
+  approvedById String?
+
+  startedAt   DateTime  @default(now())
+  completedAt DateTime?
+
+  organization Organization         @relation(fields: [organizationId], references: [id])
+  branch       Branch               @relation(fields: [branchId], references: [id])
+  startedBy    AuthorizedPersonnel  @relation("StockTakeStartedBy", fields: [startedById], references: [id])
+  approvedBy   AuthorizedPersonnel? @relation("StockTakeApprovedBy", fields: [approvedById], references: [id])
+
+  items StockTakeItem[]
+
+  @@index([organizationId, branchId])
+  @@index([status])
+}
+
+model StockTakeItem {
+  id              String @id @default(cuid())
+  stockTakeId     String
+  branchProductId String
+
+  expectedStock  Int
+  actualStock    Int
+  discrepancy    Int // Auto-calculated (actual - expected)
+  unitCost       Decimal @db.Decimal(18, 2)
+  totalLossValue Decimal @default(0) @db.Decimal(18, 2)
+
+  stockTake      StockTake       @relation(fields: [stockTakeId], references: [id], onDelete: Cascade)
+  branchProduct  BranchProduct   @relation(fields: [branchProductId], references: [id])
+  stockMovements StockMovement[]
+
+  @@index([stockTakeId])
+  @@index([branchProductId])
 }
 
 ////////////////////////////////////
@@ -420,8 +597,8 @@ model Customer {
   address        String?
   type           CustomerType
 
-  totalOrders Int      @default(0)
-  totalSpent  Decimal  @default(0) @db.Decimal(18, 2)
+  totalOrders Int       @default(0)
+  totalSpent  Decimal   @default(0) @db.Decimal(18, 2)
   deletedAt   DateTime?
 
   createdById String?
@@ -430,10 +607,10 @@ model Customer {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  organization      Organization           @relation(fields: [organizationId], references: [id])
-  createdBy         AuthorizedPersonnel?   @relation("CustomerCreatedBy", fields: [createdById], references: [id])
-  updatedBy         AuthorizedPersonnel?   @relation("CustomerUpdatedBy", fields: [updatedById], references: [id])
-  
+  organization Organization         @relation(fields: [organizationId], references: [id])
+  createdBy    AuthorizedPersonnel? @relation("CustomerCreatedBy", fields: [createdById], references: [id])
+  updatedBy    AuthorizedPersonnel? @relation("CustomerUpdatedBy", fields: [updatedById], references: [id])
+
   orders            Order[]
   invoices          Invoice[]
   sales             Sale[]                 @relation("CustomerSales")
@@ -485,25 +662,31 @@ model CustomerGroup {
 ////////////////////////////////////
 
 model Product {
-  id             String    @id @default(cuid())
+  id             String  @id @default(cuid())
   organizationId String
   name           String
   sku            String
   barcode        String?
   description    String?
   categoryId     String?
-  costPrice      Decimal   @db.Decimal(18, 2)
-  currency       String    @default("NGN")
-  deletedAt      DateTime?
-  
-  createdById    String?
-  updatedById    String?
 
-  createdAt      DateTime  @default(now())
-  updatedAt      DateTime  @updatedAt
+  // --- PREMIUM UPGRADES ---
+  baseCostPrice Decimal @default(0) @db.Decimal(18, 2) // Master financial reference
+  uomId         String? // Replaces the raw "unit" string
+
+  costPrice Decimal   @db.Decimal(18, 2)
+  currency  String    @default("NGN")
+  deletedAt DateTime?
+
+  createdById String?
+  updatedById String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   organization Organization         @relation(fields: [organizationId], references: [id])
   category     Category?            @relation(fields: [categoryId], references: [id])
+  uom          UnitOfMeasure?       @relation(fields: [uomId], references: [id])
   createdBy    AuthorizedPersonnel? @relation("ProductCreatedBy", fields: [createdById], references: [id])
   updatedBy    AuthorizedPersonnel? @relation("ProductUpdatedBy", fields: [updatedById], references: [id])
 
@@ -513,12 +696,15 @@ model Product {
   draftSaleItems     DraftSaleItem[]
   stockTransferItems StockTransferItem[]
   stockMovements     StockMovement[]
+  poItems            PurchaseOrderItem[]
+  grnItems           GoodsReceiptItem[]
 
   @@unique([organizationId, sku])
   @@unique([organizationId, barcode])
   @@index([organizationId])
   @@index([organizationId, deletedAt])
   @@index([categoryId])
+  @@index([uomId])
 }
 
 model BranchProduct {
@@ -533,16 +719,20 @@ model BranchProduct {
   lastSoldAt      DateTime?
   lastRestockedAt DateTime?
   safetyStock     Int?      @default(0)
-  unit            String?   @default("pcs")
-  sellingPrice    Decimal?  @db.Decimal(18, 2)
-  vendorId        String?
-  costPrice       Decimal?  @db.Decimal(18, 2)
-  deletedAt       DateTime?
 
-  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  branch       Branch       @relation(fields: [branchId], references: [id], onDelete: Cascade)
-  product      Product      @relation(fields: [productId], references: [id], onDelete: Cascade)
-  vendor       Vendor?      @relation(fields: [vendorId], references: [id])
+  // --- PREMIUM UPGRADES ---
+  uomId String? // Inherits or overrides product UoM
+
+  sellingPrice Decimal?  @db.Decimal(18, 2)
+  vendorId     String?
+  costPrice    Decimal?  @db.Decimal(18, 2)
+  deletedAt    DateTime?
+
+  organization Organization   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  branch       Branch         @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  product      Product        @relation(fields: [productId], references: [id], onDelete: Cascade)
+  vendor       Vendor?        @relation(fields: [vendorId], references: [id])
+  uom          UnitOfMeasure? @relation(fields: [uomId], references: [id])
 
   orderItems         OrderItem[]         @relation("BranchProductOrderItems")
   sales              Sale[]              @relation("BranchProductSales")
@@ -550,6 +740,11 @@ model BranchProduct {
   receipts           Receipt[]
   draftSaleItems     DraftSaleItem[]
   stockTransferItems StockTransferItem[]
+  grnItems           GoodsReceiptItem[]
+
+  // New Audit & Return hooks
+  refundItems    RefundItem[]
+  stockTakeItems StockTakeItem[]
 
   @@unique([branchId, productId])
   @@index([organizationId])
@@ -561,6 +756,7 @@ model BranchProduct {
   @@index([stock])
   @@index([reorderLevel])
   @@index([deletedAt])
+  @@index([uomId])
 }
 
 ////////////////////////////////////
@@ -573,12 +769,12 @@ model Category {
   name           String
   description    String?
   deletedAt      DateTime?
-  
-  createdById    String?
-  updatedById    String?
 
-  createdAt      DateTime  @default(now())
-  updatedAt      DateTime  @updatedAt
+  createdById String?
+  updatedById String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   organization Organization         @relation(fields: [organizationId], references: [id])
   createdBy    AuthorizedPersonnel? @relation("CategoryCreatedBy", fields: [createdById], references: [id])
@@ -590,6 +786,123 @@ model Category {
   @@index([organizationId])
 }
 
+////////////////////////////////////
+// PROCUREMENT & RECEIVING
+////////////////////////////////////
+
+model PurchaseOrder {
+  id             String @id @default(cuid())
+  organizationId String
+  branchId       String
+  vendorId       String
+  poNumber       String
+
+  status       POStatus  @default(DRAFT)
+  totalAmount  Decimal   @db.Decimal(18, 2)
+  currency     String    @default("NGN")
+  expectedDate DateTime?
+  notes        String?
+  deletedAt    DateTime?
+
+  createdById  String
+  approvedById String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  organization Organization         @relation("OrgPurchaseOrders", fields: [organizationId], references: [id])
+  branch       Branch               @relation("BranchPurchaseOrders", fields: [branchId], references: [id])
+  vendor       Vendor               @relation("VendorPurchaseOrders", fields: [vendorId], references: [id])
+  createdBy    AuthorizedPersonnel  @relation("POCreatedBy", fields: [createdById], references: [id])
+  approvedBy   AuthorizedPersonnel? @relation("POApprovedBy", fields: [approvedById], references: [id])
+
+  items PurchaseOrderItem[]
+  grns  GoodsReceiptNote[]
+
+  @@unique([organizationId, poNumber])
+  @@index([organizationId, branchId])
+  @@index([vendorId])
+  @@index([status])
+}
+
+model PurchaseOrderItem {
+  id              String @id @default(cuid())
+  purchaseOrderId String
+  productId       String
+
+  quantityOrdered  Int
+  quantityReceived Int     @default(0)
+  unitCost         Decimal @db.Decimal(18, 2)
+  totalCost        Decimal @db.Decimal(18, 2)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  purchaseOrder PurchaseOrder      @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
+  product       Product            @relation(fields: [productId], references: [id])
+  grnItems      GoodsReceiptItem[]
+
+  @@index([purchaseOrderId])
+  @@index([productId])
+}
+
+model GoodsReceiptNote {
+  id              String  @id @default(cuid())
+  organizationId  String
+  branchId        String
+  purchaseOrderId String?
+  vendorId        String
+  grnNumber       String
+
+  status     GRNStatus @default(PENDING)
+  receivedAt DateTime  @default(now())
+  notes      String?
+
+  receivedById String
+  approvedById String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  organization  Organization         @relation("OrgGRNs", fields: [organizationId], references: [id])
+  branch        Branch               @relation("BranchGRNs", fields: [branchId], references: [id])
+  purchaseOrder PurchaseOrder?       @relation(fields: [purchaseOrderId], references: [id])
+  vendor        Vendor               @relation("VendorGRNs", fields: [vendorId], references: [id])
+  receivedBy    AuthorizedPersonnel  @relation("GRNReceivedBy", fields: [receivedById], references: [id])
+  approvedBy    AuthorizedPersonnel? @relation("GRNApprovedBy", fields: [approvedById], references: [id])
+
+  items          GoodsReceiptItem[]
+  stockMovements StockMovement[]
+
+  @@unique([organizationId, grnNumber])
+  @@index([purchaseOrderId])
+  @@index([vendorId])
+}
+
+model GoodsReceiptItem {
+  id              String  @id @default(cuid())
+  grnId           String
+  poItemId        String?
+  productId       String
+  branchProductId String
+
+  quantityAccepted Int
+  quantityRejected Int     @default(0)
+  unitCost         Decimal @db.Decimal(18, 2)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  grn           GoodsReceiptNote   @relation(fields: [grnId], references: [id], onDelete: Cascade)
+  poItem        PurchaseOrderItem? @relation(fields: [poItemId], references: [id])
+  product       Product            @relation(fields: [productId], references: [id])
+  branchProduct BranchProduct      @relation(fields: [branchProductId], references: [id])
+
+  @@index([grnId])
+  @@index([branchProductId])
+}
+
 model Vendor {
   id             String    @id @default(cuid())
   organizationId String
@@ -599,12 +912,14 @@ model Vendor {
   address        String?
   deletedAt      DateTime?
 
-  createdById    String?
-  updatedById    String?
+  createdById String?
+  updatedById String?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  purchaseOrders PurchaseOrder[]      @relation("VendorPurchaseOrders")
+  grns           GoodsReceiptNote[]   @relation("VendorGRNs")
   organization   Organization         @relation(fields: [organizationId], references: [id])
   createdBy      AuthorizedPersonnel? @relation("VendorCreatedBy", fields: [createdById], references: [id])
   updatedBy      AuthorizedPersonnel? @relation("VendorUpdatedBy", fields: [updatedById], references: [id])
@@ -647,12 +962,12 @@ model Order {
   salesperson  AuthorizedPersonnel @relation("SalespersonOrders", fields: [salespersonId], references: [id])
   customer     Customer?           @relation(fields: [customerId], references: [id])
 
+  @@unique([organizationId, orderNumber])
   @@index([organizationId, branchId, status])
   @@index([organizationId, deletedAt])
   @@index([branchId, createdAt])
   @@index([salespersonId])
   @@index([customerId])
-  @@unique([organizationId, orderNumber])
 }
 
 model OrderItem {
@@ -666,6 +981,7 @@ model OrderItem {
   total     Decimal  @db.Decimal(18, 2)
   discount  Decimal? @default(0) @db.Decimal(18, 2)
   tax       Decimal? @default(0) @db.Decimal(18, 2)
+  taxRateId String?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -673,6 +989,7 @@ model OrderItem {
   order         Order           @relation(fields: [orderId], references: [id], onDelete: Cascade)
   branchProduct BranchProduct   @relation("BranchProductOrderItems", fields: [branchProductId], references: [id])
   product       Product         @relation("ProductOrderItems", fields: [productId], references: [id])
+  taxRate       TaxRate?        @relation(fields: [taxRateId], references: [id])
   stockMoves    StockMovement[]
 
   @@index([orderId])
@@ -681,10 +998,11 @@ model OrderItem {
 }
 
 model Invoice {
-  id             String @id @default(cuid())
+  // ... (Keep existing scalars)
+  id             String  @id @default(cuid())
   organizationId String
   branchId       String
-  orderId        String @unique
+  orderId        String  @unique
   invoiceNumber  String?
 
   issuedById  String
@@ -709,28 +1027,31 @@ model Invoice {
   sales    Sale[]
   receipts Receipt[]
 
-  // Relations
-  organization Organization        @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  branch       Branch              @relation(fields: [branchId], references: [id])
-  order        Order               @relation(fields: [orderId], references: [id], onDelete: Cascade)
-  issuedBy     AuthorizedPersonnel @relation("IssuedInvoices", fields: [issuedById], references: [id])
+  // --- PREMIUM UPGRADES ---
+  refunds Refund[]
+
+  organization Organization         @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  branch       Branch               @relation(fields: [branchId], references: [id])
+  order        Order                @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  issuedBy     AuthorizedPersonnel  @relation("IssuedInvoices", fields: [issuedById], references: [id])
   updatedBy    AuthorizedPersonnel? @relation("InvoiceUpdatedBy", fields: [updatedById], references: [id])
-  customer     Customer?           @relation(fields: [customerId], references: [id])
+  customer     Customer?            @relation(fields: [customerId], references: [id])
   checkHash    String?
 
+  @@unique([organizationId, invoiceNumber])
   @@index([organizationId, branchId, status])
   @@index([issuedAt])
   @@index([organizationId, deletedAt])
-  @@unique([organizationId, invoiceNumber])
 }
 
 model Payment {
-  id             String  @id @default(cuid())
+  id             String       @id @default(cuid())
   organizationId String
   invoiceId      String
   cashierId      String
-  updatedById    String?      // For audit/compliance
+  updatedById    String? // For audit/compliance
   receiptId      String?
+  transaction    Transaction?
 
   method    PaymentMethod
   amount    Decimal       @db.Decimal(18, 2)
@@ -742,10 +1063,10 @@ model Payment {
   receivedAt DateTime @default(now())
 
   // Relations
-  invoice   Invoice             @relation(fields: [invoiceId], references: [id])
-  cashier   AuthorizedPersonnel @relation("InvoicePaidBy", fields: [cashierId], references: [id])
+  invoice   Invoice              @relation(fields: [invoiceId], references: [id])
+  cashier   AuthorizedPersonnel  @relation("InvoicePaidBy", fields: [cashierId], references: [id])
   updatedBy AuthorizedPersonnel? @relation("PaymentUpdatedBy", fields: [updatedById], references: [id])
-  receipt   Receipt?            @relation("PaymentReceipt", fields: [receiptId], references: [id])
+  receipt   Receipt?             @relation("PaymentReceipt", fields: [receiptId], references: [id])
 
   @@index([invoiceId])
   @@index([cashierId])
@@ -808,7 +1129,8 @@ model DraftSaleItem {
 }
 
 model Sale {
-  id              String   @id @default(cuid())
+  // ... (Keep existing scalars)
+  id              String @id @default(cuid())
   organizationId  String
   invoiceId       String
   branchProductId String
@@ -825,11 +1147,19 @@ model Sale {
   cashierId  String
   customerId String?
 
+  // --- PREMIUM UPGRADES: Linked Tax ---
+  taxRateId String?
+  tax       Decimal? @default(0) @db.Decimal(18, 2)
+  discount  Decimal? @default(0) @db.Decimal(18, 2)
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   receipts   Receipt[]
   stockMoves StockMovement[]
+
+  // Audit & Returns hooks
+  refundItems RefundItem[]
 
   organization  Organization        @relation(fields: [organizationId], references: [id])
   invoice       Invoice             @relation(fields: [invoiceId], references: [id])
@@ -838,26 +1168,21 @@ model Sale {
   branch        Branch              @relation(fields: [branchId], references: [id])
   attendant     AuthorizedPersonnel @relation("AttendantSales", fields: [cashierId], references: [id])
   customer      Customer?           @relation("CustomerSales", fields: [customerId], references: [id])
+  taxRate       TaxRate?            @relation(fields: [taxRateId], references: [id])
 
-  // Prevent duplicate product lines in the same invoice
   @@unique([invoiceId, branchProductId])
-
-  // Multi-tenant performance
   @@index([organizationId, branchId])
   @@index([organizationId, deletedAt])
   @@index([organizationId, createdAt])
-
-  // Foreign key lookup indexes
   @@index([invoiceId])
   @@index([productId])
   @@index([branchProductId])
   @@index([cashierId])
   @@index([customerId])
-
-  // Reporting / analytics indexes
   @@index([createdAt])
   @@index([branchId, createdAt])
   @@index([cashierId, createdAt])
+  @@index([taxRateId])
 }
 
 ////////////////////////////////////
@@ -871,36 +1196,47 @@ model StockMovement {
   branchProductId String
   productId       String
   type            StockMovementType
-  quantity        Int               // always positive
+  quantity        Int
   unitCost        Decimal           @db.Decimal(18, 2)
   totalCost       Decimal           @db.Decimal(18, 2)
   reason          String?
-  approvedAt      DateTime?
-  approvalId      String?
-  handledById     String?
-  updatedById     String?           // For audit/compliance
-  deletedAt       DateTime?
 
+  runningBalance Int
+  previousHash   String?
+  hash           String?
+
+  approvedAt  DateTime?
+  approvalId  String?
+  handledById String?
+  updatedById String?
+  deletedAt   DateTime?
+
+  // --- POLYMORPHIC TRACEABILITY (PREMIUM UPGRADES) ---
   saleId              String?
   orderItemId         String?
   stockTransferItemId String?
+  grnId               String?
+  refundItemId        String? // NEW: Trace back to customer returns
+  stockTakeItemId     String? // NEW: Trace back to audit adjustments
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  // Relations
-  organization      Organization         @relation(fields: [organizationId], references: [id])
-  branch            Branch               @relation("BranchStockMoves", fields: [branchId], references: [id])
-  branchProduct     BranchProduct        @relation("BranchProductStockMoves", fields: [branchProductId], references: [id])
-  product           Product              @relation(fields: [productId], references: [id])
-  approval          ApprovalRequest?     @relation("ApprovalStockMoves", fields: [approvalId], references: [id])
-  handledBy         AuthorizedPersonnel? @relation("HandledStockMoves", fields: [handledById], references: [id])
-  updatedBy         AuthorizedPersonnel? @relation("StockMovementUpdatedBy", fields: [updatedById], references: [id])
-  sale              Sale?                @relation(fields: [saleId], references: [id])
-  orderItem         OrderItem?           @relation(fields: [orderItemId], references: [id])
-  stockTransferItem StockTransferItem?   @relation(fields: [stockTransferItemId], references: [id])
+  organization  Organization         @relation(fields: [organizationId], references: [id])
+  branch        Branch               @relation("BranchStockMoves", fields: [branchId], references: [id])
+  branchProduct BranchProduct        @relation("BranchProductStockMoves", fields: [branchProductId], references: [id])
+  product       Product              @relation(fields: [productId], references: [id])
+  approval      ApprovalRequest?     @relation("ApprovalStockMoves", fields: [approvalId], references: [id])
+  handledBy     AuthorizedPersonnel? @relation("HandledStockMoves", fields: [handledById], references: [id])
+  updatedBy     AuthorizedPersonnel? @relation("StockMovementUpdatedBy", fields: [updatedById], references: [id])
 
-  // Indexes for reporting and concurrency
+  sale              Sale?              @relation(fields: [saleId], references: [id])
+  orderItem         OrderItem?         @relation(fields: [orderItemId], references: [id])
+  stockTransferItem StockTransferItem? @relation(fields: [stockTransferItemId], references: [id])
+  grn               GoodsReceiptNote?  @relation(fields: [grnId], references: [id])
+  refundItem        RefundItem?        @relation(fields: [refundItemId], references: [id])
+  stockTakeItem     StockTakeItem?     @relation(fields: [stockTakeItemId], references: [id])
+
   @@index([organizationId])
   @@index([organizationId, deletedAt])
   @@index([branchId])
@@ -909,9 +1245,12 @@ model StockMovement {
   @@index([type])
   @@index([approvedAt])
   @@index([deletedAt])
-  @@index([branchProductId, type])        // quick stock movement lookups
-  @@index([branchProductId, createdAt])   // for FIFO/LIFO reporting
+  @@index([branchProductId, type])
+  @@index([branchProductId, createdAt])
   @@index([updatedById])
+  @@index([grnId])
+  @@index([refundItemId])
+  @@index([stockTakeItemId])
 }
 
 ////////////////////////////////////
@@ -933,20 +1272,20 @@ model StockTransfer {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  organization Organization        @relation("OrgStockTransfers", fields: [organizationId], references: [id])
-  fromBranch   Branch              @relation("BranchTransfersFrom", fields: [fromBranchId], references: [id])
-  toBranch     Branch              @relation("BranchTransfersTo", fields: [toBranchId], references: [id])
-  createdBy    AuthorizedPersonnel @relation("CreatedStockTransfers", fields: [createdById], references: [id])
+  organization Organization         @relation("OrgStockTransfers", fields: [organizationId], references: [id])
+  fromBranch   Branch               @relation("BranchTransfersFrom", fields: [fromBranchId], references: [id])
+  toBranch     Branch               @relation("BranchTransfersTo", fields: [toBranchId], references: [id])
+  createdBy    AuthorizedPersonnel  @relation("CreatedStockTransfers", fields: [createdById], references: [id])
   approvedBy   AuthorizedPersonnel? @relation("ApprovedStockTransfers", fields: [approvedById], references: [id])
 
   items StockTransferItem[]
 
+  @@unique([organizationId, transferNumber])
   @@index([organizationId])
   @@index([fromBranchId])
   @@index([toBranchId])
   @@index([status])
   @@index([deletedAt])
-  @@unique([organizationId, transferNumber])
 }
 
 model StockTransferItem {
@@ -978,7 +1317,7 @@ model Receipt {
   id              String  @id @default(cuid())
   organizationId  String
   branchId        String
-  personnelId     String            // now required
+  personnelId     String // now required
   saleId          String?
   invoiceId       String?
   branchProductId String?
@@ -989,9 +1328,9 @@ model Receipt {
   currency  String    @default("NGN")
   deletedAt DateTime?
 
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-  updatedById String?                 // optional audit field
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  updatedById String? // optional audit field
 
   // Relations
   organization  Organization         @relation(fields: [organizationId], references: [id])
@@ -1004,6 +1343,7 @@ model Receipt {
   posSession    POSSession?          @relation("POSSessionReceipts", fields: [posSessionId], references: [id])
   payments      Payment[]            @relation("PaymentReceipt")
 
+  @@unique([organizationId, receiptNumber])
   // Indexes
   @@index([organizationId, branchId])
   @@index([saleId])
@@ -1011,7 +1351,38 @@ model Receipt {
   @@index([branchProductId])
   @@index([deletedAt])
   @@index([updatedById])
-  @@unique([organizationId, receiptNumber])
+}
+
+////////////////////////////////////
+// POS SESSION 
+////////////////////////////////////
+
+model POSSession {
+  id             String @id @default(cuid())
+  organizationId String
+  branchId       String
+  cashierId      String
+
+  openedAt       DateTime         @default(now())
+  closedAt       DateTime?
+  openingBalance Decimal          @db.Decimal(18, 2)
+  closingBalance Decimal?         @db.Decimal(18, 2)
+  status         POSSessionStatus @default(OPEN)
+
+  organization Organization        @relation("OrgPOSSessions", fields: [organizationId], references: [id])
+  branch       Branch              @relation("BranchPOSSessions", fields: [branchId], references: [id])
+  cashier      AuthorizedPersonnel @relation("CashierPOSSessions", fields: [cashierId], references: [id])
+
+  receipts   Receipt[]   @relation("POSSessionReceipts")
+  draftSales DraftSale[] @relation("POSSessionDraftSales")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([branchId])
+  @@index([cashierId])
+  @@index([cashierId, status])
+  @@index([status])
 }
 
 ////////////////////////////////////
@@ -1034,11 +1405,11 @@ model ActivityLog {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  organization Organization         @relation(fields: [organizationId], references: [id])
-  branch       Branch?              @relation(fields: [branchId], references: [id])
-  personnel    AuthorizedPersonnel? @relation(fields: [personnelId], references: [id])
-  approval     ApprovalRequest?     @relation("ApprovalLogs", fields: [approvalId], references: [id])
-  notifications  Notification[]
+  organization  Organization         @relation(fields: [organizationId], references: [id])
+  branch        Branch?              @relation(fields: [branchId], references: [id])
+  personnel     AuthorizedPersonnel? @relation(fields: [personnelId], references: [id])
+  approval      ApprovalRequest?     @relation("ApprovalLogs", fields: [approvalId], references: [id])
+  notifications Notification[]
 
   @@index([organizationId, branchId])
   @@index([personnelId])
@@ -1057,25 +1428,25 @@ model Notification {
   organizationId String
   branchId       String?
   type           NotificationType
-  
-  // High Efficiency: Link directly to the triggering action/log
-  actionTrigger  CriticalAction?  // Points to your existing CriticalAction enum
-  activityLogId  String?          // The source ActivityLog for details
-  
-  title          String
-  message        String
-  approvalId     String?
-  deletedAt      DateTime?
 
-  createdAt      DateTime         @default(now())
-  updatedAt      DateTime         @updatedAt
+  // High Efficiency: Link directly to the triggering action/log
+  actionTrigger CriticalAction? // Points to your existing CriticalAction enum
+  activityLogId String? // The source ActivityLog for details
+
+  title      String
+  message    String
+  approvalId String?
+  deletedAt  DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   // Relations
-  organization   Organization     @relation(fields: [organizationId], references: [id])
-  branch         Branch?          @relation(fields: [branchId], references: [id])
-  approval       ApprovalRequest? @relation(fields: [approvalId], references: [id])
-  activity       ActivityLog?     @relation(fields: [activityLogId], references: [id])
-  recipients     NotificationRecipient[]
+  organization Organization            @relation(fields: [organizationId], references: [id])
+  branch       Branch?                 @relation(fields: [branchId], references: [id])
+  approval     ApprovalRequest?        @relation(fields: [approvalId], references: [id])
+  activity     ActivityLog?            @relation(fields: [activityLogId], references: [id])
+  recipients   NotificationRecipient[]
 
   @@index([organizationId, branchId])
   @@index([type])
@@ -1088,13 +1459,13 @@ model NotificationRecipient {
   notificationId String
   personnelId    String
   read           Boolean @default(false)
-  
-  // Helpful for cleanup or prioritizing recent push notifications
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
 
-  notification   Notification        @relation(fields: [notificationId], references: [id], onDelete: Cascade)
-  personnel      AuthorizedPersonnel @relation(fields: [personnelId], references: [id], onDelete: Cascade)
+  // Helpful for cleanup or prioritizing recent push notifications
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  notification Notification        @relation(fields: [notificationId], references: [id], onDelete: Cascade)
+  personnel    AuthorizedPersonnel @relation(fields: [personnelId], references: [id], onDelete: Cascade)
 
   @@unique([notificationId, personnelId])
   @@index([personnelId])
@@ -1106,18 +1477,18 @@ model NotificationSetting {
   organizationId   String
   personnelId      String?
   notificationType NotificationType
-  
-  // Delivery Channels: Makes push logic very efficient
-  inAppEnabled     Boolean          @default(true)
-  pushEnabled      Boolean          @default(false)
-  emailEnabled     Boolean          @default(false)
-  
-  deletedAt        DateTime?
-  createdAt        DateTime         @default(now())
-  updatedAt        DateTime         @updatedAt
 
-  organization     Organization     @relation(fields: [organizationId], references: [id])
-  personnel        AuthorizedPersonnel? @relation(fields: [personnelId], references: [id])
+  // Delivery Channels: Makes push logic very efficient
+  inAppEnabled Boolean @default(true)
+  pushEnabled  Boolean @default(false)
+  emailEnabled Boolean @default(false)
+
+  deletedAt DateTime?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  organization Organization         @relation(fields: [organizationId], references: [id])
+  personnel    AuthorizedPersonnel? @relation(fields: [personnelId], references: [id])
 
   @@unique([organizationId, personnelId, notificationType])
   @@index([organizationId])
@@ -1170,8 +1541,10 @@ model FinanceAccount {
   personnelId    String?
   name           String
   balance        Decimal     @default(0) @db.Decimal(18, 2)
+  version        Int         @default(1) // Optimized concurrency control
   currency       String      @default("NGN")
   type           AccountType
+  isFrozen       Boolean     @default(false) // Emergency lock
   deletedAt      DateTime?
 
   createdAt DateTime @default(now())
@@ -1181,7 +1554,8 @@ model FinanceAccount {
   branch       Branch?              @relation(fields: [branchId], references: [id])
   personnel    AuthorizedPersonnel? @relation(fields: [personnelId], references: [id])
 
-  transactions Transaction[]
+  transactions       Transaction[]
+  reconciliationLogs ReconciliationLog[]
 
   @@unique([organizationId, branchId, name])
   @@index([organizationId])
@@ -1196,16 +1570,41 @@ model Transaction {
   type      TransactionType
   amount    Decimal         @db.Decimal(18, 2)
   currency  String          @default("NGN")
-  metadata  Json?
 
+  // --- PREMIUM LEDGER INTEGRITY ---
+  runningBalance Decimal @db.Decimal(18, 2)
+  previousHash   String?
+  hash           String?
+
+  // --- ORIGIN TRACEABILITY ---
+  paymentId   String? @unique
+  expenseId   String? @unique
+  transferId  String?
+  handledById String?
+  refundId    String? @unique // PREMIUM UPGRADE: Financial trace for cash returns
+
+  metadata  Json?
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  // --- RELATIONS ---
   account FinanceAccount @relation(fields: [accountId], references: [id])
+  payment Payment?       @relation(fields: [paymentId], references: [id])
 
-  @@index([accountId])
+  // FIXED: Added named relation "TransactionToExpense" to resolve 1:1 ambiguity
+  expense Expense? @relation("TransactionToExpense", fields: [expenseId], references: [id])
+
+  // FIXED: Matches the @relation("HandledTransactions") now in AuthorizedPersonnel
+  handledBy AuthorizedPersonnel? @relation("HandledTransactions", fields: [handledById], references: [id])
+
+  refund Refund? @relation(fields: [refundId], references: [id])
+
+  // --- INDEXING ---
+  @@index([accountId, createdAt])
   @@index([type])
-  @@index([createdAt])
+  @@index([paymentId])
+  @@index([expenseId])
+  @@index([refundId])
 }
 
 ////////////////////////////////////
@@ -1213,36 +1612,74 @@ model Transaction {
 ////////////////////////////////////
 
 model Expense {
-  id             String      @id @default(cuid())
+  id             String  @id @default(cuid())
   organizationId String
-  branchId       String?
-  vendorId       String?
-  type           ExpenseType
-  categoryId     String?
-  amount         Decimal     @db.Decimal(18, 2)
-  currency       String      @default("NGN")
-  description    String?
-  paidAt         DateTime?
-  deletedAt      DateTime?
+  branchId       String
+  categoryId     String // Categorized for audit (e.g., Rent, Utilities)
+  vendorId       String? // Who was paid?
 
-  createdById    String?
-  updatedById    String?
+  amount   Decimal       @db.Decimal(18, 2)
+  currency String        @default("NGN")
+  status   InvoiceStatus @default(DRAFT)
 
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  // --- FORTRESS TRACEABILITY ---
+  // FIXED: Removed 'transactionId String?' here because Transaction model 
+  // now holds 'expenseId'. Prisma only allows the ID on one side for 1:1.
+
+  approvalId String? @unique // Linked to an ApprovalRequest if > threshold
+  reference  String? // Invoice # or Receipt #
+
+  date          DateTime @default(now())
+  attachmentUrl String? // Digital proof (Receipt image)
+
+  createdById String
+  updatedById String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
 
   // Relations
-  organization Organization         @relation(fields: [organizationId], references: [id])
-  branch       Branch?              @relation(fields: [branchId], references: [id])
-  vendor       Vendor?              @relation(fields: [vendorId], references: [id])
-  category     Category?            @relation(fields: [categoryId], references: [id])
-  createdBy    AuthorizedPersonnel? @relation("ExpenseCreatedBy", fields: [createdById], references: [id])
-  updatedBy    AuthorizedPersonnel? @relation("ExpenseUpdatedBy", fields: [updatedById], references: [id])
+  organization Organization @relation(fields: [organizationId], references: [id])
+  branch       Branch       @relation(fields: [branchId], references: [id])
+  category     Category     @relation(fields: [categoryId], references: [id])
+  vendor       Vendor?      @relation(fields: [vendorId], references: [id])
 
-  @@index([organizationId, branchId])
-  @@index([vendorId])
-  @@index([categoryId])
-  @@index([deletedAt])
+  createdBy AuthorizedPersonnel  @relation("ExpenseCreatedBy", fields: [createdById], references: [id])
+  updatedBy AuthorizedPersonnel? @relation("ExpenseUpdatedBy", fields: [updatedById], references: [id])
+
+  // FIXED: Simply points back to the named relation defined in Transaction
+  transaction Transaction? @relation("TransactionToExpense")
+
+  approval ApprovalRequest? @relation(fields: [approvalId], references: [id])
+
+  @@index([organizationId, status])
+  @@index([branchId])
+}
+
+model ReconciliationLog {
+  id String @id @default(cuid())
+
+  // --- PREMIUM UPGRADES: Added multi-tenant consistency ---
+  organizationId String
+  branchId       String?
+
+  accountId   String
+  personnelId String
+
+  statementDate DateTime
+  ledgerBalance Decimal  @db.Decimal(18, 2)
+  actualBalance Decimal  @db.Decimal(18, 2)
+  discrepancy   Decimal  @db.Decimal(18, 2)
+
+  status String
+  notes  String?
+
+  createdAt DateTime            @default(now())
+  account   FinanceAccount      @relation(fields: [accountId], references: [id])
+  personnel AuthorizedPersonnel @relation(fields: [personnelId], references: [id])
+
+  @@index([organizationId])
+  @@index([branchId])
+  @@index([accountId])
 }
 
 ////////////////////////////////////
@@ -1250,17 +1687,17 @@ model Expense {
 ////////////////////////////////////
 
 model CustomerOrderSummary {
-  id                 String    @id @default(cuid())
-  organizationId     String
-  branchId           String
-  customerId         String
-  totalOrders        Int       @default(0)
-  totalQuantity      Int       @default(0)
-  totalSpent         Decimal   @default(0) @db.Decimal(18, 2)
-  averageOrderValue  Decimal?  @db.Decimal(18, 2)
-  lifetimeValue      Decimal?  @db.Decimal(18, 2)
-  lastOrderAt        DateTime?
-  productBreakdown   Json?
+  id                String    @id @default(cuid())
+  organizationId    String
+  branchId          String
+  customerId        String
+  totalOrders       Int       @default(0)
+  totalQuantity     Int       @default(0)
+  totalSpent        Decimal   @default(0) @db.Decimal(18, 2)
+  averageOrderValue Decimal?  @db.Decimal(18, 2)
+  lifetimeValue     Decimal?  @db.Decimal(18, 2)
+  lastOrderAt       DateTime?
+  productBreakdown  Json?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt

@@ -242,7 +242,7 @@ export async function PATCH(req: NextRequest) {
       id, name, email, role, disabled, isLocked, lockReason, newPassword, branchAssignments
     } = body;
 
-    if (!id) return NextResponse.json({ message: "Target ID is required" }, { status: 400 });
+    if (!id) return NextResponse.json({ message: "Personnel ID is required" }, { status: 400 });
 
     // CRITICAL: Prevent self-modification for security status
     if (id === auth.userId && (disabled !== undefined || isLocked !== undefined)) {
@@ -422,7 +422,7 @@ export async function DELETE(req: NextRequest) {
     const { searchParams } = new URL(req.url);
     const id = searchParams.get("id");
 
-    if (!id) return NextResponse.json({ message: "ID required" }, { status: 400 });
+    if (!id) return NextResponse.json({ message: "Personnel ID required" }, { status: 400 });
     
     // CRITICAL: Prevent self-deletion
     if (id === auth.userId) {
@@ -433,7 +433,7 @@ export async function DELETE(req: NextRequest) {
       where: { id, organizationId: auth.organizationId, deletedAt: null }
     });
 
-    if (!targetUser) return NextResponse.json({ message: "User not found" }, { status: 404 });
+    if (!targetUser) return NextResponse.json({ message: "Personnel not found" }, { status: 404 });
 
     // CRITICAL: Admins and Owners cannot be deleted through this interface
     if (targetUser.role === Role.ADMIN || targetUser.isOrgOwner) {

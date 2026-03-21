@@ -15,7 +15,6 @@ import {
 
 import { useEffect, useState } from "react";
 import SalesChart from "@/components/dashboard/SalesChart";
-import PopularItems from "@/components/dashboard/PopularItems";
 import RecentOrders from "@/components/dashboard/RecentOrders";
 import QuickAction from "@/components/dashboard/QuickAction";
 import { NotificationList, Notification } from "@/components/dashboard/NotificationCard";
@@ -42,7 +41,8 @@ interface OverviewData {
     name: string;
     category: string;
     price: number;
-    image?: string;
+    // UPDATED: image is now required, and the API should provide a dynamic generated URL.
+    image: string; 
     orders: number;
   }[];
   recentOrders: {
@@ -135,8 +135,8 @@ export default function DashboardPage() {
         </div>
 
         {/* Popular Items */}
-        <PopularItems items={overview.popularItems} />
+        
       </div>
     </div>
   );
-} 
+}
