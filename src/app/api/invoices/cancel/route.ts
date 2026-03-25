@@ -1,0 +1,77 @@
+import { NextRequest, NextResponse } from "next/server";
+import prisma from "@/core/lib/prisma";
+import { InvoiceStatus, StockMovementType } from "@prisma/client";
+import { getServerSession } from "next-auth";
+import { authOptions } from "@/core/lib/auth";
+
+// =====================================================
+// POST: Cancel an invoice and restock its sales
+// =====================================================
+export async function POST(req: NextRequest) {
+  try {
+    const session = await getServerSession(authOptions);
+
+    if (!session?.user?.organizationId) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+
+    const { invoiceId } = (await req.json()) as { invoiceId?: string };
+
+    if (!invoiceId) {
+      return NextResponse.json({ error: "Invoice ID required" }, { status: 400 });
+    }
+
+    const invoice = await prisma.invoice.findFirst({
+      where: {
+        id: invoiceId,
+        organizationId: session.user.organizationId,
+        deletedAt: null,
+      },
+      include: {
+        sales: true, // include sales to restock products
+      },
+    });
+
+    if (!invoice) {
+      return NextResponse.json({ error: "Invoice not found" }, { status: 404 });
+    }
+
+    if (invoice.status === InvoiceStatus.VOIDED || invoice.status === InvoiceStatus.CANCELLED) {
+      return NextResponse.json({ error: "Invoice already cancelled/voided" }, { status: 409 });
+    }
+
+    // Transaction: restock and update invoice status
+    await prisma.$transaction(async (tx) => {
+      for (const sale of invoice.sales) {
+        // Increment stock
+        await tx.branchProduct.update({
+          where: { id: sale.branchProductId },
+          data: { stock: { increment: sale.quantity } },
+        });
+
+        // Log stock movement
+        await tx.stockMovement.create({
+          data: {
+            branchProductId: sale.branchProductId,
+            branchId: sale.branchId,
+            personnelId: session.user.id,
+            type: StockMovementType.IN,
+            quantity: sale.quantity,
+            referenceId: invoice.id,
+          },
+        });
+      }
+
+      // Update invoice status to VOIDED
+      await tx.invoice.update({
+        where: { id: invoice.id },
+        data: { status: InvoiceStatus.VOIDED },
+      });
+    });
+
+    return NextResponse.json({ message: "Invoice cancelled successfully" });
+  } catch (error) {
+    console.error("CANCEL INVOICE ERROR:", error);
+    return NextResponse.json({ error: "Failed to cancel invoice" }, { status: 500 });
+  }
+}
