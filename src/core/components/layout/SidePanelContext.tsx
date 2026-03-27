@@ -9,11 +9,13 @@ import React, {
   ReactNode,
   useMemo,
   useRef,
+  startTransition,
 } from "react";
 import { useSession } from "next-auth/react";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 
 /* --------------------------------------------- */
-/* Types */
+/* Types & Constants */
 /* --------------------------------------------- */
 
 export interface PanelConfig {
@@ -25,6 +27,7 @@ export interface PanelConfig {
 export interface SidePanelContextType extends PanelConfig {
   content: ReactNode | null;
   title: string;
+  isLoaded: boolean;
   openPanel: (content: ReactNode, title?: string) => void;
   openProvision: (data: any) => void;
   resetToDefault: () => void;
@@ -35,35 +38,58 @@ export interface SidePanelContextType extends PanelConfig {
   saveLayout: (currentConfig?: PanelConfig) => Promise<void>;
 }
 
+const PREF_KEY = "right-panel-config";
+const SAVE_DEBOUNCE_MS = 800;
+// Inside SidePanelContext.tsx
+const MIN_WIDTH = 320;
+const MAX_WIDTH = 340; // Changed from 900 to 380
+
 const DEFAULT_CONFIG: PanelConfig = {
-  isOpen: true, // Display by default as requested
+  isOpen: false,
   isFullScreen: false,
-  width: 420, 
+  width: 340, // Ensure default is the cap
 };
 
 const SidePanelContext = createContext<SidePanelContextType | undefined>(undefined);
 
+/* --------------------------------------------- */
+/* Provider */
+/* --------------------------------------------- */
+
 export function SidePanelProvider({ children }: { children: ReactNode }) {
   const { data: session } = useSession();
+  const pathname = usePathname();
+  const router = useRouter();
+  const searchParams = useSearchParams();
+
   const user = session?.user;
 
+  /* ---------------- State ---------------- */
+
   const [content, setContent] = useState<ReactNode | null>(null);
-  const [title, setTitle] = useState<string>("Workspace Schedule");
+  const [title, setTitle] = useState("Workspace Schedule");
   const [config, setConfig] = useState<PanelConfig>(DEFAULT_CONFIG);
-  const [mounted, setMounted] = useState(false);
+  const [isLoaded, setIsLoaded] = useState(false);
 
-  // Ref tracking to prevent stale state in async saveLayout
-  const configRef = useRef(config);
-  useEffect(() => {
-    configRef.current = config;
-  }, [config]);
+  const saveTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const lastSavedRef = useRef<string>("");
 
-  /* --- Persistence Logic --- */
+  /* ---------------- Page Key ---------------- */
+
+  const pageKey = useMemo(() => {
+    if (!pathname) return "unknown-page";
+    const segments = pathname.split("/").filter(Boolean);
+    return `${segments.at(-1) || "overview"}-panel`;
+  }, [pathname]);
+
+  /* --------------------------------------------- */
+  /* Persistence Helper */
+  /* --------------------------------------------- */
 
   const persistToDB = useCallback(async (data: PanelConfig) => {
-    if (!user?.organizationId || !user?.branchId || !user?.id) return;
+    if (!user?.id) return;
     try {
-      await fetch("/api/preferences", {
+      const res = await fetch("/api/preferences", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -72,89 +98,142 @@ export function SidePanelProvider({ children }: { children: ReactNode }) {
           personnelId: user.id,
           scope: "USER",
           category: "LAYOUT",
-          key: "right-panel-config",
-          value: JSON.stringify({ isOpen: data.isOpen, width: data.width }),
-          target: "", // Aligned with Sidebar pattern
+          key: PREF_KEY,
+          target: pageKey,
+          value: JSON.stringify({
+            isOpen: data.isOpen,
+            width: data.width,
+          }),
         }),
       });
+
+      if (res.ok) {
+        window.dispatchEvent(
+          new CustomEvent("preference-update", {
+            detail: { key: PREF_KEY, pageKey, isOpen: data.isOpen },
+          })
+        );
+      }
     } catch (err) {
-      console.error("SidePanel Persistence Error:", err);
+      console.error("Persistence Error:", err);
     }
-  }, [user?.id, user?.organizationId, user?.branchId]);
+  }, [user, pageKey]);
 
-  const saveLayout = useCallback(async (explicitConfig?: PanelConfig) => {
-    const targetConfig = explicitConfig || configRef.current;
-    localStorage.setItem("masa-right-panel", JSON.stringify(targetConfig));
-    await persistToDB(targetConfig);
-  }, [persistToDB]);
+  const saveLayout = useCallback(async (explicit?: PanelConfig) => {
+    const target = explicit || config;
+    const serialized = JSON.stringify(target);
 
-  /* --- Initialization --- */
+    if (serialized === lastSavedRef.current) return;
+    lastSavedRef.current = serialized;
+
+    localStorage.setItem(`masa-${pageKey}`, serialized);
+
+    if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
+    saveTimeoutRef.current = setTimeout(() => {
+      persistToDB(target);
+    }, SAVE_DEBOUNCE_MS);
+  }, [config, persistToDB, pageKey]);
+
+  /* --------------------------------------------- */
+  /* Sync Effect (Fixes the Router Update Error) */
+  /* --------------------------------------------- */
 
   useEffect(() => {
-    setMounted(true);
-    
-    // 1. Immediate Local Sync (to prevent flicker)
-    const saved = localStorage.getItem("masa-right-panel");
+    if (!isLoaded) return;
+
+    // 1. Sync State to URL
+    const params = new URLSearchParams(searchParams.toString());
+    const isCurrentlyOpenInURL = params.get("panel") === "open";
+
+    if (config.isOpen !== isCurrentlyOpenInURL) {
+      if (config.isOpen) params.set("panel", "open");
+      else params.delete("panel");
+
+      startTransition(() => {
+        router.replace(`?${params.toString()}`, { scroll: false });
+      });
+    }
+
+    // 2. Sync State to DB/Local (Debounced)
+    saveLayout(config);
+  }, [config, isLoaded, router, searchParams, saveLayout]);
+
+  /* --------------------------------------------- */
+  /* Initialization (Fixes the JSON Syntax Error) */
+  /* --------------------------------------------- */
+
+  const fetchPreferences = useCallback(async () => {
+    if (!user?.id) {
+      setIsLoaded(true);
+      return;
+    }
+
+    try {
+      const params = new URLSearchParams({
+        personnelId: user.id,
+        category: "LAYOUT",
+        key: PREF_KEY,
+        target: pageKey,
+      });
+
+      const res = await fetch(`/api/preferences?${params}`);
+
+      // Handle non-OK responses (like 404 or middleware redirects)
+      if (!res.ok) {
+        console.warn(`Preferences API returned status: ${res.status}`);
+        setIsLoaded(true);
+        return;
+      }
+
+      // Handle non-JSON content types (preventing SyntaxError)
+      const contentType = res.headers.get("content-type");
+      if (!contentType || !contentType.includes("application/json")) {
+        console.error("Preferences API did not return JSON. Check for redirects.");
+        setIsLoaded(true);
+        return;
+      }
+
+      const data = await res.json();
+
+      if (data?.success && data.preference) {
+        const parsed = typeof data.preference === "string" 
+          ? JSON.parse(data.preference) 
+          : data.preference;
+        setConfig((prev) => ({ ...prev, ...parsed }));
+      }
+    } catch (err) {
+      console.error("Fetch preferences failed:", err);
+    } finally {
+      setIsLoaded(true);
+    }
+  }, [user?.id, pageKey]);
+
+  useEffect(() => {
+    const saved = localStorage.getItem(`masa-${pageKey}`);
     if (saved) {
       try {
         setConfig(JSON.parse(saved));
       } catch (e) {
-        console.warn("Malformed local storage config, falling back to default open.");
+        console.error("Failed to parse local storage config", e);
       }
     }
+    fetchPreferences();
+  }, [fetchPreferences, pageKey]);
 
-    // 2. Database Sync (Authority source)
-    const fetchPreference = async () => {
-      if (!user?.organizationId || !user?.branchId || !user?.id) return;
-      
-      try {
-        const params = new URLSearchParams({
-          organizationId: user.organizationId,
-          branchId: user.branchId,
-          personnelId: user.id,
-          category: "LAYOUT",
-          key: "right-panel-config",
-          target: "", // Aligned with Sidebar pattern
-        });
-
-        const res = await fetch(`/api/preferences?${params.toString()}`);
-        const data = await res.json();
-
-        if (data.success && data.preference) {
-          const parsed = typeof data.preference === 'string' 
-            ? JSON.parse(data.preference) 
-            : data.preference;
-          
-          const updatedConfig = { ...DEFAULT_CONFIG, ...parsed };
-          setConfig(updatedConfig);
-          localStorage.setItem("masa-right-panel", JSON.stringify(updatedConfig));
-        }
-      } catch (err) {
-        console.error("Failed to fetch panel preferences:", err);
-      }
-    };
-
-    fetchPreference();
-  }, [user]); // Changed dependency to watch the full user object, mirroring the Sidebar
-
-  /* --- Actions --- */
+  /* --------------------------------------------- */
+  /* Actions */
+  /* --------------------------------------------- */
 
   const resetToDefault = useCallback(() => {
     setContent(null);
     setTitle("Workspace Schedule");
   }, []);
 
-  const openPanel = useCallback((newContent: ReactNode, newTitle?: string) => {
-    setContent(newContent);
+  const openPanel = useCallback((node: ReactNode, newTitle?: string) => {
+    setContent(node);
     if (newTitle) setTitle(newTitle);
-    
-    setConfig((prev) => {
-      const next = { ...prev, isOpen: true };
-      if (prev.isOpen) return prev; 
-      saveLayout(next);
-      return next;
-    });
-  }, [saveLayout]);
+    setConfig((prev) => (prev.isOpen ? prev : { ...prev, isOpen: true }));
+  }, []);
 
   const openProvision = useCallback((data: any) => {
     setTitle("Infrastructure Provisioning");
@@ -164,59 +243,41 @@ export function SidePanelProvider({ children }: { children: ReactNode }) {
           <div className="h-2 w-2 rounded-full bg-blue-500 animate-pulse" />
           <h4 className="text-[10px] font-black uppercase tracking-widest text-slate-400">Node_Status: Provisioning</h4>
         </div>
-        <p className="text-xs font-bold text-slate-600">Syncing resources for: <span className="text-slate-900">{data?.name || 'Unknown Entity'}</span></p>
+        <p className="text-xs font-bold text-slate-600">
+          Syncing resources for: <span className="text-slate-900">{data?.name || "Unknown Entity"}</span>
+        </p>
       </div>
     );
-    
-    setConfig((prev) => {
-      const next = { ...prev, isOpen: true };
-      if (prev.isOpen) return prev;
-      saveLayout(next);
-      return next;
-    });
-  }, [saveLayout]);
+    setConfig((prev) => ({ ...prev, isOpen: true }));
+  }, []);
 
   const closePanel = useCallback(() => {
-    setConfig((prev) => {
-      if (!prev.isOpen && !prev.isFullScreen) return prev; 
-      const next = { ...prev, isOpen: false, isFullScreen: false };
-      saveLayout(next);
-      return next;
-    });
-    
-    setTimeout(() => {
-      resetToDefault();
-    }, 300);
-  }, [saveLayout, resetToDefault]);
+    setConfig((prev) => ({ ...prev, isOpen: false, isFullScreen: false }));
+    setTimeout(resetToDefault, 250);
+  }, [resetToDefault]);
 
   const toggleLayout = useCallback(() => {
-    setConfig((prev) => {
-      const next = { ...prev, isOpen: !prev.isOpen };
-      saveLayout(next);
-      return next;
-    });
-  }, [saveLayout]);
+    setConfig((prev) => ({ ...prev, isOpen: !prev.isOpen }));
+  }, []);
 
   const toggleFullScreen = useCallback(() => {
-    setConfig((prev) => {
-      const next = { ...prev, isFullScreen: !prev.isFullScreen };
-      saveLayout(next);
-      return next;
-    });
-  }, [saveLayout]);
-
-  const updateWidth = useCallback((newWidth: number) => {
-    setConfig((prev) => {
-      const next = { ...prev, width: newWidth };
-      localStorage.setItem("masa-right-panel", JSON.stringify(next));
-      return next;
-    });
+    setConfig((prev) => ({ ...prev, isFullScreen: !prev.isFullScreen }));
   }, []);
+
+  const updateWidth = useCallback((width: number) => {
+    const clamped = Math.min(Math.max(width, MIN_WIDTH), MAX_WIDTH);
+    setConfig((prev) => (prev.width === clamped ? prev : { ...prev, width: clamped }));
+  }, []);
+
+  /* --------------------------------------------- */
+  /* Context Value */
+  /* --------------------------------------------- */
 
   const value = useMemo(() => ({
     ...config,
     content,
     title,
+    isLoaded,
     openPanel,
     openProvision,
     resetToDefault,
@@ -225,22 +286,18 @@ export function SidePanelProvider({ children }: { children: ReactNode }) {
     toggleFullScreen,
     updateWidth,
     saveLayout,
-  }), [config, content, title, openPanel, openProvision, resetToDefault, closePanel, toggleLayout, toggleFullScreen, updateWidth, saveLayout]);
+  }), [config, content, title, isLoaded, openPanel, openProvision, resetToDefault, closePanel, toggleLayout, toggleFullScreen, updateWidth, saveLayout]);
 
-  // Prevent hydration mismatch by rendering invisible wrapper until mounted
+  // Keep children mounted to prevent fetch loops during re-renders
   return (
     <SidePanelContext.Provider value={value}>
-      <div style={{ visibility: mounted ? "visible" : "hidden" }}>
-        {children}
-      </div>
+      {children}
     </SidePanelContext.Provider>
   );
 }
 
 export const useSidePanel = () => {
-  const context = useContext(SidePanelContext);
-  if (!context) {
-    throw new Error("useSidePanel must be used within a SidePanelProvider");
-  }
-  return context;
+  const ctx = useContext(SidePanelContext);
+  if (!ctx) throw new Error("useSidePanel must be used within SidePanelProvider");
+  return ctx;
 };

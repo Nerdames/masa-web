@@ -6,7 +6,19 @@ import bcrypt from "bcryptjs";
 
 const JWT_SECRET = process.env.NEXTAUTH_SECRET;
 
-/* -------------------- AUTH & ACCESS -------------------- */
+/* -------------------- ROLE HIERARCHY & AUTH -------------------- */
+
+const ROLE_WEIGHT: Record<Role, number> = {
+  DEV: 100,
+  ADMIN: 50,
+  MANAGER: 40,
+  AUDITOR: 35,
+  INVENTORY: 30,
+  SALES: 20,
+  CASHIER: 10,
+};
+
+const CAN_MANAGE_PERSONNEL: Role[] = [ Role.ADMIN, Role.MANAGER];
 
 async function getAuthContext(req: NextRequest) {
   const token = await getToken({ req, secret: JWT_SECRET });
@@ -21,17 +33,16 @@ async function getAuthContext(req: NextRequest) {
   };
 }
 
-const CAN_MANAGE_PERSONNEL: Role[] = [Role.ADMIN, Role.MANAGER];
-
 /* -------------------- HELPERS -------------------- */
 
 const ROLE_CODE: Record<Role, string> = {
   DEV: "00",
   ADMIN: "01",
   MANAGER: "02",
-  SALES: "03",
+  AUDITOR: "03",
   INVENTORY: "04",
-  CASHIER: "05",
+  SALES: "05",
+  CASHIER: "06",
 };
 
 async function generateStaffCode(
@@ -64,6 +75,7 @@ export async function GET(req: NextRequest) {
     const baseWhere: Prisma.AuthorizedPersonnelWhereInput = {
       deletedAt: null,
       organizationId: auth.organizationId,
+      // Managers only see personnel assigned to their branch (unless OrgOwner)
       ...(auth.role === Role.MANAGER && auth.branchId && !auth.isOrgOwner && {
         branchAssignments: { some: { branchId: auth.branchId } }
       }),
@@ -136,7 +148,7 @@ export async function GET(req: NextRequest) {
         id: b.id,
         name: b.name,
         count: b._count.personnel
-       })),
+      })),
       recentLogs
     });
   } catch (error) {
@@ -149,8 +161,10 @@ export async function GET(req: NextRequest) {
 
 export async function POST(req: NextRequest) {
   const auth = await getAuthContext(req);
-  if (!auth || !CAN_MANAGE_PERSONNEL.includes(auth.role)) {
-    return NextResponse.json({ message: "Access denied" }, { status: 403 });
+  
+  // Strict Guard: Only ADMIN, DEV, or OrgOwner can provision new accounts
+  if (!auth || (!auth.isOrgOwner && ROLE_WEIGHT[auth.role] < ROLE_WEIGHT.ADMIN)) {
+    return NextResponse.json({ message: "You do not have clearance to provision new personnel." }, { status: 403 });
   }
 
   try {
@@ -245,8 +259,8 @@ export async function PATCH(req: NextRequest) {
     if (!id) return NextResponse.json({ message: "Personnel ID is required" }, { status: 400 });
 
     // CRITICAL: Prevent self-modification for security status
-    if (id === auth.userId && (disabled !== undefined || isLocked !== undefined)) {
-      return NextResponse.json({ message: "You cannot lock or disable your own account." }, { status: 403 });
+    if (id === auth.userId && (disabled !== undefined || isLocked !== undefined || role !== undefined)) {
+      return NextResponse.json({ message: "You cannot alter your own security status or role." }, { status: 403 });
     }
 
     const targetUser = await prisma.authorizedPersonnel.findFirst({
@@ -255,18 +269,21 @@ export async function PATCH(req: NextRequest) {
 
     if (!targetUser) return NextResponse.json({ message: "Personnel not found" }, { status: 404 });
 
-    const isTargetPrivileged = targetUser.role === Role.ADMIN || targetUser.isOrgOwner;
-
-    // Security constraints for Privileged Accounts
-    if (isTargetPrivileged && (disabled === true || isLocked === true)) {
-      return NextResponse.json({ message: "Privileged accounts cannot be locked or disabled for security reasons." }, { status: 403 });
+    // Hierarchy Guard: Cannot modify someone of equal or greater rank (unless OrgOwner)
+    if (!auth.isOrgOwner && ROLE_WEIGHT[auth.role] <= ROLE_WEIGHT[targetUser.role]) {
+      return NextResponse.json({ message: "You do not have sufficient authority over this rank." }, { status: 403 });
     }
 
-    // Role-specific constraints
-    if (auth.role === Role.MANAGER) {
-      if (isTargetPrivileged) return NextResponse.json({ message: "Cannot modify superior roles." }, { status: 403 });
-      if (disabled !== undefined || isLocked !== undefined) {
-        return NextResponse.json({ message: "Managers cannot modify account security status (Lock/Disable)." }, { status: 403 });
+    // Role-Specific Restraints for MANAGER
+    if (auth.role === Role.MANAGER && !auth.isOrgOwner) {
+      if (email !== undefined && email !== targetUser.email) {
+         return NextResponse.json({ message: "Only Administrators can modify email addresses." }, { status: 403 });
+      }
+      if (newPassword) {
+         return NextResponse.json({ message: "Only Administrators can force password resets." }, { status: 403 });
+      }
+      if (role !== undefined && role !== targetUser.role) {
+         return NextResponse.json({ message: "Only Administrators can modify role assignments." }, { status: 403 });
       }
     }
 
@@ -298,11 +315,12 @@ export async function PATCH(req: NextRequest) {
         auditChanges.role = { from: targetUser.role, to: role };
       }
 
+      // MANAGER IS ALLOWED TO PROCEED HERE (Lock / Disable)
       if (disabled !== undefined && disabled !== targetUser.disabled) {
         updateData.disabled = disabled;
         auditChanges.disabled = { from: targetUser.disabled, to: disabled };
         actions.push(disabled ? "ACCOUNT_DISABLED" : "ACCOUNT_ENABLED");
-        notificationMessage = disabled ? "Your account has been disabled by an administrator." : "Your account access has been restored.";
+        notificationMessage = disabled ? "Your account has been disabled by management." : "Your account access has been restored.";
       }
 
       if (isLocked !== undefined && isLocked !== targetUser.isLocked) {
@@ -414,8 +432,10 @@ export async function PATCH(req: NextRequest) {
 
 export async function DELETE(req: NextRequest) {
   const auth = await getAuthContext(req);
-  if (!auth || !CAN_MANAGE_PERSONNEL.includes(auth.role)) {
-    return NextResponse.json({ message: "Access denied" }, { status: 403 });
+  
+  // Strict Guard: Only ADMIN, DEV, or OrgOwner can delete accounts
+  if (!auth || (!auth.isOrgOwner && ROLE_WEIGHT[auth.role] < ROLE_WEIGHT.ADMIN)) {
+    return NextResponse.json({ message: "You do not have clearance to delete or deactivate personnel." }, { status: 403 });
   }
 
   try {
@@ -435,14 +455,9 @@ export async function DELETE(req: NextRequest) {
 
     if (!targetUser) return NextResponse.json({ message: "Personnel not found" }, { status: 404 });
 
-    // CRITICAL: Admins and Owners cannot be deleted through this interface
-    if (targetUser.role === Role.ADMIN || targetUser.isOrgOwner) {
-       return NextResponse.json({ message: "Administrative accounts cannot be deactivated. Please contact support or downgrade the role first." }, { status: 403 });
-    }
-
-    // Manager constraints
-    if (auth.role === Role.MANAGER) {
-        return NextResponse.json({ message: "Managers do not have permission to deactivate personnel." }, { status: 403 });
+    // CRITICAL: Prevent Admins from deleting other Admins unless they are the OrgOwner
+    if (!auth.isOrgOwner && ROLE_WEIGHT[auth.role] <= ROLE_WEIGHT[targetUser.role]) {
+       return NextResponse.json({ message: "You do not have sufficient authority to deactivate this rank." }, { status: 403 });
     }
 
     await prisma.$transaction(async (tx) => {
@@ -461,7 +476,7 @@ export async function DELETE(req: NextRequest) {
           organizationId: auth.organizationId,
           type: NotificationType.SYSTEM,
           title: "Account Deactivated",
-          message: "Your account has been permanently deactivated by an administrator.",
+          message: "Your account has been permanently deactivated by management.",
           recipients: { create: { personnelId: targetUser.id } }
         }
       });

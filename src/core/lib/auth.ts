@@ -2,7 +2,7 @@ import CredentialsProvider from "next-auth/providers/credentials";
 import type { NextAuthOptions, DefaultSession, DefaultUser } from "next-auth";
 import type { JWT } from "next-auth/jwt";
 import bcrypt from "bcryptjs";
-import prisma from "@/core/lib/prisma"; // Ensure this points to your Prisma client instance
+import prisma from "@/core/lib/prisma";
 import { Role } from "@prisma/client";
 
 /* ------------------------------------------
@@ -12,6 +12,9 @@ declare module "next-auth" {
   interface Session {
     user: {
       id: string;
+      name?: string | null;
+      email?: string | null;
+      staffCode: string | null;
       role: Role;
       isOrgOwner: boolean;
       organizationId: string;
@@ -28,6 +31,7 @@ declare module "next-auth" {
   }
 
   interface User extends DefaultUser {
+    staffCode: string | null;
     role: Role;
     isOrgOwner: boolean;
     organizationId: string;
@@ -45,6 +49,7 @@ declare module "next-auth" {
 declare module "next-auth/jwt" {
   interface JWT {
     id: string;
+    staffCode: string | null;
     role: Role;
     isOrgOwner: boolean;
     organizationId: string;
@@ -73,7 +78,7 @@ const MAX_FAILED_ATTEMPTS = 5;
 export const authOptions: NextAuthOptions = {
   session: {
     strategy: "jwt",
-    maxAge: 24 * 60 * 60, // 24 Hours Session Duration
+    maxAge: 12 * 60 * 60, // 12 Hours Session Duration for POS Security
   },
 
   providers: [
@@ -81,7 +86,6 @@ export const authOptions: NextAuthOptions = {
       id: "credentials",
       name: "MASA ERP Secure Access",
       credentials: {
-        // We use "identifier" to allow either Email or Staff Code
         identifier: { label: "Email or Staff Code", type: "text" },
         password: { label: "Password", type: "password" },
       },
@@ -113,24 +117,23 @@ export const authOptions: NextAuthOptions = {
 
         const now = new Date();
 
-        // 2. Handle Unknown User (Generic error for security)
+        // 2. Handle Unknown User
         if (!personnel) {
           console.warn(`[AUTH_WARN] Attempted login for non-existent identifier: ${input}`);
           return null;
         }
 
-        // 3. Organization Shield (Kill-switch check)
-        // If your Organization model doesn't have an 'active' field yet, 
-        // you should add it to your schema for subscription management.
+        // 3. Organization Shield (Kill-switch)
         if (personnel.organization && 'active' in personnel.organization && !personnel.organization.active) {
           throw new Error("ORGANIZATION_SUSPENDED");
         }
 
-        // 4. Security Checks (Disabled / Locked / Temporary Lockout)
+        // 4. Security Checks
         const isTemporaryLocked = personnel.lockoutUntil && personnel.lockoutUntil > now;
+        const isDisabled =  personnel.disabled;
 
-        if (personnel.disabled || personnel.isLocked || isTemporaryLocked) {
-          const reason = personnel.disabled ? "ACCOUNT_DISABLED" : 
+        if (isDisabled || personnel.isLocked || isTemporaryLocked) {
+          const reason = isDisabled ? "ACCOUNT_DISABLED" : 
                          personnel.isLocked ? (personnel.lockReason || "ACCOUNT_LOCKED") : 
                          "TEMPORARY_LOCKOUT";
 
@@ -161,7 +164,7 @@ export const authOptions: NextAuthOptions = {
               failedLoginAttempts: attempts,
               isLocked: shouldLock ? true : personnel.isLocked,
               lockReason: shouldLock ? "EXCESSIVE_FAILED_ATTEMPTS" : personnel.lockReason,
-              lockoutUntil: shouldLock ? new Date(now.getTime() + 15 * 60 * 1000) : null, // 15 min cool-off
+              lockoutUntil: shouldLock ? new Date(now.getTime() + 15 * 60 * 1000) : null,
             },
           });
 
@@ -180,18 +183,14 @@ export const authOptions: NextAuthOptions = {
           throw new Error("INVALID_CREDENTIALS");
         }
 
-        // 6. Role & Branch Resolution (Hierarchical Logic)
+        // 6. Role & Branch Resolution
         let effectiveRole: Role = personnel.role;
         let activeBranchId: string | null = personnel.branchId;
         let activeBranchName: string | null = personnel.branch?.name ?? null;
 
-        // Owner/Admin Override
         if (personnel.isOrgOwner) {
           effectiveRole = Role.ADMIN;
-        }
-
-        // Primary Branch Assignment Logic
-        if (personnel.branchAssignments.length > 0) {
+        } else if (personnel.branchAssignments.length > 0) {
           const primary = personnel.branchAssignments[0];
           effectiveRole = primary.role; 
           activeBranchId = primary.branchId;
@@ -227,6 +226,7 @@ export const authOptions: NextAuthOptions = {
           id: personnel.id,
           name: personnel.name,
           email: personnel.email,
+          staffCode: personnel.staffCode,
           role: effectiveRole,
           isOrgOwner: personnel.isOrgOwner,
           organizationId: personnel.organizationId,
@@ -235,7 +235,7 @@ export const authOptions: NextAuthOptions = {
           branchName: activeBranchName,
           lastLogin: now.toISOString(),
           lastActivityAt: now.toISOString(),
-          disabled: personnel.disabled,
+          disabled: isDisabled,
           locked: personnel.isLocked,
           requiresPasswordChange: personnel.requiresPasswordChange,
         };
@@ -252,6 +252,9 @@ export const authOptions: NextAuthOptions = {
         return {
           ...token,
           id: user.id,
+          name: user.name,
+          email: user.email,
+          staffCode: user.staffCode,
           role: user.role,
           isOrgOwner: user.isOrgOwner,
           organizationId: user.organizationId,
@@ -266,13 +269,13 @@ export const authOptions: NextAuthOptions = {
         };
       }
 
-      // Handle profile/session updates (e.g. changing branches)
+      // Session Updates
       if (trigger === "update" && session) {
         return { ...token, ...session };
       }
 
-      // Heartbeat Logic & Inactivity Timeout
-      if (token.id) {
+      // Heartbeat & Mid-Session Security Verification
+      if (token.id && !token.expired) {
         const lastActivity = (token.lastActivityAt as number) || 0;
         const idleTime = now - lastActivity;
 
@@ -281,16 +284,26 @@ export const authOptions: NextAuthOptions = {
           return { ...token, expired: true } as JWT;
         }
 
-        // Throttle DB update to every 5 minutes to save performance
+        // Throttle DB update to save DB connection pool
         if (idleTime > DB_UPDATE_THROTTLE_MS) {
           try {
-            await prisma.authorizedPersonnel.update({
+            // Update activity AND verify account hasn't been locked by an Admin
+            const personnelState = await prisma.authorizedPersonnel.update({
               where: { id: token.id },
               data: { lastActivityAt: new Date(now) },
+              select: { disabled: true, isLocked: true}
             });
+
+            const isDisabled =  personnelState.disabled;
+
+            // Kill token immediately if revoked mid-session
+            if (!personnelState || isDisabled || personnelState.isLocked) {
+              return { ...token, expired: true } as JWT;
+            }
+
             token.lastActivityAt = now;
           } catch (e) {
-            console.error("[AUTH_SYNC_ERROR] Heartbeat failed", e);
+            console.error("[AUTH_SYNC_ERROR] Heartbeat or validation failed", e);
           }
         }
       }
@@ -301,6 +314,9 @@ export const authOptions: NextAuthOptions = {
     async session({ session, token }) {
       if (token && token.id) {
         session.user.id = token.id;
+        session.user.name = token.name;
+        session.user.email = token.email;
+        session.user.staffCode = token.staffCode;
         session.user.role = token.role;
         session.user.isOrgOwner = token.isOrgOwner;
         session.user.organizationId = token.organizationId;
@@ -318,9 +334,25 @@ export const authOptions: NextAuthOptions = {
     },
   },
 
+  events: {
+    // Audit Trail: Log exact time of user sign out
+    async signOut({ token }) {
+      if (token?.id) {
+        try {
+          await prisma.authorizedPersonnel.update({
+            where: { id: token.id },
+            data: { lastActivityAt: new Date() },
+          });
+        } catch (e) {
+          console.error("[AUTH_SIGNOUT_ERROR] Failed to mark final activity", e);
+        }
+      }
+    },
+  },
+
   pages: {
-    signIn: "/auth/signin",
-    error: "/auth/signin",
+    signIn: "/signin",
+    error: "/signin",
   },
   
   secret: process.env.NEXTAUTH_SECRET,

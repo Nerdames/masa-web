@@ -56,7 +56,7 @@ export default function TopBar({ isLoading }: TopBarProps) {
       
       {/* Left Section: Logo & Navigation */}
       <div
-        onClick={() => router.push(user ? "/dashboard" : "/")}
+        onClick={() => router.push(user ? "/admin/overview" : "/")}
         className="flex items-center gap-2 flex-shrink-0 cursor-pointer group"
       >
         <div 
@@ -119,7 +119,7 @@ export default function TopBar({ isLoading }: TopBarProps) {
           </>
         ) : (
           <button
-            onClick={() => router.push("/auth/signin")}
+            onClick={() => router.push("/signin")}
             className="px-3 py-1 rounded-md text-xs font-medium text-white bg-black hover:bg-slate-800 transition shadow-sm"
           >
             Sign in

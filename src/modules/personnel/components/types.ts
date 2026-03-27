@@ -1,12 +1,12 @@
 import { ActivityLog } from "@prisma/client";
 
 export enum Role {
-  DEV = "DEV",
   ADMIN = "ADMIN",
   MANAGER = "MANAGER",
   SALES = "SALES",
   INVENTORY = "INVENTORY",
   CASHIER = "CASHIER"
+  AUDITOR = "AUDITOR"
 }
 
 export interface Branch {

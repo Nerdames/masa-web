@@ -9,16 +9,17 @@ import {
 /**
  * =========================================================
  * ROLE HIERARCHY
+ * Higher weight = Higher authority.
  * =========================================================
  */
 export const ROLE_WEIGHT: Record<Role, number> = {
-  DEV: 0,
-  CASHIER: 10,
-  SALES: 20,
-  INVENTORY: 30,
-  AUDITOR: 35,
-  MANAGER: 40,
-  ADMIN: 50,
+  DEV: 100,      // System Superuser
+  ADMIN: 50,     // Organization Admin
+  MANAGER: 40,   // Branch/Department Manager
+  AUDITOR: 35,   // Compliance/Finance oversight
+  INVENTORY: 30, // Warehouse/Stock control
+  SALES: 20,     // Front-end sales
+  CASHIER: 10,   // Point of Sale operations
 };
 
 /**
@@ -35,6 +36,8 @@ export const RESOURCES = {
   REPORT: "REPORT",
   AUDIT: "AUDIT",
   SETTINGS: "SETTINGS",
+  BRANCH: "BRANCH",
+  PERSONNEL: "PERSONNEL",
 } as const;
 
 export type ResourceType = keyof typeof RESOURCES;
@@ -48,39 +51,22 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<
   Role,
   Partial<Record<ResourceType, PermissionAction[]>>
 > = {
+  DEV: {
+    SETTINGS: [PermissionAction.READ, PermissionAction.UPDATE],
+    AUDIT: [PermissionAction.READ],
+  },
   ADMIN: {
-    INVOICE: [
-      PermissionAction.CREATE,
-      PermissionAction.READ,
-      PermissionAction.UPDATE,
-      PermissionAction.DELETE,
-      PermissionAction.VOID,
-      PermissionAction.APPROVE,
-      PermissionAction.EXPORT,
-    ],
-    STOCK: [
-      PermissionAction.CREATE,
-      PermissionAction.READ,
-      PermissionAction.UPDATE,
-      PermissionAction.DELETE,
-      PermissionAction.APPROVE,
-    ],
+    INVOICE: [PermissionAction.CREATE, PermissionAction.READ, PermissionAction.UPDATE, PermissionAction.DELETE, PermissionAction.VOID, PermissionAction.APPROVE, PermissionAction.EXPORT],
+    STOCK: [PermissionAction.CREATE, PermissionAction.READ, PermissionAction.UPDATE, PermissionAction.DELETE, PermissionAction.APPROVE],
+    PERSONNEL: [PermissionAction.CREATE, PermissionAction.READ, PermissionAction.UPDATE, PermissionAction.DELETE],
+    BRANCH: [PermissionAction.CREATE, PermissionAction.READ, PermissionAction.UPDATE],
     AUDIT: [PermissionAction.READ, PermissionAction.EXPORT],
+    SETTINGS: [PermissionAction.READ, PermissionAction.UPDATE],
   },
   MANAGER: {
-    INVOICE: [
-      PermissionAction.CREATE,
-      PermissionAction.READ,
-      PermissionAction.UPDATE,
-      PermissionAction.VOID,
-      PermissionAction.APPROVE,
-    ],
-    STOCK: [
-      PermissionAction.CREATE,
-      PermissionAction.READ,
-      PermissionAction.UPDATE,
-      PermissionAction.APPROVE,
-    ],
+    INVOICE: [PermissionAction.CREATE, PermissionAction.READ, PermissionAction.UPDATE, PermissionAction.VOID, PermissionAction.APPROVE],
+    STOCK: [PermissionAction.CREATE, PermissionAction.READ, PermissionAction.UPDATE, PermissionAction.APPROVE],
+    PERSONNEL: [PermissionAction.READ, PermissionAction.UPDATE], // Allows Manager to Read & Update (Lock/Disable)
   },
   AUDITOR: {
     INVOICE: [PermissionAction.READ, PermissionAction.EXPORT],
@@ -89,40 +75,59 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<
     REPORT: [PermissionAction.READ, PermissionAction.EXPORT],
   },
   INVENTORY: {
-    STOCK: [
-      PermissionAction.CREATE,
-      PermissionAction.READ,
-      PermissionAction.UPDATE,
-    ],
-    PRODUCT: [
-      PermissionAction.CREATE,
-      PermissionAction.READ,
-      PermissionAction.UPDATE,
-    ],
+    STOCK: [PermissionAction.CREATE, PermissionAction.READ, PermissionAction.UPDATE],
+    PRODUCT: [PermissionAction.CREATE, PermissionAction.READ, PermissionAction.UPDATE],
   },
   SALES: {
     INVOICE: [PermissionAction.CREATE, PermissionAction.READ],
-    CUSTOMER: [
-      PermissionAction.CREATE,
-      PermissionAction.READ,
-      PermissionAction.UPDATE,
-    ],
+    CUSTOMER: [PermissionAction.CREATE, PermissionAction.READ, PermissionAction.UPDATE],
   },
   CASHIER: {
     INVOICE: [PermissionAction.CREATE, PermissionAction.READ],
-  },
-  DEV: {
-    SETTINGS: [PermissionAction.READ, PermissionAction.UPDATE],
   },
 };
 
 /**
  * =========================================================
+ * PAGE-LEVEL RBAC (Browser URLs)
+ * Logic: Matches the actual URL paths, omitting (group) names.
+ * =========================================================
+ */
+export const PAGE_PERMISSIONS = {
+  // Admin & Analytics (from (dashboard)/admin)
+  "/admin": [Role.ADMIN, Role.MANAGER, Role.DEV],
+  "/admin/overview": [Role.ADMIN, Role.MANAGER, Role.DEV],
+  "/admin/personnels": [Role.ADMIN, Role.MANAGER, Role.DEV], // Manager gets UI access here
+  "/admin/branches": [Role.ADMIN, Role.DEV],
+  
+  // Audit (from (dashboard)/audit)
+  "/audit": [Role.ADMIN, Role.AUDITOR, Role.DEV],
+  
+  // Terminal Modules (from (terminal)/inventory & (terminal)/pos)
+  "/inventory": [Role.ADMIN, Role.MANAGER, Role.INVENTORY, Role.AUDITOR, Role.DEV],
+  "/pos": [Role.ADMIN, Role.MANAGER, Role.SALES, Role.CASHIER, Role.DEV],
+  
+  // Technical Tools (from (tools))
+  "/db-inspector": [Role.DEV],
+  "/logs": [Role.DEV, Role.ADMIN],
+  "/monitoring": [Role.DEV],
+} as const satisfies Record<string, readonly Role[]>;
+
+// Removed "/admin/personnels" so the routing falls to PAGE_PERMISSIONS above (which explicitly allows Manager)
+// This strictly locks DB and Branch configuration to pure Admins/Devs.
+export const MANAGEMENT_ROUTES = ["/admin/branches", "/db-inspector"];
+
+// Routes universally accessible to any authenticated user
+export const PERSONAL_ROUTES = ["/settings", "/feedback"] as const;
+
+/**
+ * =========================================================
  * CRITICAL ACTION REQUIREMENTS
+ * Defines which role is required to bypass an "Approval Flow".
  * =========================================================
  */
 export const ACTION_REQUIREMENTS: Record<CriticalAction, Role> = {
-  USER_LOCK_UNLOCK: Role.MANAGER,
+  USER_LOCK_UNLOCK: Role.MANAGER, // Allows Managers to execute lock actions
   EMAIL_CHANGE: Role.ADMIN,
   PASSWORD_CHANGE: Role.ADMIN,
   PRICE_UPDATE: Role.MANAGER,
@@ -130,44 +135,6 @@ export const ACTION_REQUIREMENTS: Record<CriticalAction, Role> = {
   STOCK_TRANSFER: Role.MANAGER,
   VOID_INVOICE: Role.MANAGER,
 };
-
-/**
- * =========================================================
- * PAGE-LEVEL RBAC
- * =========================================================
- */
-export const PAGE_PERMISSIONS = {
-  "/dashboard": [
-    Role.ADMIN,
-    Role.MANAGER,
-    Role.SALES,
-    Role.CASHIER,
-    Role.INVENTORY,
-    Role.AUDITOR,
-  ],
-  "/dashboard/admin": [Role.ADMIN, Role.MANAGER],
-  "/dashboard/inventory": [
-    Role.ADMIN,
-    Role.MANAGER,
-    Role.INVENTORY,
-    Role.AUDITOR,
-  ],
-  "/dashboard/sales": [
-    Role.ADMIN,
-    Role.MANAGER,
-    Role.SALES,
-    Role.AUDITOR,
-  ],
-  "/dashboard/audit": [Role.ADMIN, Role.AUDITOR],
-  "/pos": [Role.ADMIN, Role.MANAGER, Role.SALES, Role.CASHIER],
-} as const satisfies Record<string, readonly Role[]>;
-
-export const MANAGEMENT_ROUTES = ["/dashboard/admin"] as const;
-
-export const PERSONAL_ROUTES = [
-  "/dashboard/profile",
-  "/dashboard/settings",
-] as const;
 
 /**
  * =========================================================
@@ -198,15 +165,13 @@ export function hasDefaultPermission(
   action: PermissionAction,
   resource: ResourceType
 ): boolean {
-  const roleRules = DEFAULT_ROLE_PERMISSIONS[role];
-  if (!roleRules) return false;
-
-  return roleRules[resource]?.includes(action) ?? false;
+  return DEFAULT_ROLE_PERMISSIONS[role]?.[resource]?.includes(action) ?? false;
 }
 
 /**
  * =========================================================
  * MANAGEMENT VALIDATION
+ * Checks if a requester has the authority to modify a target user.
  * =========================================================
  */
 export function validateManagementRights(
@@ -214,44 +179,27 @@ export function validateManagementRights(
   target: Pick<AuthorizedPersonnel, "id" | "role" | "isOrgOwner">
 ): { authorized: boolean; reason?: string } {
   if (requester.id === target.id) {
-    return {
-      authorized: false,
-      reason: "Use profile settings for self-updates.",
-    };
+    return { authorized: false, reason: "Use profile settings for self-updates." };
   }
 
   if (requester.isOrgOwner) return { authorized: true };
 
-  if (requester.role === Role.ADMIN) {
-    if (target.isOrgOwner) {
-      return {
-        authorized: false,
-        reason: "Cannot modify organization owner.",
-      };
-    }
-    return { authorized: true };
+  if (target.isOrgOwner) {
+    return { authorized: false, reason: "Organization owners cannot be modified by staff." };
   }
 
-  if (requester.role === Role.MANAGER) {
-    if (target.role === Role.ADMIN || target.isOrgOwner) {
-      return { authorized: false, reason: "Insufficient clearance." };
-    }
-  }
-
-  const allowed =
-    ROLE_WEIGHT[requester.role] > ROLE_WEIGHT[target.role];
+  // Ensures a Manager (weight 40) can NEVER edit or lock an Admin (weight 50)
+  const allowed = ROLE_WEIGHT[requester.role] > ROLE_WEIGHT[target.role];
 
   return {
     authorized: allowed,
-    reason: allowed
-      ? undefined
-      : "You do not have authority over this role.",
+    reason: allowed ? undefined : "You do not have authority over this role rank.",
   };
 }
 
 /**
  * =========================================================
- * PAGE ACCESS
+ * PAGE ACCESS ENGINE
  * =========================================================
  */
 export function hasPagePermission(
@@ -263,25 +211,25 @@ export function hasPagePermission(
 
   if (isOrgOwner) return true;
 
-  if (MANAGEMENT_ROUTES.some((p) => path.startsWith(p))) {
-    return role === Role.ADMIN;
-  }
-
-  if (PERSONAL_ROUTES.some((p) => path.startsWith(p))) {
+  // 1. Personal routes check
+  if (PERSONAL_ROUTES.some((p) => path === p || path.startsWith(`${p}/`))) {
     return true;
   }
 
-  const sorted = Object.entries(PAGE_PERMISSIONS).sort(
-    (a, b) => b[0].length - a[0].length
-  );
+  // 2. Management route strict check (Admins and Devs ONLY)
+  if (MANAGEMENT_ROUTES.some((p) => path.startsWith(p))) {
+    return role === Role.ADMIN || role === Role.DEV;
+  }
 
-  const match = sorted.find(
-    ([p]) => path === p || path.startsWith(`${p}/`)
-  );
+  // 3. Dynamic Page Permission check
+  // Sorted to ensure /admin/sub-route is checked before /admin
+  const sorted = Object.entries(PAGE_PERMISSIONS).sort((a, b) => b[0].length - a[0].length);
+
+  const match = sorted.find(([p]) => path === p || path.startsWith(`${p}/`));
 
   if (!match) return false;
 
-  return match[1].includes(role);
+  return (match[1] as readonly Role[]).includes(role);
 }
 
 /**
@@ -289,10 +237,7 @@ export function hasPagePermission(
  * APPROVAL CHECK
  * =========================================================
  */
-export function actionRequiresApproval(
-  role: Role,
-  action: CriticalAction
-): boolean {
+export function actionRequiresApproval(role: Role, action: CriticalAction): boolean {
   const required = ACTION_REQUIREMENTS[action];
   if (!required) return false;
 
@@ -307,14 +252,10 @@ export function actionRequiresApproval(
 type AuthorizeParams = {
   role: Role;
   isOrgOwner?: boolean;
-
   pathname?: string;
-
   action?: PermissionAction;
   resource?: ResourceType | string;
-
   userPermissions?: Permission[];
-
   criticalAction?: CriticalAction;
 };
 
@@ -331,40 +272,32 @@ export function authorize({
   requiresApproval?: boolean;
   reason?: string;
 } {
-  // 1. Org Owner override
+  // 1. Root Override
   if (isOrgOwner) return { allowed: true };
 
   // 2. Page-level check
   if (pathname && !hasPagePermission(role, pathname, isOrgOwner)) {
-    return { allowed: false, reason: "Access denied." };
+    return { allowed: false, reason: "Access denied to this module." };
   }
 
-  // 3. Resource permission check
+  // 3. Resource-level check (Explicit + Default fallback)
   if (action && resource) {
     const explicit = canPerform(userPermissions, action, resource);
-    const fallback = hasDefaultPermission(
-      role,
-      action,
-      resource as ResourceType
-    );
+    const fallback = hasDefaultPermission(role, action, resource as ResourceType);
 
     if (!explicit && !fallback) {
-      return {
-        allowed: false,
-        reason: "Missing required permission.",
-      };
+      return { allowed: false, reason: "Insufficient resource permissions." };
     }
   }
 
-  // 4. Critical action check
+  // 4. Critical Action approval check
   if (criticalAction) {
     const needsApproval = actionRequiresApproval(role, criticalAction);
-
     if (needsApproval) {
       return {
         allowed: false,
         requiresApproval: true,
-        reason: "Action requires approval.",
+        reason: "This action requires manager approval.",
       };
     }
   }
@@ -374,12 +307,9 @@ export function authorize({
 
 /**
  * =========================================================
- * OPTIONAL HELPERS
+ * HELPERS
  * =========================================================
  */
-export function canPerformAction(
-  role: Role,
-  action: CriticalAction
-): boolean {
+export function canPerformAction(role: Role, action: CriticalAction): boolean {
   return !actionRequiresApproval(role, action);
 }

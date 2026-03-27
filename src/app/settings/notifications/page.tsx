@@ -5,10 +5,10 @@ import { useSession } from "next-auth/react";
 import { motion } from "framer-motion";
 import { Preference, PreferenceScope } from "@prisma/client";
 
-import { SettingsGroup } from "@/src/core/components/ui/SettingsGroup";
-import CollapseSection from "@/src/core/components/ui/CollapseSection";
-import { useToast } from "@/src/core/components/feedback/ToastProvider";
-import AccessDenied from "@/src/core/components/feedback/AccessDenied";
+import { SettingsGroup } from "@/core/components/ui/SettingsGroup";
+import {CollapseSection} from "@/core/components/ui/CollapseSection";
+import { useToast } from "@/core/components/feedback/ToastProvider";
+import AccessDenied from "@/core/components/feedback/AccessDenied";
 
 /* ---------------------------- CONFIG ---------------------------- */
 

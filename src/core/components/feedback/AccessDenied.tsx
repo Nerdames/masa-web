@@ -55,7 +55,7 @@ const AccessDenied: FC<AccessDeniedProps> = ({
           
           {/* Secondary Action: Switch accounts */}
           <button
-            onClick={() => signOut({ callbackUrl: "/auth/signin" })}
+            onClick={() => signOut({ callbackUrl: "/signin" })}
             className="w-full px-6 py-3 bg-white text-gray-600 border border-gray-200 font-medium rounded-xl hover:bg-gray-50 transition-all flex items-center justify-center gap-2"
           >
             <i className="bx bx-log-out text-lg" />

@@ -15,7 +15,7 @@ import { Tooltip } from "@/core/components/feedback/Tooltip";
 import { useSession, signOut } from "next-auth/react";
 import { getInitials } from "@/core/utils";
 import ConfirmModal from "@/core/components/modal/ConfirmModal";
-import { Role } from "@prisma/client"
+import { Role } from "@prisma/client";
 
 /* --------------------------------------------- */
 /* Types */
@@ -26,6 +26,7 @@ export interface SidebarItem {
   name: string;
   href: string;
   icon: string;
+  roles?: Role[];
 }
 
 /* --------------------------------------------- */
@@ -33,20 +34,20 @@ export interface SidebarItem {
 /* --------------------------------------------- */
 
 const ADMIN_ITEMS: SidebarItem[] = [
-  { key: "dashboard", name: "Dashboard", href: "/admin/dashboard", icon: "bx-grid-alt" },
-  { key: "branches", name: "Branches", href: "/admin/branches", icon: "bx-buildings", roles: [Role.ADMIN] },
-  { key: "personnels", name: "Personnels", href: "/admin/personnels", icon: "bx-user-circle", roles: [Role.ADMIN] },
+  { key: "overview", name: "Overview", href: "/admin/overview", icon: "bx-doughnut-chart" },
+  { key: "branches", name: "Branches", href: "/admin/branches", icon: "bx-buildings" },
+  { key: "personnels", name: "Personnels", href: "/admin/personnels", icon: "bx-group" },
 ];
 
 const AUDIT_ITEMS: SidebarItem[] = [
-  { key: "logs", name: "Logs", href: "/audit/logs", icon: "bx-list-ul", roles: [Role.AUDITOR, Role.DEV, Role.ADMIN] },
-  { key: "reports", name: "Reports", href: "/audit/reports", icon: "bx-file-find", roles: [Role.AUDITOR, Role.DEV] },
+  { key: "logs", name: "Logs", href: "/audit/logs", icon: "bx-list-ul" },
+  { key: "reports", name: "Reports", href: "/audit/reports", icon: "bx-file-find" },
 ];
 
 const SETTINGS_ITEMS: SidebarItem[] = [
   { key: "profile", name: "Profile", href: "/settings/profile", icon: "bx-user" },
   { key: "notifications", name: "Notifications", href: "/settings/notifications", icon: "bx-bell" },
-  { key: "preferences", name: "Preferences", href: "/settings/preferences", icon: "bx-cog" },
+  { key: "preferences", name: "Preferences", href: "/settings/preferences", icon: "bx-brush" },
 ];
 
 /* --------------------------------------------- */
@@ -95,7 +96,13 @@ const SidebarItemLink = React.memo(function SidebarItemLink({
       <i className={`bx ${item.icon} text-[18px] relative z-10`} />
 
       {!collapsed && (
-        <span className="truncate relative z-10">{item.name}</span>
+        <motion.span 
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          className="truncate relative z-10"
+        >
+          {item.name}
+        </motion.span>
       )}
     </Link>
   );
@@ -182,6 +189,33 @@ const DropdownMenu = ({
     </AnimatePresence>
   );
 };
+
+/* --------------------------------------------- */
+/* Sidebar Section Header */
+/* --------------------------------------------- */
+
+const SectionHeader = ({ 
+  label, 
+  icon, 
+  collapsed 
+}: { 
+  label: string; 
+  icon: string; 
+  collapsed: boolean 
+}) => (
+  <div className={`flex items-center text-gray-400 px-3 pt-6 pb-2 transition-all duration-300 ${collapsed ? "justify-center" : "gap-2"}`}>
+    <i className={`bx ${icon} text-[16px]`} />
+    {!collapsed && (
+      <motion.span 
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        className="text-[11px] font-bold uppercase tracking-wider truncate"
+      >
+        {label}
+      </motion.span>
+    )}
+  </div>
+);
 
 /* --------------------------------------------- */
 /* Sidebar */
@@ -323,7 +357,7 @@ function Sidebar() {
       animate={isCollapsed ? "collapsed" : "expanded"}
       variants={SIDEBAR_MOTION}
       transition={{ type: "spring", stiffness: 260, damping: 30 }}
-      className="h-screen bg-white border-r border-gray-200 flex flex-col relative"
+      className="h-screen bg-white border-r border-gray-200 flex flex-col relative pb-10"
     >
       <button
         onClick={toggleCollapsed}
@@ -332,28 +366,14 @@ function Sidebar() {
         <i className={`bx ${isCollapsed ? "bx-chevron-right" : "bx-chevron-left"}`} />
       </button>
 
-      <nav className="flex-1 px-2 py-3 space-y-1">
-        {!isCollapsed && (
-          <div className="text-[12px] text-gray-400 px-3 pt-3 pb-3 uppercase">
-            Management
-          </div>
-        )}
+      <nav className="flex-1 px-2 py-3 space-y-1 overflow-y-auto overflow-x-hidden">
+        <SectionHeader label="Management" icon="bx-grid-alt" collapsed={isCollapsed} />
         {ADMIN_ITEMS.map(renderItem)}
 
-        {!isCollapsed && (
-          <div className="text-[12px] text-gray-400 px-3 pt-3 pb-3 uppercase">
-            Audit
-          </div>
-        )}
-
+        <SectionHeader label="Audit" icon="bx-shield-quarter" collapsed={isCollapsed} />
         {AUDIT_ITEMS.map(renderItem)}
 
-        {!isCollapsed && (
-          <div className="text-[12px] text-gray-400 px-3 pt-3 pb-3 uppercase">
-            Settings
-          </div>
-        )}
-
+        <SectionHeader label="Settings" icon="bx-cog" collapsed={isCollapsed} />
         {SETTINGS_ITEMS.map(renderItem)}
       </nav>
 
@@ -384,7 +404,7 @@ function Sidebar() {
               ${isCollapsed ? "h-9 w-9 justify-center mx-auto" : "px-3 py-2 gap-3"}
               `}
             >
-              <div className="w-7 h-7 rounded-full bg-black text-white flex items-center justify-center text-[12px] font-semibold">
+              <div className="w-7 h-7 flex-shrink-0 rounded-full bg-black text-white flex items-center justify-center text-[12px] font-semibold">
                 {getInitials(user.name)}
               </div>
 

@@ -9,7 +9,7 @@ import { useAlerts } from "@/core/components/feedback/AlertProvider";
 
 /**
  * MASA Terminal v3.0 - Unified SignIn
- * Perfectly synchronized with WelcomePage layout and aesthetic.
+ * Perfectly synchronized with authOptions logic.
  */
 
 interface AuthErrorConfig {
@@ -23,7 +23,10 @@ const ERROR_MAP: Record<string, AuthErrorConfig> = {
   ACCOUNT_DISABLED: { title: "Node Decommissioned", message: "Access revoked by Admin.", type: "SECURITY", kind: "PUSH" },
   ORGANIZATION_SUSPENDED: { title: "Sector Offline", message: "Org-level suspension active.", type: "ERROR", kind: "PUSH" },
   ACCOUNT_LOCKED: { title: "Security Lockout", message: "Terminal frozen. Needs Admin override.", type: "ERROR", kind: "PUSH" },
+  EXCESSIVE_FAILED_ATTEMPTS: { title: "Security Lockout", message: "Too many failed attempts. Cooling down...", type: "ERROR", kind: "PUSH" },
+  TEMPORARY_LOCKOUT: { title: "Access Restricted", message: "Terminal cooling down. Please wait 15m.", type: "SECURITY", kind: "PUSH" },
   INVALID_CREDENTIALS: { title: "Access Denied", message: "Invalid credentials.", type: "ERROR", kind: "TOAST" },
+  CredentialsSignin: { title: "Access Denied", message: "Invalid credentials.", type: "ERROR", kind: "TOAST" },
   SessionExpired: { title: "Session Terminated", message: "Re-authentication required.", type: "SECURITY", kind: "PUSH" },
 };
 
@@ -43,7 +46,9 @@ const SignInForm = () => {
   const urlError = searchParams.get("error");
 
   useEffect(() => {
+    // Generate transient Hardware ID for visual fidelity
     setHwId(Math.random().toString(36).substr(2, 6).toUpperCase());
+    
     if (urlError && ERROR_MAP[urlError]) {
       const config = ERROR_MAP[urlError];
       dispatch({ kind: config.kind, type: config.type, title: config.title, message: config.message });
@@ -66,9 +71,11 @@ const SignInForm = () => {
 
       if (result?.error) {
         await controls.start({ x: [-8, 8, -8, 8, 0], transition: { duration: 0.4 } });
+        // Map the custom error string from authorize() or fallback to generic
         const config = ERROR_MAP[result.error] || ERROR_MAP.INVALID_CREDENTIALS;
         dispatch({ kind: config.kind, type: config.type, title: config.title, message: config.message });
       } else {
+        // Fetch session to verify 'requiresPasswordChange' from the JWT/Session callback
         const session = await getSession();
         const user = session?.user;
         
@@ -80,9 +87,12 @@ const SignInForm = () => {
         });
 
         setTimeout(() => {
-          if (user?.requiresPasswordChange) router.replace("/reset-password");
-          else router.replace(callbackUrl === "/" ? "/admin/dashboard" : callbackUrl);
-          router.refresh();
+          if (user?.requiresPasswordChange) {
+            router.replace("/reset-password");
+          } else {
+            router.replace(callbackUrl === "/" ? "/admin/overview" : callbackUrl);
+          }
+          router.refresh(); // Ensure session state is propagated
         }, 800);
       }
     } catch {
@@ -145,17 +155,16 @@ const SignInForm = () => {
           <button 
             type="submit"
             disabled={loading}
-            className="w-full py-4 flex justify-center  bg-slate-900 text-white rounded-2xl text-[10px] font-black uppercase tracking-[0.2em] hover:bg-blue-600 transition-all active:scale-95 flex items-center justify-center gap-2"
+            className="w-full py-4 flex justify-center bg-slate-900 text-white rounded-2xl text-[10px] font-black uppercase tracking-[0.2em] hover:bg-blue-600 transition-all active:scale-95 flex items-center justify-center gap-2"
           >
             {loading ? <i className="bx bx-loader-alt animate-spin text-lg" /> : "Initiate Session"}
           </button>
         </motion.form>
 
-        {/* Replaced 'Forgot Password' with Registration routing */}
         <div className="flex flex-col items-center gap-2 pt-1 border-t border-slate-50/50 mt-2">
           <p className="text-[9px] font-bold uppercase tracking-widest text-slate-300 mt-4">New Personnel?</p>
           <Link href="/register" className="text-[10px] font-black uppercase tracking-widest text-blue-500 hover:text-blue-700 transition-colors">
-             Create Terminal Account
+              Create Terminal Account
           </Link>
         </div>
       </div>
@@ -226,7 +235,6 @@ export default function SignInPage() {
       <main className="flex-1 relative z-20 flex flex-col items-center justify-center px-6 min-h-0">
         <div className="max-w-7xl w-full grid grid-cols-1 lg:grid-cols-2 gap-12 items-center">
           
-          {/* Left: Project Branding */}
           <section className="flex flex-col space-y-4 md:space-y-6 order-2 lg:order-1 hidden sm:block ">
             <div className="space-y-4">
               <div className="inline-flex items-center gap-2 bg-indigo-50 border border-indigo-100 px-3 py-1 rounded-full w-fit">
@@ -256,7 +264,6 @@ export default function SignInPage() {
             </div>
           </section>
 
-          {/* Right: The Auth Card */}
           <section className="flex justify-center lg:justify-end order-1 lg:order-2">
             <Suspense fallback={<div className="animate-pulse font-black text-slate-300 uppercase tracking-widest text-xs">Waking Core...</div>}>
               <SignInForm />

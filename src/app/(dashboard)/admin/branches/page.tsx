@@ -3,7 +3,7 @@
 import React, { useState, useEffect, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Role } from "@prisma/client";
-import { useAlerts } from "@/src/core/components/feedback/AlertProvider";
+import { useAlerts } from "@/core/components/feedback/AlertProvider";
 
 /* ================= TYPES ================= */
 

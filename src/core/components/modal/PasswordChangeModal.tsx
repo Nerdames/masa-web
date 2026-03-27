@@ -2,7 +2,7 @@
 
 import React, { useState, useMemo } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
-import { useAlerts } from "@/src/core/components/feedback/AlertProvider";
+import { useAlerts } from "@/core/components/feedback/AlertProvider";
 import { useSession } from "next-auth/react";
 
 interface PasswordChangeModalProps {

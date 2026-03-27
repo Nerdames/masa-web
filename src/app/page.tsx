@@ -13,5 +13,5 @@ export default async function RootPage() {
   // If session exists, redirect to a neutral starting point.
   // The Middleware (proxy.ts) will intercept this and send 
   // them to the correct role-based dashboard.
-  redirect("/admin/dashboard");
+  redirect("/admin/overview");
 }

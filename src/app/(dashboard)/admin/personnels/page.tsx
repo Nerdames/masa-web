@@ -1,24 +1,28 @@
 "use client";
 
 import React, { useState, useEffect, useCallback, useRef } from "react";
+import { useSession } from "next-auth/react";
 import { useSidePanel } from "@/core/components/layout/SidePanelContext";
 import { ActivityLogsPanel } from "@/modules/audit/components/ActivityLogsPanel";
 import { ActivityLog } from "@prisma/client";
 import { useAlerts } from "@/core/components/feedback/AlertProvider";
 
-// Import Refactored Components
 import { Personnel, Branch, SummaryStats, PaginatedResponse, ProvisionPayload, UpdatePayload } from "@/modules/personnel/components/types";
 import { DetailsPanel } from "@/modules/personnel/components/DetailsPanel";
 import { ProvisionPanel } from "@/modules/personnel/components/ProvisionPanel";
 import { PersonnelRow } from "@/modules/personnel/components/PersonnelRow";
 
 export default function PersonnelManagementPage() {
+  const { data: session } = useSession();
   const { dispatch } = useAlerts();
-  const { openPanel, closePanel, isOpen } = useSidePanel();
+  const { openPanel, closePanel, resetToDefault, isOpen } = useSidePanel();
 
-  // Mock Role Check - Replace with your actual Auth logic (e.g., useSession)
-  const userRole = "ADMIN"; 
-  const isAdmin = userRole === "ADMIN";
+  const userRole = session?.user?.role;
+  const isOrgOwner = session?.user?.isOrgOwner;
+  
+  const hasFullClearance = isOrgOwner || userRole === "ADMIN" || userRole === "DEV";
+  const canProvision = hasFullClearance;
+  const canDelete = hasFullClearance;
 
   const [personnelList, setPersonnelList] = useState<Personnel[]>([]);
   const [branches, setBranches] = useState<Branch[]>([]);
@@ -32,14 +36,16 @@ export default function PersonnelManagementPage() {
 
   const abortControllerRef = useRef<AbortController | null>(null);
 
+  // FIX: Use resetToDefault to return to previous view without closing panel
   const handleClosePanel = useCallback(() => {
-    closePanel();
+    resetToDefault();
     setSelectedPersonId(null);
-  }, [closePanel]);
+  }, [resetToDefault]);
 
+  // FIX: Dependency array must be empty to only fire on actual Page unmount
   useEffect(() => {
     return () => closePanel();
-  }, [closePanel]);
+  }, []); 
 
   const fetchPersonnel = useCallback(async () => {
     if (abortControllerRef.current) abortControllerRef.current.abort();
@@ -73,6 +79,7 @@ export default function PersonnelManagementPage() {
   }, [fetchPersonnel]);
 
   const handleCreate = async (payload: ProvisionPayload) => {
+    if (!canProvision) return;
     const res = await fetch("/api/personnels", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -106,6 +113,11 @@ export default function PersonnelManagementPage() {
   };
 
   const handleDelete = async (id: string) => {
+    if (!canDelete) {
+      dispatch({ kind: "TOAST", type: "ERROR", title: "Access Denied", message: "You do not have clearance to delete personnel." });
+      return;
+    }
+
     if (!confirm("Are you absolutely sure you want to delete this account? This action will softly deactivate it.")) return;
     try {
       const res = await fetch(`/api/personnels?id=${id}`, { method: "DELETE" });
@@ -125,6 +137,7 @@ export default function PersonnelManagementPage() {
   };
 
   const handleOpenProvision = () => {
+    if (!canProvision) return;
     setSelectedPersonId(null);
     openPanel(<ProvisionPanel branches={branches} onClose={handleClosePanel} onCreate={handleCreate} dispatch={dispatch} />);
   };
@@ -152,7 +165,7 @@ export default function PersonnelManagementPage() {
               <span className="hidden md:inline whitespace-nowrap">Audit Trail</span>
             </button>
             
-            {isAdmin && (
+            {canProvision && (
               <button 
                 onClick={handleOpenProvision} 
                 title="Provision Access"
@@ -165,7 +178,6 @@ export default function PersonnelManagementPage() {
           </div>
         </div>
         
-        {/* Stats Summary - Responsive No Wrap */}
         <div className="flex gap-4 md:gap-6 mt-6 pt-4 border-t border-black/5 overflow-x-auto no-scrollbar whitespace-nowrap">
           <div className="flex flex-col shrink-0"><span className="text-[9px] md:text-[10px] font-bold text-slate-400 uppercase tracking-widest">Total Staff</span><span className="text-lg md:text-xl font-medium text-slate-800">{summary.total}</span></div>
           <div className="w-px h-8 bg-black/5 self-center shrink-0" />
@@ -177,7 +189,6 @@ export default function PersonnelManagementPage() {
         </div>
       </header>
 
-      {/* Search and Filters Bar */}
       <div className="px-4 md:px-10 py-3 shrink-0 flex items-center gap-3 bg-slate-50/50 border-b border-black/[0.04]">
         <div className="relative flex-1 md:flex-none md:w-80 shrink-0">
           <i className="bx bx-search absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 text-base" />
@@ -192,7 +203,6 @@ export default function PersonnelManagementPage() {
         
         <div className="h-4 w-px bg-black/10 shrink-0" />
 
-        {/* Mobile Dropdown / Desktop Tabs */}
         <div className="flex items-center shrink-0">
           <div className="md:hidden">
             <select 
@@ -219,7 +229,6 @@ export default function PersonnelManagementPage() {
         </div>
       </div>
 
-      {/* Table Header - No Wrap */}
       <div className="px-4 md:px-8 py-2 shrink-0 flex items-center text-[10px] font-bold text-slate-400 uppercase tracking-widest border-b border-black/[0.04] bg-white overflow-hidden whitespace-nowrap">
         <div className="w-[100px] md:w-[140px] shrink-0 truncate">Staff ID</div>
         <div className="w-[100px] md:w-[160px] shrink-0 truncate">Primary Branch</div>
@@ -229,7 +238,6 @@ export default function PersonnelManagementPage() {
         <div className="w-[70px] md:w-[100px] shrink-0 truncate text-right md:text-left">Access</div>
       </div>
 
-      {/* List Container */}
       <div className="flex-1 overflow-y-auto custom-scrollbar bg-white relative">
         {isLoading && personnelList.length === 0 ? (
           <div className="absolute inset-0 flex items-center justify-center bg-white/50 backdrop-blur-sm z-10"><i className="bx bx-loader-alt animate-spin text-3xl text-blue-500" /></div>
