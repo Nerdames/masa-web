@@ -5,7 +5,7 @@ export enum Role {
   MANAGER = "MANAGER",
   SALES = "SALES",
   INVENTORY = "INVENTORY",
-  CASHIER = "CASHIER"
+  CASHIER = "CASHIER",
   AUDITOR = "AUDITOR"
 }
 

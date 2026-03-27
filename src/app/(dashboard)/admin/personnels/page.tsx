@@ -149,45 +149,114 @@ export default function PersonnelManagementPage() {
 
   return (
     <div className="flex flex-col h-full w-full bg-white relative z-0 overflow-hidden">
-      <header className="px-4 py-4 shrink-0 border-b border-black/[0.04] bg-white">
-        <div className="flex items-center justify-between gap-4">
-          <div className="px-2 truncate">
-            <h1 className="text-lg md:text-2xl font-semibold tracking-tight text-slate-900 truncate">Personnel Operations</h1>
-            <p className="hidden md:block text-[13px] text-slate-500 mt-1 truncate">Manage global branch access, security parameters, and roles.</p>
-          </div>
-          <div className="flex items-center gap-2 shrink-0">
-            <button 
-              onClick={handleOpenLogs} 
-              title="Audit Trail"
-              className="p-2 md:px-4 md:py-2 text-[12px] font-semibold border rounded-lg transition-colors flex items-center gap-2 bg-white border-black/5 text-slate-500 hover:bg-slate-50 hover:text-slate-800 shadow-sm"
-            >
-              <i className="bx bx-history text-base md:text-sm" /> 
-              <span className="hidden md:inline whitespace-nowrap">Audit Trail</span>
-            </button>
-            
-            {canProvision && (
-              <button 
-                onClick={handleOpenProvision} 
-                title="Provision Access"
-                className="p-2 md:px-5 md:py-2 bg-slate-900 text-white text-[12px] font-semibold rounded-lg shadow-sm hover:bg-slate-800 transition-all flex items-center gap-2"
-              >
-                <i className="bx bx-plus text-base md:text-sm" /> 
-                <span className="hidden md:inline whitespace-nowrap">Provision Access</span>
-              </button>
-            )}
-          </div>
-        </div>
-        
-        <div className="flex gap-4 md:gap-6 mt-6 pt-4 border-t border-black/5 overflow-x-auto no-scrollbar whitespace-nowrap">
-          <div className="flex flex-col shrink-0"><span className="text-[9px] md:text-[10px] font-bold text-slate-400 uppercase tracking-widest">Total Staff</span><span className="text-lg md:text-xl font-medium text-slate-800">{summary.total}</span></div>
-          <div className="w-px h-8 bg-black/5 self-center shrink-0" />
-          <div className="flex flex-col shrink-0"><span className="text-[9px] md:text-[10px] font-bold text-emerald-500 uppercase tracking-widest">Active Accounts</span><span className="text-lg md:text-xl font-medium text-slate-800">{summary.active}</span></div>
-          <div className="w-px h-8 bg-black/5 self-center shrink-0" />
-          <div className="flex flex-col shrink-0"><span className="text-[9px] md:text-[10px] font-bold text-slate-400 uppercase tracking-widest">Disabled</span><span className="text-lg md:text-xl font-medium text-slate-800">{summary.disabled}</span></div>
-          <div className="w-px h-8 bg-black/5 self-center shrink-0" />
-          <div className="flex flex-col shrink-0"><span className="text-[9px] md:text-[10px] font-bold text-amber-500 uppercase tracking-widest">Locked Out</span><span className="text-lg md:text-xl font-medium text-slate-800">{summary.locked}</span></div>
-        </div>
-      </header>
+<header className="px-4 py-4 shrink-0 border-b border-black/[0.04] bg-white">
+  <div className="flex items-center justify-between gap-4">
+    {/* Title: single-line, truncates, responsive size */}
+    <div className="px-2 min-w-0 flex-1">
+      <h1
+        className="block w-full truncate text-[14px] sm:text-[15px] md:text-[18px] lg:text-2xl font-semibold tracking-tight text-slate-900 leading-tight"
+        title="Personnel Operations"
+        aria-label="Personnel Operations"
+      >
+        Personnel Operations
+      </h1>
+    </div>
+
+    {/* Actions: icons always visible; labels appear md+ */}
+    <div className="flex items-center gap-2 shrink-0">
+      <button
+        onClick={handleOpenLogs}
+        title="Audit Trail"
+        className="p-2 md:px-4 md:py-2 text-[12px] font-semibold border rounded-lg transition-colors flex items-center gap-2 bg-white border-black/5 text-slate-500 hover:bg-slate-50 hover:text-slate-800 shadow-sm"
+      >
+        <i className="bx bx-history text-base md:text-sm" />
+        <span className="hidden md:inline whitespace-nowrap">Audit Trail</span>
+      </button>
+
+      {canProvision && (
+        <button
+          onClick={handleOpenProvision}
+          title="Provision Access"
+          className="p-2 md:px-5 md:py-2 bg-slate-900 text-white text-[12px] font-semibold rounded-lg shadow-sm hover:bg-slate-800 transition-all flex items-center gap-2"
+        >
+          <i className="bx bx-plus text-base md:text-sm" />
+          <span className="hidden md:inline whitespace-nowrap">Provision Access</span>
+        </button>
+      )}
+    </div>
+  </div>
+
+  {/* Single-line summary — forced single row, truncates labels and values */}
+  <div
+    aria-label="summary"
+    className="flex items-center gap-3 md:gap-4 mt-6 pt-4 border-t border-black/5 overflow-hidden whitespace-nowrap"
+    style={{ minWidth: 0 }}
+  >
+    {/* Total */}
+    <div className="flex items-center gap-3 shrink-0 min-w-0">
+      <div className="flex flex-col min-w-0">
+        <span className="text-[10px] md:text-[11px] font-bold text-slate-400 uppercase tracking-widest truncate max-w-[72px] md:max-w-[120px]">
+          Total
+        </span>
+        <span className="text-sm md:text-lg font-medium text-slate-800 truncate max-w-[84px] md:max-w-[140px]">
+          {summary.total}
+        </span>
+      </div>
+    </div>
+
+    <div className="w-px h-8 bg-black/5 self-center" />
+
+    {/* Active */}
+    <div className="flex items-center gap-3 shrink-0 min-w-0">
+      <div className="flex flex-col min-w-0">
+        <span className="text-[10px] md:text-[11px] font-bold text-emerald-500 uppercase tracking-widest truncate max-w-[72px] md:max-w-[120px]">
+          Active
+        </span>
+        <span className="text-sm md:text-lg font-medium text-slate-800 truncate max-w-[84px] md:max-w-[140px]">
+          {summary.active}
+        </span>
+      </div>
+    </div>
+
+    <div className="w-px h-8 bg-black/5 self-center" />
+
+    {/* Disabled */}
+    <div className="flex items-center gap-3 shrink-0 min-w-0">
+      <div className="flex flex-col min-w-0">
+        <span className="text-[10px] md:text-[11px] font-bold text-slate-400 uppercase tracking-widest truncate max-w-[72px] md:max-w-[120px]">
+          Disabled
+        </span>
+        <span className="text-sm md:text-lg font-medium text-slate-800 truncate max-w-[84px] md:max-w-[140px]">
+          {summary.disabled}
+        </span>
+      </div>
+    </div>
+
+    <div className="w-px h-8 bg-black/5 self-center" />
+
+    {/* Locked */}
+    <div className="flex items-center gap-3 shrink-0 min-w-0">
+      <div className="flex flex-col min-w-0">
+        <span className="text-[10px] md:text-[11px] font-bold text-amber-500 uppercase tracking-widest truncate max-w-[72px] md:max-w-[120px]">
+          Locked
+        </span>
+        <span className="text-sm md:text-lg font-medium text-slate-800 truncate max-w-[84px] md:max-w-[140px]">
+          {summary.locked}
+        </span>
+      </div>
+    </div>
+  </div>
+
+  {/* Small helper CSS to ensure truncation and prevent overflow in extreme cases */}
+  <style jsx>{`
+    header { min-width: 0; }
+    /* Slight scale down on very narrow screens to avoid overflow while keeping single-line */
+    @media (max-width: 340px) {
+      header > div:first-child { transform-origin: left center; transform: scale(0.96); }
+    }
+  `}</style>
+</header>
+
 
       <div className="px-4 md:px-10 py-3 shrink-0 flex items-center gap-3 bg-slate-50/50 border-b border-black/[0.04]">
         <div className="relative flex-1 md:flex-none md:w-80 shrink-0">
