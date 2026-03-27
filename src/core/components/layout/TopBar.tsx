@@ -22,13 +22,11 @@ export default function TopBar({ isLoading }: TopBarProps) {
 
   /**
    * Side Panel Controls
-   * toggleLayout: Physically slides the panel in/out without destroying content.
    */
   const { isOpen, toggleLayout } = useSidePanel();
 
   /**
    * Memoized change handler to prevent infinite loops 
-   * inside the NotificationsBell component.
    */
   const handleUnreadChange = useCallback((count: number) => {
     setUnreadCount(count);
@@ -65,7 +63,7 @@ export default function TopBar({ isLoading }: TopBarProps) {
         >
           M
         </div>
-        <span className="text-sm font-semibold truncate max-w-[200px] text-slate-800 group-hover:text-blue-600 transition-colors">
+        <span className="text-sm font-semibold truncate max-w-[200px] text-slate-800 group-hover:text-blue-600 transition-colors whitespace-nowrap">
           {user?.organizationName || "MASA"}
         </span>
       </div>
@@ -78,14 +76,11 @@ export default function TopBar({ isLoading }: TopBarProps) {
               {/* Notification System */}
               <NotificationsBell onUnreadChange={handleUnreadChange} />
               
-              {/* LAYOUT TOGGLE BUTTON
-                  This is the only button that controls the isOpen state.
-                  It preserves whatever was in the 'content' state.
-              */}
+              {/* LAYOUT TOGGLE BUTTON - Hidden on Mobile (md:flex) */}
               <button
                 onClick={toggleLayout}
                 aria-label={isOpen ? "Hide Side Panel" : "Show Side Panel"}
-                className={`w-8 h-8 flex items-center justify-center rounded-lg transition-all duration-200 
+                className={`hidden md:flex w-8 h-8 items-center justify-center rounded-lg transition-all duration-200 
                   ${isOpen 
                     ? "bg-blue-50 text-blue-600 shadow-inner" 
                     : "text-slate-400 hover:bg-slate-100 hover:text-slate-600"
@@ -99,11 +94,12 @@ export default function TopBar({ isLoading }: TopBarProps) {
             <UserMenu
               trigger={
                 <button className="flex items-center gap-2 cursor-pointer rounded-full py-0.5 pr-3 pl-0.5 bg-slate-50 hover:bg-slate-100 transition-all border border-transparent hover:border-slate-200">
-                  <div className="w-7 h-7 rounded-full text-white flex items-center justify-center font-bold text-[10px] bg-blue-600 shadow-sm">
+                  <div className="w-7 h-7 rounded-full text-white flex-shrink-0 flex items-center justify-center font-bold text-[10px] bg-blue-600 shadow-sm">
                     {getInitials(user.name)}
                   </div>
 
-                  <div className="hidden sm:flex items-center gap-1">
+                  {/* Hidden on Mobile: Only initials displayed */}
+                  <div className="hidden sm:flex items-center gap-1 whitespace-nowrap">
                     <span className="text-xs font-medium text-slate-700">
                       {user.name?.split(" ")[0]}
                     </span>
@@ -118,11 +114,18 @@ export default function TopBar({ isLoading }: TopBarProps) {
             />
           </>
         ) : (
+          /* Sign In Button: Identical shape/style to UserMenu trigger */
           <button
             onClick={() => router.push("/signin")}
-            className="px-3 py-1 rounded-md text-xs font-medium text-white bg-black hover:bg-slate-800 transition shadow-sm"
+            className="flex items-center gap-2 cursor-pointer rounded-full py-0.5 pr-3 pl-0.5 bg-slate-50 hover:bg-slate-100 transition-all border border-slate-100 hover:border-slate-200 shadow-sm"
           >
-            Sign in
+            <div className="w-7 h-7 rounded-full text-white flex-shrink-0 flex items-center justify-center bg-black shadow-sm">
+              <i className="bx bx-log-in-circle text-[14px]" />
+            </div>
+            {/* Hidden on Mobile for consistency with Profile behavior */}
+            <span className="hidden sm:inline text-xs font-bold text-blue-700 uppercase tracking-tight whitespace-nowrap">
+              Sign In
+            </span>
           </button>
         )}
       </div>

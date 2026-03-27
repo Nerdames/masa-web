@@ -3,7 +3,7 @@
 
 import React, { useState, useRef, useEffect } from "react";
 
-import { ProvisionBranchPayload } from "../types";
+import { ProvisionBranchPayload } from "@/types";
 
 interface BranchProvisionPanelProps {
   onClose: () => void;
@@ -74,8 +74,7 @@ export function BranchProvisionPanel({ onClose, onRefresh, dispatch }: BranchPro
             <i className="bx bx-server text-lg" aria-hidden="true" />
           </div>
           <div>
-            <h2 className="text-sm md:text-[13px] font-black uppercase tracking-[0.18em] text-slate-900">Deploy New Node</h2>
-            <p className="text-[12px] text-slate-500 mt-0.5">Provision a physical or virtual branch into the network</p>
+            <h2 className="text-sm md:text-[13px] font-black uppercase  text-slate-900">Deploy New Node</h2>
           </div>
         </div>
 
@@ -83,7 +82,7 @@ export function BranchProvisionPanel({ onClose, onRefresh, dispatch }: BranchPro
           <button
             onClick={onClose}
             aria-label="Close panel"
-            className="w-9 h-9 rounded-md bg-black/5 hover:bg-black/10 flex items-center justify-center transition-colors"
+            className="w-8 h-8 rounded-lg hover:bg-slate-100 flex items-center justify-center text-slate-500 transition-all active:scale-90"
           >
             <i className="bx bx-x text-lg" />
           </button>

@@ -40,14 +40,13 @@ export interface SidePanelContextType extends PanelConfig {
 
 const PREF_KEY = "right-panel-config";
 const SAVE_DEBOUNCE_MS = 800;
-// Inside SidePanelContext.tsx
 const MIN_WIDTH = 320;
-const MAX_WIDTH = 340; // Changed from 900 to 380
+const MAX_WIDTH = 340; // Cap width to 340
 
 const DEFAULT_CONFIG: PanelConfig = {
   isOpen: false,
   isFullScreen: false,
-  width: 340, // Ensure default is the cap
+  width: 340, 
 };
 
 const SidePanelContext = createContext<SidePanelContextType | undefined>(undefined);
@@ -135,7 +134,7 @@ export function SidePanelProvider({ children }: { children: ReactNode }) {
   }, [config, persistToDB, pageKey]);
 
   /* --------------------------------------------- */
-  /* Sync Effect (Fixes the Router Update Error) */
+  /* Sync Effect (URL & State Sync) */
   /* --------------------------------------------- */
 
   useEffect(() => {
@@ -159,7 +158,7 @@ export function SidePanelProvider({ children }: { children: ReactNode }) {
   }, [config, isLoaded, router, searchParams, saveLayout]);
 
   /* --------------------------------------------- */
-  /* Initialization (Fixes the JSON Syntax Error) */
+  /* Initialization (Local Storage & DB Fetch) */
   /* --------------------------------------------- */
 
   const fetchPreferences = useCallback(async () => {
@@ -178,14 +177,12 @@ export function SidePanelProvider({ children }: { children: ReactNode }) {
 
       const res = await fetch(`/api/preferences?${params}`);
 
-      // Handle non-OK responses (like 404 or middleware redirects)
       if (!res.ok) {
         console.warn(`Preferences API returned status: ${res.status}`);
         setIsLoaded(true);
         return;
       }
 
-      // Handle non-JSON content types (preventing SyntaxError)
       const contentType = res.headers.get("content-type");
       if (!contentType || !contentType.includes("application/json")) {
         console.error("Preferences API did not return JSON. Check for redirects.");
@@ -199,6 +196,13 @@ export function SidePanelProvider({ children }: { children: ReactNode }) {
         const parsed = typeof data.preference === "string" 
           ? JSON.parse(data.preference) 
           : data.preference;
+        
+        // Mobile Check: Prevent panel from opening by default on mobile DB fetch
+        const isMobile = window.innerWidth < 768;
+        if (isMobile) {
+          parsed.isOpen = false;
+        }
+
         setConfig((prev) => ({ ...prev, ...parsed }));
       }
     } catch (err) {
@@ -210,13 +214,25 @@ export function SidePanelProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     const saved = localStorage.getItem(`masa-${pageKey}`);
+    const isMobile = window.innerWidth < 768;
+
     if (saved) {
       try {
-        setConfig(JSON.parse(saved));
+        const parsedConfig = JSON.parse(saved);
+        // Mobile Check: Override localStorage truthy value for isOpen
+        if (isMobile) {
+          setConfig({ ...parsedConfig, isOpen: false });
+        } else {
+          setConfig(parsedConfig);
+        }
       } catch (e) {
         console.error("Failed to parse local storage config", e);
       }
+    } else if (isMobile) {
+      // Ensure mobile starts closed even without saved state
+      setConfig((prev) => ({ ...prev, isOpen: false }));
     }
+    
     fetchPreferences();
   }, [fetchPreferences, pageKey]);
 
@@ -230,6 +246,11 @@ export function SidePanelProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const openPanel = useCallback((node: ReactNode, newTitle?: string) => {
+    // UX Enhancement: Scroll to top on mobile so the panel content is visible
+    if (window.innerWidth < 768) {
+      window.scrollTo(0, 0);
+    }
+    
     setContent(node);
     if (newTitle) setTitle(newTitle);
     setConfig((prev) => (prev.isOpen ? prev : { ...prev, isOpen: true }));
@@ -253,7 +274,12 @@ export function SidePanelProvider({ children }: { children: ReactNode }) {
 
   const closePanel = useCallback(() => {
     setConfig((prev) => ({ ...prev, isOpen: false, isFullScreen: false }));
-    setTimeout(resetToDefault, 250);
+    // Wait for slide-out animation (300ms) before clearing content to prevent flashing
+    setTimeout(() => {
+      startTransition(() => {
+        resetToDefault();
+      });
+    }, 300);
   }, [resetToDefault]);
 
   const toggleLayout = useCallback(() => {

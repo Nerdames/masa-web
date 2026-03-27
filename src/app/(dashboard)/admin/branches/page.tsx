@@ -248,11 +248,14 @@ export default function BranchManagementPage(): JSX.Element {
         </div>
       </div>
 
-      {/* Column Headers */}
-      <div className="px-4 md:px-8 py-2 shrink-0 flex items-center text-[10px] font-bold text-slate-400 uppercase tracking-widest border-b border-black/[0.04] bg-white overflow-hidden whitespace-nowrap">
+      {/* --- Node Registry Table Header (Hidden on Mobile) --- */}
+      <div className="hidden sm:flex px-4 md:px-8 py-2 shrink-0 items-center text-[10px] font-bold text-slate-400 uppercase tracking-widest border-b border-black/[0.04] bg-white overflow-hidden whitespace-nowrap">
         <div className="w-[90px] md:w-[120px] shrink-0 truncate">Node ID</div>
         <div className="flex-1 min-w-[120px] truncate">Branch Name</div>
+        
+        {/* Location remains hidden until desktop (md) to prioritize Name/Revenue on tablets */}
         <div className="w-[100px] md:w-[180px] hidden md:block shrink-0 truncate">Location</div>
+        
         <div className="w-[70px] text-center shrink-0 truncate">Staff</div>
         <div className="w-[100px] md:w-[140px] text-right shrink-0 truncate">Total Revenue</div>
         <div className="w-[70px] text-right shrink-0 truncate">Status</div>

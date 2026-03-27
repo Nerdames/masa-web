@@ -219,7 +219,7 @@ export function ActivityLogsPanel({
             <span className="w-1.5 h-1.5 rounded-sm bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.3)] animate-pulse" /> 
             {title}
           </h2>
-          <button onClick={onClose} className="w-7 h-7 rounded-md hover:bg-slate-100 flex items-center justify-center text-slate-400 transition-colors">
+          <button onClick={onClose} className="w-8 h-8 rounded-lg hover:bg-slate-100 flex items-center justify-center text-slate-500 transition-all active:scale-90">
             <i className="bx bx-x text-lg" />
           </button>
         </div>
