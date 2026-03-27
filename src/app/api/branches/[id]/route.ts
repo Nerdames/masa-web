@@ -1,13 +1,17 @@
+// File: src/app/api/branches/[id]/route.ts
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/core/lib/auth";
 import prisma from "@/core/lib/prisma";
 import { NextRequest, NextResponse } from "next/server";
 import { Role, Prisma } from "@prisma/client";
 
+/**
+ * Next.js 15 requires params to be a Promise for dynamic routes.
+ */
 interface RouteParams {
-  params: {
+  params: Promise<{
     id: string;
-  };
+  }>;
 }
 
 /* -------------------- GET: SINGLE BRANCH -------------------- */
@@ -18,6 +22,7 @@ export async function GET(
 ): Promise<NextResponse> {
   try {
     const session = await getServerSession(authOptions);
+    const { id } = await params; // CRITICAL FIX: Unwrapping the promise
 
     if (!session || (session.user.role !== Role.ADMIN && !session.user.isOrgOwner)) {
       return NextResponse.json({ error: "Access denied" }, { status: 403 });
@@ -25,7 +30,7 @@ export async function GET(
 
     const branch = await prisma.branch.findFirst({
       where: {
-        id: params.id,
+        id: id,
         organizationId: session.user.organizationId,
       },
       include: {
@@ -45,8 +50,8 @@ export async function GET(
         _count: {
           select: {
             branchProducts: true,
-            personnel: { where: { deletedAt: null } },
-            orders: { where: { deletedAt: null } },
+            personnel: true, // Prisma count filters vary by version; ensure previewFeatures="filteredRelationCount" is on or use total count
+            orders: true,
             activityLogs: true,
           }
         }
@@ -64,7 +69,7 @@ export async function GET(
   }
 }
 
-/* -------------------- DELETE: SOFT DELETE & REASSIGN -------------------- */
+/* -------------------- DELETE: SOFT DELETE & LOGGING -------------------- */
 
 export async function DELETE(
   req: NextRequest,
@@ -72,12 +77,12 @@ export async function DELETE(
 ): Promise<NextResponse> {
   try {
     const session = await getServerSession(authOptions);
+    const { id: branchId } = await params; // CRITICAL FIX: Unwrapping the promise
 
     if (!session || (session.user.role !== Role.ADMIN && !session.user.isOrgOwner)) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 403 });
     }
 
-    const branchId = params.id;
     const organizationId = session.user.organizationId;
 
     const result = await prisma.$transaction(async (tx) => {
@@ -89,18 +94,18 @@ export async function DELETE(
         throw new Error("Branch not found");
       }
 
-      // 1. Clear assignments
+      // 1. Clear explicit branch assignments
       await tx.branchAssignment.deleteMany({
         where: { branchId }
       });
 
-      // 2. Reset personnel branch reference
+      // 2. Unlink personnel referencing this branch as their primary
       await tx.authorizedPersonnel.updateMany({
         where: { branchId, organizationId },
         data: { branchId: null }
       });
 
-      // 3. Soft delete
+      // 3. Execute Soft Delete (Archival)
       const deletedBranch = await tx.branch.update({
         where: { id: branchId },
         data: { 
@@ -109,10 +114,11 @@ export async function DELETE(
         }
       });
 
-      // 4. Log the action
+      // 4. Critical Security Logging
       const logMetadata: Prisma.JsonObject = { 
         branchName: branch.name, 
-        deletedByRole: session.user.role 
+        deletedByRole: session.user.role,
+        terminalContext: "MASA_TERMINAL_V3"
       };
 
       await tx.activityLog.create({

@@ -27,7 +27,7 @@ export interface ActivityLogDTO {
   details?: string;
 }
 
-interface DetailsPanelProps {
+interface PersonnelDetailsPanelProps {
   personnel: Personnel;
   logs?: ActivityLogDTO[]; // Passed down or dynamically fetched
   onClose: () => void;
@@ -247,7 +247,7 @@ type FormState = {
   role: Role;
 };
 
-export function DetailsPanel({ personnel, logs = [], onClose, onUpdate, onDelete, dispatch }: DetailsPanelProps) {
+export function PersonnelDetailsPanel({ personnel, logs = [], onClose, onUpdate, onDelete, dispatch }: PersonnelDetailsPanelProps) {
   const [isEditing, setIsEditing] = useState(false);
   const [isLogExpanded, setIsLogExpanded] = useState(true); // Default to expanded
   const [logFilter] = useState<string>(LOG_TABS.ALL);

@@ -1,27 +1,21 @@
-// File: @/modules/branches/page.tsx  (or @/app/(dashboard)/branches/page.tsx)
+// File: @/modules/branches/page.tsx
 "use client";
 
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import { useSession } from "next-auth/react";
-import { motion } from "framer-motion";
 import { useSidePanel } from "@/core/components/layout/SidePanelContext";
 import { useAlerts } from "@/core/components/feedback/AlertProvider";
 import { ActivityLogsPanel } from "@/modules/audit/components/ActivityLogsPanel";
 
-import { Branch, BranchSummary, BranchListResponse } from "@/modules/branches/components/types";
+import { Branch, BranchSummary, BranchListResponse } from "./types";
 import { BranchDetailsPanel } from "@/modules/branches/components/BranchDetailsPanel";
 import { BranchProvisionPanel } from "@/modules/branches/components/BranchProvisionPanel";
 import { BranchRow } from "@/modules/branches/components/BranchRow";
 
 /**
  * BranchManagementPage
- * - Designed to live inside the app layout <main> (no fixed/fullscreen overlays)
- * - Header + filter/search are sticky at the top of the scroll container
- * - Responsive to sidebar width: uses min-w-0 and flex-1 so it shrinks correctly
- * - Internal list scrolls (native scrolling preserved); scrollbars visually hidden via utility
- * - Truncates long text, collapses columns on small screens
+ * Refactored to match Personnel Operations high-fidelity UI.
  */
-
 export default function BranchManagementPage(): JSX.Element {
   const { data: session } = useSession();
   const { dispatch } = useAlerts();
@@ -47,6 +41,7 @@ export default function BranchManagementPage(): JSX.Element {
     setSelectedBranchId(null);
   }, [resetToDefault]);
 
+  // Sync panel closure on page unmount
   useEffect(() => {
     return () => closePanel();
   }, [closePanel]);
@@ -108,144 +103,183 @@ export default function BranchManagementPage(): JSX.Element {
   };
 
   return (
-    <section className="h-full w-full min-h-0 min-w-0 flex flex-col bg-white">
-      {/* Local utility styles: hide scrollbars visually but keep scroll behavior */}
-      <style jsx>{`
-        .hide-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
-        .hide-scrollbar::-webkit-scrollbar { display: none; width: 0; height: 0; }
-        /* small scale fallback to avoid overflow on tiny viewports */
-        @media (max-width: 340px), (max-height: 640px) {
-          .branch-scale-fallback { transform-origin: top center; transform: scale(0.96); }
-        }
-      `}</style>
+    <div className="flex flex-col h-full w-full bg-white relative z-0 overflow-hidden">
+      <header className="px-4 py-4 shrink-0 border-b border-black/[0.04] bg-white">
+        <div className="flex items-center justify-between gap-4">
+          <div className="px-2 min-w-0 flex-1">
+            <h1
+              className="block w-full truncate text-[14px] sm:text-[15px] md:text-[18px] lg:text-2xl font-semibold tracking-tight text-slate-900 leading-tight"
+              title="Infrastructure"
+            >
+              Infrastructure
+            </h1>
+          </div>
 
-      <div className="branch-scale-fallback flex flex-col h-full w-full min-h-0 min-w-0">
-        {/* Header + actions (sticky inside the main scroll container) */}
-        <header className="sticky top-0 z-30 bg-white border-b border-black/[0.04]">
-          <div className="px-4 md:px-8 py-3 md:py-4 flex items-start md:items-center justify-between gap-4">
-            <div className="min-w-0 flex-1">
-              <h1 className="text-lg md:text-2xl font-bold tracking-tight text-slate-900 leading-tight truncate">
-                Infrastructure
-              </h1>
-              <p className="text-xs text-black/40 font-medium mt-1 truncate">Global Network Nodes & Hubs</p>
-            </div>
+          <div className="flex items-center gap-2 shrink-0">
+            <button
+              onClick={handleOpenLogs}
+              title="Audit Trail"
+              className="p-2 md:px-4 md:py-2 text-[12px] font-semibold border rounded-lg transition-colors flex items-center gap-2 bg-white border-black/5 text-slate-500 hover:bg-slate-50 hover:text-slate-800 shadow-sm"
+            >
+              <i className="bx bx-history text-base md:text-sm" />
+              <span className="hidden md:inline whitespace-nowrap">Audit Trail</span>
+            </button>
 
-            <div className="flex items-center gap-2 shrink-0">
+            {hasFullClearance && (
               <button
-                onClick={handleOpenLogs}
-                title="Audit Trail"
-                className="p-2 md:px-4 md:py-2 text-[12px] font-semibold border rounded-lg transition-colors flex items-center gap-2 bg-white border-black/5 text-slate-500 hover:bg-slate-50 hover:text-slate-800 shadow-sm"
-                aria-label="Open audit trail"
+                onClick={handleOpenProvision}
+                title="Deploy Node"
+                className="p-2 md:px-5 md:py-2 bg-blue-600 text-white text-[12px] font-semibold rounded-lg shadow-sm hover:bg-blue-700 transition-all flex items-center gap-2"
               >
-                <i className="bx bx-history text-base md:text-sm" />
-                <span className="hidden md:inline whitespace-nowrap">Audit Trail</span>
+                <i className="bx bx-plus text-base md:text-sm" />
+                <span className="hidden md:inline whitespace-nowrap">Deploy Node</span>
               </button>
-
-              {hasFullClearance && (
-                <button
-                  onClick={handleOpenProvision}
-                  title="Deploy Node"
-                  className="p-2 md:px-5 md:py-2 bg-blue-600 text-white text-[12px] font-semibold rounded-lg shadow-sm hover:bg-blue-700 transition-all flex items-center gap-2"
-                  aria-label="Deploy node"
-                >
-                  <i className="bx bx-plus text-base md:text-sm" />
-                  <span className="hidden md:inline whitespace-nowrap">Deploy Node</span>
-                </button>
-              )}
-            </div>
-          </div>
-
-          {/* Filters + Search (sticky under header) */}
-          <div className="w-full bg-white border-t border-black/5">
-            <div className="px-4 md:px-8 py-3 flex items-center justify-between gap-3">
-              {/* Filters */}
-              <div className="flex items-center gap-2 md:gap-4 min-w-0 overflow-hidden">
-                {(["all", "active", "inactive", "deleted"] as const).map((status) => (
-                  <button
-                    key={status}
-                    onClick={() => setFilterStatus(status)}
-                    className={`flex items-center gap-2 text-[11px] font-black uppercase tracking-widest pb-1 relative min-w-0 transition-colors ${
-                      filterStatus === status ? "text-blue-600" : "text-black/30 hover:text-black/60"
-                    }`}
-                    aria-pressed={filterStatus === status}
-                    aria-label={`Filter ${status}`}
-                  >
-                    <span className="truncate max-w-[80px] md:max-w-[120px]">{status}</span>
-                    <span
-                      className={`text-[10px] px-2 py-0.5 rounded-full ${
-                        filterStatus === status ? "bg-blue-100 text-blue-600" : "bg-black/5 text-black/40"
-                      }`}
-                    >
-                      {summary[status]}
-                    </span>
-                    {filterStatus === status && (
-                      <motion.div
-                        layoutId="activeTab"
-                        className="absolute bottom-0 left-0 right-0 h-0.5 bg-blue-600 rounded-t-full"
-                      />
-                    )}
-                  </button>
-                ))}
-              </div>
-
-              {/* Search */}
-              <div className="relative w-full md:w-72 shrink-0 min-w-0">
-                <i className="bx bx-search absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 text-base" />
-                <input
-                  type="text"
-                  placeholder="Search nodes or locations..."
-                  value={searchTerm}
-                  onChange={(e) => setSearchTerm(e.target.value)}
-                  className="w-full pl-9 pr-4 py-2 bg-[#F8F9FC] border border-transparent rounded-lg text-[12px] font-medium outline-none focus:bg-white focus:border-blue-500/30 focus:ring-4 focus:ring-blue-500/10 transition-all truncate"
-                  aria-label="Search nodes or locations"
-                />
-              </div>
-            </div>
-          </div>
-        </header>
-
-        {/* Column headers (sticky below filters) */}
-        <div className="sticky top-[calc( (var(--header-height,0px)) )] z-20 bg-slate-50/50 border-b border-black/[0.04]">
-          <div className="px-4 md:px-8 py-2 flex items-center text-[10px] font-bold text-slate-400 uppercase tracking-widest">
-            <div className="w-[90px] md:w-[120px] shrink-0 truncate">Node ID</div>
-            <div className="flex-1 min-w-[120px] truncate">Branch Name</div>
-            <div className="w-[100px] md:w-[180px] hidden md:block shrink-0 truncate">Location</div>
-            <div className="w-[70px] text-center shrink-0 truncate">Staff</div>
-            <div className="w-[100px] md:w-[140px] text-right shrink-0 truncate">Total Revenue</div>
-            <div className="w-[70px] text-right shrink-0 truncate">Status</div>
+            )}
           </div>
         </div>
 
-        {/* Scrollable list area: this element scrolls inside the layout main */}
-        <main
-          className="flex-1 overflow-auto hide-scrollbar bg-[#FAFAFC] p-2 md:p-4 min-h-0 min-w-0"
-          role="main"
-          aria-live="polite"
+        {/* Horizontal Summary Bar */}
+        <div
+          aria-label="summary"
+          className="flex items-center gap-3 md:gap-4 mt-6 pt-4 border-t border-black/5 overflow-hidden whitespace-nowrap"
+          style={{ minWidth: 0 }}
         >
-          {/* Loading / Empty / List */}
-          {isLoading && branches.length === 0 ? (
-            <div className="flex items-center justify-center h-full">
-              <i className="bx bx-loader-alt animate-spin text-3xl text-blue-500" />
+          <div className="flex items-center gap-3 shrink-0 min-w-0">
+            <div className="flex flex-col min-w-0">
+              <span className="text-[10px] md:text-[11px] font-bold text-slate-400 uppercase tracking-widest truncate max-w-[72px] md:max-w-[120px]">
+                Total
+              </span>
+              <span className="text-sm md:text-lg font-medium text-slate-800 truncate max-w-[84px] md:max-w-[140px]">
+                {summary.total}
+              </span>
             </div>
-          ) : branches.length === 0 ? (
-            <div className="flex flex-col items-center justify-center h-full text-center space-y-3 opacity-40 p-6">
-              <i className="bx bx-buildings text-5xl text-black/20" />
-              <p className="text-[12px] font-bold tracking-widest uppercase">No Infrastructure Found</p>
+          </div>
+
+          <div className="w-px h-8 bg-black/5 self-center" />
+
+          <div className="flex items-center gap-3 shrink-0 min-w-0">
+            <div className="flex flex-col min-w-0">
+              <span className="text-[10px] md:text-[11px] font-bold text-emerald-500 uppercase tracking-widest truncate max-w-[72px] md:max-w-[120px]">
+                Active
+              </span>
+              <span className="text-sm md:text-lg font-medium text-slate-800 truncate max-w-[84px] md:max-w-[140px]">
+                {summary.active}
+              </span>
             </div>
-          ) : (
-            <div className="flex flex-col gap-2">
-              {branches.map((branch) => (
-                <BranchRow
-                  key={branch.id}
-                  branch={branch}
-                  isSelected={selectedBranchId === branch.id}
-                  onClick={() => handleOpenDetails(branch)}
-                />
+          </div>
+
+          <div className="w-px h-8 bg-black/5 self-center" />
+
+          <div className="flex items-center gap-3 shrink-0 min-w-0">
+            <div className="flex flex-col min-w-0">
+              <span className="text-[10px] md:text-[11px] font-bold text-slate-400 uppercase tracking-widest truncate max-w-[72px] md:max-w-[120px]">
+                Inactive
+              </span>
+              <span className="text-sm md:text-lg font-medium text-slate-800 truncate max-w-[84px] md:max-w-[140px]">
+                {summary.inactive}
+              </span>
+            </div>
+          </div>
+
+          <div className="w-px h-8 bg-black/5 self-center" />
+
+          <div className="flex items-center gap-3 shrink-0 min-w-0">
+            <div className="flex flex-col min-w-0">
+              <span className="text-[10px] md:text-[11px] font-bold text-rose-500 uppercase tracking-widest truncate max-w-[72px] md:max-w-[120px]">
+                Deleted
+              </span>
+              <span className="text-sm md:text-lg font-medium text-slate-800 truncate max-w-[84px] md:max-w-[140px]">
+                {summary.deleted}
+              </span>
+            </div>
+          </div>
+        </div>
+
+        <style jsx>{`
+          header { min-width: 0; }
+          @media (max-width: 340px) {
+            header > div:first-child { transform-origin: left center; transform: scale(0.96); }
+          }
+        `}</style>
+      </header>
+
+      {/* Filter Row */}
+      <div className="px-4 md:px-10 py-3 shrink-0 flex items-center gap-3 bg-slate-50/50 border-b border-black/[0.04]">
+        <div className="relative flex-1 md:flex-none md:w-80 shrink-0">
+          <i className="bx bx-search absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 text-base" />
+          <input
+            type="text"
+            placeholder="Search nodes..."
+            value={searchTerm}
+            onChange={(e) => setSearchTerm(e.target.value)}
+            className="w-full pl-9 pr-4 py-1.5 bg-white border border-black/5 rounded-md text-[12px] outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500/30 transition-all truncate"
+          />
+        </div>
+
+        <div className="h-4 w-px bg-black/10 shrink-0" />
+
+        <div className="flex items-center shrink-0">
+          <div className="md:hidden">
+            <select
+              value={filterStatus}
+              onChange={(e) => setFilterStatus(e.target.value as any)}
+              className="bg-white border border-black/5 text-[11px] font-semibold px-2 py-1.5 rounded-md outline-none text-slate-700 capitalize"
+            >
+              {["all", "active", "inactive", "deleted"].map((status) => (
+                <option key={status} value={status}>{status}</option>
               ))}
-            </div>
-          )}
-        </main>
+            </select>
+          </div>
+          <div className="hidden md:flex gap-1">
+            {["all", "active", "inactive", "deleted"].map((status) => (
+              <button
+                key={status}
+                onClick={() => setFilterStatus(status as any)}
+                className={`px-3 py-1 rounded text-[11px] font-semibold capitalize transition-colors whitespace-nowrap ${
+                  filterStatus === status
+                    ? "bg-white border shadow-sm text-slate-800"
+                    : "text-slate-500 hover:text-slate-800 hover:bg-black/5"
+                }`}
+              >
+                {status}
+              </button>
+            ))}
+          </div>
+        </div>
       </div>
-    </section>
+
+      {/* Column Headers */}
+      <div className="px-4 md:px-8 py-2 shrink-0 flex items-center text-[10px] font-bold text-slate-400 uppercase tracking-widest border-b border-black/[0.04] bg-white overflow-hidden whitespace-nowrap">
+        <div className="w-[90px] md:w-[120px] shrink-0 truncate">Node ID</div>
+        <div className="flex-1 min-w-[120px] truncate">Branch Name</div>
+        <div className="w-[100px] md:w-[180px] hidden md:block shrink-0 truncate">Location</div>
+        <div className="w-[70px] text-center shrink-0 truncate">Staff</div>
+        <div className="w-[100px] md:w-[140px] text-right shrink-0 truncate">Total Revenue</div>
+        <div className="w-[70px] text-right shrink-0 truncate">Status</div>
+      </div>
+
+      {/* Main Content Area */}
+      <div className="flex-1 overflow-y-auto custom-scrollbar bg-white relative">
+        {isLoading && branches.length === 0 ? (
+          <div className="absolute inset-0 flex items-center justify-center bg-white/50 backdrop-blur-sm z-10">
+            <i className="bx bx-loader-alt animate-spin text-3xl text-blue-500" />
+          </div>
+        ) : branches.length === 0 ? (
+          <div className="flex flex-col items-center justify-center h-full text-center space-y-3 opacity-50 p-6">
+            <i className="bx bx-buildings text-4xl text-black/20" />
+            <p className="text-[12px] font-bold tracking-widest uppercase">No Infrastructure Found</p>
+          </div>
+        ) : (
+          branches.map((branch) => (
+            <BranchRow
+              key={branch.id}
+              branch={branch}
+              isSelected={selectedBranchId === branch.id}
+              onClick={() => handleOpenDetails(branch)}
+            />
+          ))
+        )}
+      </div>
+    </div>
   );
 }

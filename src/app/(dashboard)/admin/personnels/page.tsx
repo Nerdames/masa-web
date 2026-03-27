@@ -8,7 +8,7 @@ import { ActivityLog } from "@prisma/client";
 import { useAlerts } from "@/core/components/feedback/AlertProvider";
 
 import { Personnel, Branch, SummaryStats, PaginatedResponse, ProvisionPayload, UpdatePayload } from "@/modules/personnel/components/types";
-import { DetailsPanel } from "@/modules/personnel/components/DetailsPanel";
+import { PersonnelDetailsPanel } from "@/modules/personnel/components/PersonnelDetailsPanel";
 import { ProvisionPanel } from "@/modules/personnel/components/ProvisionPanel";
 import { PersonnelRow } from "@/modules/personnel/components/PersonnelRow";
 
@@ -104,7 +104,7 @@ export default function PersonnelManagementPage() {
       await fetchPersonnel();
       const updatedPerson = { ...(personnelList.find(p => p.id === id)), ...data };
       if (isOpen && selectedPersonId === id) {
-        openPanel(<DetailsPanel personnel={updatedPerson} onClose={handleClosePanel} onUpdate={handleUpdate} onDelete={handleDelete} dispatch={dispatch} />);
+        openPanel(<PersonnelDetailsPanel personnel={updatedPerson} onClose={handleClosePanel} onUpdate={handleUpdate} onDelete={handleDelete} dispatch={dispatch} />);
       }
     } catch (err: unknown) {
       setPersonnelList(originalList);
@@ -133,7 +133,7 @@ export default function PersonnelManagementPage() {
 
   const handleOpenDetails = (person: Personnel) => {
     setSelectedPersonId(person.id);
-    openPanel(<DetailsPanel personnel={person} onClose={handleClosePanel} onUpdate={handleUpdate} onDelete={handleDelete} dispatch={dispatch} />);
+    openPanel(<PersonnelDetailsPanel personnel={person} onClose={handleClosePanel} onUpdate={handleUpdate} onDelete={handleDelete} dispatch={dispatch} />);
   };
 
   const handleOpenProvision = () => {

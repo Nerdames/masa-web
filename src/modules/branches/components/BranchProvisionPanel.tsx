@@ -160,12 +160,12 @@ export function BranchProvisionPanel({ onClose, onRefresh, dispatch }: BranchPro
       </div>
 
       {/* Footer */}
-      <div className="p-5 md:p-6 border-t border-black/5 bg-white sticky bottom-0 z-10">
+      <div className="p-3 md:p-3 border-t border-black/5 bg-white sticky bottom-0 z-10">
         <div className="max-w-3xl mx-auto flex items-center gap-3">
           <button
             onClick={handleCreate}
             disabled={isSaving}
-            className="flex-1 inline-flex items-center justify-center gap-3 px-4 py-3 rounded-xl bg-blue-600 text-white font-black text-sm uppercase tracking-widest hover:bg-blue-700 transition disabled:opacity-60 disabled:pointer-events-none"
+            className="flex-1 inline-flex items-center justify-center gap-3 px-2 py-3 rounded-xl bg-blue-600 text-white font-black text-sm uppercase tracking-widest hover:bg-blue-700 transition disabled:opacity-60 disabled:pointer-events-none"
             aria-disabled={isSaving}
           >
             {isSaving ? (

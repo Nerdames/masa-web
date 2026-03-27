@@ -1,6 +1,6 @@
-// @/modules/branches/components/BranchRow.tsx
+// File: @/modules/branches/components/BranchRow.tsx
 import React from "react";
-import { Branch } from "./types";
+import { Branch } from "@/types";
 
 interface BranchRowProps {
   branch: Branch;
@@ -8,6 +8,11 @@ interface BranchRowProps {
   onClick: () => void;
 }
 
+/**
+ * BranchRow
+ * Refactored to mimic the high-fidelity PropertyRow pattern.
+ * Supports horizontal alignment on desktop and a clean mobile-ready stack.
+ */
 export function BranchRow({ branch, isSelected, onClick }: BranchRowProps) {
   const status = branch.deletedAt ? "deleted" : branch.active ? "active" : "inactive";
 
@@ -17,56 +22,98 @@ export function BranchRow({ branch, isSelected, onClick }: BranchRowProps) {
     deleted: "bg-red-50 text-red-600 border-red-200",
   };
 
+  const revenue = `$${Number(branch.salesTotal || 0).toLocaleString(undefined, {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })}`;
+
   return (
     <div
       onClick={onClick}
-      className={`group w-full flex items-center px-4 py-3 md:px-4 md:py-4 rounded-xl cursor-pointer transition-all border ${
-        isSelected
-          ? "bg-blue-50 border-blue-500/30 shadow-sm"
-          : "bg-white border-black/[0.04] hover:border-black/10 hover:shadow-sm"
+      className={`group w-full flex flex-col md:flex-row items-start md:items-center px-4 py-3 md:px-8 md:py-3.5 cursor-pointer transition-all border-b border-black/[0.04] ${
+        isSelected ? "bg-blue-50/50" : "bg-white hover:bg-slate-50/50"
       }`}
+      role="button"
+      aria-pressed={isSelected}
     >
-      {/* Node ID */}
-      <div className="w-[100px] md:w-[120px] shrink-0">
-        <span className="text-[11px] font-mono font-bold text-slate-400 bg-slate-100 px-2 py-1 rounded">
-          {branch.id.slice(-8).toUpperCase()}
-        </span>
-      </div>
+      {/* --- DESKTOP VIEW (Horizontal Grid) --- */}
+      <div className="hidden md:flex items-center w-full text-[13px]">
+        {/* Node ID */}
+        <div className="w-[90px] md:w-[120px] shrink-0 flex items-center gap-2">
+          <i className="bx bx-hash text-slate-300 group-hover:text-slate-500 w-4 text-center" />
+          <span className="font-mono font-bold text-slate-400 truncate">
+            {branch.id.slice(-8).toUpperCase()}
+          </span>
+        </div>
 
-      {/* Name */}
-      <div className="flex-1 min-w-[120px] pr-4">
-        <h3 className="font-bold text-sm text-slate-900 truncate group-hover:text-blue-600 transition-colors">
+        {/* Primary Branch Name */}
+        <div className="flex-1 min-w-[120px] px-2 font-medium text-slate-900 truncate">
           {branch.name}
-        </h3>
-      </div>
+        </div>
 
-      {/* Location */}
-      <div className="w-[120px] md:w-[180px] hidden md:flex shrink-0 pr-4 items-center gap-1.5 opacity-60 group-hover:opacity-100 transition-opacity">
-        <i className="bx bx-map-pin text-[10px]" />
-        <span className="text-[11px] font-bold truncate text-slate-700">
-          {branch.location || "Floating Node"}
-        </span>
-      </div>
+        {/* Location */}
+        <div className="w-[100px] md:w-[180px] shrink-0 px-2 flex items-center gap-2 text-slate-500 font-medium">
+          <i className="bx bx-map-pin text-slate-300 w-4 text-center" />
+          <span className="truncate">{branch.location || "Floating Node"}</span>
+        </div>
 
-      {/* Staff Count */}
-      <div className="w-[80px] text-center shrink-0">
-        <span className="text-xs font-bold text-slate-600 bg-slate-50 border border-black/5 px-2.5 py-1 rounded-lg">
+        {/* Staff Count */}
+        <div className="w-[70px] shrink-0 text-center font-medium text-slate-600">
           {branch._count?.personnel || 0}
-        </span>
+        </div>
+
+        {/* Revenue */}
+        <div className="w-[100px] md:w-[140px] shrink-0 text-right font-bold text-slate-800 tabular-nums">
+          {revenue}
+        </div>
+
+        {/* Status */}
+        <div className="w-[70px] shrink-0 flex justify-end">
+          <span
+            className={`px-1.5 py-0.5 rounded text-[9px] font-black uppercase tracking-widest border ${statusStyles[status]}`}
+          >
+            {status === "deleted" ? "archived" : status}
+          </span>
+        </div>
       </div>
 
-      {/* Revenue */}
-      <div className="w-[100px] md:w-[140px] text-right shrink-0 pr-4">
-        <span className="text-xs font-black text-slate-800">
-          ${Number(branch.salesTotal || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-        </span>
-      </div>
+      {/* --- MOBILE VIEW (Property List Pattern) --- */}
+      <div className="flex md:hidden flex-col w-full gap-1.5">
+        <div className="flex justify-between items-start mb-1">
+          <h3 className="font-bold text-sm text-slate-900 truncate">{branch.name}</h3>
+          <span
+            className={`px-1.5 py-0.5 rounded text-[8px] font-black uppercase tracking-widest border ${statusStyles[status]}`}
+          >
+            {status === "deleted" ? "archived" : status}
+          </span>
+        </div>
 
-      {/* Status */}
-      <div className="w-[80px] flex justify-end shrink-0">
-        <span className={`px-2 py-1 rounded-md border text-[9px] font-black uppercase tracking-widest ${statusStyles[status]}`}>
-          {status === 'deleted' ? 'archived' : status}
-        </span>
+        {/* ID Property */}
+        <div className="flex items-center text-[12px]">
+          <div className="w-24 shrink-0 flex items-center gap-2 text-slate-400 font-medium">
+            <i className="bx bx-hash text-slate-300 w-3 text-center" />
+            <span>Node ID</span>
+          </div>
+          <div className="font-mono text-slate-500">{branch.id.slice(-8).toUpperCase()}</div>
+        </div>
+
+        {/* Location Property */}
+        <div className="flex items-center text-[12px]">
+          <div className="w-24 shrink-0 flex items-center gap-2 text-slate-400 font-medium">
+            <i className="bx bx-map-pin text-slate-300 w-3 text-center" />
+            <span>Location</span>
+          </div>
+          <div className="text-slate-600 truncate">{branch.location || "N/A"}</div>
+        </div>
+
+        {/* Revenue Property */}
+        <div className="flex items-center text-[12px]">
+          <div className="w-24 shrink-0 flex items-center gap-2 text-slate-400 font-medium">
+            <i className="bx bx-dollar-circle text-slate-300 w-3 text-center" />
+            <span>Revenue</span>
+          </div>
+          <div className="font-bold text-slate-800">{revenue}</div>
+        </div>
       </div>
     </div>
   );

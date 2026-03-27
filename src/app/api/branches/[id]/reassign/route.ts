@@ -1,3 +1,4 @@
+// File: src/app/api/branches/[id]/reassign/route.ts
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/core/lib/auth";
 import prisma from "@/core/lib/prisma";
@@ -9,10 +10,11 @@ interface ReassignRequestBody {
   newBranchId: string;
 }
 
+// FIX: Next.js 15 requires dynamic segment params to be unwrapped as a Promise
 interface RouteParams {
-  params: {
+  params: Promise<{
     id: string;
-  };
+  }>;
 }
 
 /**
@@ -25,6 +27,7 @@ export async function POST(
 ): Promise<NextResponse> {
   try {
     const session = await getServerSession(authOptions);
+    const { id: oldBranchId } = await params; // CRITICAL: Awaiting the params object
 
     if (!session || (session.user.role !== Role.ADMIN && !session.user.isOrgOwner)) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 403 });
@@ -32,7 +35,6 @@ export async function POST(
 
     const body: ReassignRequestBody = await req.json();
     const { personnelIds, newBranchId } = body;
-    const oldBranchId = params.id;
     const organizationId = session.user.organizationId;
 
     if (!personnelIds || personnelIds.length === 0 || !newBranchId) {
