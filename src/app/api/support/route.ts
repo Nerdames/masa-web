@@ -1,92 +1,94 @@
 import { NextRequest, NextResponse } from "next/server";
+import { getServerSession } from "next-auth/next";
+import { authOptions } from "@/core/lib/auth";
 import prisma from "@/core/lib/prisma";
 import { logActivity } from "@/lib/audit";
-import { SupportRequestSchema } from "@/lib/validators/support";
-import { CriticalAction, ApprovalStatus, Role, NotificationType } from "@prisma/client";
+import { Role, CriticalAction, ApprovalStatus, NotificationType } from "@prisma/client";
+import { pusherServer } from "@/core/lib/pusher";
 
-interface SupportResponse {
-  success: boolean;
-  requestId?: string;
-  error?: string;
-}
-
-export async function POST(req: NextRequest): Promise<NextResponse<SupportResponse>> {
+export async function POST(req: NextRequest) {
   try {
-    const json: unknown = await req.json();
-    const result = SupportRequestSchema.safeParse(json);
+    const session = await getServerSession(authOptions);
+    if (!session?.user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
-    if (!result.success) {
-      return NextResponse.json(
-        { success: false, error: result.error.issues[0].message },
-        { status: 400 }
-      );
-    }
+    const body = await req.json();
+    const { subject, message, category, metadata } = body;
 
-    const { subject, message, category, metadata } = result.data;
-    const targetRole = metadata.isAdmin ? Role.DEV : Role.ADMIN;
-
-    // Map frontend actionKey to Prisma CriticalAction Enum
-    // This allows the Approval List to show specific "Quick Action" buttons
-    let mappedAction: CriticalAction;
-    
-    switch (metadata.actionKey) {
-      case "USER_LOCK_UNLOCK":
-        mappedAction = CriticalAction.USER_LOCK_UNLOCK;
-        break;
-      case "BRANCH_TRANSFER":
-        mappedAction = CriticalAction.STOCK_TRANSFER; // Proxying since schema lacks STAFF_TRANSFER
-        break;
-      default:
-        // Use a generic critical action if it's a general support ticket
-        mappedAction = CriticalAction.USER_LOCK_UNLOCK; 
-    }
-
-    // 1. Create the Approval Request with the specific Action Type
-    const request = await prisma.approvalRequest.create({
-      data: {
+    // 1. Identify Target Recipients (Admins or Branch Managers)
+    const recipients = await prisma.authorizedPersonnel.findMany({
+      where: {
         organizationId: metadata.organizationId,
-        branchId: metadata.branchId,
-        requesterId: metadata.personnelId,
-        actionType: mappedAction, 
-        status: ApprovalStatus.PENDING,
-        requiredRole: targetRole,
-        changes: {
-          kind: "SUPPORT_TICKET",
-          actionKey: metadata.actionKey, // Saved for directed UI actions
-          subject,
-          message,
-          category,
-          submittedBy: metadata.personnelId
+        disabled: false,
+        OR: [
+          { role: Role.ADMIN },
+          metadata.branchId ? { role: Role.MANAGER, branchId: metadata.branchId } : {},
+        ],
+        NOT: { id: metadata.personnelId }
+      },
+      select: { id: true }
+    });
+
+    // 2. Atomic Creation: Approval + Notification + Recipients
+    const result = await prisma.$transaction(async (tx) => {
+      // Create Approval Request
+      const approval = await tx.approvalRequest.create({
+        data: {
+          organizationId: metadata.organizationId,
+          branchId: metadata.branchId,
+          requesterId: metadata.personnelId,
+          actionType: metadata.actionKey as CriticalAction,
+          status: ApprovalStatus.PENDING,
+          requiredRole: Role.ADMIN, // Default to Admin for support
+          changes: { subject, message, category },
         },
-      },
+      });
+
+      // Create Notification
+      const notification = await tx.notification.create({
+        data: {
+          organizationId: metadata.organizationId,
+          branchId: metadata.branchId,
+          type: NotificationType.APPROVAL_REQUIRED,
+          title: `Support: ${subject}`,
+          message: `Request from ${session.user.name}`,
+          actionTrigger: metadata.actionKey as CriticalAction,
+          approvalId: approval.id,
+          recipients: {
+            create: recipients.map((r) => ({ personnelId: r.id })),
+          },
+        },
+      });
+
+      return { approval, notification };
     });
 
-    // 2. Trigger a System Notification
-    await prisma.notification.create({
-      data: {
-        organizationId: metadata.organizationId,
-        branchId: metadata.branchId,
-        targetRole: targetRole,
-        type: NotificationType.APPROVAL_REQUIRED,
-        title: `Support Protocol: ${subject}`,
-        message: `Action Required: ${metadata.actionKey.replace(/_/g, ' ')}`,
-      },
-    });
+    // 3. Broadcast to Pusher for Real-time Alerts
+    await Promise.allSettled(
+      recipients.map((r) =>
+        pusherServer.trigger(`user-${r.id}`, "new-alert", {
+          id: result.notification.id,
+          kind: "PUSH",
+          type: "APPROVAL_REQUIRED",
+          title: `Support: ${subject}`,
+          message: `Approval required for ${metadata.actionKey.replace(/_/g, ' ')}`,
+          approvalId: result.approval.id,
+        })
+      )
+    );
 
-    // 3. Log the activity
+    // 4. Audit Log
     await logActivity({
       personnelId: metadata.personnelId,
       organizationId: metadata.organizationId,
       branchId: metadata.branchId,
-      approvalRequestId: request.id,
       action: "SUPPORT_TICKET_SUBMITTED",
-      meta: JSON.stringify({ subject, actionKey: metadata.actionKey }) 
+      meta: JSON.stringify({ subject, approvalId: result.approval.id })
     });
 
-    return NextResponse.json({ success: true, requestId: request.id }, { status: 200 });
+    return NextResponse.json({ success: true, requestId: result.approval.id });
 
-  } catch (error: unknown) {
-    const errorMessage = error instanceof Error ? error.message : "Internal Server Error";
-    return NextResponse.json({ success: false, error: errorMessage }, { status: 500 });
+  } catch (error: any) {
+    console.error("[SUPPORT_POST_ERROR]:", error);
+    return NextResponse.json({ success: false, error: error.message }, { status: 500 });
   }
 }

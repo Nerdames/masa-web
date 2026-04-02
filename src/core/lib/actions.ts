@@ -1,81 +1,116 @@
 import { Prisma, CriticalAction } from "@prisma/client";
 
+export interface ActionPayload {
+  lock?: boolean;
+  reason?: string;
+  branchProductId?: string;
+  newPrice?: number | string;
+  adjustmentAmount?: number;
+  productId?: string;
+  quantity?: number;
+  destinationBranchId?: string;
+  invoiceId?: string;
+  newEmail?: string;
+  hashedPassword?: string;
+  targetId?: string;
+  expectedVersion?: number; // Added for Optimistic Locking
+  [key: string]: any;
+}
+
 /**
- * --- CRITICAL ACTION EXECUTION ENGINE ---
- * This function executes the actual business logic for a critical action.
- * It is wrapped in a transaction by the caller (API route).
+ * Executes critical business logic with strict state validation.
  */
 export async function applyActionDirectly(
   tx: Prisma.TransactionClient,
-  action: string,
+  action: CriticalAction,
   targetId: string,
-  meta: Record<string, any>,
+  payload: ActionPayload,
   requesterId: string,
   organizationId: string,
   branchId: string | null
 ) {
-  // Convert string action to Enum for type safety
-  const actionEnum = action as CriticalAction;
-
-  switch (actionEnum) {
+  switch (action) {
     case CriticalAction.USER_LOCK_UNLOCK:
       return await tx.authorizedPersonnel.update({
-        where: { id: targetId || meta.targetId },
+        where: { id: targetId },
         data: { 
-          isLocked: meta.lock ?? true,
-          lockReason: meta.reason || "Administrative action"
+          isLocked: payload.lock ?? true,
+          lockReason: payload.reason || "Administrative action",
         },
       });
 
     case CriticalAction.PRICE_UPDATE:
       return await tx.branchProduct.update({
-        where: { id: meta.branchProductId },
-        data: { sellingPrice: new Prisma.Decimal(meta.newPrice) },
+        // Optimistic Lock: Update only if version matches
+        where: { 
+          id: payload.branchProductId,
+          ...(payload.expectedVersion && { stockVersion: payload.expectedVersion })
+        },
+        data: { 
+          sellingPrice: new Prisma.Decimal(payload.newPrice!),
+          stockVersion: { increment: 1 } 
+        },
       });
 
     case CriticalAction.STOCK_ADJUST:
       return await tx.branchProduct.update({
-        where: { id: meta.branchProductId },
+        where: { 
+          id: payload.branchProductId,
+          ...(payload.expectedVersion && { stockVersion: payload.expectedVersion })
+        },
         data: { 
-          stock: { increment: meta.adjustmentAmount } 
+          stock: { increment: payload.adjustmentAmount },
+          stockVersion: { increment: 1 }
         },
       });
 
     case CriticalAction.STOCK_TRANSFER:
-      // Example logic for stock transfer
+      // Atomic Transfer: Decrease source, Increase destination
+      const source = await tx.branchProduct.update({
+        where: { 
+          productId_branchId: { productId: payload.productId!, branchId: branchId! },
+          stock: { gte: payload.quantity! } // Prevent negative stock
+        },
+        data: { stock: { decrement: payload.quantity! } }
+      });
+
+      await tx.branchProduct.upsert({
+        where: { productId_branchId: { productId: payload.productId!, branchId: payload.destinationBranchId! } },
+        create: {
+          organizationId,
+          branchId: payload.destinationBranchId!,
+          productId: payload.productId!,
+          stock: payload.quantity!,
+          sellingPrice: source.sellingPrice,
+        },
+        update: { stock: { increment: payload.quantity! } }
+      });
+
       return await tx.stockMovement.create({
         data: {
           organizationId,
           branchId: branchId!,
-          productId: meta.productId,
-          quantity: meta.quantity,
+          productId: payload.productId!,
+          quantity: payload.quantity!,
           type: "TRANSFER",
-          note: `Transfer to ${meta.destinationBranchId}`,
+          note: `Transfer to branch ${payload.destinationBranchId}`,
           personnelId: requesterId,
         },
       });
 
     case CriticalAction.VOID_INVOICE:
       return await tx.invoice.update({
-        where: { id: meta.invoiceId },
-        data: { 
-          status: "VOIDED",
-        },
+        where: { id: payload.invoiceId, status: { not: "VOIDED" } },
+        data: { status: "VOIDED" },
       });
 
     case CriticalAction.EMAIL_CHANGE:
-    case CriticalAction.PASSWORD_CHANGE:
       return await tx.authorizedPersonnel.update({
         where: { id: targetId },
-        data: { 
-          email: meta.newEmail,
-          password: meta.hashedPassword // Ensure hashing happens before calling this
-        },
+        data: { email: payload.newEmail },
       });
 
     default:
-      // Fallback for custom actions not in the CriticalAction enum
-      console.warn(`Action ${action} executed without specific logic.`);
-      return { status: "logged_only" };
+      throw new Error(`Execution logic for ${action} not implemented in Engine.`);
   }
 }

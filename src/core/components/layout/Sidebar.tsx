@@ -2,20 +2,10 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import React, {
-  useState,
-  useEffect,
-  useMemo,
-  useCallback,
-  ReactNode,
-  useRef,
-} from "react";
-import { motion, AnimatePresence } from "framer-motion";
+import React, { useState, useEffect, useMemo, useCallback, ReactNode } from "react";
+import { motion } from "framer-motion";
 import { Tooltip } from "@/core/components/feedback/Tooltip";
-import { useSession, signOut } from "next-auth/react";
-import { getInitials } from "@/core/utils";
-import ConfirmModal from "@/core/components/modal/ConfirmModal";
-import { Role } from "@prisma/client";
+import { useSession } from "next-auth/react";
 
 /* --------------------------------------------- */
 /* Types */
@@ -26,11 +16,10 @@ export interface SidebarItem {
   name: string;
   href: string;
   icon: string;
-  roles?: Role[];
 }
 
 /* --------------------------------------------- */
-/* Navigation Config (Mapped to Folder Tree) */
+/* Navigation Config */
 /* --------------------------------------------- */
 
 const ADMIN_ITEMS: SidebarItem[] = [
@@ -51,15 +40,6 @@ const SETTINGS_ITEMS: SidebarItem[] = [
 ];
 
 /* --------------------------------------------- */
-/* Motion */
-/* --------------------------------------------- */
-
-const SIDEBAR_MOTION = {
-  expanded: { width: 200 },
-  collapsed: { width: 52 },
-};
-
-/* --------------------------------------------- */
 /* Sidebar Item */
 /* --------------------------------------------- */
 
@@ -69,40 +49,22 @@ interface ItemProps {
   collapsed: boolean;
 }
 
-const SidebarItemLink = React.memo(function SidebarItemLink({
-  item,
-  active,
-  collapsed,
-}: ItemProps) {
+const SidebarItemLink = React.memo(function SidebarItemLink({ item, active, collapsed }: ItemProps) {
   const link = (
     <Link
       href={item.href}
       aria-current={active ? "page" : undefined}
       className={`
-      relative flex items-center rounded-md
-      ${collapsed ? "h-9 w-9 justify-center mx-auto" : "px-3 py-2 gap-3"}
-      text-[13px] font-medium transition-colors
-      ${active ? "text-white" : "text-gray-700 hover:bg-gray-100"}
+        relative flex items-center rounded-md transition-all duration-200
+        ${collapsed ? "h-9 w-9 justify-center mx-auto" : "px-3 py-2 gap-3"}
+        ${active ? "bg-blue-600 text-white shadow-sm" : "text-gray-700 hover:bg-gray-100"}
       `}
     >
-      {active && (
-        <motion.span
-          layoutId="sidebar-active"
-          className="absolute inset-0 rounded-md bg-blue-600"
-          transition={{ type: "spring", stiffness: 480, damping: 38 }}
-        />
-      )}
-
-      <i className={`bx ${item.icon} text-[18px] relative z-10`} />
-
+      <i className={`bx ${item.icon} text-[18px] flex-shrink-0`} />
       {!collapsed && (
-        <motion.span 
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          className="truncate relative z-10"
-        >
+        <span className="text-[13px] font-medium truncate">
           {item.name}
-        </motion.span>
+        </span>
       )}
     </Link>
   );
@@ -111,108 +73,16 @@ const SidebarItemLink = React.memo(function SidebarItemLink({
 });
 
 /* --------------------------------------------- */
-/* Dropdown Menu */
-/* --------------------------------------------- */
-
-interface MenuItem {
-  label: string;
-  icon?: string;
-  destructive?: boolean;
-  action?: () => void;
-}
-
-const DropdownMenu = ({
-  items,
-  show,
-  setShow,
-  parentWidth,
-  containerRef,
-}: {
-  items: MenuItem[];
-  show: boolean;
-  setShow: (v: boolean) => void;
-  parentWidth: number;
-  containerRef: React.RefObject<HTMLDivElement>;
-}) => {
-  useEffect(() => {
-    if (!show) return;
-
-    const handler = (e: MouseEvent) => {
-      if (!containerRef.current?.contains(e.target as Node)) {
-        setShow(false);
-      }
-    };
-
-    const esc = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setShow(false);
-    };
-
-    document.addEventListener("mousedown", handler);
-    window.addEventListener("keydown", esc);
-
-    return () => {
-      document.removeEventListener("mousedown", handler);
-      window.removeEventListener("keydown", esc);
-    };
-  }, [show, containerRef, setShow]);
-
-  return (
-    <AnimatePresence>
-      {show && (
-        <motion.div
-          initial={{ opacity: 0, y: 8 }}
-          animate={{ opacity: 1, y: 0 }}
-          exit={{ opacity: 0, y: 8 }}
-          transition={{ type: "spring", stiffness: 320, damping: 28 }}
-          style={{ left: parentWidth }}
-          className="absolute bottom-0 mb-14 w-56 bg-white border border-gray-200 rounded-xl shadow-xl overflow-hidden z-50"
-        >
-          <div className="absolute left-0 top-4 -ml-2 w-0 h-0 border-t-[8px] border-t-transparent border-b-[8px] border-b-transparent border-r-[8px] border-r-white" />
-
-          {items.map((item, i) => (
-            <button
-              key={i}
-              onClick={() => {
-                item.action?.();
-                setShow(false);
-              }}
-              className={`w-full px-4 py-2 text-[13px] flex items-center gap-3 hover:bg-gray-100
-              ${item.destructive ? "text-red-600 hover:bg-red-50" : "text-gray-700"}
-              `}
-            >
-              {item.icon && <i className={`bx ${item.icon} text-[16px]`} />}
-              {item.label}
-            </button>
-          ))}
-        </motion.div>
-      )}
-    </AnimatePresence>
-  );
-};
-
-/* --------------------------------------------- */
 /* Sidebar Section Header */
 /* --------------------------------------------- */
 
-const SectionHeader = ({ 
-  label, 
-  icon, 
-  collapsed 
-}: { 
-  label: string; 
-  icon: string; 
-  collapsed: boolean 
-}) => (
-  <div className={`flex items-center text-gray-400 px-3 pt-6 pb-2 transition-all duration-300 ${collapsed ? "justify-center" : "gap-2"}`}>
-    <i className={`bx ${icon} text-[16px]`} />
+const SectionHeader = ({ label, icon, collapsed }: { label: string; icon: string; collapsed: boolean }) => (
+  <div className={`flex items-center text-gray-400 px-3 pt-6 pb-2 transition-all duration-200 ${collapsed ? "justify-center" : "gap-2"}`}>
+    <i className={`bx ${icon} text-[16px] flex-shrink-0`} />
     {!collapsed && (
-      <motion.span 
-        initial={{ opacity: 0 }}
-        animate={{ opacity: 1 }}
-        className="text-[11px] font-bold uppercase tracking-wider truncate"
-      >
+      <span className="text-[11px] font-bold uppercase tracking-wider truncate">
         {label}
-      </motion.span>
+      </span>
     )}
   </div>
 );
@@ -227,19 +97,14 @@ function Sidebar() {
   const user = session?.user;
 
   const [collapsed, setCollapsed] = useState<boolean | null>(null);
-  const [showAccountMenu, setShowAccountMenu] = useState(false);
-  const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
-
-  const accountRef = useRef<HTMLDivElement>(null);
-
   const isCollapsed = collapsed ?? false;
-  const sidebarWidth = isCollapsed ? 52 : 180;
 
+  // 1. Fetch Preference (Preserved)
   useEffect(() => {
     const fetchPreference = async () => {
       if (!user?.organizationId || !user?.branchId || !user?.id) {
         const saved = localStorage.getItem("sidebar-collapsed");
-        setCollapsed(saved === "true");
+        if (saved) setCollapsed(saved === "true");
         return;
       }
 
@@ -261,17 +126,18 @@ function Sidebar() {
           localStorage.setItem("sidebar-collapsed", String(data.preference));
         } else {
           const saved = localStorage.getItem("sidebar-collapsed");
-          setCollapsed(saved === "true");
+          if (saved) setCollapsed(saved === "true");
         }
       } catch {
         const saved = localStorage.getItem("sidebar-collapsed");
-        setCollapsed(saved === "true");
+        if (saved) setCollapsed(saved === "true");
       }
     };
 
     fetchPreference();
   }, [user]);
 
+  // 2. Toggle & Save Preference (Preserved)
   const toggleCollapsed = async () => {
     const next = !isCollapsed;
     setCollapsed(next);
@@ -282,9 +148,7 @@ function Sidebar() {
     try {
       await fetch("/api/preferences", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           organizationId: user.organizationId,
           branchId: user.branchId,
@@ -301,6 +165,7 @@ function Sidebar() {
     }
   };
 
+  // 3. Active State Logic
   const activeKeys = useMemo(() => {
     const all = [...ADMIN_ITEMS, ...AUDIT_ITEMS, ...SETTINGS_ITEMS];
     let longest = 0;
@@ -308,7 +173,6 @@ function Sidebar() {
 
     for (const item of all) {
       const match = pathname === item.href || pathname.startsWith(item.href + "/");
-
       if (match && item.href.length > longest) {
         longest = item.href.length;
         key = item.key;
@@ -330,43 +194,21 @@ function Sidebar() {
     [activeKeys, isCollapsed]
   );
 
-  const accountMenu: MenuItem[] = user
-    ? [
-        {
-          label: "Profile",
-          icon: "bx-user",
-          action: () => (window.location.href = "/dashboard/settings/profile"),
-        },
-        {
-          label: "Preferences",
-          icon: "bx-cog",
-          action: () => (window.location.href = "/dashboard/settings/preferences"),
-        },
-        {
-          label: "Log out",
-          icon: "bx-log-out",
-          destructive: true,
-          action: () => setShowLogoutConfirm(true),
-        },
-      ]
-    : [];
-
   return (
     <motion.aside
-      initial={true}
-      animate={isCollapsed ? "collapsed" : "expanded"}
-      variants={SIDEBAR_MOTION}
-      transition={{ type: "spring", stiffness: 260, damping: 30 }}
-      className="h-screen bg-white border-r border-gray-200 flex flex-col relative pb-10"
+      initial={false}
+      animate={{ width: isCollapsed ? 52 : 180 }}
+      transition={{ duration: 0.2, ease: "easeInOut" }} // Removed heavy spring physics
+      className="h-screen bg-white border-r border-gray-200 flex flex-col relative"
     >
       <button
         onClick={toggleCollapsed}
-        className="absolute top-3 -right-3 z-[60] w-6 h-6 rounded-full border border-gray-200 bg-white shadow flex items-center justify-center hover:bg-gray-100"
+        className="absolute top-3 -right-3 z-[60] w-6 h-6 rounded-full border border-gray-200 bg-white shadow-sm flex items-center justify-center hover:bg-gray-50 transition-colors"
       >
-        <i className={`bx ${isCollapsed ? "bx-chevron-right" : "bx-chevron-left"}`} />
+        <i className={`bx ${isCollapsed ? "bx-chevron-right" : "bx-chevron-left"} text-gray-500`} />
       </button>
 
-      <nav className="flex-1 px-2 py-3 space-y-1 overflow-y-auto overflow-x-hidden">
+      <nav className="flex-1 px-2 py-3 space-y-1 overflow-y-auto overflow-x-hidden pb-6">
         <SectionHeader label="Management" icon="bx-grid-alt" collapsed={isCollapsed} />
         {ADMIN_ITEMS.map(renderItem)}
 
@@ -376,76 +218,8 @@ function Sidebar() {
         <SectionHeader label="Settings" icon="bx-cog" collapsed={isCollapsed} />
         {SETTINGS_ITEMS.map(renderItem)}
       </nav>
-
-      <div className="border-t border-gray-200 p-2">
-        <div ref={accountRef} className="relative">
-
-          {!user && (
-            <Link
-              href="/signin"
-              className={`flex items-center rounded-md hover:bg-gray-100
-              ${isCollapsed ? "h-9 w-9 justify-center mx-auto" : "px-3 py-2 gap-3"}
-              `}
-            >
-              <i className="bx bx-log-in text-[18px]" />
-
-              {!isCollapsed && (
-                <span className="text-[13px] font-medium">
-                  Sign In
-                </span>
-              )}
-            </Link>
-          )}
-
-          {user && (
-            <button
-              onClick={() => setShowAccountMenu((p) => !p)}
-              className={`flex items-center w-full rounded-md hover:bg-gray-100
-              ${isCollapsed ? "h-9 w-9 justify-center mx-auto" : "px-3 py-2 gap-3"}
-              `}
-            >
-              <div className="w-7 h-7 flex-shrink-0 rounded-full bg-black text-white flex items-center justify-center text-[12px] font-semibold">
-                {getInitials(user.name)}
-              </div>
-
-              {!isCollapsed && (
-                <div className="flex flex-col text-left truncate">
-                  <span className="text-[13px] font-medium text-gray-900 truncate">
-                    {user.name}
-                  </span>
-
-                  <span className="text-[11px] text-gray-500 truncate">
-                    {user.email}
-                  </span>
-                </div>
-              )}
-            </button>
-          )}
-
-          {user && (
-            <DropdownMenu
-              items={accountMenu}
-              show={showAccountMenu}
-              setShow={setShowAccountMenu}
-              parentWidth={sidebarWidth}
-              containerRef={accountRef}
-            />
-          )}
-
-        </div>
-      </div>
-
-      <ConfirmModal
-        open={showLogoutConfirm}
-        title="Log out"
-        message="Are you sure you want to log out of your account?"
-        confirmLabel="Log out"
-        destructive
-        onClose={() => setShowLogoutConfirm(false)}
-        onConfirm={async () => {
-          await signOut({ callbackUrl: "/" });
-        }}
-      />
+      
+      {/* Account Bottom Section entirely removed */}
     </motion.aside>
   );
 }

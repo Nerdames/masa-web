@@ -1,4 +1,3 @@
-// src/core/events/register.ts
 import { eventBus } from "./bus";
 import { 
   handleApprovalRequested, 
@@ -7,17 +6,8 @@ import {
   handleInventoryAlert 
 } from "./handlers";
 
-/**
- * Global flag to prevent duplicate event registration during 
- * Next.js development HMR (Hot Module Replacement).
- */
 let isRegistered = false;
 
-/**
- * Registers all application-wide event listeners.
- * This is the "wiring" of the Fortress event system, connecting 
- * the Event Bus to the actual logic handlers.
- */
 export function registerEvents() {
   if (isRegistered) return;
 
@@ -33,8 +23,12 @@ export function registerEvents() {
 
   isRegistered = true;
 
-  // Only log in development to keep production logs clean
   if (process.env.NODE_ENV === "development") {
     console.log("✔️ [EventBus] All Fortress event handlers registered.");
   }
+}
+
+export function clearEvents() {
+  eventBus.clearAll();
+  isRegistered = false;
 }

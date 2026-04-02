@@ -3,7 +3,8 @@ import { getServerSession } from "next-auth";
 import { authOptions } from "@/core/lib/auth";
 import prisma from "@/core/lib/prisma";
 import { NextRequest, NextResponse } from "next/server";
-import { Role, Prisma } from "@prisma/client";
+import { Role, Prisma, NotificationType } from "@prisma/client";
+import { pusherServer } from "@/core/lib/pusher";
 
 interface ReassignRequestBody {
   personnelIds: string[];
@@ -41,27 +42,21 @@ export async function POST(
       return NextResponse.json({ error: "Missing required fields" }, { status: 400 });
     }
 
-    const reassignedCount = await prisma.$transaction(async (tx) => {
+    // Wrap the entire reassignment, logging, and DB notification in a single transaction
+    const { reassignedCount, notificationPayload, recipientIds } = await prisma.$transaction(async (tx) => {
       // 1. Verify target branch belongs to same org and is active
       const targetBranch = await tx.branch.findFirst({
-        where: { 
-          id: newBranchId, 
-          organizationId, 
-          deletedAt: null, 
-          active: true 
-        }
+        where: { id: newBranchId, organizationId, deletedAt: null, active: true }
       });
 
       if (!targetBranch) {
         throw new Error("Target branch not found or inactive.");
       }
 
-      // 2. Fetch current roles to preserve them
+      // 2. Fetch current roles and names to preserve them and log them
       const currentAssignments = await tx.branchAssignment.findMany({
-        where: { 
-          branchId: oldBranchId, 
-          personnelId: { in: personnelIds } 
-        }
+        where: { branchId: oldBranchId, personnelId: { in: personnelIds } },
+        include: { personnel: { select: { name: true, role: true } } }
       });
 
       if (currentAssignments.length === 0) {
@@ -70,10 +65,7 @@ export async function POST(
 
       // 3. Remove old assignments
       await tx.branchAssignment.deleteMany({
-        where: { 
-          branchId: oldBranchId, 
-          personnelId: { in: personnelIds } 
-        }
+        where: { branchId: oldBranchId, personnelId: { in: personnelIds } }
       });
 
       // 4. Create new assignments maintaining their role
@@ -89,33 +81,89 @@ export async function POST(
 
       // 5. Update primary branch reference for floating or directly assigned staff
       await tx.authorizedPersonnel.updateMany({
-        where: { 
-          id: { in: personnelIds }, 
-          branchId: oldBranchId 
-        },
+        where: { id: { in: personnelIds }, branchId: oldBranchId },
         data: { branchId: newBranchId }
       });
 
-      // 6. Record Audit Log
-      const logMetadata: Prisma.JsonObject = { 
+      // 6. Record Detailed Audit Log
+      const logMetadata = { 
         fromBranchId: oldBranchId, 
         toBranchId: newBranchId, 
-        reassignedCount: currentAssignments.length 
+        reassignedPersonnel: currentAssignments.map(a => ({
+          id: a.personnelId,
+          name: a.personnel.name,
+          role: a.role
+        }))
       };
 
-      await tx.activityLog.create({
+      const log = await tx.activityLog.create({
         data: {
           organizationId,
           branchId: newBranchId,
           personnelId: session.user.id,
           action: "BULK_STAFF_REASSIGNMENT",
           critical: true,
-          metadata: logMetadata
+          metadata: logMetadata as Prisma.JsonObject
         }
       });
 
-      return currentAssignments.length;
+      // 7. Identify Notification Recipients (Admins, Org Owners, and Receiving Managers)
+      const recipients = await tx.authorizedPersonnel.findMany({
+        where: {
+          organizationId,
+          OR: [
+            { role: Role.ADMIN },
+            { role: Role.MANAGER, branchId: newBranchId },
+            { isOrgOwner: true }
+          ],
+          disabled: false
+        },
+        select: { id: true }
+      });
+
+      // 8. Create Database Notifications
+      let notification = null;
+      if (recipients.length > 0) {
+        notification = await tx.notification.create({
+          data: {
+            organizationId,
+            branchId: newBranchId,
+            type: NotificationType.INFO,
+            title: "Staff Reassignment",
+            message: `${currentAssignments.length} staff members have been deployed to ${targetBranch.name}.`,
+            activityLogId: log.id,
+            recipients: {
+              create: recipients.map(r => ({ personnelId: r.id }))
+            }
+          }
+        });
+      }
+
+      return { 
+        reassignedCount: currentAssignments.length, 
+        notificationPayload: notification,
+        recipientIds: recipients.map(r => r.id)
+      };
     });
+
+    // 9. Dispatch Real-Time Pusher Events (Outside the transaction to prevent blocking)
+    if (notificationPayload && recipientIds.length > 0) {
+      const alertPayload = {
+        id: notificationPayload.id,
+        kind: "PUSH",
+        type: notificationPayload.type,
+        title: notificationPayload.title,
+        message: notificationPayload.message,
+        activityId: notificationPayload.activityLogId,
+        createdAt: Date.now(),
+      };
+
+      await Promise.allSettled(
+        recipientIds.map((id) =>
+          pusherServer.trigger(`user-${id}`, "new-alert", alertPayload)
+        )
+      );
+    }
 
     return NextResponse.json({ 
       message: `Successfully reassigned ${reassignedCount} staff members` 

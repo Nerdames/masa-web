@@ -18,15 +18,12 @@ import { createNotification } from "@/core/lib/notifications";
 /* CONFIG & TYPES */
 /* -------------------------------------------------- */
 
-const MAX_META_BYTES = 32 * 1024; // 32KB safety limit for JSON metadata
+const MAX_META_BYTES = 32 * 1024; 
 const MAX_ACTION_LENGTH = 200;
 const RATE_LIMIT_WINDOW_MS = 10_000;
 const RATE_LIMIT_MAX = 30;
 const SYSTEM_HMAC_SECRET = process.env.LOG_SYSTEM_HMAC_SECRET || "";
 
-/**
- * Validates the incoming request body
- */
 const postBodySchema = z.object({
   action: z.string().min(1).max(MAX_ACTION_LENGTH),
   organizationId: z.string().optional(),
@@ -38,7 +35,7 @@ const postBodySchema = z.object({
 });
 
 /* -------------------------------------------------- */
-/* RATE LIMITER (In-Memory) */
+/* RATE LIMITER */
 /* -------------------------------------------------- */
 
 const rateMap = new Map<string, number[]>();
@@ -68,12 +65,7 @@ function jsonError(message: string, status = 400) {
 
 function verifySystemHmac(payload: string, hmac: string): boolean {
   if (!SYSTEM_HMAC_SECRET) return false;
-
-  const mac = crypto
-    .createHmac("sha256", SYSTEM_HMAC_SECRET)
-    .update(payload)
-    .digest("hex");
-
+  const mac = crypto.createHmac("sha256", SYSTEM_HMAC_SECRET).update(payload).digest("hex");
   try {
     return crypto.timingSafeEqual(Buffer.from(mac), Buffer.from(hmac));
   } catch {
@@ -86,7 +78,8 @@ async function getNotificationRecipients(organizationId: string) {
     where: {
       organizationId,
       role: { in: [Role.ADMIN, Role.MANAGER] },
-      status: "ACTIVE",
+      disabled: false,
+      deletedAt: null,
     },
     select: { id: true },
   });
@@ -102,37 +95,22 @@ export async function POST(req: NextRequest) {
     const ip = req.headers.get("x-forwarded-for")?.split(",")[0] ?? "unknown";
     const device = req.headers.get("user-agent") ?? "unknown";
 
-    // 1. Rate Limiting Check
-    if (!checkRateLimit(`log_post:${ip}`)) {
-      return jsonError("Too many requests", 429);
-    }
+    if (!checkRateLimit(`log_post:${ip}`)) return jsonError("Too many requests", 429);
 
     const rawBody = await req.text();
-    let jsonBody: unknown;
-
+    let jsonBody: any;
     try {
       jsonBody = JSON.parse(rawBody);
     } catch {
       return jsonError("Invalid JSON body", 400);
     }
 
-    // 2. Schema Validation
     const result = postBodySchema.safeParse(jsonBody);
-    if (!result.success) {
-      return jsonError("Invalid payload schema", 400);
-    }
+    if (!result.success) return jsonError("Invalid payload schema", 400);
 
-    const {
-      action,
-      organizationId,
-      branchId,
-      personnelId,
-      approvalId,
-      meta,
-      systemHmac,
-    } = result.data;
+    const { action, organizationId, branchId, personnelId, approvalId, meta, systemHmac } = result.data;
 
-    // 3. Metadata Size Check
+    // 1. Metadata Validation
     if (meta) {
       const metaStr = JSON.stringify(meta);
       if (Buffer.byteLength(metaStr, "utf8") > MAX_META_BYTES) {
@@ -140,22 +118,28 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // 4. Verification & Authentication
+    // 2. Authentication & Verification
     const isVerifiedSystem = systemHmac ? verifySystemHmac(rawBody, systemHmac) : false;
     const session = await getServerSession(authOptions);
     const requester = session?.user;
 
-    if (!requester && !isVerifiedSystem) {
-      return jsonError("Unauthorized access", 401);
+    if (!requester && !isVerifiedSystem) return jsonError("Unauthorized access", 401);
+
+    // 3. Strict DB Check for Requester (Verify not locked/disabled)
+    if (requester) {
+      const dbRequester = await prisma.authorizedPersonnel.findUnique({
+        where: { id: requester.id },
+        select: { isLocked: true, disabled: true, deletedAt: true }
+      });
+      if (!dbRequester || dbRequester.isLocked || dbRequester.disabled || dbRequester.deletedAt) {
+        return jsonError("Account suspended or inactive", 403);
+      }
     }
 
     const targetOrgId = organizationId ?? requester?.organizationId;
-    if (!targetOrgId) {
-      return jsonError("Organization Context Missing", 400);
-    }
+    if (!targetOrgId) return jsonError("Organization Context Missing", 400);
 
-    // 5. Authorization Logic
-    // Check if the action is defined as a CriticalAction in your schema
+    // 4. Authorization Logic
     const isCriticalAction = Object.values(CriticalAction).includes(action as CriticalAction);
     const requiredRole = isCriticalAction ? ACTION_REQUIREMENTS[action as CriticalAction] : null;
     const userRole = requester?.role as Role | undefined;
@@ -163,6 +147,10 @@ export async function POST(req: NextRequest) {
     const requesterMeetsRequirement =
       isVerifiedSystem || 
       (!!requester && (!requiredRole || (userRole && ROLE_WEIGHT[userRole] >= ROLE_WEIGHT[requiredRole])));
+
+    // Extract target context for better auditing
+    const targetId = (meta?.targetId || meta?.productId || meta?.userId) as string | undefined;
+    const targetType = (meta?.targetType || action.split('_')[0]) as string | undefined;
 
     /* ---------------- CASE 1: Requires Approval ---------------- */
 
@@ -174,8 +162,11 @@ export async function POST(req: NextRequest) {
             branchId: branchId ?? null,
             requesterId: requester.id,
             actionType: action as CriticalAction,
+            requiredRole: requiredRole ?? Role.MANAGER, // Sync with config
             changes: (meta as Prisma.InputJsonValue) ?? {},
             status: ApprovalStatus.PENDING,
+            targetId: targetId ?? null,
+            targetType: targetType ?? null,
           },
         });
 
@@ -188,18 +179,18 @@ export async function POST(req: NextRequest) {
             critical: false,
             ipAddress: ip,
             deviceInfo: device,
-            metadata: {
-              approvalId: approval.id,
-              payload: meta ?? null,
+            metadata: { 
+                approvalId: approval.id, 
+                targetId, 
+                targetType, 
+                payload: meta ?? null 
             } as Prisma.InputJsonValue,
             approvalId: approval.id,
           },
         });
-
         return approval;
       });
 
-      // Async Notification (don't await to keep response fast)
       getNotificationRecipients(targetOrgId).then((recipientIds) => {
         if (recipientIds.length) {
           createNotification({
@@ -214,10 +205,7 @@ export async function POST(req: NextRequest) {
         }
       }).catch(err => console.error("[NOTIFY_ERR]", err));
 
-      return NextResponse.json(
-        { success: true, approvalId: approvalResult.id, status: "PENDING" },
-        { status: 202 }
-      );
+      return NextResponse.json({ success: true, approvalId: approvalResult.id, status: "PENDING" }, { status: 202 });
     }
 
     /* ---------------- CASE 2: Authorized Execution ---------------- */
@@ -239,18 +227,21 @@ export async function POST(req: NextRequest) {
             organizationId: targetOrgId,
             branchId: branchId ?? null,
             personnelId: requester?.id ?? null,
-            action: `EXECUTE_${action}`,
+            action: isVerifiedSystem ? `SYSTEM_EXECUTE_${action}` : `EXECUTE_${action}`,
             critical: true,
             ipAddress: ip,
             deviceInfo: device,
-            metadata: { status: "EXECUTED", changes: meta ?? {} } as Prisma.InputJsonValue,
+            metadata: { 
+                status: "EXECUTED", 
+                targetId, 
+                targetType, 
+                changes: meta ?? {} 
+            } as Prisma.InputJsonValue,
           },
         });
-
         return opResult;
       });
 
-      // Async Notification
       getNotificationRecipients(targetOrgId).then((recipientIds) => {
         if (recipientIds.length) {
           createNotification({
@@ -267,7 +258,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ success: true, result: executionResult });
     }
 
-    /* ---------------- CASE 3: Standard Logging Fallback ---------------- */
+    /* ---------------- CASE 3: Standard Logging ---------------- */
 
     const logEntry = await prisma.activityLog.create({
       data: {
@@ -283,13 +274,14 @@ export async function POST(req: NextRequest) {
       },
     });
 
-    return NextResponse.json({
-      success: true,
-      id: logEntry.id,
-    });
+    return NextResponse.json({ success: true, id: logEntry.id });
 
   } catch (err) {
     console.error("[LOG_POST_FATAL]", err);
+    // Determine if it was a concurrency error
+    if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2034') {
+        return jsonError("Conflict detected: please retry the action", 409);
+    }
     return jsonError("Internal server error during processing", 500);
   }
 }

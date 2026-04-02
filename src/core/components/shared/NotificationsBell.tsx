@@ -3,366 +3,288 @@
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { useRouter } from "next/navigation";
 import useSWR from "swr";
-import { useMemo, useState, useEffect, useRef } from "react";
+import { useMemo, useState, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Tooltip } from "@/core/components/feedback/Tooltip";
 import { useSession } from "next-auth/react";
 import { getPusherClient } from "@/core/lib/pusher";
-import { formatDistanceToNowStrict } from "date-fns";
+import { formatDistanceToNowStrict, isToday, isYesterday } from "date-fns";
 import { NotificationType } from "@prisma/client";
 import "boxicons/css/boxicons.min.css";
 
 /* -------------------------------------------------- */
-/* TYPES & CONFIG */
+/* TYPES & CONFIG (Mirrored from AlertProvider) */
 /* -------------------------------------------------- */
 
-interface Notification {
+export interface Notification {
   id: string;
   read: boolean;
   title: string;
   message: string;
   type: NotificationType;
   createdAt: string;
-  approvalId?: string;
+  actionTrigger?: string;
+  approvalId?: string; 
+  entityId?: string;   
 }
 
-interface Props {
-  onUnreadChange?: (count: number) => void;
-}
-
-const fetcher = async (url: string): Promise<{ notifications: Notification[] }> => {
-  const res = await fetch(url);
-  if (!res.ok) return { notifications: [] };
-  return res.json();
+const TYPE_CONFIG: Record<NotificationType, { icon: string; bg: string }> = {
+  SECURITY: { icon: "bx-shield-quarter", bg: "bg-red-500" },
+  SYSTEM: { icon: "bx-cog", bg: "bg-slate-600" },
+  APPROVAL: { icon: "bx-lock-open", bg: "bg-amber-500" },
+  APPROVAL_DECISION: { icon: "bx-git-commit", bg: "bg-indigo-500" },
+  SUCCESS: { icon: "bx-check-circle", bg: "bg-emerald-500" },
+  WARNING: { icon: "bx-error", bg: "bg-orange-500" },
+  INFO: { icon: "bx-info-circle", bg: "bg-blue-500" },
+  INVENTORY: { icon: "bx-package", bg: "bg-purple-500" },
+  TRANSACTIONAL: { icon: "bx-receipt", bg: "bg-emerald-600" },
 };
 
-const TYPE_CONFIG: Record<NotificationType, { icon: string; color: string; bg: string; solidBg: string; label: string }> = {
-  SECURITY: { icon: "bx-shield-quarter", color: "text-red-600", bg: "bg-red-50", solidBg: "bg-red-500", label: "Security" },
-  SYSTEM: { icon: "bx-cog", color: "text-slate-600", bg: "bg-slate-50", solidBg: "bg-slate-500", label: "System" },
-  APPROVAL: { icon: "bx-lock-open", color: "text-amber-600", bg: "bg-amber-50", solidBg: "bg-amber-500", label: "Approvals" },
-  APPROVAL_DECISION: { icon: "bx-git-commit", color: "text-indigo-600", bg: "bg-indigo-50", solidBg: "bg-indigo-500", label: "Decisions" },
-  SUCCESS: { icon: "bx-check-circle", color: "text-emerald-600", bg: "bg-emerald-50", solidBg: "bg-emerald-500", label: "Success" },
-  WARNING: { icon: "bx-error", color: "text-orange-600", bg: "bg-orange-50", solidBg: "bg-orange-500", label: "Warnings" },
-  INFO: { icon: "bx-info-circle", color: "text-blue-600", bg: "bg-blue-50", solidBg: "bg-blue-500", label: "Updates" },
-  INVENTORY: { icon: "bx-package", color: "text-purple-600", bg: "bg-purple-50", solidBg: "bg-purple-500", label: "Inventory" },
-  TRANSACTIONAL: { icon: "bx-receipt", color: "text-emerald-600", bg: "bg-emerald-50", solidBg: "bg-emerald-500", label: "Transactions" },
-};
+/* -------------------------------------------------- */
+/* HELPERS */
+/* -------------------------------------------------- */
 
-function formatTime(dateStr: string) {
-  try {
-    return formatDistanceToNowStrict(new Date(dateStr))
-      .replace(/ seconds?/, "s")
-      .replace(/ minutes?/, "m")
-      .replace(/ hours?/, "h")
-      .replace(/ days?/, "d");
-  } catch (e) {
-    return "now";
-  }
+function groupNotifications(notifications: Notification[]) {
+  const groups: Record<string, Notification[]> = { Today: [], Yesterday: [], Earlier: [] };
+  notifications.forEach((n) => {
+    const d = new Date(n.createdAt);
+    if (isToday(d)) groups.Today.push(n);
+    else if (isYesterday(d)) groups.Yesterday.push(n);
+    else groups.Earlier.push(n);
+  });
+  return Object.entries(groups).filter(([_, items]) => items.length > 0);
 }
 
 /* -------------------------------------------------- */
-/* COMPONENT */
+/* MAIN COMPONENT */
 /* -------------------------------------------------- */
 
-export function NotificationsBell({ onUnreadChange }: Props) {
+export function NotificationsBell() {
   const router = useRouter();
   const { data: session } = useSession();
   const [open, setOpen] = useState(false);
-  const [expandedGroup, setExpandedGroup] = useState<string | null>(null);
-  const [loadingMarkAll, setLoadingMarkAll] = useState(false);
-  
-  const closeTimerRef = useRef<NodeJS.Timeout | null>(null);
-  const onUnreadChangeRef = useRef(onUnreadChange);
-  const lastNotifiedCount = useRef<number | null>(null);
-
-  useEffect(() => {
-    onUnreadChangeRef.current = onUnreadChange;
-  }, [onUnreadChange]);
+  const [loading, setLoading] = useState(false);
 
   const { data, mutate, isValidating } = useSWR<{ notifications: Notification[] }>(
-    "/api/notifications",
-    fetcher,
-    { refreshInterval: 0, revalidateOnFocus: true }
+    "/api/notifications?limit=20",
+    (url) => fetch(url).then((res) => res.json())
   );
 
   const notifications = useMemo(() => data?.notifications ?? [], [data]);
   const unreadCount = useMemo(() => notifications.filter((n) => !n.read).length, [notifications]);
+  const grouped = useMemo(() => groupNotifications(notifications), [notifications]);
 
-  const grouped = useMemo(() => {
-    return notifications.reduce((acc, n) => {
-      if (!acc[n.type]) acc[n.type] = [];
-      acc[n.type].push(n);
-      return acc;
-    }, {} as Record<string, Notification[]>);
-  }, [notifications]);
-
-  // Handle Real-time updates
   useEffect(() => {
-    if (!session?.user?.organizationId) return;
+    if (!session?.user?.id) return;
     const pusher = getPusherClient();
-    const channel = pusher.subscribe(`org-${session.user.organizationId}`);
-    
-    const handleUpdate = () => mutate();
-    
-    channel.bind("critical-alert", handleUpdate);
-    channel.bind("new-notification", handleUpdate);
-    
-    return () => {
-      pusher.unsubscribe(`org-${session.user.organizationId}`);
-    };
-  }, [session?.user?.organizationId, mutate]);
-
-  useEffect(() => {
-    if (onUnreadChangeRef.current && unreadCount !== lastNotifiedCount.current) {
-      lastNotifiedCount.current = unreadCount;
-      onUnreadChangeRef.current(unreadCount);
-    }
-  }, [unreadCount]);
-
-  const handleMouseEnter = () => {
-    if (closeTimerRef.current) clearTimeout(closeTimerRef.current);
-  };
-
-  const handleMouseLeave = () => {
-    closeTimerRef.current = setTimeout(() => {
-      setOpen(false);
-    }, 1200);
-  };
-
-  const handleMarkRead = async (id: string) => {
-    mutate(
-      { notifications: notifications.map((n) => (n.id === id ? { ...n, read: true } : n)) },
-      false
-    );
-    setOpen(false);
-    
-    try {
-      await fetch("/api/notifications", {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ id }),
-      });
-    } catch (err) {
-      console.error("Sync error:", err);
-    }
-    router.push(`/dashboard/notifications?selected=${id}`);
-  };
+    const channel = pusher.subscribe(`user-${session.user.id}`);
+    const sync = () => mutate();
+    channel.bind("new-alert", sync);
+    channel.bind("notifications-read", sync);
+    return () => { pusher.unsubscribe(`user-${session.user.id}`); };
+  }, [session?.user?.id, mutate]);
 
   const handleMarkAllRead = async () => {
-    const unreadIds = notifications.filter((n) => !n.read).map((n) => n.id);
-    if (unreadIds.length === 0) return;
+    setLoading(true);
+    mutate({ notifications: notifications.map(n => ({ ...n, read: true })) }, false);
+    await fetch("/api/notifications", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ markAll: true }),
+    });
+    setLoading(false);
+    mutate();
+  };
 
-    setLoadingMarkAll(true);
-    mutate(
-      { notifications: notifications.map((n) => ({ ...n, read: true })) },
-      false
-    );
-
-    try {
-      await fetch("/api/notifications", {
+  const handleNotificationClick = async (n: Notification) => {
+    if (!n.read) {
+      mutate({ notifications: notifications.map(x => x.id === n.id ? { ...x, read: true } : x) }, false);
+      fetch(`/api/notifications/${n.id}`, { 
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ids: unreadIds }),
+        body: JSON.stringify({ read: true }) 
       });
-    } finally {
-      setLoadingMarkAll(false);
-      mutate();
     }
+    setOpen(false);
+    router.push(n.entityId ? `/dashboard/context/${n.entityId}` : '/notifications');
   };
 
   return (
-    <DropdownMenu.Root 
-      open={open} 
-      onOpenChange={(v) => { 
-        setOpen(v); 
-        if (!v) setExpandedGroup(null); 
-      }}
-    >
-      {/* FIX: Wrap the DropdownMenu.Trigger in the Tooltip safely.
-        By placing the trigger inside the Tooltip but ensuring the Tooltip itself 
-        doesn't directly hijack the button's focus events (using an intermediate span if needed, 
-        or relying on Radix's standard composition). 
-        If `Tooltip` is a custom component, separating them is the safest route.
-      */}
-        <span>
-          <DropdownMenu.Trigger asChild>
-            <button className="relative w-9 h-9 rounded-[12px] bg-slate-100 flex items-center justify-center hover:bg-slate-200 transition-all group outline-none focus:ring-2 focus:ring-blue-500/20">
-              <i className={`bx bx-bell text-xl transition-colors ${unreadCount > 0 ? "text-blue-600" : "text-slate-500 group-hover:text-slate-700"}`} />
-              {unreadCount > 0 && (
-                <span className="absolute top-2 right-2 w-2.5 h-2.5 bg-red-500 rounded-full border-2 border-white animate-pulse" />
-              )}
-            </button>
-          </DropdownMenu.Trigger>
-        </span>
+    <DropdownMenu.Root open={open} onOpenChange={setOpen}>
+      <DropdownMenu.Trigger asChild>
+        <button
+          className={`relative flex w-9 h-9 items-center justify-center rounded-xl transition-all duration-300 outline-none
+            ${open ? "bg-blue-50 dark:bg-blue-500/10 text-blue-600 shadow-inner" : "text-slate-400 hover:bg-slate-100 dark:hover:bg-white/5"}
+          `}
+        >
+          <i className={`bx bx-bell text-xl ${unreadCount > 0 ? "text-blue-500 animate-[bell-ring_1s_infinite]" : ""}`} />
+          {unreadCount > 0 && (
+            <span className="absolute top-2 right-2 flex h-2 w-2">
+              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75"></span>
+              <span className="relative inline-flex rounded-full h-2 w-2 bg-red-500 border border-white dark:border-[#18181b]"></span>
+            </span>
+          )}
+        </button>
+      </DropdownMenu.Trigger>
 
       <DropdownMenu.Portal>
         <DropdownMenu.Content
           align="end"
-          sideOffset={12}
-          onMouseEnter={handleMouseEnter}
-          onMouseLeave={handleMouseLeave}
+          sideOffset={8}
+          className="w-[380px] bg-white dark:bg-[#18181b] border border-black/5 dark:border-white/10 shadow-2xl rounded-2xl overflow-hidden z-[100] outline-none"
           asChild
         >
-          <motion.div 
-            initial={{ opacity: 0, y: 10, scale: 0.95 }}
-            animate={{ opacity: 1, y: 0, scale: 1 }}
-            className="w-[380px] bg-white rounded-[24px] shadow-[0_20px_50px_rgba(0,0,0,0.15)] border border-slate-100 flex flex-col overflow-hidden z-[100] outline-none"
+          <motion.div
+            initial={{ opacity: 0, scale: 0.95, y: -10 }}
+            animate={{ opacity: 1, scale: 1, y: 0 }}
+            transition={{ type: "spring", duration: 0.4, bounce: 0.3 }}
           >
-            {/* Header */}
-            <div className="px-6 py-5 border-b border-slate-50 flex items-center justify-between bg-slate-50/50">
-              <div className="flex-1">
-                {expandedGroup ? (
-                  <button onClick={() => setExpandedGroup(null)} className="flex items-center gap-1 text-[11px] font-bold text-slate-500 hover:text-slate-800 transition-colors group">
-                    <div className="w-5 h-5 rounded-full bg-slate-200/50 flex items-center justify-center group-hover:bg-slate-200 transition-colors">
-                      <i className="bx bx-chevron-left text-sm" />
-                    </div>
-                    Back to Feed
-                  </button>
-                ) : (
-                  <>
-                    <h3 className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400">Security Feed</h3>
-                    <p className="text-[12px] text-slate-600 font-bold">{unreadCount} pending alerts</p>
-                  </>
-                )}
+            {/* Header - Matching Alert Group Header */}
+            <div className="flex items-center justify-between px-5 py-4 border-b border-black/5 dark:border-white/5 bg-slate-50/50 dark:bg-white/5">
+              <div className="flex items-center gap-2">
+                <i className="bx bxs-bell text-blue-500 text-xs" />
+                <span className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">
+                  Notifications • {unreadCount} New
+                </span>
               </div>
-
-              {!expandedGroup && (
-                <div className="flex items-center gap-1.5">
-                  {unreadCount > 0 && (
-                    <button
-                      onClick={handleMarkAllRead}
-                      disabled={loadingMarkAll}
-                      className="w-8 h-8 flex items-center justify-center rounded-full hover:bg-white text-slate-400 hover:text-blue-600 transition-colors"
-                      title="Clear all"
-                    >
-                      <i className="bx bx-check-double text-xl" />
-                    </button>
-                  )}
-                  <button
-                    onClick={() => mutate()}
-                    className={`w-8 h-8 flex items-center justify-center rounded-full hover:bg-white text-slate-400 hover:text-slate-600 transition-all ${isValidating ? "animate-spin text-blue-500" : ""}`}
-                  >
-                    <i className="bx bx-refresh text-xl" />
+              <div className="flex items-center gap-3">
+                {unreadCount > 0 && (
+                  <button onClick={handleMarkAllRead} disabled={loading} className="text-[10px] font-bold text-blue-600 hover:text-blue-700 disabled:opacity-50 transition-colors uppercase tracking-tight">
+                    Mark All Read
                   </button>
-                </div>
-              )}
+                )}
+                <button onClick={() => mutate()} className={`text-slate-400 hover:text-slate-600 ${isValidating ? "animate-spin" : ""}`}>
+                  <i className="bx bx-refresh text-lg" />
+                </button>
+              </div>
             </div>
 
-            {/* Content Area */}
-            <div className="h-[420px] overflow-y-auto overflow-x-hidden custom-scrollbar bg-slate-50/30">
-              <AnimatePresence mode="wait">
-                {Object.keys(grouped).length === 0 ? (
-                  <motion.div key="empty" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="py-20 flex flex-col items-center justify-center text-slate-300">
-                    <div className="w-14 h-14 rounded-[18px] bg-slate-50 flex items-center justify-center mb-4">
-                      <i className="bx bx-notification-off text-3xl" />
+            {/* Notification List */}
+            <div className="max-h-[480px] overflow-y-auto overscroll-contain">
+              <AnimatePresence mode="popLayout">
+                {grouped.length === 0 ? (
+                  <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="py-20 flex flex-col items-center justify-center text-center opacity-60">
+                    <div className="w-12 h-12 bg-slate-100 dark:bg-white/5 rounded-2xl flex items-center justify-center mb-4">
+                      <i className="bx bx-bell-off text-2xl text-slate-300" />
                     </div>
-                    <p className="text-[10px] font-black uppercase tracking-[0.15em]">No Recent Activity</p>
-                  </motion.div>
-                ) : expandedGroup ? (
-                  <motion.div 
-                    key="list" 
-                    initial={{ opacity: 0, x: 20 }} 
-                    animate={{ opacity: 1, x: 0 }} 
-                    exit={{ opacity: 0, x: -20 }} 
-                    transition={{ ease: "circOut", duration: 0.25 }}
-                    className="flex flex-col p-3"
-                  >
-                    <div className="mb-2 px-3 pt-2 flex items-center gap-2">
-                      <div className={`w-1.5 h-3.5 rounded-full ${TYPE_CONFIG[expandedGroup as NotificationType].solidBg}`} />
-                      <span className="text-[10px] font-black uppercase tracking-[0.15em] text-slate-400">
-                        {TYPE_CONFIG[expandedGroup as NotificationType].label} ({grouped[expandedGroup].length})
-                      </span>
-                    </div>
-
-                    <div className="flex flex-col gap-1">
-                      {grouped[expandedGroup].map((n) => (
-                        <div 
-                          key={n.id} 
-                          onClick={() => handleMarkRead(n.id)}
-                          className="group py-3 px-4 bg-white border border-slate-100 hover:border-blue-200 transition-colors cursor-pointer rounded-[14px] shadow-sm"
-                        >
-                          <div className="flex justify-between items-start mb-1">
-                            <span className={`text-[13px] font-bold ${!n.read ? "text-slate-900" : "text-slate-600"}`}>
-                              {n.title}
-                            </span>
-                            <span className={`text-[10px] font-bold uppercase mt-0.5 ${!n.read ? "text-blue-500" : "text-slate-400"}`}>
-                              {formatTime(n.createdAt)}
-                            </span>
-                          </div>
-                          <p className="text-[12px] text-slate-500 line-clamp-2 leading-relaxed">
-                            {n.message}
-                          </p>
-                        </div>
-                      ))}
-                    </div>
+                    <p className="text-xs font-bold text-slate-800 dark:text-white uppercase tracking-widest">All Clear</p>
+                    <p className="text-[11px] text-slate-500 mt-1">No pending updates found</p>
                   </motion.div>
                 ) : (
-                  <motion.div 
-                    key="groups" 
-                    initial={{ opacity: 0, x: -20 }} 
-                    animate={{ opacity: 1, x: 0 }} 
-                    exit={{ opacity: 0, x: 20 }} 
-                    transition={{ ease: "circOut", duration: 0.25 }}
-                    className="flex flex-col gap-5 p-4"
-                  >
-                    {Object.entries(grouped).map(([type, items]) => {
-                      const config = TYPE_CONFIG[type as NotificationType];
-                      const latest = items[0];
-                      const hasMultiple = items.length > 1;
-
-                      return (
-                        <div key={type} className="relative group cursor-pointer" onClick={() => setExpandedGroup(type)}>
-                          {hasMultiple && (
-                            <>
-                              <div className="absolute -bottom-1.5 left-2 right-2 h-6 bg-white border border-slate-200/60 rounded-[16px] z-0 shadow-sm transition-transform group-hover:translate-y-[2px]" />
-                              <div className="absolute -bottom-3 left-4 right-4 h-6 bg-slate-50 border border-slate-200/40 rounded-[14px] z-[-1] shadow-sm transition-transform group-hover:translate-y-[4px]" />
-                            </>
-                          )}
-                          
-                          <div className="relative z-10 flex gap-4 p-4 bg-white border border-slate-200/80 rounded-[20px] shadow-sm group-hover:border-slate-300 transition-all">
-                            <div className={`flex-shrink-0 w-11 h-11 rounded-[14px] ${config.bg} flex items-center justify-center border border-white shadow-sm mt-0.5`}>
-                              <i className={`bx ${config.icon} text-2xl ${config.color}`} />
-                            </div>
-
-                            <div className="flex-1 min-w-0 pr-2">
-                              <div className="flex justify-between items-center mb-1">
-                                <span className="text-[10px] font-black uppercase tracking-[0.15em] text-slate-400">
-                                  {config.label}
-                                </span>
-                                {hasMultiple && (
-                                  <span className="bg-slate-100 text-slate-600 text-[10px] font-bold px-2 py-0.5 rounded-md border border-slate-200">
-                                    {items.length} Alerts
-                                  </span>
-                                )}
-                              </div>
-                              <p className="text-[14px] font-bold text-slate-900 truncate">
-                                {latest.title} <span className="text-slate-400 font-medium ml-1">· {formatTime(latest.createdAt)}</span>
-                              </p>
-                              <p className="text-[13px] text-slate-500 line-clamp-1 truncate mt-0.5 font-medium">
-                                {latest.message}
-                              </p>
-                            </div>
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </motion.div>
+                  grouped.map(([label, items]) => (
+                    <div key={label}>
+                      <div className="px-5 py-2.5 bg-slate-50 dark:bg-white/5 text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest sticky top-0 z-10 backdrop-blur-md border-y border-black/5 dark:border-white/5">
+                        {label}
+                      </div>
+                      {items.map((n) => (
+                        <NotificationItem 
+                          key={n.id} 
+                          notification={n} 
+                          onClick={() => handleNotificationClick(n)}
+                          onActionComplete={() => mutate()} 
+                        />
+                      ))}
+                    </div>
+                  ))
                 )}
               </AnimatePresence>
             </div>
 
             {/* Footer */}
-            <div className="p-4 bg-white border-t border-slate-100 z-10 relative shadow-[0_-10px_15px_-3px_rgba(0,0,0,0.02)]">
+            <div className="p-3 border-t border-black/5 dark:border-white/5 bg-slate-50/30 dark:bg-white/5">
               <button
-                onClick={() => { setOpen(false); router.push("/dashboard/notifications"); }}
-                className="w-full py-2.5 rounded-[14px] bg-slate-50 border border-slate-200 text-[10px] font-black uppercase tracking-[0.15em] text-slate-500 hover:text-blue-600 hover:border-blue-200 hover:bg-white transition-all shadow-sm"
+                onClick={() => { setOpen(false); router.push("/notifications"); }}
+                className="w-full py-2.5 rounded-xl bg-white dark:bg-[#202023] border border-black/5 dark:border-white/5 text-[11px] font-bold text-slate-500 hover:text-blue-500 dark:hover:text-white transition-all shadow-sm flex items-center justify-center gap-2"
               >
-                View Analysis Dashboard
+                View Full Activity History
+                <i className="bx bx-right-arrow-alt text-lg" />
               </button>
             </div>
           </motion.div>
         </DropdownMenu.Content>
       </DropdownMenu.Portal>
     </DropdownMenu.Root>
+  );
+}
+
+/* -------------------------------------------------- */
+/* ITEM COMPONENT (Matches AlertProvider PushItem style) */
+/* -------------------------------------------------- */
+
+function NotificationItem({ 
+  notification: n, 
+  onClick,
+  onActionComplete 
+}: { 
+  notification: Notification; 
+  onClick: () => void;
+  onActionComplete: () => void; 
+}) {
+  const config = TYPE_CONFIG[n.type] || TYPE_CONFIG.INFO;
+  const [actingOn, setActingOn] = useState<"approve" | "reject" | null>(null);
+
+  const handleAction = async (e: React.MouseEvent, type: "approve" | "reject") => {
+    e.stopPropagation();
+    setActingOn(type);
+    try {
+      await fetch(`/api/approvals/${n.approvalId}/${type}`, { method: "POST" });
+      onActionComplete();
+    } catch {
+    } finally {
+      setActingOn(null);
+    }
+  };
+
+  return (
+    <motion.div
+      layout
+      onClick={onClick}
+      className={`relative px-5 py-4 border-b border-black/5 dark:border-white/5 cursor-pointer transition-all group 
+        ${!n.read ? "bg-blue-50/40 dark:bg-blue-500/5" : "bg-white dark:bg-transparent hover:bg-slate-50 dark:hover:bg-white/5"}
+      `}
+    >
+      <div className="flex gap-4">
+        {/* Mirroring the Alert icon-box */}
+        <div className={`w-9 h-9 rounded-xl ${config.bg} flex items-center justify-center flex-shrink-0 shadow-sm transition-transform group-hover:scale-105`}>
+          <i className={`bx ${config.icon} text-white text-lg`} />
+        </div>
+        
+        <div className="flex-1 min-w-0">
+          <div className="flex justify-between items-start mb-0.5">
+            <span className={`text-[12px] truncate pr-4 ${!n.read ? "font-bold text-slate-900 dark:text-white" : "font-semibold text-slate-500 dark:text-slate-400"}`}>
+              {n.title}
+            </span>
+            <span className="text-[10px] font-medium text-slate-400 whitespace-nowrap mt-0.5 uppercase tracking-tighter">
+              {formatDistanceToNowStrict(new Date(n.createdAt))}
+            </span>
+          </div>
+          <p className="text-[12px] text-slate-500 dark:text-slate-400 leading-snug line-clamp-2">{n.message}</p>
+
+          {/* Quick Actions */}
+          {n.type === "APPROVAL" && !n.read && n.approvalId && (
+            <div className="flex gap-2 mt-3">
+              <button 
+                disabled={actingOn !== null}
+                onClick={(e) => handleAction(e, "approve")}
+                className="px-4 py-1.5 bg-emerald-500 text-white text-[10px] font-bold rounded-lg hover:bg-emerald-600 transition-colors shadow-sm disabled:opacity-50 min-w-[70px]"
+              >
+                {actingOn === "approve" ? <i className="bx bx-loader-alt animate-spin text-sm" /> : "Approve"}
+              </button>
+              <button 
+                disabled={actingOn !== null}
+                onClick={(e) => handleAction(e, "reject")}
+                className="px-4 py-1.5 bg-white dark:bg-white/5 border border-black/5 dark:border-white/10 text-slate-600 dark:text-slate-300 text-[10px] font-bold rounded-lg hover:bg-slate-50 transition-colors shadow-sm disabled:opacity-50 min-w-[70px]"
+              >
+                {actingOn === "reject" ? <i className="bx bx-loader-alt animate-spin text-sm" /> : "Reject"}
+              </button>
+            </div>
+          )}
+        </div>
+      </div>
+      
+      {/* Unread Accent Bar */}
+      {!n.read && (
+        <div className="absolute left-0 top-3 bottom-3 w-1 bg-blue-500 rounded-r-full shadow-[0_0_8px_rgba(59,130,246,0.5)]" />
+      )}
+    </motion.div>
   );
 }

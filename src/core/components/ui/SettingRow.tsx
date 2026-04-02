@@ -3,7 +3,7 @@
 import { FC, useState, useRef, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { createPortal } from "react-dom";
-import { Tooltip } from "@/src/core/components/feedback/Tooltip";
+import { Tooltip } from "@/core/components/feedback/Tooltip";
 import { PreferenceScope } from "@prisma/client";
 
 interface SettingRowProps {

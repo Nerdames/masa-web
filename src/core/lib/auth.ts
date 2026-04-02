@@ -352,7 +352,7 @@ export const authOptions: NextAuthOptions = {
 
   pages: {
     signIn: "/signin",
-    error: "/signin",
+    error: "/error",
   },
   
   secret: process.env.NEXTAUTH_SECRET,

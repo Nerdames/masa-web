@@ -1,33 +1,42 @@
-// src/core/events/handlers.ts
 import prisma from "@/core/lib/prisma";
 import { pusherServer } from "@/core/lib/pusher";
-import { Role } from "@prisma/client";
+import { Role, NotificationType } from "@prisma/client";
 import { EventPayloads } from "./types";
 
 /**
- * Handles generating notifications for new Approval Requests.
- * Targets: ADMIN, AUDITOR, and relevant MANAGERS.
+ * Ensures standard payload structure across the entire application so the 
+ * frontend MASAAlertProvider handles real-time alerts without crashing.
  */
+const buildAlertPayload = (notification: any, kind = "PUSH") => ({
+  id: notification.id,
+  kind,
+  type: notification.type,
+  title: notification.title,
+  message: notification.message,
+  actionTrigger: notification.actionTrigger,
+  approvalId: notification.approvalId,
+  activityId: notification.activityLogId,
+  createdAt: Date.now(),
+});
+
 export async function handleApprovalRequested(payload: EventPayloads["approval.requested"]) {
   try {
     const eligiblePersonnel = await prisma.authorizedPersonnel.findMany({
       where: {
         organizationId: payload.organizationId,
-        role: { in: [Role.ADMIN, Role.MANAGER, Role.AUDITOR] },
         disabled: false,
         isLocked: false,
-        ...(payload.branchId ? {
-          OR: [
-            { branchId: payload.branchId },
-            { role: Role.ADMIN },
-            { isOrgOwner: true }
-          ]
-        } : {})
+        OR: [
+          { role: Role.ADMIN },
+          { isOrgOwner: true },
+          { role: Role.MANAGER, branchId: payload.branchId },
+        ],
+        NOT: { id: payload.requesterId }
       },
       select: { id: true }
     });
 
-    if (!eligiblePersonnel.length) return;
+    if (eligiblePersonnel.length === 0) return;
 
     const notification = await prisma.notification.create({
       data: {
@@ -44,21 +53,22 @@ export async function handleApprovalRequested(payload: EventPayloads["approval.r
       },
     });
 
-    await pusherServer.trigger(`org-${payload.organizationId}`, "notification:new", {
-      id: notification.id,
-      title: notification.title,
-      type: notification.type,
-    });
+    const alertPayload = buildAlertPayload(notification);
+
+    await Promise.allSettled(
+      eligiblePersonnel.map((p) => 
+        pusherServer.trigger(`user-${p.id}`, "new-alert", alertPayload)
+      )
+    );
   } catch (error) {
-    console.error("[EventHandler] handleApprovalRequested failed:", error);
+    console.error("[EventBus] handleApprovalRequested failed:", error);
   }
 }
 
-/**
- * Handles notifying the requester when their request is Resolved (Approved/Rejected).
- */
 export async function handleApprovalResolved(payload: EventPayloads["approval.resolved"]) {
   try {
+    const statusLabel = payload.status === "APPROVED" ? "Granted" : "Declined";
+    
     const notification = await prisma.notification.create({
       data: {
         organizationId: payload.organizationId,
@@ -66,90 +76,83 @@ export async function handleApprovalResolved(payload: EventPayloads["approval.re
         type: payload.notificationType,
         actionTrigger: payload.actionType,
         approvalId: payload.approvalId,
-        title: `Request ${payload.status.toLowerCase()}`,
-        message: `Your request for ${payload.actionType.replace(/_/g, " ")} has been ${payload.status.toLowerCase()}.`,
+        title: `Approval ${statusLabel}`,
+        message: `Your request for ${payload.actionType.replace(/_/g, " ")} was ${payload.status.toLowerCase()}.`,
         recipients: {
           create: { personnelId: payload.requesterId },
         },
       },
     });
 
-    await pusherServer.trigger(`user-${payload.requesterId}`, "notification:new", {
-      id: notification.id,
-      title: notification.title,
-      status: payload.status,
-    });
+    const alertPayload = buildAlertPayload(notification, "IN_APP");
+
+    await pusherServer.trigger(`user-${payload.requesterId}`, "new-alert", alertPayload);
   } catch (error) {
-    console.error("[EventHandler] handleApprovalResolved failed:", error);
+    console.error("[EventBus] handleApprovalResolved failed:", error);
   }
 }
 
-/**
- * Handles High-Risk Security Alerts.
- * Targets: ADMIN and OrgOwners for immediate intervention.
- */
 export async function handleSecurityAlert(payload: EventPayloads["security.alert"]) {
   try {
-    const admins = await prisma.authorizedPersonnel.findMany({
+    const authority = await prisma.authorizedPersonnel.findMany({
       where: {
         organizationId: payload.organizationId,
-        role: Role.ADMIN,
         disabled: false,
         isLocked: false,
+        OR: [{ role: Role.ADMIN }, { isOrgOwner: true }],
       },
       select: { id: true }
     });
 
-    if (!admins.length) return;
+    if (authority.length === 0) return;
 
     const notification = await prisma.notification.create({
       data: {
         organizationId: payload.organizationId,
         branchId: payload.branchId,
-        type: payload.notificationType,
+        type: NotificationType.SECURITY,
         actionTrigger: payload.actionTrigger,
         activityLogId: payload.activityLogId,
         title: payload.title,
         message: payload.message,
         recipients: {
-          create: admins.map((p) => ({ personnelId: p.id })),
+          create: authority.map((p) => ({ personnelId: p.id })),
         },
       },
     });
 
-    await pusherServer.trigger(`org-${payload.organizationId}-admin`, "security:alert", {
-      id: notification.id,
-      title: notification.title,
-    });
+    const alertPayload = buildAlertPayload(notification, "URGENT");
+
+    await Promise.allSettled(
+      authority.map((p) => 
+        pusherServer.trigger(`user-${p.id}`, "new-alert", alertPayload)
+      )
+    );
   } catch (error) {
-    console.error("[EventHandler] handleSecurityAlert failed:", error);
+    console.error("[EventBus] handleSecurityAlert failed:", error);
   }
 }
 
-/**
- * Handles Inventory Alerts (e.g., Low Stock).
- * Targets: INVENTORY role and branch MANAGERS.
- */
 export async function handleInventoryAlert(payload: EventPayloads["inventory.alert"]) {
   try {
     const personnel = await prisma.authorizedPersonnel.findMany({
       where: {
         organizationId: payload.organizationId,
         branchId: payload.branchId,
-        role: { in: [Role.INVENTORY, Role.MANAGER, Role.ADMIN] },
         disabled: false,
         isLocked: false,
+        role: { in: [Role.INVENTORY, Role.MANAGER, Role.ADMIN] },
       },
       select: { id: true }
     });
 
-    if (!personnel.length) return;
+    if (personnel.length === 0) return;
 
     const notification = await prisma.notification.create({
       data: {
         organizationId: payload.organizationId,
         branchId: payload.branchId,
-        type: payload.notificationType,
+        type: NotificationType.INVENTORY,
         title: payload.title,
         message: payload.message,
         recipients: {
@@ -158,12 +161,14 @@ export async function handleInventoryAlert(payload: EventPayloads["inventory.ale
       },
     });
 
-    await pusherServer.trigger(`branch-${payload.branchId}-inventory`, "inventory:alert", {
-      id: notification.id,
-      title: notification.title,
-      productId: payload.productId,
-    });
+    const alertPayload = buildAlertPayload(notification, "IN_APP");
+
+    await Promise.allSettled(
+      personnel.map((p) => 
+        pusherServer.trigger(`user-${p.id}`, "new-alert", alertPayload)
+      )
+    );
   } catch (error) {
-    console.error("[EventHandler] handleInventoryAlert failed:", error);
+    console.error("[EventBus] handleInventoryAlert failed:", error);
   }
 }

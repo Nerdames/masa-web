@@ -276,7 +276,7 @@ const EditProfilePanel = ({
         <button 
           onClick={handleSave}
           disabled={isSubmitting || !isValid}
-          className="flex-2 px-8 py-3 bg-slate-900 text-white text-sm font-bold rounded-xl flex items-center justify-center gap-2 transition-opacity disabled:opacity-20 hover:bg-slate-800"
+          className="flex-2 px-3 py-3 bg-slate-900 text-white text-sm font-bold rounded-xl flex items-center justify-center gap-2 transition-opacity disabled:opacity-20 hover:bg-slate-800"
         >
           {isSubmitting ? <i className="bx bx-loader-alt animate-spin" /> : <i className="bx bx-check-shield" />}
           Commit Changes
@@ -317,20 +317,51 @@ const ProfileHeader = ({ profile, onSupport, onLogs }: { profile: ProfileDTO, on
       </div>
     </div>
 
-    <div className="flex gap-4 md:gap-6 mt-6 pt-4 border-t border-black/5 overflow-x-auto no-scrollbar whitespace-nowrap">
-      <div className="flex flex-col shrink-0">
-        <span className="text-[9px] md:text-[10px] font-bold text-slate-400 uppercase tracking-widest">Global Role</span>
-        <span className="text-lg md:text-xl font-medium text-slate-800">{profile.role}</span>
-      </div>
-      <div className="w-px h-8 bg-black/5 self-center shrink-0" />
-      <div className="flex flex-col shrink-0">
-        <span className="text-[9px] md:text-[10px] font-bold text-slate-400 uppercase tracking-widest">Active Nodes</span>
-        <span className="text-lg md:text-xl font-medium text-slate-800">{profile.assignments.length}</span>
-      </div>
-      <div className="w-px h-8 bg-black/5 self-center shrink-0" />
-      <div className="flex flex-col shrink-0">
-        <span className={`text-[9px] md:text-[10px] font-bold uppercase tracking-widest ${profile.isLocked ? 'text-red-500' : 'text-emerald-500'}`}>Integrity Status</span>
-        <span className="text-lg md:text-xl font-medium text-slate-800">{profile.isLocked ? "Suspended" : "Operational"}</span>
+    <div className="mt-6 pt-4 border-t border-black/5">
+      {/* flex-row: Always horizontal 
+          md:justify-start: Align left on larger screens
+          items-stretch: Ensures dividers are full height
+      */}
+      <div className="flex flex-row items-stretch md:justify-start w-full gap-0 md:gap-12">
+        
+        {/* Global Role - flex-1 on mobile to fill 1/3 of width */}
+        <div className="flex flex-1 md:flex-none flex-col min-w-0">
+          <span className="text-[9px] md:text-[10px] font-black text-slate-400 uppercase tracking-widest truncate">
+            Global Role
+          </span>
+          <span className="text-sm md:text-xl font-bold text-slate-800 truncate">
+            {profile.role}
+          </span>
+        </div>
+
+        {/* Divider (Mobile only) - subtle vertical line */}
+        <div className="w-px bg-black/5 mx-2 md:hidden" />
+
+        {/* Active Nodes */}
+        <div className="flex flex-1 md:flex-none flex-col min-w-0 md:border-l md:border-black/5 md:pl-12">
+          <span className="text-[9px] md:text-[10px] font-black text-slate-400 uppercase tracking-widest truncate">
+            Nodes
+          </span>
+          <span className="text-sm md:text-xl font-bold text-slate-800 truncate">
+            {profile.assignments.length}
+          </span>
+        </div>
+
+        {/* Divider (Mobile only) */}
+        <div className="w-px bg-black/5 mx-2 md:hidden" />
+
+        {/* Integrity Status */}
+        <div className="flex flex-1 md:flex-none flex-col min-w-0 md:border-l md:border-black/5 md:pl-12">
+          <span className={`text-[9px] md:text-[10px] font-black uppercase tracking-widest truncate ${
+            profile.isLocked ? 'text-red-500' : 'text-emerald-500'
+          }`}>
+            Status
+          </span>
+          <span className="text-sm md:text-xl font-bold text-slate-800 truncate">
+            {profile.isLocked ? "Locked" : "Active"}
+          </span>
+        </div>
+
       </div>
     </div>
   </header>

@@ -1,7 +1,6 @@
-// src/core/events/index.ts
 import { registerEvents } from "./register";
 
-// Initialize the nervous system
+// Initialize the nervous system immediately upon import
 registerEvents();
 
 export { eventBus } from "./bus";

@@ -1,4 +1,3 @@
-// src/core/events/types.ts
 import { CriticalAction, NotificationType } from "@prisma/client";
 
 export type EventPayloads = {
@@ -8,7 +7,7 @@ export type EventPayloads = {
     approvalId: string;
     requesterId: string;
     actionType: CriticalAction;
-    notificationType: NotificationType; // Now included
+    notificationType: NotificationType;
     title: string;
     message: string;
   };
@@ -25,19 +24,16 @@ export type EventPayloads = {
   "security.alert": {
     organizationId: string;
     branchId?: string | null;
-    personnelId?: string;
-    activityLogId?: string;
-    actionTrigger?: CriticalAction;
-    notificationType: NotificationType;
+    activityLogId: string;
+    actionTrigger: CriticalAction;
     title: string;
     message: string;
   };
   "inventory.alert": {
     organizationId: string;
-    branchId: string;
+    branchId: string; // Branch is required for inventory
     productId: string;
     branchProductId: string;
-    notificationType: NotificationType;
     title: string;
     message: string;
   };

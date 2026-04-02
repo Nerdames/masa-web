@@ -7,7 +7,7 @@ import { useSidePanel } from "@/core/components/layout/SidePanelContext";
 import { useAlerts } from "@/core/components/feedback/AlertProvider";
 import { ActivityLogsPanel } from "@/modules/audit/components/ActivityLogsPanel";
 
-import { Branch, BranchSummary, BranchListResponse } from "./types";
+import { Branch, BranchSummary, BranchListResponse } from "@/modules/branches/types";
 import { BranchDetailsPanel } from "@/modules/branches/components/BranchDetailsPanel";
 import { BranchProvisionPanel } from "@/modules/branches/components/BranchProvisionPanel";
 import { BranchRow } from "@/modules/branches/components/BranchRow";

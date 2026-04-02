@@ -45,7 +45,7 @@ export default function SupportForm({ user, onSuccess, onCancel }: SupportFormPr
   const [message, setMessage] = useState("");
   const [isSending, setIsSending] = useState(false);
 
-  const selectedOption = options.find(o => o.id === subjectId);
+  const selectedOption = options.find((o) => o.id === subjectId);
   const currentLabel = selectedOption?.label || "Select Category";
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -76,13 +76,12 @@ export default function SupportForm({ user, onSuccess, onCancel }: SupportFormPr
         throw new Error(error.message || "Failed to deliver request");
       }
 
-      // 1. Success Feedback (In-App Toast)
       dispatch({
         kind: "TOAST",
         type: "SUCCESS",
         title: "Ticket Submitted",
-        message: user.isAdmin 
-          ? "The technical team has been notified of this bug." 
+        message: user.isAdmin
+          ? "The technical team has been notified of this bug."
           : "Your request has been routed to system administrators.",
       });
 
@@ -102,21 +101,26 @@ export default function SupportForm({ user, onSuccess, onCancel }: SupportFormPr
   };
 
   return (
-    <section className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden h-fit">
-      {/* HEADER SECTION */}
-      <div className="px-6 py-4 border-b border-gray-50 bg-gray-50/30 text-left flex justify-between items-center">
-        <h3 className="font-black text-gray-400 text-[10px] tracking-[0.2em] uppercase">
-          {user.isAdmin ? "Dev Protocol (L3)" : "System Support (L2)"}
-        </h3>
-        <span className="text-[8px] font-bold text-blue-500 bg-blue-50 px-2 py-0.5 rounded uppercase">
-          Priority Channel
-        </span>
+    <div className="w-full max-w-xl mx-auto bg-transparent p-4 relative">
+      {/* CLOSE PANEL BUTTON */}
+          <button onClick={onCancel}         className="absolute top-4 right-4 w-8 h-8 rounded-lg hover:bg-slate-100 flex items-center justify-center text-slate-500 transition-all active:scale-90" aria-label="Close panel">
+            <i className="bx bx-x text-lg" />
+          </button>
+
+      {/* HEADER - Borderless with asymmetric alignment */}
+      <div className="pb-6 flex justify-between items-center pr-10">
+        <div className="space-y-1">
+          <h3 className="font-black text-slate-400 text-[10px] tracking-[0.2em] pt-4 uppercase whitespace-nowrap">
+            {user.isAdmin ? "Dev Protocol (L3)" : "System Support (L2)"}
+          </h3>
+          <p className="text-[11px] text-slate-500 font-medium whitespace-nowrap">Priority Support Channel</p>
+        </div>
       </div>
 
-      <form onSubmit={handleSubmit} className="p-6 space-y-5 text-left">
+      <form onSubmit={handleSubmit} className="py-2 space-y-8 text-left">
         {/* CATEGORY SELECTOR */}
-        <div className="space-y-1.5">
-          <label className="text-[10px] font-black uppercase tracking-widest text-slate-400 block">
+        <div className="space-y-3">
+          <label className="pl-1 text-[10px] font-black uppercase tracking-widest text-slate-400 block whitespace-nowrap">
             Directed Action Type
           </label>
 
@@ -124,10 +128,10 @@ export default function SupportForm({ user, onSuccess, onCancel }: SupportFormPr
             <DropdownMenu.Trigger asChild>
               <button
                 type="button"
-                className="w-full flex items-center justify-between px-4 py-3 rounded-xl bg-slate-50 border border-slate-100 text-sm font-bold text-slate-700 hover:bg-slate-100 transition-all outline-none focus:ring-4 focus:ring-blue-500/10 focus:border-blue-500"
+                className="w-full flex items-center justify-between px-5 py-4 rounded-2xl bg-slate-100/40 text-sm font-bold text-slate-700 hover:bg-slate-100/60 transition-all outline-none focus:ring-2 focus:ring-slate-900/5"
               >
-                <span>{currentLabel}</span>
-                <i className="bx bx-chevron-down text-lg text-slate-400" />
+                <span className="whitespace-nowrap overflow-hidden text-ellipsis">{currentLabel}</span>
+                <i className="bx bx-chevron-down text-xl text-slate-400 flex-shrink-0" />
               </button>
             </DropdownMenu.Trigger>
 
@@ -141,10 +145,10 @@ export default function SupportForm({ user, onSuccess, onCancel }: SupportFormPr
                   <DropdownMenu.Item
                     key={opt.id}
                     onSelect={() => setSubjectId(opt.id)}
-                    className={`flex items-center px-3 py-2.5 text-sm rounded-lg cursor-pointer outline-none transition-colors mb-0.5 last:mb-0 ${
-                      subjectId === opt.id 
-                        ? "bg-slate-900 text-white font-bold" 
-                        : "text-slate-600 hover:bg-slate-50"
+                    className={`flex items-center px-4 py-3 text-xs rounded-xl cursor-pointer outline-none transition-colors mb-1 last:mb-0 whitespace-nowrap ${
+                      subjectId === opt.id
+                        ? "bg-slate-900 text-white font-bold"
+                        : "text-slate-600 hover:bg-slate-50 font-semibold"
                     }`}
                   >
                     {opt.label}
@@ -157,14 +161,14 @@ export default function SupportForm({ user, onSuccess, onCancel }: SupportFormPr
 
         {/* CONDITIONAL SUBJECT INPUT */}
         {subjectId === "OTHER" && (
-          <div className="space-y-1.5 animate-in slide-in-from-top-2 duration-200">
-            <label className="text-[10px] font-black uppercase tracking-widest text-slate-400 block">
+          <div className="space-y-3 animate-in slide-in-from-top-2 duration-200">
+            <label className="pl-1 text-[10px] font-black uppercase tracking-widest text-slate-400 block whitespace-nowrap">
               Specify Subject
             </label>
             <input
               required
               maxLength={50}
-              className="w-full px-4 py-3 rounded-xl bg-blue-50/30 border border-blue-100 focus:border-blue-500 outline-none transition-all text-sm font-bold"
+              className="w-full px-5 py-4 rounded-2xl bg-blue-50/40 focus:bg-blue-50/60 outline-none transition-all text-sm font-bold placeholder:text-blue-300"
               placeholder="Brief summary..."
               value={customSubject}
               onChange={(e) => setCustomSubject(e.target.value)}
@@ -173,37 +177,38 @@ export default function SupportForm({ user, onSuccess, onCancel }: SupportFormPr
         )}
 
         {/* MESSAGE AREA */}
-        <div>
-          <label className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-1.5 block">
+        <div className="space-y-3">
+          <label className="pl-1 text-[10px] font-black uppercase tracking-widest text-slate-400 block whitespace-nowrap">
             Detailed Request
           </label>
           <textarea
             required
-            rows={4}
-            className="w-full px-4 py-3 rounded-xl bg-slate-50 border border-slate-100 focus:border-blue-500 outline-none transition-all text-sm font-medium resize-none"
+            rows={5}
+            className="w-full px-5 py-4 rounded-2xl bg-slate-100/40 focus:bg-slate-100/60 outline-none transition-all text-sm font-medium resize-none placeholder:text-slate-300 leading-relaxed"
             placeholder="Explain the context..."
             value={message}
             onChange={(e) => setMessage(e.target.value)}
           />
         </div>
 
-        <div className="flex gap-3 pt-2">
-          <button 
-            type="button" 
-            onClick={onCancel} 
-            className="flex-1 py-3 text-[10px] font-black uppercase tracking-widest text-slate-400 hover:text-red-500 transition-colors"
+        {/* ACTION BUTTONS */}
+        <div className="flex items-center gap-6 pt-4">
+          <button
+            type="button"
+            onClick={onCancel}
+            className="flex-1 py-4 text-[11px] font-bold uppercase tracking-widest text-slate-400 hover:text-red-500 transition-colors whitespace-nowrap"
           >
             Discard
           </button>
           <button
             type="submit"
             disabled={isSending}
-            className="flex-1 py-4 rounded-xl text-[10px] font-black uppercase tracking-widest bg-slate-900 text-white hover:bg-blue-600 transition-all disabled:opacity-50 shadow-lg shadow-slate-200 active:scale-[0.98]"
+            className="flex-[2] py-4 rounded-full text-[11px] font-black uppercase tracking-widest bg-slate-900 text-white hover:bg-black transition-all disabled:opacity-50 active:scale-[0.98] shadow-xl shadow-slate-200 whitespace-nowrap"
           >
             {isSending ? "Routing..." : "Send Request"}
           </button>
         </div>
       </form>
-    </section>
+    </div>
   );
 }
