@@ -35,6 +35,18 @@ enum PermissionAction {
   EXPORT
 }
 
+enum ActorType {
+  USER
+  SYSTEM
+}
+
+enum Severity {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
 enum TaxType {
   VAT
   SALES_TAX
@@ -1389,38 +1401,69 @@ model POSSession {
 // ACTIVITY LOGS
 ////////////////////////////////////
 
+////////////////////////////////////
+// FORENSIC AUDIT LOGGING
+////////////////////////////////////
+
 model ActivityLog {
   id             String    @id @default(cuid())
   organizationId String
   branchId       String?
-  personnelId    String?
-  action         String
+  
+  // Actor context
+  actorId        String?   // Maps to AuthorizedPersonnel.id or "SYSTEM"
+  actorType      ActorType @default(USER)
+  actorRole      Role?     // Snapshot of the role at the time of action
+  
+  // Action details
+  action         String    // e.g., "EXECUTE_STOCK_ADJUST"
+  description    String @default("System generated log")
+  severity       Severity  @default(LOW)
   critical       Boolean   @default(false)
+
+  // Target Resource (Polymorphic tracking)
+  targetId       String?   // ID of the resource being acted upon
+  targetType     String?   // e.g., "PRODUCT", "INVOICE", "PERSONNEL"
+
+  // State Tracking (For "Before/After" diffing)
+  before         Json?     // Snapshot of data BEFORE the change
+  after          Json?     // Snapshot of data AFTER the change
+  
+  // Security & Networking
+  requestId      String?   // 🔥 Correlation UUID to group logs from one API call
   ipAddress      String?
   deviceInfo     String?
-  metadata       Json?
+  metadata       Json?     // Extra context (e.g., error stacks, specific flags)
+
+  // Audit Integrity (Blockchain-style hash chaining)
+  hash           String?   @unique 
+  previousHash   String?   
+
+  // Status & Cleanup
   deletedAt      DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  // Relations
+  organization   Organization        @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  branch         Branch?             @relation(fields: [branchId], references: [id])
+  personnel      AuthorizedPersonnel? @relation(fields: [actorId], references: [id])
+  
   approvalId     String?
-
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  organization  Organization         @relation(fields: [organizationId], references: [id])
-  branch        Branch?              @relation(fields: [branchId], references: [id])
-  personnel     AuthorizedPersonnel? @relation(fields: [personnelId], references: [id])
-  approval      ApprovalRequest?     @relation("ApprovalLogs", fields: [approvalId], references: [id])
-  notifications Notification[]
+  approval       ApprovalRequest?    @relation("ApprovalLogs", fields: [approvalId], references: [id])
+  
+  notifications  Notification[]
 
   @@index([organizationId, branchId])
-  @@index([personnelId])
+  @@index([actorId])
   @@index([action])
-  @@index([critical])
+  @@index([requestId])
   @@index([createdAt])
-  @@index([deletedAt])
+  @@index([hash])
 }
 
 ////////////////////////////////////
-// NOTIFICATIONS
+// NOTIFICATIONS SYSTEM
 ////////////////////////////////////
 
 model Notification {
@@ -1429,29 +1472,31 @@ model Notification {
   branchId       String?
   type           NotificationType
 
-  // High Efficiency: Link directly to the triggering action/log
-  actionTrigger CriticalAction? // Points to your existing CriticalAction enum
-  activityLogId String? // The source ActivityLog for details
+  // High Efficiency: Link directly to the triggering event
+  actionTrigger  CriticalAction? 
+  activityLogId  String? 
 
-  title      String
-  message    String
-  approvalId String?
-  deletedAt  DateTime?
-
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  title          String
+  message        String
+  approvalId     String?
+  
+  // Metadata for filtering
+  deletedAt      DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
 
   // Relations
-  organization Organization            @relation(fields: [organizationId], references: [id])
-  branch       Branch?                 @relation(fields: [branchId], references: [id])
-  approval     ApprovalRequest?        @relation(fields: [approvalId], references: [id])
-  activity     ActivityLog?            @relation(fields: [activityLogId], references: [id])
-  recipients   NotificationRecipient[]
+  organization   Organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  branch         Branch?           @relation(fields: [branchId], references: [id])
+  approval       ApprovalRequest?  @relation(fields: [approvalId], references: [id])
+  activity       ActivityLog?      @relation(fields: [activityLogId], references: [id])
+  
+  recipients     NotificationRecipient[]
 
   @@index([organizationId, branchId])
   @@index([type])
-  @@index([actionTrigger])
-  @@index([deletedAt])
+  @@index([activityLogId])
+  @@index([createdAt])
 }
 
 model NotificationRecipient {
@@ -1460,12 +1505,11 @@ model NotificationRecipient {
   personnelId    String
   read           Boolean @default(false)
 
-  // Helpful for cleanup or prioritizing recent push notifications
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
 
-  notification Notification        @relation(fields: [notificationId], references: [id], onDelete: Cascade)
-  personnel    AuthorizedPersonnel @relation(fields: [personnelId], references: [id], onDelete: Cascade)
+  notification   Notification        @relation(fields: [notificationId], references: [id], onDelete: Cascade)
+  personnel      AuthorizedPersonnel @relation(fields: [personnelId], references: [id], onDelete: Cascade)
 
   @@unique([notificationId, personnelId])
   @@index([personnelId])
@@ -1475,20 +1519,20 @@ model NotificationRecipient {
 model NotificationSetting {
   id               String           @id @default(cuid())
   organizationId   String
-  personnelId      String?
+  personnelId      String?          // Null = Organization-wide default
   notificationType NotificationType
 
-  // Delivery Channels: Makes push logic very efficient
-  inAppEnabled Boolean @default(true)
-  pushEnabled  Boolean @default(false)
-  emailEnabled Boolean @default(false)
+  // Delivery Channels
+  inAppEnabled     Boolean @default(true)
+  pushEnabled      Boolean @default(false)
+  emailEnabled     Boolean @default(false)
 
-  deletedAt DateTime?
-  createdAt DateTime  @default(now())
-  updatedAt DateTime  @updatedAt
+  deletedAt        DateTime?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
 
-  organization Organization         @relation(fields: [organizationId], references: [id])
-  personnel    AuthorizedPersonnel? @relation(fields: [personnelId], references: [id])
+  organization     Organization        @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  personnel        AuthorizedPersonnel? @relation(fields: [personnelId], references: [id], onDelete: Cascade)
 
   @@unique([organizationId, personnelId, notificationType])
   @@index([organizationId])

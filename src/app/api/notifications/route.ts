@@ -4,23 +4,22 @@ import { authOptions } from "@/core/lib/auth";
 import prisma from "@/core/lib/prisma";
 import { pusherServer } from "@/core/lib/pusher";
 import { Role, NotificationType, CriticalAction } from "@prisma/client";
+import { z } from "zod";
 
 /* -------------------------------------------------- */
-/* GET: FETCH USER NOTIFICATIONS (PAGINATED)          */
+/* GET: FETCH NOTIFICATIONS (PAGINATED & OPTIMIZED)   */
 /* -------------------------------------------------- */
 export async function GET(req: NextRequest) {
   try {
     const session = await getServerSession(authOptions);
-    if (!session?.user?.id) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
+    if (!session?.user?.id) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
     const { searchParams } = new URL(req.url);
     const limit = Math.min(Number(searchParams.get("limit")) || 50, 100);
     const cursor = searchParams.get("cursor");
     const personnelId = session.user.id;
 
-    // Fetch notifications via the recipient join table
+    // Fetch via strict NotificationRecipient Join Table
     const recipientEntries = await prisma.notificationRecipient.findMany({
       where: { 
         personnelId, 
@@ -48,13 +47,11 @@ export async function GET(req: NextRequest) {
       ...(cursor && { skip: 1, cursor: { id: cursor } }),
     });
 
-    // Map to a structure that frontend components (Drawer/Toasts) can use instantly
     const notifications = recipientEntries.map((entry) => {
       const n = entry.notification;
-
       return {
         id: n.id,
-        recipientEntryId: entry.id, // For specific row targeting if needed
+        recipientEntryId: entry.id,
         type: n.type,
         actionTrigger: n.actionTrigger, 
         title: n.title,
@@ -62,7 +59,6 @@ export async function GET(req: NextRequest) {
         createdAt: n.createdAt,
         updatedAt: n.updatedAt,
         read: entry.read,
-        // Polymorphic context for "Approve/Reject" or "Undo" UIs
         context: n.approval ? {
           type: "APPROVAL",
           id: n.approval.id,
@@ -75,11 +71,10 @@ export async function GET(req: NextRequest) {
           id: n.activity.id,
           action: n.activity.action,
           critical: n.activity.critical,
-          metadata: n.activity.metadata, // Contains old/new values for "Undo" logic
-          personnel: n.activity.personnel,
-          time: n.activity.createdAt.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
-          ip: n.activity.ipAddress ?? "Internal System",
-          device: n.activity.deviceInfo ?? "Server",
+          metadata: n.activity.metadata,
+          actor: n.activity.personnel,
+          time: n.activity.createdAt.toISOString(),
+          ip: n.activity.ipAddress ?? "System",
         } : null,
       };
     });
@@ -90,13 +85,8 @@ export async function GET(req: NextRequest) {
 
     return NextResponse.json({
       notifications,
-      pagination: {
-        nextCursor: recipientEntries.length === limit
-          ? recipientEntries[recipientEntries.length - 1].id
-          : null,
-      },
+      pagination: { nextCursor: recipientEntries.length === limit ? recipientEntries[recipientEntries.length - 1].id : null },
       unreadCount,
-      count: notifications.length,
     });
   } catch (error) {
     console.error("[GET_NOTIFICATIONS_ERROR]:", error);
@@ -105,25 +95,32 @@ export async function GET(req: NextRequest) {
 }
 
 /* -------------------------------------------------- */
-/* POST: CREATE & DISPATCH NEW NOTIFICATION          */
+/* POST: CREATE & BROADCAST (PUSHER)                  */
 /* -------------------------------------------------- */
+const postSchema = z.object({
+  type: z.nativeEnum(NotificationType),
+  title: z.string().min(1),
+  message: z.string().min(1),
+  branchId: z.string().optional().nullable(),
+  actionTrigger: z.nativeEnum(CriticalAction).optional().nullable(),
+  activityLogId: z.string().optional().nullable(),
+  approvalId: z.string().optional().nullable(),
+  kind: z.string().default("PUSH"),
+});
+
 export async function POST(req: NextRequest) {
   try {
     const session = await getServerSession(authOptions);
-    if (!session?.user?.id) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
+    if (!session?.user?.id) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
     const body = await req.json();
-    const { 
-      type, title, message, branchId, 
-      actionTrigger, activityLogId, approvalId, 
-      kind = "PUSH" 
-    } = body;
-    
+    const parsed = postSchema.safeParse(body);
+    if (!parsed.success) return NextResponse.json({ error: "Invalid payload" }, { status: 400 });
+
+    const { type, title, message, branchId, actionTrigger, activityLogId, approvalId, kind } = parsed.data;
     const organizationId = session.user.organizationId;
 
-    // 1. Identify valid recipients (Admins, Owners, or Branch Managers)
+    // Audience Targeting
     const recipients = await prisma.authorizedPersonnel.findMany({
       where: {
         organizationId,
@@ -131,38 +128,35 @@ export async function POST(req: NextRequest) {
         isLocked: false,
         OR: [
           { role: Role.ADMIN },
+          { role: Role.AUDITOR }, // Explicitly including Auditor from schema updates
           { isOrgOwner: true },
           branchId ? { role: Role.MANAGER, branchId } : {},
         ],
-        NOT: { id: session.user.id } // Do not notify the user who performed the action
+        NOT: { id: session.user.id }
       },
       select: { id: true },
     });
 
-    if (recipients.length === 0) {
-      return NextResponse.json({ success: true, message: "No recipients found" });
-    }
+    if (!recipients.length) return NextResponse.json({ success: true, message: "No valid targets" });
 
-    // 2. Create the notification and join records atomically
+    // Atomic Creation
     const notification = await prisma.notification.create({
       data: {
         organizationId,
         branchId,
-        type: type as NotificationType,
+        type,
         title,
         message,
-        actionTrigger: actionTrigger as CriticalAction,
+        actionTrigger,
         activityLogId,
         approvalId,
         recipients: {
-          create: recipients.map((r) => ({
-            personnelId: r.id,
-          })),
+          create: recipients.map((r) => ({ personnelId: r.id })),
         },
       },
     });
 
-    // 3. Dispatch Live Payload for MASAAlertProvider
+    // Real-Time Push Payload
     const alertPayload = {
       id: notification.id,
       kind,
@@ -170,79 +164,53 @@ export async function POST(req: NextRequest) {
       title: notification.title,
       message: notification.message,
       actionTrigger: notification.actionTrigger,
-      approvalId: notification.approvalId, // Presence of this triggers "Accept/Reject" UI
-      activityId: notification.activityLogId, // Presence of this triggers "Undo/View" UI
+      approvalId: notification.approvalId,
+      activityId: notification.activityLogId,
       createdAt: Date.now(),
     };
 
-    // Parallel broadcast to all active recipient channels
-    await Promise.allSettled(
-      recipients.map((r) =>
-        pusherServer.trigger(`user-${r.id}`, "new-alert", alertPayload)
-      )
-    );
+    await Promise.allSettled(recipients.map((r) => pusherServer.trigger(`user-${r.id}`, "new-alert", alertPayload)));
 
-    return NextResponse.json({ 
-      success: true, 
-      notificationId: notification.id, 
-      dispatchedTo: recipients.length 
-    });
+    return NextResponse.json({ success: true, notificationId: notification.id, dispatchedTo: recipients.length });
   } catch (error) {
-    console.error("[CREATE_NOTIFICATION_ERROR]:", error);
-    return NextResponse.json({ error: "Failed to dispatch notification" }, { status: 500 });
+    console.error("[POST_NOTIFICATION_ERROR]:", error);
+    return NextResponse.json({ error: "Broadcast failed" }, { status: 500 });
   }
 }
 
 /* -------------------------------------------------- */
-/* PATCH: UPDATE READ STATUS (SINGLE OR ALL)         */
+/* PATCH: UPDATE READ STATUS                          */
 /* -------------------------------------------------- */
 export async function PATCH(req: NextRequest) {
   try {
     const session = await getServerSession(authOptions);
-    if (!session?.user?.id) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
+    if (!session?.user?.id) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
     const body = await req.json();
     const { id, read, markAll } = body;
     const personnelId = session.user.id;
 
-    // Handle Bulk "Mark as Read"
     if (markAll === true) {
       await prisma.notificationRecipient.updateMany({
         where: { personnelId, read: false },
         data: { read: true },
       });
-
       await pusherServer.trigger(`user-${personnelId}`, "notifications-read", { type: "all" });
       return NextResponse.json({ success: true, updated: "all" });
     }
 
-    // Handle Single Notification Update
-    if (!id || typeof read !== "boolean") {
-      return NextResponse.json({ error: "Invalid payload" }, { status: 400 });
-    }
+    if (!id || typeof read !== "boolean") return NextResponse.json({ error: "Invalid payload" }, { status: 400 });
 
-    // Uses the strict compound unique index from your schema
+    // Uses the exact compound unique index from the schema @unique([notificationId, personnelId])
     const updated = await prisma.notificationRecipient.update({
-      where: { 
-        notificationId_personnelId: { 
-          notificationId: id, 
-          personnelId 
-        } 
-      },
+      where: { notificationId_personnelId: { notificationId: id, personnelId } },
       data: { read },
     });
 
-    await pusherServer.trigger(`user-${personnelId}`, "notifications-read", {
-      type: "single",
-      id: id,
-      read: updated.read,
-    });
-
+    await pusherServer.trigger(`user-${personnelId}`, "notifications-read", { type: "single", id, read: updated.read });
     return NextResponse.json({ success: true });
   } catch (error) {
-    console.error("[UPDATE_NOTIFICATION_ERROR]:", error);
-    return NextResponse.json({ error: "Failed to update notification" }, { status: 500 });
+    console.error("[PATCH_NOTIFICATION_ERROR]:", error);
+    return NextResponse.json({ error: "Update failed" }, { status: 500 });
   }
 }
