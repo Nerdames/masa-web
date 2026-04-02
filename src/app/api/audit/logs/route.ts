@@ -43,10 +43,10 @@ export async function GET(req: NextRequest) {
     rawLogs.forEach(log => {
       const meta = log.metadata as any || {};
       
-      // Fallback Trace ID: Using safe fallbacks for IP to group heuristics
+      // Fallback Trace ID: Prefer native requestId, fallback to metadata traceId, then safe fallbacks
       const safeIp = log.ipAddress || "127.0.0.1";
-      const heuristicTraceId = meta.traceId || 
-        `HEURISTIC_${log.personnelId || 'SYS'}_${safeIp}_${new Date(log.createdAt).getHours()}`;
+      const heuristicTraceId = log.requestId || meta.traceId || 
+        `HEURISTIC_${log.actorId || 'SYS'}_${safeIp}_${new Date(log.createdAt).getHours()}`;
 
       if (!chainMap.has(heuristicTraceId)) {
         chainMap.set(heuristicTraceId, []);
@@ -76,22 +76,28 @@ export async function GET(req: NextRequest) {
       processedLogs.push({
         id: triggerEvent.id,
         traceId: traceId,
+        requestId: triggerEvent.requestId,
         action: triggerEvent.action,
         critical: triggerEvent.critical,
+        severity: triggerEvent.severity,
         createdAt: triggerEvent.createdAt,
+        
         // FIX: Ensure IP and Device info always have a string fallback
         ipAddress: triggerEvent.ipAddress || "0.0.0.0",
         deviceInfo: triggerEvent.deviceInfo || "SYSTEM_PROCESS",
         metadata: triggerEvent.metadata,
-        // FIX: Provide personnelId for frontend routing
-        personnelId: triggerEvent.personnelId || "SYSTEM", 
+        
+        // FIX: Replaced personnelId with actorId and actorRole mapped from Schema
+        personnelId: triggerEvent.actorId || "SYSTEM", 
         personnelName: triggerEvent.personnel?.name || "System Automated",
-        personnelRole: triggerEvent.personnel?.role || "SYSTEM",
+        personnelRole: triggerEvent.actorRole || triggerEvent.personnel?.role || "SYSTEM",
+        
         module: logModule,
         similarEvents: similarEvents.map(se => ({
           id: se.id,
           action: se.action,
           critical: se.critical,
+          severity: se.severity,
           createdAt: se.createdAt,
           metadata: se.metadata
         }))

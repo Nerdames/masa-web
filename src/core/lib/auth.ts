@@ -403,7 +403,7 @@ export const authOptions: NextAuthOptions = {
 
   pages: {
     signIn: "/signin",
-    error: "/error",
+    error: "/signin",
   },
   
   secret: process.env.NEXTAUTH_SECRET,

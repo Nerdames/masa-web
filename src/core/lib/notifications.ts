@@ -1,6 +1,6 @@
 import prisma from "@/core/lib/prisma";
 import { pusherServer } from "@/core/lib/pusher";
-import { NotificationType, Prisma } from "@prisma/client";
+import { NotificationType, Prisma, CriticalAction } from "@prisma/client";
 
 /* -------------------------------------------------- */
 /* TYPES */
@@ -13,6 +13,10 @@ interface CreateNotificationParams {
 
   organizationId: string;
   recipientIds: string[];
+
+  // PREMIUM: Linked to Forensic/Audit System
+  actionTrigger?: CriticalAction | null;
+  activityLogId?: string | null;
 
   approvalId?: string | null;
   branchId?: string | null;
@@ -43,6 +47,8 @@ export async function createNotification({
   recipientIds,
   approvalId,
   branchId,
+  actionTrigger,
+  activityLogId,
   silent = false,
 }: CreateNotificationParams) {
   /* ---------------- Validation ---------------- */
@@ -89,10 +95,10 @@ export async function createNotification({
     where: {
       id: { in: uniqueRecipientIds },
       organizationId,
-      NotificationSetting: {
+      notificationSettings: {
         none: {
           notificationType: type,
-          enabled: false,
+          inAppEnabled: false,
         },
       },
     },
@@ -121,6 +127,8 @@ export async function createNotification({
           branchId: branchId ?? null,
 
           approvalId: approvalId ?? null,
+          actionTrigger: actionTrigger ?? null,
+          activityLogId: activityLogId ?? null,
         },
       });
 
@@ -144,12 +152,8 @@ export async function createNotification({
     });
 
     /* ---------------- Recipient Count ---------------- */
-
-    const recipientCount = await prisma.notificationRecipient.count({
-      where: {
-        notificationId: notification.id,
-      },
-    });
+    // Performance optimization: We already know the count from the array length
+    const recipientCount = finalRecipientIds.length;
 
     /* --------------------------------------------------
        REALTIME BROADCAST
@@ -165,7 +169,8 @@ export async function createNotification({
             title: notification.title,
             message: notification.message,
             type: notification.type,
-
+            
+            actionTrigger: notification.actionTrigger ?? null,
             approvalId: notification.approvalId ?? null,
             branchId: notification.branchId ?? null,
 
@@ -192,6 +197,8 @@ export async function createNotification({
       message: notification.message,
       type: notification.type,
 
+      actionTrigger: notification.actionTrigger ?? null,
+      activityLogId: notification.activityLogId ?? null,
       approvalId: notification.approvalId ?? null,
       branchId: notification.branchId ?? null,
 

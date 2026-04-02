@@ -8,9 +8,9 @@ import { hasPagePermission } from "@/core/lib/permission";
 /* -------------------------------------------------- */
 
 const AUTH_ROUTES = ["/signin", "/register", "/reset-password", "/welcome"];
-const BYPASS_PREFIXES = ["/_next", "/api/auth", "/favicon.ico", "/feedback"];
+// Expanded to include common asset folders to avoid CSS/styling blockages
+const BYPASS_PREFIXES = ["/_next", "/api/auth", "/favicon.ico", "/feedback", "/public", "/images", "/assets"];
 const PUBLIC_FILE = /\.(.*)$/;
-const DB_UPDATE_THROTTLE_MS = 5 * 60 * 1000;
 
 /* -------------------------------------------------- */
 /* HELPERS */
@@ -18,12 +18,16 @@ const DB_UPDATE_THROTTLE_MS = 5 * 60 * 1000;
 
 /**
  * Hardened Unauthorized Handler
- * Explicitly prevents "undefined" in the URL string.
+ * Explicitly prevents "undefined" and handles Next.js JSON requests properly.
  */
 function handleUnauthorized(req: NextRequest, destination: string, error?: string) {
   const { pathname, origin } = req.nextUrl;
 
-  if (pathname.startsWith("/api/")) {
+  // If this is an API call or a Next.js data route, returning a redirect string breaks standard fetches.
+  // Return a clean 403 JSON payload instead.
+  const isDataRequest = req.headers.get("x-nextjs-data") || pathname.startsWith("/_next/data");
+  
+  if (pathname.startsWith("/api/") || isDataRequest) {
     return NextResponse.json(
       { error: error || "Unauthorized", message: "Session expired or insufficient permissions." },
       { status: 403 }
@@ -37,7 +41,7 @@ function handleUnauthorized(req: NextRequest, destination: string, error?: strin
     url.searchParams.set("callbackUrl", pathname);
   }
   
-  // Explicitly set error if provided, ensuring it's never the literal string "undefined"
+  // Explicitly set error if provided, preventing null/undefined leaks
   if (error) {
     url.searchParams.set("error", error);
   }
@@ -45,6 +49,10 @@ function handleUnauthorized(req: NextRequest, destination: string, error?: strin
   return NextResponse.redirect(url);
 }
 
+/**
+ * PRODUCTION LOGGING
+ * Uses ev.waitUntil to offload logging to the edge without slowing down the user.
+ */
 function logSecurityEvent(ev: NextFetchEvent, origin: string, action: string, meta: Record<string, any>) {
   const logPromise = fetch(`${origin}/api/logs`, {
     method: "POST",
@@ -65,12 +73,16 @@ function logSecurityEvent(ev: NextFetchEvent, origin: string, action: string, me
 export async function proxy(req: NextRequest, ev: NextFetchEvent) {
   const { pathname, origin } = req.nextUrl;
 
-  // 1. BYPASS LOGIC
+  // 1. CRITICAL BYPASS LOGIC (Static files & internal routes)
   const isInternalAction = req.headers.get("x-masa-internal-key") === process.env.INTERNAL_API_KEY;
-  if (isInternalAction || BYPASS_PREFIXES.some(p => pathname.startsWith(p)) || PUBLIC_FILE.test(pathname)) {
+  const isBypassRoute = BYPASS_PREFIXES.some(p => pathname.startsWith(p));
+  const isStaticFile = PUBLIC_FILE.test(pathname);
+
+  if (isInternalAction || isBypassRoute || isStaticFile) {
     return NextResponse.next();
   }
 
+  // 2. TOKEN RETRIEVAL
   const token = await getToken({
     req,
     secret: process.env.NEXTAUTH_SECRET,
@@ -78,41 +90,41 @@ export async function proxy(req: NextRequest, ev: NextFetchEvent) {
 
   const isAuthPage = AUTH_ROUTES.some((r) => pathname.startsWith(r));
 
-  // 2. GUEST ACCESS CONTROL
+  // 3. GUEST ACCESS CONTROL
   if (!token) {
     if (isAuthPage || pathname === "/") return NextResponse.next();
-    // Default to signin for any protected route
     return handleUnauthorized(req, "/signin");
   }
 
-  // 3. ACCOUNT INTEGRITY (Explicit Error Mapping)
-  // Maps internal states to the error codes handled by your error/page.tsx
+  // 4. ACCOUNT INTEGRITY & MID-SESSION REVOCATION
+  // This directly mirrors the flags your authOptions JWT heartbeat will throw.
   if (token.disabled || token.locked || token.expired) {
-    if (pathname === "/signin") return NextResponse.next();
+    if (pathname === "/signin" || pathname.startsWith("/api/auth")) return NextResponse.next();
 
     let errorCode = "Default";
-    if (token.disabled) errorCode = "AccessDenied";
-    if (token.locked) errorCode = "AccessDenied";
-    if (token.expired) errorCode = "Verification";
+    if (token.disabled || token.locked) errorCode = "AccessDenied";
+    if (token.expired) errorCode = "Verification"; // Points to inactivity or forced expiry
 
     logSecurityEvent(ev, origin, `SECURITY_BLOCK_${errorCode}`, {
       personnelId: token.id,
       email: token.email,
-      path: pathname
+      path: pathname,
+      metadata: { disabled: token.disabled, locked: token.locked, expired: token.expired }
     });
 
     return handleUnauthorized(req, "/signin", errorCode);
   }
 
-  // 4. MANDATORY PASSWORD ROTATION
+  // 5. MANDATORY PASSWORD ROTATION
   if (token.requiresPasswordChange) {
     const isResetPage = pathname.startsWith("/reset-password");
+    // Don't block API calls while on the reset page (so the POST request can complete)
     if (!isResetPage && !pathname.startsWith("/api/")) {
       return NextResponse.redirect(new URL("/reset-password", origin));
     }
   }
 
-  // 5. AUTHENTICATED REDIRECTION (The "Kick-back")
+  // 6. AUTHENTICATED REDIRECTION (The "Kick-back")
   if (isAuthPage || pathname === "/") {
     if (token.requiresPasswordChange && pathname.startsWith("/reset-password")) {
       return NextResponse.next();
@@ -132,7 +144,7 @@ export async function proxy(req: NextRequest, ev: NextFetchEvent) {
     return NextResponse.redirect(new URL(destination, origin));
   }
 
-  // 6. RBAC ENGINE
+  // 7. RBAC ENGINE
   const allowed = hasPagePermission(
     token.role as Role,
     pathname,
@@ -140,31 +152,18 @@ export async function proxy(req: NextRequest, ev: NextFetchEvent) {
   );
 
   if (!allowed) {
-    if (pathname.startsWith("/api/")) {
-      return NextResponse.json({ error: "Forbidden", message: "Access denied." }, { status: 403 });
-    }
-    
     logSecurityEvent(ev, origin, "UNAUTHORIZED_ACCESS_ATTEMPT", {
       personnelId: token.id,
       role: token.role,
       path: pathname,
     });
 
-    // Redirect to the error page we built earlier with the AccessDenied code
-    return NextResponse.redirect(new URL("/signin?error=AccessDenied", origin));
+    return handleUnauthorized(req, "/signin", "AccessDenied");
   }
 
-  // 7. HEARTBEAT SYNC
-  const now = Date.now();
-  const lastActivity = Number(token.lastActivityAt || 0);
-  const isLowPriority = ["/api/notifications", "/api/logs"].some(p => pathname.startsWith(p));
-
-  if (!isLowPriority && (now - lastActivity > DB_UPDATE_THROTTLE_MS)) {
-    logSecurityEvent(ev, origin, "HEARTBEAT_SYNC", {
-      personnelId: token.id,
-      path: pathname
-    });
-  }
+  // Note: We removed the duplicate heartbeat sync DB update from the proxy.
+  // Since your `authOptions` handles the exact same update in the JWT callback (throttled perfectly),
+  // handling it here as well caused unnecessary double queries on the DB connection pool.
 
   return NextResponse.next();
 }
