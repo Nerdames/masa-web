@@ -9,7 +9,7 @@ import { useAlerts } from "@/core/components/feedback/AlertProvider";
 
 /**
  * MASA Terminal v3.0 - Unified SignIn
- * Perfectly synchronized with authOptions logic.
+ * Fully synchronized with "Fortress Protocol" backend logic.
  */
 
 interface AuthErrorConfig {
@@ -20,11 +20,16 @@ interface AuthErrorConfig {
 }
 
 const ERROR_MAP: Record<string, AuthErrorConfig> = {
+  // Account Status Errors
   ACCOUNT_DISABLED: { title: "Node Decommissioned", message: "Access revoked by Admin.", type: "SECURITY", kind: "PUSH" },
   ORGANIZATION_SUSPENDED: { title: "Sector Offline", message: "Org-level suspension active.", type: "ERROR", kind: "PUSH" },
-  ACCOUNT_LOCKED: { title: "Security Lockout", message: "Terminal frozen. Needs Admin override.", type: "ERROR", kind: "PUSH" },
+  
+  // Lockout & Security Errors (Synchronized with auth.ts lock reasons)
+  ACCOUNT_LOCKED_ADMIN: { title: "Security Lockout", message: "Terminal frozen by Admin override.", type: "ERROR", kind: "PUSH" },
   EXCESSIVE_FAILED_ATTEMPTS: { title: "Security Lockout", message: "Too many failed attempts. Cooling down...", type: "ERROR", kind: "PUSH" },
-  TEMPORARY_LOCKOUT: { title: "Access Restricted", message: "Terminal cooling down. Please wait 15m.", type: "SECURITY", kind: "PUSH" },
+  TEMPORARY_SECURITY_LOCKOUT: { title: "Access Restricted", message: "Terminal cooling down. Please wait 15m.", type: "SECURITY", kind: "PUSH" },
+  
+  // Validation Errors
   INVALID_CREDENTIALS: { title: "Access Denied", message: "Invalid credentials.", type: "ERROR", kind: "TOAST" },
   CredentialsSignin: { title: "Access Denied", message: "Invalid credentials.", type: "ERROR", kind: "TOAST" },
   SessionExpired: { title: "Session Terminated", message: "Re-authentication required.", type: "SECURITY", kind: "PUSH" },
@@ -47,8 +52,8 @@ const SignInForm = () => {
 
   useEffect(() => {
     // Generate transient Hardware ID for visual fidelity
-    setHwId(Math.random().toString(36).substr(2, 6).toUpperCase());
-    
+    setHwId(Math.random().toString(36).substring(2, 8).toUpperCase());
+
     if (urlError && ERROR_MAP[urlError]) {
       const config = ERROR_MAP[urlError];
       dispatch({ kind: config.kind, type: config.type, title: config.title, message: config.message });
@@ -71,14 +76,21 @@ const SignInForm = () => {
 
       if (result?.error) {
         await controls.start({ x: [-8, 8, -8, 8, 0], transition: { duration: 0.4 } });
-        // Map the custom error string from authorize() or fallback to generic
+        
+        // Match specific error string from backend or fallback
         const config = ERROR_MAP[result.error] || ERROR_MAP.INVALID_CREDENTIALS;
-        dispatch({ kind: config.kind, type: config.type, title: config.title, message: config.message });
+        
+        dispatch({ 
+          kind: config.kind, 
+          type: config.type, 
+          title: config.title, 
+          message: config.message 
+        });
       } else {
-        // Fetch session to verify 'requiresPasswordChange' from the JWT/Session callback
+        // Success: Verify session for security flags (e.g. requiresPasswordChange)
         const session = await getSession();
         const user = session?.user;
-        
+
         dispatch({
           kind: "PUSH",
           type: user?.requiresPasswordChange ? "WARNING" : "SUCCESS",
@@ -86,16 +98,17 @@ const SignInForm = () => {
           message: "Synchronizing security protocols...",
         });
 
+        // Delay slightly for visual feedback/sync
         setTimeout(() => {
           if (user?.requiresPasswordChange) {
             router.replace("/reset-password");
           } else {
             router.replace(callbackUrl === "/" ? "/admin/overview" : callbackUrl);
           }
-          router.refresh(); // Ensure session state is propagated
+          router.refresh(); 
         }, 800);
       }
-    } catch {
+    } catch (err) {
       dispatch({ kind: "TOAST", type: "ERROR", title: "Gateway Fault", message: "Network timeout." });
     } finally {
       setLoading(false);
@@ -168,7 +181,7 @@ const SignInForm = () => {
           </Link>
         </div>
       </div>
-      
+
       <div className="bg-slate-50/80 px-8 py-3 flex items-center justify-between border-t border-slate-100">
         <div className="flex items-center gap-1.5">
           <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
@@ -234,19 +247,19 @@ export default function SignInPage() {
       {/* Main Content */}
       <main className="flex-1 relative z-20 flex flex-col items-center justify-center px-6 min-h-0">
         <div className="max-w-7xl w-full grid grid-cols-1 lg:grid-cols-2 gap-12 items-center">
-          
+
           <section className="flex flex-col space-y-4 md:space-y-6 order-2 lg:order-1 hidden sm:block ">
             <div className="space-y-4">
               <div className="inline-flex items-center gap-2 bg-indigo-50 border border-indigo-100 px-3 py-1 rounded-full w-fit">
                 <span className="w-2 h-2 rounded-full bg-indigo-500 animate-pulse" />
                 <span className="text-[10px] font-bold uppercase tracking-widest text-indigo-600">v3.0 Secure Terminal</span>
               </div>
-              
+
               <h1 className="text-4xl md:text-5xl lg:text-7xl font-black leading-[1.1] tracking-tight text-slate-900">
                 Authorized <br /> 
                 <span className="text-transparent bg-clip-text bg-gradient-to-r from-indigo-600 via-blue-500 to-cyan-500">Access Only.</span>
               </h1>
-              
+
               <p className="text-sm md:text-base text-slate-600 max-w-md font-medium leading-relaxed">
                 Connect to the MASA multi-tenant infrastructure. High-fidelity branch management and real-time personnel auditing start here.
               </p>

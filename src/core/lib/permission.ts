@@ -66,7 +66,7 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<
   MANAGER: {
     INVOICE: [PermissionAction.CREATE, PermissionAction.READ, PermissionAction.UPDATE, PermissionAction.VOID, PermissionAction.APPROVE],
     STOCK: [PermissionAction.CREATE, PermissionAction.READ, PermissionAction.UPDATE, PermissionAction.APPROVE],
-    PERSONNEL: [PermissionAction.READ, PermissionAction.UPDATE], // Allows Manager to Read & Update (Lock/Disable)
+    PERSONNEL: [PermissionAction.READ, PermissionAction.UPDATE], 
   },
   AUDITOR: {
     INVOICE: [PermissionAction.READ, PermissionAction.EXPORT],
@@ -90,44 +90,31 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<
 /**
  * =========================================================
  * PAGE-LEVEL RBAC (Browser URLs)
- * Logic: Matches the actual URL paths, omitting (group) names.
  * =========================================================
  */
 export const PAGE_PERMISSIONS = {
-  // Admin & Analytics (from (dashboard)/admin)
   "/admin": [Role.ADMIN, Role.MANAGER, Role.DEV],
   "/admin/overview": [Role.ADMIN, Role.MANAGER, Role.DEV],
-  "/admin/personnels": [Role.ADMIN, Role.MANAGER, Role.DEV], // Manager gets UI access here
+  "/admin/personnels": [Role.ADMIN, Role.MANAGER, Role.DEV], 
   "/admin/branches": [Role.ADMIN, Role.DEV],
-  
-  // Audit (from (dashboard)/audit)
   "/audit": [Role.ADMIN, Role.AUDITOR, Role.DEV],
-  
-  // Terminal Modules (from (terminal)/inventory & (terminal)/pos)
   "/inventory": [Role.ADMIN, Role.MANAGER, Role.INVENTORY, Role.AUDITOR, Role.DEV],
   "/pos": [Role.ADMIN, Role.MANAGER, Role.SALES, Role.CASHIER, Role.DEV],
-  
-  // Technical Tools (from (tools))
   "/db-inspector": [Role.DEV],
   "/logs": [Role.DEV, Role.ADMIN],
   "/monitoring": [Role.DEV],
 } as const satisfies Record<string, readonly Role[]>;
 
-// Removed "/admin/personnels" so the routing falls to PAGE_PERMISSIONS above (which explicitly allows Manager)
-// This strictly locks DB and Branch configuration to pure Admins/Devs.
 export const MANAGEMENT_ROUTES = ["/admin/branches", "/db-inspector"];
-
-// Routes universally accessible to any authenticated user
 export const PERSONAL_ROUTES = ["/settings", "/feedback"] as const;
 
 /**
  * =========================================================
  * CRITICAL ACTION REQUIREMENTS
- * Defines which role is required to bypass an "Approval Flow".
  * =========================================================
  */
 export const ACTION_REQUIREMENTS: Record<CriticalAction, Role> = {
-  USER_LOCK_UNLOCK: Role.MANAGER, // Allows Managers to execute lock actions
+  USER_LOCK_UNLOCK: Role.MANAGER,
   EMAIL_CHANGE: Role.ADMIN,
   PASSWORD_CHANGE: Role.ADMIN,
   PRICE_UPDATE: Role.MANAGER,
@@ -169,9 +156,29 @@ export function hasDefaultPermission(
 }
 
 /**
+ * VISIBILITY HIERARCHY
+ * Determines if a recipient has the authority to see an action performed by an actor.
+ */
+export function canSeeAction(recipientRole: Role, actorRole: Role): boolean {
+  // 1. Devs and Admins see everything.
+  if (recipientRole === Role.DEV || recipientRole === Role.ADMIN) return true;
+
+  // 2. Auditors see everything for compliance/oversight.
+  if (recipientRole === Role.AUDITOR) return true;
+
+  // 3. Managers see anyone with a strictly lower weight (Cashier, Sales, Inventory).
+  // They cannot see actions by other Managers, Admins, or Devs.
+  if (recipientRole === Role.MANAGER) {
+    return ROLE_WEIGHT[actorRole] < ROLE_WEIGHT.MANAGER;
+  }
+
+  // 4. Standard personnel (Cashier/Sales) generally don't see system notifications.
+  return false;
+}
+
+/**
  * =========================================================
  * MANAGEMENT VALIDATION
- * Checks if a requester has the authority to modify a target user.
  * =========================================================
  */
 export function validateManagementRights(
@@ -188,7 +195,6 @@ export function validateManagementRights(
     return { authorized: false, reason: "Organization owners cannot be modified by staff." };
   }
 
-  // Ensures a Manager (weight 40) can NEVER edit or lock an Admin (weight 50)
   const allowed = ROLE_WEIGHT[requester.role] > ROLE_WEIGHT[target.role];
 
   return {
@@ -208,27 +214,20 @@ export function hasPagePermission(
   isOrgOwner: boolean = false
 ): boolean {
   const path = normalizePath(pathname);
-
   if (isOrgOwner) return true;
 
-  // 1. Personal routes check
   if (PERSONAL_ROUTES.some((p) => path === p || path.startsWith(`${p}/`))) {
     return true;
   }
 
-  // 2. Management route strict check (Admins and Devs ONLY)
   if (MANAGEMENT_ROUTES.some((p) => path.startsWith(p))) {
     return role === Role.ADMIN || role === Role.DEV;
   }
 
-  // 3. Dynamic Page Permission check
-  // Sorted to ensure /admin/sub-route is checked before /admin
   const sorted = Object.entries(PAGE_PERMISSIONS).sort((a, b) => b[0].length - a[0].length);
-
   const match = sorted.find(([p]) => path === p || path.startsWith(`${p}/`));
 
   if (!match) return false;
-
   return (match[1] as readonly Role[]).includes(role);
 }
 
@@ -272,15 +271,12 @@ export function authorize({
   requiresApproval?: boolean;
   reason?: string;
 } {
-  // 1. Root Override
   if (isOrgOwner) return { allowed: true };
 
-  // 2. Page-level check
   if (pathname && !hasPagePermission(role, pathname, isOrgOwner)) {
     return { allowed: false, reason: "Access denied to this module." };
   }
 
-  // 3. Resource-level check (Explicit + Default fallback)
   if (action && resource) {
     const explicit = canPerform(userPermissions, action, resource);
     const fallback = hasDefaultPermission(role, action, resource as ResourceType);
@@ -290,7 +286,6 @@ export function authorize({
     }
   }
 
-  // 4. Critical Action approval check
   if (criticalAction) {
     const needsApproval = actionRequiresApproval(role, criticalAction);
     if (needsApproval) {
@@ -305,11 +300,6 @@ export function authorize({
   return { allowed: true };
 }
 
-/**
- * =========================================================
- * HELPERS
- * =========================================================
- */
 export function canPerformAction(role: Role, action: CriticalAction): boolean {
   return !actionRequiresApproval(role, action);
 }

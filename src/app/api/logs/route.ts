@@ -4,21 +4,27 @@ import { getServerSession } from "next-auth/next";
 import { authOptions } from "@/core/lib/auth";
 import crypto from "crypto";
 import { z } from "zod";
-import { Prisma, Role, CriticalAction, ApprovalStatus, ActorType } from "@prisma/client";
+import { Prisma, Role, CriticalAction, ApprovalStatus, ActorType, Severity } from "@prisma/client";
+import { Ratelimit } from "@upstash/ratelimit";
+import { Redis } from "@upstash/redis";
 
-import { ROLE_WEIGHT, ACTION_REQUIREMENTS } from "@/core/lib/permission";
+import { ROLE_WEIGHT, ACTION_REQUIREMENTS, canSeeAction } from "@/core/lib/permission";
 import { applyActionDirectly } from "@/core/lib/actions";
 import { createNotification } from "@/core/lib/notifications";
 
 /* -------------------------------------------------- */
-/* CONFIG & TYPES */
+/* CONFIG & PRODUCTION RATE LIMITING */
 /* -------------------------------------------------- */
-const MAX_META_BYTES = 32 * 1024; // 32KB Limit
-const RATE_LIMIT_WINDOW_MS = 10_000;
-const RATE_LIMIT_MAX = 30;
+const MAX_META_BYTES = 32 * 1024; 
 const SYSTEM_HMAC_SECRET = process.env.LOG_SYSTEM_HMAC_SECRET || "";
 
-// Strict Schema Alignment based on Updated MASA Schema
+// Production-ready stateless rate limiter (Upstash Redis)
+const ratelimit = new Ratelimit({
+  redis: Redis.fromEnv(),
+  limiter: Ratelimit.slidingWindow(30, "10 s"),
+  analytics: true,
+});
+
 const logPayloadSchema = z.object({
   action: z.string().min(1).max(200),
   organizationId: z.string().cuid(),
@@ -28,33 +34,13 @@ const logPayloadSchema = z.object({
   before: z.record(z.unknown()).optional().nullable(),
   after: z.record(z.unknown()).optional().nullable(),
   meta: z.record(z.unknown()).optional().nullable(),
+  severity: z.nativeEnum(Severity).optional().default(Severity.LOW),
   systemHmac: z.string().optional(),
 });
 
 /* -------------------------------------------------- */
-/* IN-MEMORY RATE LIMITER (Use Redis for distributed) */
+/* HELPERS */
 /* -------------------------------------------------- */
-const rateMap = new Map<string, number[]>();
-function checkRateLimit(key: string): boolean {
-  const now = Date.now();
-  const timestamps = rateMap.get(key) ?? [];
-  const filtered = timestamps.filter((t) => now - t <= RATE_LIMIT_WINDOW_MS);
-  if (filtered.length >= RATE_LIMIT_MAX) {
-    rateMap.set(key, filtered);
-    return false;
-  }
-  filtered.push(now);
-  rateMap.set(key, filtered);
-  return true;
-}
-
-/* -------------------------------------------------- */
-/* SECURITY UTILS */
-/* -------------------------------------------------- */
-function jsonError(message: string, status = 400) {
-  return NextResponse.json({ message, success: false }, { status });
-}
-
 function verifySystemHmac(payload: string, hmac: string): boolean {
   if (!SYSTEM_HMAC_SECRET) return false;
   const mac = crypto.createHmac("sha256", SYSTEM_HMAC_SECRET).update(payload).digest("hex");
@@ -65,7 +51,6 @@ function verifySystemHmac(payload: string, hmac: string): boolean {
   }
 }
 
-// Cryptographic hash for audit chain integrity
 function generateHash(data: any): string {
   return crypto.createHash("sha256").update(JSON.stringify(data)).digest("hex");
 }
@@ -75,62 +60,70 @@ function generateHash(data: any): string {
 ================================================== */
 export async function POST(req: NextRequest) {
   try {
-    const ipAddress = req.headers.get("x-forwarded-for")?.split(",")[0] ?? "unknown";
+    const ipAddress = req.headers.get("x-forwarded-for")?.split(",")[0] ?? "127.0.0.1";
     const deviceInfo = req.headers.get("user-agent") ?? "unknown";
-    const requestId = crypto.randomUUID(); // Correlation ID
+    const requestId = crypto.randomUUID(); 
 
-    if (!checkRateLimit(`log_post:${ipAddress}`)) return jsonError("Too many requests", 429);
+    // 1. Stateless Rate Limit Check
+    const { success: limitOk } = await ratelimit.limit(`log_post:${ipAddress}`);
+    if (!limitOk) {
+      return NextResponse.json({ message: "Too many requests" }, { status: 429 });
+    }
 
     const rawBody = await req.text();
     let jsonBody;
     try {
       jsonBody = JSON.parse(rawBody);
     } catch {
-      return jsonError("Invalid JSON body", 400);
+      return NextResponse.json({ message: "Invalid JSON body" }, { status: 400 });
     }
 
     const parsed = logPayloadSchema.safeParse(jsonBody);
-    if (!parsed.success) return jsonError(`Validation failed: ${parsed.error.message}`, 400);
+    if (!parsed.success) {
+      return NextResponse.json({ message: `Validation failed: ${parsed.error.message}` }, { status: 400 });
+    }
 
-    const { action, organizationId, branchId, targetId, targetType, before, after, meta, systemHmac } = parsed.data;
+    const { action, organizationId, branchId, targetId, targetType, before, after, meta, severity, systemHmac } = parsed.data;
 
     if (meta && Buffer.byteLength(JSON.stringify(meta), "utf8") > MAX_META_BYTES) {
-      return jsonError("Payload size exceeded", 413);
+      return NextResponse.json({ message: "Payload size exceeded" }, { status: 413 });
     }
 
     const isVerifiedSystem = systemHmac ? verifySystemHmac(rawBody, systemHmac) : false;
     const session = await getServerSession(authOptions);
     const requester = session?.user;
 
-    if (!requester && !isVerifiedSystem) return jsonError("Unauthorized access", 401);
+    if (!requester && !isVerifiedSystem) {
+      return NextResponse.json({ message: "Unauthorized access" }, { status: 401 });
+    }
 
-    // Strict Account Verification
+    // 2. Validate Requester State
     if (requester) {
       const dbRequester = await prisma.authorizedPersonnel.findUnique({
         where: { id: requester.id },
-        select: { isLocked: true, disabled: true, deletedAt: true }
+        select: { isLocked: true, disabled: true, deletedAt: true, role: true }
       });
       if (!dbRequester || dbRequester.isLocked || dbRequester.disabled || dbRequester.deletedAt) {
-        return jsonError("Account suspended or inactive", 403);
+        return NextResponse.json({ message: "Account suspended or inactive" }, { status: 403 });
       }
     }
 
     const isCriticalAction = Object.values(CriticalAction).includes(action as CriticalAction);
     const requiredRole = isCriticalAction ? ACTION_REQUIREMENTS[action as CriticalAction] : null;
-    const userRole = requester?.role as Role | undefined;
+    const userRole = (requester?.role as Role) || Role.CASHIER; // Fallback to lowest role
 
-    const isAuthorized = isVerifiedSystem || (!!requester && (!requiredRole || (userRole && ROLE_WEIGHT[userRole] >= ROLE_WEIGHT[requiredRole])));
+    const isAuthorized = isVerifiedSystem || (!!requester && (!requiredRole || (ROLE_WEIGHT[userRole] >= ROLE_WEIGHT[requiredRole])));
 
     return await prisma.$transaction(async (tx) => {
-      // 1. Fetch Previous Hash for Chain Integrity (Locking row if possible via raw SQL in production, relying on transaction isolation here)
+      // 3. Fetch Chain Link with Serializable Lock
       const lastLog = await tx.activityLog.findFirst({
         where: { organizationId },
         orderBy: { createdAt: "desc" },
         select: { hash: true },
       });
-      const previousHash = lastLog?.hash ?? null;
+      const previousHash = lastLog?.hash ?? "GENESIS";
 
-      /* ---------------- CASE 1: Requires Approval ---------------- */
+      /* --- CASE 1: Requires Approval --- */
       if (isCriticalAction && requester && !isAuthorized) {
         const approval = await tx.approvalRequest.create({
           data: {
@@ -146,7 +139,17 @@ export async function POST(req: NextRequest) {
           },
         });
 
-        const logData = { action: `REQUEST_${action}`, organizationId, branchId, actorId: requester.id, actorRole: userRole, targetId, targetType, approvalId: approval.id, previousHash, requestId };
+        const logData = { 
+            action: `REQUEST_${action}`, 
+            organizationId, 
+            branchId, 
+            actorId: requester.id, 
+            actorRole: userRole, 
+            targetId, 
+            targetType, 
+            previousHash, 
+            requestId 
+        };
         const hash = generateHash(logData);
 
         await tx.activityLog.create({
@@ -154,49 +157,72 @@ export async function POST(req: NextRequest) {
             ...logData,
             actorType: ActorType.USER,
             critical: false,
+            severity: Severity.MEDIUM,
             ipAddress,
             deviceInfo,
             before: before ?? Prisma.JsonNull,
             after: after ?? Prisma.JsonNull,
             metadata: meta ?? Prisma.JsonNull,
+            approvalId: approval.id,
             hash,
           },
         });
 
-        // Async Notification Dispatch
-        queueNotification(organizationId, "APPROVAL_REQUIRED", `Approval requested for ${action}`, branchId, approval.id, requester.id);
+        // Hierarchical Notification
+        await queueHierarchicalNotification(tx, organizationId, "APPROVAL", `Approval requested for ${action}`, userRole, branchId, approval.id, requester.id);
         
         return NextResponse.json({ success: true, approvalId: approval.id, status: "PENDING" }, { status: 202 });
       }
 
-      /* ---------------- CASE 2: Authorized Execution ---------------- */
+      /* --- CASE 2: Authorized Execution --- */
       if (isCriticalAction && isAuthorized) {
         const opResult = await applyActionDirectly(tx, action, requester?.id ?? "SYSTEM", (meta as any) ?? {}, requester?.id ?? "SYSTEM", organizationId, branchId ?? null);
 
-        const logData = { action: `EXECUTE_${action}`, organizationId, branchId, actorId: requester?.id ?? "SYSTEM", actorRole: userRole, targetId, targetType, previousHash, requestId };
+        const logData = { 
+            action: `EXECUTE_${action}`, 
+            organizationId, 
+            branchId, 
+            actorId: requester?.id ?? "SYSTEM", 
+            actorRole: userRole, 
+            targetId, 
+            targetType, 
+            previousHash, 
+            requestId 
+        };
         const hash = generateHash(logData);
 
-        await tx.activityLog.create({
+        const logEntry = await tx.activityLog.create({
           data: {
             ...logData,
             actorType: isVerifiedSystem ? ActorType.SYSTEM : ActorType.USER,
             critical: true,
+            severity: Severity.HIGH,
             ipAddress,
             deviceInfo,
             before: before ?? Prisma.JsonNull,
             after: after ?? Prisma.JsonNull,
-            metadata: { ...meta, status: "EXECUTED" } ?? Prisma.JsonNull,
+            metadata: { ...((meta as object) || {}), status: "EXECUTED" },
             hash,
           },
         });
 
-        queueNotification(organizationId, "SYSTEM", `Executed critical action: ${action}`, branchId, undefined, requester?.id);
-
+        await queueHierarchicalNotification(tx, organizationId, "SECURITY", `Executed critical action: ${action}`, userRole, branchId, undefined, requester?.id, logEntry.id);
+        
         return NextResponse.json({ success: true, result: opResult });
       }
 
-      /* ---------------- CASE 3: Standard Logging ---------------- */
-      const logData = { action, organizationId, branchId, actorId: requester?.id ?? "SYSTEM", actorRole: userRole, targetId, targetType, previousHash, requestId };
+      /* --- CASE 3: Standard Logging --- */
+      const logData = { 
+          action, 
+          organizationId, 
+          branchId, 
+          actorId: requester?.id ?? "SYSTEM", 
+          actorRole: userRole, 
+          targetId, 
+          targetType, 
+          previousHash, 
+          requestId 
+      };
       const hash = generateHash(logData);
 
       const logEntry = await tx.activityLog.create({
@@ -204,6 +230,7 @@ export async function POST(req: NextRequest) {
           ...logData,
           actorType: isVerifiedSystem ? ActorType.SYSTEM : ActorType.USER,
           critical: false,
+          severity,
           ipAddress,
           deviceInfo,
           before: before ?? Prisma.JsonNull,
@@ -213,9 +240,14 @@ export async function POST(req: NextRequest) {
         },
       });
 
+      // Notify on Logins specifically
+      if (action === "LOGIN") {
+        await queueHierarchicalNotification(tx, organizationId, "SECURITY", `User logged in from ${ipAddress}`, userRole, branchId, undefined, requester?.id, logEntry.id);
+      }
+
       return NextResponse.json({ success: true, id: logEntry.id });
     }, {
-      isolationLevel: Prisma.TransactionIsolationLevel.Serializable, // Prevents race conditions on previousHash
+      isolationLevel: Prisma.TransactionIsolationLevel.Serializable, 
       maxWait: 5000,
       timeout: 10000,
     });
@@ -223,29 +255,55 @@ export async function POST(req: NextRequest) {
   } catch (err) {
     console.error("[LOG_POST_FATAL]", err);
     if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2034') {
-      return jsonError("Transaction conflict: Please retry.", 409);
+      return NextResponse.json({ message: "Transaction conflict: Please retry." }, { status: 409 });
     }
-    return jsonError("Internal server error during audit logging", 500);
+    return NextResponse.json({ message: "Internal server error" }, { status: 500 });
   }
 }
 
-// Fire-and-forget helper to decouple slow notification logic from fast API response
-async function queueNotification(orgId: string, type: string, message: string, branchId?: string | null, approvalId?: string, excludeUserId?: string) {
+/**
+ * PRODUCTION HIERARCHICAL NOTIFICATION LOGIC
+ */
+async function queueHierarchicalNotification(
+    tx: Prisma.TransactionClient,
+    orgId: string, 
+    type: string, 
+    message: string,
+    actorRole: Role,
+    branchId?: string | null, 
+    approvalId?: string, 
+    excludeUserId?: string,
+    activityLogId?: string
+) {
   try {
-    const staff = await prisma.authorizedPersonnel.findMany({
-      where: { organizationId: orgId, role: { in: [Role.ADMIN, Role.MANAGER, Role.AUDITOR] }, disabled: false, id: { not: excludeUserId } },
-      select: { id: true },
+    // 1. Fetch potential observers
+    const observers = await tx.authorizedPersonnel.findMany({
+      where: { 
+          organizationId: orgId, 
+          role: { in: [Role.ADMIN, Role.MANAGER, Role.AUDITOR] }, 
+          disabled: false, 
+          id: { not: excludeUserId } 
+      },
+      select: { id: true, role: true },
     });
-    if (!staff.length) return;
+
+    // 2. Apply Visibility Logic: Who is allowed to see this specific actor?
+    const validRecipients = observers
+      .filter(obs => canSeeAction(obs.role as Role, actorRole))
+      .map(obs => obs.id);
+
+    if (validRecipients.length === 0) return;
     
+    // 3. Dispatch to internal notification engine
     await createNotification({
-      title: type === "APPROVAL_REQUIRED" ? "Action Required" : "System Alert",
+      title: type === "APPROVAL" ? "Action Required" : "System Alert",
       message,
-      type,
+      type: type as any,
       organizationId: orgId,
       branchId: branchId ?? null,
       approvalId,
-      recipientIds: staff.map((s) => s.id),
+      activityLogId,
+      recipientIds: validRecipients,
     });
   } catch (e) {
     console.error("[NOTIFY_QUEUE_ERR]", e);

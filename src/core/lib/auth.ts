@@ -4,7 +4,14 @@ import type { JWT } from "next-auth/jwt";
 import bcrypt from "bcryptjs";
 import crypto from "crypto";
 import prisma from "@/core/lib/prisma";
-import { Role, ActorType, Severity, Prisma } from "@prisma/client";
+import { 
+  Role, 
+  ActorType, 
+  Severity, 
+  NotificationType, 
+  CriticalAction, 
+  Prisma 
+} from "@prisma/client";
 
 /* ------------------------------------------
  * MODULE AUGMENTATION (STRICT TYPING)
@@ -97,12 +104,12 @@ async function secureAuditLog(tx: Prisma.TransactionClient, data: {
 
   const previousHash = lastLog?.hash ?? null;
   const requestId = crypto.randomUUID();
-  
+
   // Create cryptographic chain link
   const hashPayload = { ...data, previousHash, requestId, timestamp: Date.now() };
   const hash = crypto.createHash("sha256").update(JSON.stringify(hashPayload)).digest("hex");
 
-  await tx.activityLog.create({
+  return await tx.activityLog.create({
     data: {
       ...data,
       actorType: ActorType.USER,
@@ -187,7 +194,7 @@ export const authOptions: NextAuthOptions = {
 
         // 5. Account Block Verification
         const isTemporaryLocked = personnel.lockoutUntil && personnel.lockoutUntil > now;
-        
+
         if (personnel.disabled || personnel.isLocked || isTemporaryLocked) {
           const reason = personnel.disabled ? "ACCOUNT_DISABLED" : 
                          personnel.isLocked ? (personnel.lockReason || "ACCOUNT_LOCKED_ADMIN") : 
@@ -207,7 +214,7 @@ export const authOptions: NextAuthOptions = {
               metadata: { reason, attemptedIdentifier: input },
             });
           });
-          
+
           throw new Error(reason);
         }
 
@@ -219,6 +226,7 @@ export const authOptions: NextAuthOptions = {
           const shouldLock = attempts >= MAX_FAILED_ATTEMPTS;
 
           await prisma.$transaction(async (tx) => {
+            // Update personnel state
             await tx.authorizedPersonnel.update({
               where: { id: personnel.id },
               data: {
@@ -229,7 +237,8 @@ export const authOptions: NextAuthOptions = {
               },
             });
 
-            await secureAuditLog(tx, {
+            // Generate Audit Log
+            const auditLog = await secureAuditLog(tx, {
               organizationId: personnel.organizationId,
               branchId: activeBranchId,
               actorId: personnel.id,
@@ -241,9 +250,46 @@ export const authOptions: NextAuthOptions = {
               deviceInfo,
               metadata: { attemptCount: attempts, locked: shouldLock },
             });
+
+            // Trigger System Auto-Lock Notifications if threshold reached
+            if (shouldLock) {
+              const alertingPersonnel = await tx.authorizedPersonnel.findMany({
+                where: {
+                  organizationId: personnel.organizationId,
+                  deletedAt: null,
+                  disabled: false,
+                  OR: [
+                    { role: Role.ADMIN },
+                    { isOrgOwner: true },
+                    { role: Role.MANAGER, branchId: activeBranchId },
+                    { branchAssignments: { some: { branchId: activeBranchId, role: Role.MANAGER } } }
+                  ]
+                },
+                select: { id: true }
+              });
+
+              if (alertingPersonnel.length > 0) {
+                await tx.notification.create({
+                  data: {
+                    organizationId: personnel.organizationId,
+                    branchId: activeBranchId,
+                    type: NotificationType.SECURITY,
+                    actionTrigger: CriticalAction.USER_LOCK_UNLOCK,
+                    activityLogId: auditLog.id,
+                    title: "Security Lockout Triggered",
+                    message: `Personnel ${personnel.name || personnel.email} has been automatically locked out of the terminal due to excessive failed verification attempts.`,
+                    recipients: {
+                      create: alertingPersonnel.map(admin => ({
+                        personnelId: admin.id
+                      }))
+                    }
+                  }
+                });
+              }
+            }
           });
 
-          throw new Error("INVALID_CREDENTIALS");
+          throw new Error(shouldLock ? "EXCESSIVE_FAILED_ATTEMPTS" : "INVALID_CREDENTIALS");
         }
 
         // 7. Success: Atomic State Reset & Audit
@@ -405,6 +451,6 @@ export const authOptions: NextAuthOptions = {
     signIn: "/signin",
     error: "/signin",
   },
-  
+
   secret: process.env.NEXTAUTH_SECRET,
 };
