@@ -5,152 +5,160 @@ import { authOptions } from "@/core/lib/auth";
 import { Role, Severity } from "@prisma/client";
 import { authorize, RESOURCES } from "@/core/lib/permission";
 
-/**
- * HELPER: Batch resolves IDs into Human-Readable Names across multiple tables.
- * Prevents N+1 query issues by grouping IDs by their Target Type.
- */
-async function resolveEntityNames(logs: any[]) {
-  const nameMap = new Map<string, string>();
-  const categories: Record<string, string[]> = {};
-
-  // 1. Group IDs by Target Type
-  logs.forEach(log => {
-    if (log.targetId && log.targetType) {
-      if (!categories[log.targetType]) categories[log.targetType] = [];
-      categories[log.targetType].push(log.targetId);
-    }
-  });
-
-  // 2. Parallel Batch Fetching for different entities
-  await Promise.all(Object.entries(categories).map(async ([type, ids]) => {
-    const uniqueIds = Array.from(new Set(ids));
-    
-    try {
-      switch (type) {
-        case 'PERSONNEL':
-          const staff = await prisma.authorizedPersonnel.findMany({ where: { id: { in: uniqueIds } }, select: { id: true, name: true } });
-          staff.forEach(s => nameMap.set(s.id, s.name));
-          break;
-        case 'BRANCH':
-          const branches = await prisma.branch.findMany({ where: { id: { in: uniqueIds } }, select: { id: true, name: true } });
-          branches.forEach(b => nameMap.set(b.id, b.name));
-          break;
-        case 'PRODUCT':
-          const products = await prisma.product.findMany({ where: { id: { in: uniqueIds } }, select: { id: true, name: true } });
-          products.forEach(p => nameMap.set(p.id, p.name));
-          break;
-        case 'CUSTOMER':
-          const customers = await prisma.customer.findMany({ where: { id: { in: uniqueIds } }, select: { id: true, name: true } });
-          customers.forEach(c => nameMap.set(c.id, c.name));
-          break;
-      }
-    } catch (e) {
-      console.warn(`Could not resolve names for ${type}`);
-    }
-  }));
-
-  return nameMap;
-}
-
-/**
- * CORE: Semantic Narrative Engine
- * Parses metadata to explain WHAT changed, not just that a change occurred.
- */
-function generateNarrative(log: any, entityName: string | null) {
-  const meta = (log.metadata as any) || {};
-  const action = log.action.toUpperCase();
-  const targetLabel = entityName || log.targetId || "System Entity";
-  
-  // A. Handle Common Patterns (CRUD)
-  if (action.includes("CREATE")) return `Registered new ${log.targetType?.toLowerCase()}: ${targetLabel}`;
-  if (action.includes("DELETE")) return `Archived ${log.targetType?.toLowerCase()}: ${targetLabel}`;
-  
-  // B. Handle Metadata Diffs (The "Intelligent" Part)
-  if (meta.before && meta.after) {
-    const changes = Object.keys(meta.after).filter(key => meta.before[key] !== meta.after[key]);
-    
-    if (changes.includes('status')) return `Changed status of ${targetLabel} to ${meta.after.status}`;
-    if (changes.includes('role')) return `Updated ${targetLabel}'s access role to ${meta.after.role}`;
-    if (changes.includes('quantity') || changes.includes('stock')) {
-      return `Adjusted stock for ${targetLabel} (${meta.before.quantity ?? 0} → ${meta.after.quantity})`;
-    }
-    if (changes.length === 1) return `Updated ${changes[0]} for ${targetLabel}`;
-    if (changes.length > 1) return `Modified multiple attributes for ${targetLabel}`;
-  }
-
-  // C. Fallback for specific POS/Financial actions
-  if (action === "VOID_TRANSACTION") return `Voided transaction for ${targetLabel}`;
-  if (action === "REFUND_PAYMENT") return `Processed a refund for ${targetLabel}`;
-
-  return log.description || `${action.replace(/_/g, " ")} ${log.targetType || ''} ${targetLabel}`.toLowerCase();
-}
-
 export async function GET(req: NextRequest) {
   try {
     const session = await getServerSession(authOptions);
-    if (!session?.user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    
+    if (!session?.user) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
 
+    const orgId = session.user.organizationId;
     const userRole = session.user.role as Role;
-    const auth = authorize({ role: userRole, action: "READ", resource: RESOURCES.AUDIT });
-    if (!auth.allowed) return NextResponse.json({ error: "Access Denied" }, { status: 403 });
+
+    // 1. STRICT RBAC: Ensure user has AUDIT READ permissions
+    const auth = authorize({ 
+      role: userRole, 
+      action: "READ", 
+      resource: RESOURCES.AUDIT 
+    });
+    
+    if (!auth.allowed) {
+      return NextResponse.json({ error: "Access Denied" }, { status: 403 });
+    }
 
     const { searchParams } = new URL(req.url);
-    const limit = Math.min(parseInt(searchParams.get("limit") || "50"), 200);
+    const limit = Math.min(parseInt(searchParams.get("limit") || "100"), 500);
+    const severityFilter = searchParams.get("severity") || "ALL";
 
-    // 1. Fetch Logs
+    // 2. Build Query Filters for the specific Organization
+    const whereClause: any = {
+      organizationId: orgId,
+      deletedAt: null,
+    };
+
+    if (severityFilter !== "ALL") {
+      whereClause.severity = severityFilter as Severity;
+    }
+
+    // 3. Fetch Raw Ledger Data strictly from Schema
     const rawLogs = await prisma.activityLog.findMany({
-      where: { organizationId: session.user.organizationId, deletedAt: null },
-      include: { personnel: { select: { name: true } } },
+      where: whereClause,
+      include: {
+        personnel: {
+          select: { name: true, role: true }
+        }
+      },
       orderBy: { createdAt: "desc" },
       take: limit,
     });
 
-    // 2. Resolve Entity Names for Target IDs
-    const resolvedNames = await resolveEntityNames(rawLogs);
-
-    // 3. Process into Intelligent Packets
-    const processed = rawLogs.map(log => {
-      const entityName = resolvedNames.get(log.targetId || "") || null;
+    // 4. Forensic Processing & Heuristic Chain-Link Engine
+    const chainMap = new Map<string, any[]>();
+    
+    rawLogs.forEach(log => {
+      const meta = (log.metadata as any) || {};
       
+      // Correlation Logic: Use native RequestID, fallback to metadata traceId, then safe temporal-actor fallback
+      const safeIp = log.ipAddress || "0.0.0.0";
+      const traceKey = log.requestId || meta.traceId || 
+        `HEURISTIC_${log.actorId || 'SYS'}_${safeIp}_${new Date(log.createdAt).getHours()}`;
+
+      if (!chainMap.has(traceKey)) {
+        chainMap.set(traceKey, []);
+      }
+      chainMap.get(traceKey)!.push(log);
+    });
+
+    // 5. Assemble the Process Trace Packets
+    const processedLogs = Array.from(chainMap.entries()).map(([traceId, chain]) => {
+      // Sort chain by time (ascending) to identify the true trigger event
+      chain.sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+      
+      const trigger = chain[0];
+      const downstream = chain.slice(1);
+      const meta = (trigger.metadata as any) || {};
+
+      // Determine Module Classification based on Action String
+      const actionStr = trigger.action.toUpperCase();
+      let moduleType: "SECURITY" | "FINANCIAL" | "INVENTORY" | "SYSTEM" = "SYSTEM";
+
+      if (trigger.critical || /LOCK|LOGIN|AUTH|PERMISSION|ROLE|PASSWORD/.test(actionStr)) {
+        moduleType = "SECURITY";
+      } else if (/PAYMENT|INVOICE|REFUND|EXPENSE|NGN|TRANSACTION/.test(actionStr)) {
+        moduleType = "FINANCIAL";
+      } else if (/STOCK|PRODUCT|WAREHOUSE|ADJUST|TRANSFER/.test(actionStr)) {
+        moduleType = "INVENTORY";
+      }
+
+      // Exact Mapping to the Frontend UI ForensicPacket Interface
       return {
-        id: log.id,
-        timestamp: log.createdAt,
-        severity: log.severity,
-        critical: log.critical,
+        id: trigger.id,
+        action: trigger.action,
+        description: trigger.description || "No description provided.",
+        module: moduleType,
+        severity: trigger.severity,
+        critical: trigger.critical,
+        createdAt: trigger.createdAt.toISOString(),
         
-        // THE INTELLIGENT PAYLOAD
-        message: generateNarrative(log, entityName),
+        // Originator Details
+        actorId: trigger.actorId,
+        actorType: trigger.actorType,
+        personnelName: trigger.personnel?.name || "System Automated",
+        personnelRole: trigger.actorRole || trigger.personnel?.role || "SYSTEM",
         
-        actor: {
-          name: log.personnel?.name || "System",
-          id: log.actorId,
-          ip: log.ipAddress
-        },
+        // Telemetry
+        requestId: trigger.requestId || traceId,
+        ipAddress: trigger.ipAddress || "0.0.0.0",
+        deviceInfo: trigger.deviceInfo || "INTERNAL_SERVICE",
         
-        context: {
-          target: entityName || log.targetId,
-          type: log.targetType,
-          action: log.action,
-          requestId: log.requestId
+        // Target Resource Mapping
+        target: {
+          id: trigger.targetId || null,
+          type: trigger.targetType || null
         },
 
-        // Raw Diffing for the "Comparison Tool" in frontend
+        // State Diffing Logic (Extracted from metadata blob)
         diff: {
-          before: (log.metadata as any)?.before || null,
-          after: (log.metadata as any)?.after || null
+          before: meta.before || null,
+          after: meta.after || null
         },
-        
+
+        // Fortress Integrity Verification Data
         integrity: {
-          isValid: log.isChainValid,
-          hash: log.hash?.substring(0, 8) + "..."
-        }
+          hash: trigger.hash || null,
+          previousHash: trigger.previousHash || null,
+          isChainValid: trigger.isChainValid ?? true
+        },
+
+        metadata: meta,
+
+        // Downstream Correlated Hops (Request Chain)
+        correlatedLogs: downstream.map(hop => ({
+          id: hop.id,
+          action: hop.action,
+          description: hop.description,
+          severity: hop.severity,
+          critical: hop.critical,
+          createdAt: hop.createdAt.toISOString(),
+          metadata: (hop.metadata as any) || {}
+        }))
       };
     });
 
-    return NextResponse.json({ success: true, logs: processed });
+    // 6. Final sort to ensure the latest "Traces" appear at the top of the terminal
+    processedLogs.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+
+    return NextResponse.json({ 
+      success: true, 
+      logs: processedLogs 
+    });
 
   } catch (error) {
     console.error("[FORENSIC_API_ERROR]", error);
-    return NextResponse.json({ error: "Failed to compile semantic audit data" }, { status: 500 });
+    return NextResponse.json(
+      { error: "Audit ledger compilation failed." }, 
+      { status: 500 }
+    );
   }
 }
