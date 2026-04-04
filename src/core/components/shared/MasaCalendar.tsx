@@ -220,7 +220,7 @@ export default function MasaCalendar() {
   return (
     <div className="relative max-w-[360px] w-full h-full bg-white border-l border-slate-200 flex flex-col text-xs overflow-hidden">
       
-      {loading && <div className="absolute top-0 left-0 right-0 h-0.5 bg-blue-500/40 animate-pulse z-50" />}
+      {loading && <div className="absolute top-0 left-1/2 -translate-x-1/2 w-48 h-0.5 bg-gradient-to-r from-transparent via-blue-500/60 to-transparent animate-pulse z-50" />}
 
       {/* Floating Month Adjuster */}
       <div className="absolute right-0 top-16 z-40 flex items-center" ref={adjusterContainerRef}>

@@ -1,24 +1,25 @@
 import { NextRequest, NextResponse } from "next/server";
-import prisma from "@/core/lib/prisma";
-import { Prisma, Role, NotificationType } from "@prisma/client";
+import prisma from "@/core/lib/prisma"; 
+import { 
+  Prisma, 
+  Role, 
+  NotificationType, 
+  Severity, 
+  ActorType,
+  CriticalAction 
+} from "@prisma/client";
 import { getToken } from "next-auth/jwt";
 import bcrypt from "bcryptjs";
+import crypto from "crypto";
+import { 
+  validateManagementRights, 
+  canPerformAction,
+  ManagementAction
+} from "@/core/lib/permission"; // Adjust path to your permission file
 
 const JWT_SECRET = process.env.NEXTAUTH_SECRET;
 
-/* -------------------- ROLE HIERARCHY & AUTH -------------------- */
-
-const ROLE_WEIGHT: Record<Role, number> = {
-  DEV: 100,
-  ADMIN: 50,
-  MANAGER: 40,
-  AUDITOR: 35,
-  INVENTORY: 30,
-  SALES: 20,
-  CASHIER: 10,
-};
-
-const CAN_MANAGE_PERSONNEL: Role[] = [ Role.ADMIN, Role.MANAGER];
+/* -------------------- HELPERS -------------------- */
 
 async function getAuthContext(req: NextRequest) {
   const token = await getToken({ req, secret: JWT_SECRET });
@@ -32,8 +33,6 @@ async function getAuthContext(req: NextRequest) {
     isOrgOwner: !!token.isOrgOwner,
   };
 }
-
-/* -------------------- HELPERS -------------------- */
 
 const ROLE_CODE: Record<Role, string> = {
   DEV: "00",
@@ -53,15 +52,21 @@ async function generateStaffCode(
   const count = await tx.authorizedPersonnel.count({ where: { organizationId } });
   const nn = (count + 1).toString().padStart(3, "0");
   const rr = ROLE_CODE[role] || "99";
-
   return `STF-${nn}-${rr}`;
 }
 
-/* -------------------- GET: LIST & ANALYTICS -------------------- */
+// Generates a secure temporary password if none is provided
+function generateTempPassword(): string {
+  return crypto.randomBytes(5).toString("hex") + "X1@"; // e.g., 9f2b3c4d5eX1@
+}
+
+/* -------------------- GET: LIST, ANALYTICS & PREFERENCES -------------------- */
 
 export async function GET(req: NextRequest) {
   const auth = await getAuthContext(req);
-  if (!auth || !CAN_MANAGE_PERSONNEL.includes(auth.role)) {
+  if (!auth) return NextResponse.json({ message: "Unauthorized" }, { status: 401 });
+
+  if (![Role.DEV, Role.ADMIN, Role.MANAGER].includes(auth.role)) {
     return NextResponse.json({ message: "Access denied" }, { status: 403 });
   }
 
@@ -99,30 +104,33 @@ export async function GET(req: NextRequest) {
       paginationWhere.isLocked = true;
     }
 
-    const [total, data, branches, recentLogs, statusCounts] = await Promise.all([
+    const [total, data, branches, statusCounts] = await Promise.all([
       prisma.authorizedPersonnel.count({ where: paginationWhere }),
       prisma.authorizedPersonnel.findMany({
         where: paginationWhere,
         skip: (page - 1) * pageSize,
         take: pageSize,
-        orderBy: { lastActivityAt: "desc" },
-        include: {
+        orderBy: { createdAt: "desc" },
+        select: {
+          id: true,
+          name: true,
+          email: true,
+          staffCode: true,
+          role: true,
+          disabled: true,
+          isLocked: true,
+          lastLogin: true,
+          lastActivityAt: true,
+          createdAt: true,
           branch: { select: { id: true, name: true } },
-          branchAssignments: { include: { branch: { select: { name: true } } } }
-        },
+          branchAssignments: { include: { branch: { select: { id: true, name: true } } } },
+          // Fetching preferences attached to the personnel
+          preferences: true 
+        }
       }),
       prisma.branch.findMany({
         where: { organizationId: auth.organizationId, deletedAt: null },
         select: { id: true, name: true, _count: { select: { personnel: true } } }
-      }),
-      prisma.activityLog.findMany({
-        where: {
-          organizationId: auth.organizationId,
-          action: { in: ['PERSONNEL_CREATED', 'PERSONNEL_UPDATED', 'ACCOUNT_LOCKED', 'ACCOUNT_UNLOCKED', 'ACCOUNT_DISABLED', 'ACCOUNT_ENABLED', 'PASSWORD_RESET', 'PERSONNEL_DELETED', 'BRANCH_REASSIGNED'] }
-        },
-        orderBy: { createdAt: "desc" },
-        take: 20,
-        include: { personnel: { select: { name: true, email: true } } }
       }),
       prisma.authorizedPersonnel.groupBy({
         by: ['disabled', 'isLocked'],
@@ -134,8 +142,8 @@ export async function GET(req: NextRequest) {
     const summary = {
       total: statusCounts.reduce((acc, curr) => acc + curr._count, 0),
       active: statusCounts.find(c => !c.disabled && !c.isLocked)?._count ?? 0,
-      disabled: statusCounts.find(c => c.disabled)?._count ?? 0,
-      locked: statusCounts.find(c => c.isLocked)?._count ?? 0,
+      disabled: statusCounts.filter(c => c.disabled).reduce((acc, curr) => acc + curr._count, 0),
+      locked: statusCounts.filter(c => c.isLocked).reduce((acc, curr) => acc + curr._count, 0),
     };
 
     return NextResponse.json({
@@ -149,7 +157,6 @@ export async function GET(req: NextRequest) {
         name: b.name,
         count: b._count.personnel
       })),
-      recentLogs
     });
   } catch (error) {
     console.error("GET Personnel Error:", error);
@@ -157,24 +164,27 @@ export async function GET(req: NextRequest) {
   }
 }
 
-/* -------------------- POST: PROVISIONING -------------------- */
+/* -------------------- POST: PROVISIONING (W/ TEMP CREDENTIALS) -------------------- */
 
 export async function POST(req: NextRequest) {
   const auth = await getAuthContext(req);
-  
-  // Strict Guard: Only ADMIN, DEV, or OrgOwner can provision new accounts
-  if (!auth || (!auth.isOrgOwner && ROLE_WEIGHT[auth.role] < ROLE_WEIGHT.ADMIN)) {
+
+  if (!auth || (!auth.isOrgOwner && auth.role !== Role.ADMIN && auth.role !== Role.DEV)) {
     return NextResponse.json({ message: "You do not have clearance to provision new personnel." }, { status: 403 });
   }
 
   try {
     const body = await req.json();
-    const { name, email, password, branchId, role, isOrgOwner } = body;
+    const { name, email, password, branchId, role, isOrgOwner, preferences } = body;
 
     const cleanEmail = email.toLowerCase().trim();
     const assignedRole = (role as Role) || Role.CASHIER;
     const assignedBranchId = branchId || auth.branchId || null;
-    const hashedPassword = await bcrypt.hash(password, 12);
+
+    // Logic: Temp Credential Generation
+    const isTempCredential = !password || password.trim() === "";
+    const plainPassword = isTempCredential ? generateTempPassword() : password;
+    const hashedPassword = await bcrypt.hash(plainPassword, 12);
 
     const personnel = await prisma.$transaction(async (tx) => {
       const conflict = await tx.authorizedPersonnel.findFirst({
@@ -197,7 +207,8 @@ export async function POST(req: NextRequest) {
           isOrgOwner: auth.isOrgOwner ? (isOrgOwner || false) : false,
           disabled: false,
           isLocked: false,
-          requiresPasswordChange: true, 
+          requiresPasswordChange: true, // Forces change on first login
+          ...(preferences && { preferences: { create: preferences } })
         },
       });
 
@@ -216,29 +227,38 @@ export async function POST(req: NextRequest) {
         data: {
           organizationId: auth.organizationId,
           branchId: auth.branchId,
-          personnelId: auth.userId,
+          actorId: auth.userId,
+          actorType: ActorType.USER,
+          actorRole: auth.role,
           action: "PERSONNEL_CREATED",
-          critical: true,
-          metadata: {
-            targetId: created.id,
-            targetName: created.name || created.email,
-            targetEmail: created.email,
-            assignedRole: created.role,
-            details: `Provisioned account (${finalStaffCode}). Force password reset enabled.`
-          } as Prisma.InputJsonValue
+          severity: Severity.MEDIUM,
+          targetId: created.id,
+          targetType: "PERSONNEL",
+          after: { email: created.email, role: created.role, branchId: assignedBranchId } as Prisma.InputJsonObject,
+          metadata: { 
+            details: `Provisioned account (${finalStaffCode}). Force reset enabled.`,
+            isTempCredential 
+          } as Prisma.InputJsonObject
         }
       });
 
       return created;
     });
 
-    return NextResponse.json(personnel, { status: 201 });
-  } catch (error: unknown) {
+    // Exclude the hashed password, but securely return the temporary credential ONCE for the admin
+    const { password: _, ...safePersonnel } = personnel;
+    
+    return NextResponse.json({
+      ...safePersonnel,
+      tempPassword: isTempCredential ? plainPassword : null, // Surface this to the frontend Admin UI
+      message: isTempCredential ? "Personnel created with temporary credentials." : "Personnel created successfully."
+    }, { status: 201 });
+
+  } catch (error: any) {
     if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
       return NextResponse.json({ message: "A user with this email or staff code already exists." }, { status: 409 });
     }
-    const message = error instanceof Error ? error.message : "Provisioning failed";
-    return NextResponse.json({ message }, { status: message.includes("registered") ? 409 : 500 });
+    return NextResponse.json({ message: error.message || "Provisioning failed" }, { status: 400 });
   }
 }
 
@@ -246,45 +266,40 @@ export async function POST(req: NextRequest) {
 
 export async function PATCH(req: NextRequest) {
   const auth = await getAuthContext(req);
-  if (!auth || !CAN_MANAGE_PERSONNEL.includes(auth.role)) {
-    return NextResponse.json({ message: "Access denied" }, { status: 403 });
-  }
+  if (!auth) return NextResponse.json({ message: "Unauthorized" }, { status: 401 });
 
   try {
     const body = await req.json();
     const {
-      id, name, email, role, disabled, isLocked, lockReason, newPassword, branchAssignments
+      id, name, email, role, disabled, isLocked, lockReason, newPassword, branchAssignments, preferences
     } = body;
 
     if (!id) return NextResponse.json({ message: "Personnel ID is required" }, { status: 400 });
 
-    // CRITICAL: Prevent self-modification for security status
-    if (id === auth.userId && (disabled !== undefined || isLocked !== undefined || role !== undefined)) {
-      return NextResponse.json({ message: "You cannot alter your own security status or role." }, { status: 403 });
-    }
-
-    const targetUser = await prisma.authorizedPersonnel.findFirst({
+    const targetUser = await prisma.authorizedPersonnel.findUnique({
       where: { id, organizationId: auth.organizationId, deletedAt: null }
     });
 
     if (!targetUser) return NextResponse.json({ message: "Personnel not found" }, { status: 404 });
 
-    // Hierarchy Guard: Cannot modify someone of equal or greater rank (unless OrgOwner)
-    if (!auth.isOrgOwner && ROLE_WEIGHT[auth.role] <= ROLE_WEIGHT[targetUser.role]) {
-      return NextResponse.json({ message: "You do not have sufficient authority over this rank." }, { status: 403 });
+    // Determine highest-level action for management validation
+    let managementAction: ManagementAction = "UPDATE_STATUS";
+    if (newPassword) managementAction = "RESET_PASSWORD";
+    else if (role !== undefined && role !== targetUser.role) managementAction = "UPDATE_ROLE";
+    else if (branchAssignments) managementAction = "TRANSFER_BRANCH";
+
+    // Unified Management Rights Check
+    const rights = validateManagementRights(auth, targetUser, managementAction);
+    if (!rights.authorized) {
+      return NextResponse.json({ message: rights.reason }, { status: 403 });
     }
 
-    // Role-Specific Restraints for MANAGER
-    if (auth.role === Role.MANAGER && !auth.isOrgOwner) {
-      if (email !== undefined && email !== targetUser.email) {
-         return NextResponse.json({ message: "Only Administrators can modify email addresses." }, { status: 403 });
-      }
-      if (newPassword) {
-         return NextResponse.json({ message: "Only Administrators can force password resets." }, { status: 403 });
-      }
-      if (role !== undefined && role !== targetUser.role) {
-         return NextResponse.json({ message: "Only Administrators can modify role assignments." }, { status: 403 });
-      }
+    // Critical Action Capability Checks
+    if (newPassword && !canPerformAction(auth.role, "PASSWORD_CHANGE")) {
+      return NextResponse.json({ message: "Admin elevation required for password resets." }, { status: 403 });
+    }
+    if (email && email.toLowerCase().trim() !== targetUser.email && !canPerformAction(auth.role, "EMAIL_CHANGE")) {
+      return NextResponse.json({ message: "Admin elevation required for email modifications." }, { status: 403 });
     }
 
     const cleanEmail = email?.toLowerCase().trim();
@@ -298,62 +313,84 @@ export async function PATCH(req: NextRequest) {
       }
 
       const updateData: Prisma.AuthorizedPersonnelUpdateInput = {};
-      const auditChanges: Record<string, unknown> = {};
       const actions: string[] = [];
+      let severity: Severity = Severity.LOW;
       let notificationMessage: string | null = null;
+      let criticalActionTrigger: CriticalAction | undefined = undefined;
 
+      // Extract Before State for Audit
+      const beforeState: any = {
+         name: targetUser.name, email: targetUser.email, role: targetUser.role,
+         disabled: targetUser.disabled, isLocked: targetUser.isLocked, branchId: targetUser.branchId
+      };
+      const afterState: any = { ...beforeState };
+
+      // Field Updates
       if (name !== undefined && name.trim() !== targetUser.name) {
         updateData.name = name.trim();
-        auditChanges.name = { from: targetUser.name, to: name.trim() };
+        afterState.name = name.trim();
       }
       if (cleanEmail !== undefined && cleanEmail !== targetUser.email) {
         updateData.email = cleanEmail;
-        auditChanges.email = { from: targetUser.email, to: cleanEmail };
+        afterState.email = cleanEmail;
+        criticalActionTrigger = CriticalAction.EMAIL_CHANGE;
       }
       if (role !== undefined && role !== targetUser.role) {
         updateData.role = role;
-        auditChanges.role = { from: targetUser.role, to: role };
+        afterState.role = role;
+        severity = Severity.HIGH;
       }
-
-      // MANAGER IS ALLOWED TO PROCEED HERE (Lock / Disable)
+      if (preferences) {
+        // Upsert logic for preferences
+        updateData.preferences = { upsert: { create: preferences, update: preferences } };
+        actions.push("PREFERENCES_UPDATED");
+      }
+      
+      // Security Controls
       if (disabled !== undefined && disabled !== targetUser.disabled) {
         updateData.disabled = disabled;
-        auditChanges.disabled = { from: targetUser.disabled, to: disabled };
+        afterState.disabled = disabled;
         actions.push(disabled ? "ACCOUNT_DISABLED" : "ACCOUNT_ENABLED");
+        severity = Severity.HIGH;
         notificationMessage = disabled ? "Your account has been disabled by management." : "Your account access has been restored.";
       }
 
       if (isLocked !== undefined && isLocked !== targetUser.isLocked) {
         updateData.isLocked = isLocked;
         updateData.lockReason = isLocked ? (lockReason || "Administratively locked") : null;
-        auditChanges.isLocked = { from: targetUser.isLocked, to: isLocked };
+        afterState.isLocked = isLocked;
         if (!isLocked) {
           updateData.failedLoginAttempts = 0;
           updateData.lockoutUntil = null;
         }
         actions.push(isLocked ? "ACCOUNT_LOCKED" : "ACCOUNT_UNLOCKED");
+        criticalActionTrigger = CriticalAction.USER_LOCK_UNLOCK;
+        severity = Severity.HIGH;
         if (!notificationMessage) {
            notificationMessage = isLocked ? `Account locked: ${updateData.lockReason}` : "Account unlocked.";
         }
       }
 
+      // Handle Forced Password Resets
       if (newPassword) {
         updateData.password = await bcrypt.hash(newPassword, 12);
         updateData.requiresPasswordChange = true; 
-        auditChanges.password = "Reset by Admin (Forced change required)";
         actions.push("PASSWORD_RESET");
+        criticalActionTrigger = CriticalAction.PASSWORD_CHANGE;
+        severity = Severity.HIGH;
+        notificationMessage = "Your password has been reset by an administrator. You will be required to change it upon your next login.";
       }
 
-      let branchesReassigned = false;
+      // Branch Reassignment logic
       if (branchAssignments && Array.isArray(branchAssignments)) {
         await tx.branchAssignment.deleteMany({ where: { personnelId: id } });
         if (branchAssignments.length > 0) {
-          const primaryCount = branchAssignments.filter((ba: { isPrimary: boolean }) => ba.isPrimary).length;
+          const primaryCount = branchAssignments.filter((ba: any) => ba.isPrimary).length;
           if (primaryCount > 1) throw new Error("Only one branch can be marked as primary.");
           if (primaryCount === 0) branchAssignments[0].isPrimary = true;
 
           await tx.branchAssignment.createMany({
-            data: branchAssignments.map((ba: { branchId: string; role: Role; isPrimary: boolean }) => ({
+            data: branchAssignments.map((ba: any) => ({
               personnelId: id,
               branchId: ba.branchId,
               role: ba.role || targetUser.role,
@@ -361,55 +398,59 @@ export async function PATCH(req: NextRequest) {
             }))
           });
 
-          const primaryBranch = branchAssignments.find((ba: { isPrimary: boolean }) => ba.isPrimary);
+          const primaryBranch = branchAssignments.find((ba: any) => ba.isPrimary);
           updateData.branchId = primaryBranch ? primaryBranch.branchId : null;
-          branchesReassigned = true;
+          afterState.branchId = updateData.branchId;
           actions.push("BRANCH_REASSIGNED");
+          severity = Severity.MEDIUM;
         } else {
           updateData.branchId = null;
-          branchesReassigned = true;
+          afterState.branchId = null;
         }
       }
 
-      if (Object.keys(auditChanges).filter(k => !['isLocked', 'disabled', 'password'].includes(k)).length > 0) {
+      if (actions.length === 0 && Object.keys(updateData).length > 0) {
         actions.push("PERSONNEL_UPDATED");
       }
 
       const updated = await tx.authorizedPersonnel.update({
         where: { id },
         data: updateData,
-        include: {
-          branchAssignments: { include: { branch: { select: { name: true } } } }
-        }
+        select: { id: true, name: true, email: true, role: true, disabled: true, isLocked: true, branchId: true }
       });
 
+      // Unified Notification System mapping
       if (notificationMessage) {
         await tx.notification.create({
           data: {
             organizationId: auth.organizationId,
             branchId: targetUser.branchId,
-            type: NotificationType.SYSTEM,
-            title: "Security Update",
+            type: NotificationType.SECURITY,
+            actionTrigger: criticalActionTrigger,
+            title: "Important Security Update",
             message: notificationMessage,
-            recipients: { create: { personnelId: targetUser.id } }
+            recipients: { create: { personnelId: targetUser.id } } 
           }
         });
       }
 
+      // Forensic Auditing
       if (actions.length > 0) {
         await tx.activityLog.create({
           data: {
             organizationId: auth.organizationId,
             branchId: auth.branchId,
-            personnelId: auth.userId,
+            actorId: auth.userId,
+            actorType: ActorType.USER,
+            actorRole: auth.role,
             action: actions.join(" | "),
-            critical: actions.some(a => ["PASSWORD_RESET", "ACCOUNT_LOCKED", "ACCOUNT_DISABLED"].includes(a)),
-            metadata: {
-              targetId: id,
-              targetName: updated.name || updated.email,
-              changes: auditChanges,
-              details: `Updates: ${Object.keys(auditChanges).join(', ')}${branchesReassigned ? ' + Branches' : ''}`
-            } as Prisma.InputJsonValue
+            severity,
+            critical: severity === Severity.HIGH || severity === Severity.CRITICAL,
+            targetId: id,
+            targetType: "PERSONNEL",
+            before: beforeState as Prisma.InputJsonObject,
+            after: afterState as Prisma.InputJsonObject,
+            metadata: { updates: Object.keys(updateData) } as Prisma.InputJsonObject
           }
         });
       }
@@ -418,13 +459,9 @@ export async function PATCH(req: NextRequest) {
     });
 
     return NextResponse.json(updatedPersonnel, { status: 200 });
-  } catch (error: unknown) {
-    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
-      return NextResponse.json({ message: "A user with this email already exists." }, { status: 409 });
-    }
-    const message = error instanceof Error ? error.message : "Update failed";
+  } catch (error: any) {
     console.error("PATCH Personnel Error:", error);
-    return NextResponse.json({ message }, { status: 400 });
+    return NextResponse.json({ message: error.message || "Update failed" }, { status: 400 });
   }
 }
 
@@ -432,22 +469,13 @@ export async function PATCH(req: NextRequest) {
 
 export async function DELETE(req: NextRequest) {
   const auth = await getAuthContext(req);
-  
-  // Strict Guard: Only ADMIN, DEV, or OrgOwner can delete accounts
-  if (!auth || (!auth.isOrgOwner && ROLE_WEIGHT[auth.role] < ROLE_WEIGHT.ADMIN)) {
-    return NextResponse.json({ message: "You do not have clearance to delete or deactivate personnel." }, { status: 403 });
-  }
+  if (!auth) return NextResponse.json({ message: "Unauthorized" }, { status: 401 });
 
   try {
     const { searchParams } = new URL(req.url);
     const id = searchParams.get("id");
 
     if (!id) return NextResponse.json({ message: "Personnel ID required" }, { status: 400 });
-    
-    // CRITICAL: Prevent self-deletion
-    if (id === auth.userId) {
-      return NextResponse.json({ message: "Security Violation: You cannot deactivate your own account." }, { status: 400 });
-    }
 
     const targetUser = await prisma.authorizedPersonnel.findUnique({
       where: { id, organizationId: auth.organizationId, deletedAt: null }
@@ -455,9 +483,15 @@ export async function DELETE(req: NextRequest) {
 
     if (!targetUser) return NextResponse.json({ message: "Personnel not found" }, { status: 404 });
 
-    // CRITICAL: Prevent Admins from deleting other Admins unless they are the OrgOwner
-    if (!auth.isOrgOwner && ROLE_WEIGHT[auth.role] <= ROLE_WEIGHT[targetUser.role]) {
-       return NextResponse.json({ message: "You do not have sufficient authority to deactivate this rank." }, { status: 403 });
+    // Validate using the new action-aware permission rule
+    const rights = validateManagementRights(auth, targetUser, "DELETE");
+    if (!rights.authorized) {
+       return NextResponse.json({ message: rights.reason }, { status: 403 });
+    }
+
+    // Secondary strict validation as fallback
+    if (!auth.isOrgOwner && auth.role !== Role.ADMIN && auth.role !== Role.DEV) {
+      return NextResponse.json({ message: "Account deactivation requires Admin clearance." }, { status: 403 });
     }
 
     await prisma.$transaction(async (tx) => {
@@ -467,14 +501,15 @@ export async function DELETE(req: NextRequest) {
           deletedAt: new Date(),
           disabled: true,
           isLocked: true,
-          lockReason: "Account deactivated/deleted by administrator"
+          lockReason: "Account deactivated/archived by administrator"
         },
       });
 
       await tx.notification.create({
         data: {
           organizationId: auth.organizationId,
-          type: NotificationType.SYSTEM,
+          type: NotificationType.SECURITY,
+          actionTrigger: CriticalAction.USER_LOCK_UNLOCK,
           title: "Account Deactivated",
           message: "Your account has been permanently deactivated by management.",
           recipients: { create: { personnelId: targetUser.id } }
@@ -485,14 +520,17 @@ export async function DELETE(req: NextRequest) {
         data: {
           organizationId: auth.organizationId,
           branchId: auth.branchId,
-          personnelId: auth.userId,
+          actorId: auth.userId,
+          actorType: ActorType.USER,
+          actorRole: auth.role,
           action: "PERSONNEL_DELETED",
+          severity: Severity.CRITICAL,
           critical: true,
-          metadata: {
-            targetId: id,
-            targetName: targetUser.name || targetUser.email,
-            details: `Account softly deleted and locked for security auditing.`
-          } as Prisma.InputJsonValue
+          targetId: id,
+          targetType: "PERSONNEL",
+          before: { status: "ACTIVE", lockReason: targetUser.lockReason } as Prisma.InputJsonObject,
+          after: { status: "DELETED", lockReason: "Account deactivated/archived by administrator" } as Prisma.InputJsonObject,
+          metadata: { details: `Account securely archived.` } as Prisma.InputJsonObject
         }
       });
     });
