@@ -40,7 +40,7 @@ export default function DashboardRootLayout({ children }: DashboardRootLayoutPro
 
             {/* MAIN CONTENT */}
             <main className={`flex-1 min-w-0 min-h-0 overflow-y-auto overflow-x-hidden transition-opacity duration-300 ${status === "loading" ? "opacity-0" : "opacity-100"}`}>
-              <div className="w-full max-w-full overflow-x-auto">
+              <div className="w-full max-w-full relative overflow-x-auto">
                 {children}
               </div>
             </main>

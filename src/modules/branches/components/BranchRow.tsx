@@ -40,7 +40,6 @@ export function BranchRow({ branch, isSelected, onClick }: BranchRowProps) {
       <div className="hidden md:flex items-center w-full text-[13px]">
         {/* Node ID */}
         <div className="w-[90px] md:w-[120px] shrink-0 flex items-center gap-2">
-          <i className="bx bx-hash text-slate-300 group-hover:text-slate-500 w-4 text-center" />
           <span className="font-mono font-bold text-slate-400 truncate">
             {branch.id.slice(-8).toUpperCase()}
           </span>

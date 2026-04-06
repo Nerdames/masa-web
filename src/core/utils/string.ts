@@ -2,19 +2,27 @@
 
 /**
  * Generates up to two initials from a provided name.
- * Defaults to "AP" (Authorized Personnel) if name is missing.
- * Logic: "John Doe" -> "JD", "Chibuzor" -> "CH", null -> "AP"
+ * Defaults to "SY" (System) if name is missing or invalid.
+ * Logic: "John Doe" -> "JD", "Chibuzor" -> "CH", "123 Nick!" -> "NI"
  */
 export function getInitials(name?: string | null): string {
-  if (!name || name.trim().length === 0) return "AP";
+  if (!name) return "SY";
 
-  const parts = name.trim().split(/\s+/); // Handle multiple spaces between names
+  const parts = name
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean)
+    // Strip non-alphabetic characters to ensure initials are letters
+    .map((p) => p.replace(/[^A-Za-z]/g, ""))
+    .filter((p) => p.length > 0);
+
+  if (parts.length === 0) return "SY";
 
   if (parts.length === 1) {
-    return parts[0].substring(0, 2).toUpperCase();
+    return parts[0].slice(0, 2).toUpperCase();
   }
 
-  // Take the first letter of the first and second words
+  // Take the first letter of the first and second valid words
   return (parts[0][0] + parts[1][0]).toUpperCase();
 }
 
@@ -25,9 +33,8 @@ export function getInitials(name?: string | null): string {
 export function formatEnum(value: string | null | undefined): string {
   if (!value) return "";
   return value
-    .toLowerCase()
     .split("_")
-    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
     .join(" ");
 }
 
@@ -43,7 +50,6 @@ export function truncate(str: string, length: number): string {
 /**
  * Converts a string into a URL-friendly slug.
  * "Electronics & Gadgets" -> "electronics-gadgets"
- * Used in the Inventory module for category/product slugs.
  */
 export function slugify(text: string): string {
   return text
@@ -64,7 +70,7 @@ export function slugify(text: string): string {
 export function formatPhoneNumber(phone: string): string {
   const cleaned = phone.replace(/\D/g, "");
   
-  // If it starts with 0, replace with 234
+  // If it starts with 0 (local format), replace with 234 (international)
   if (cleaned.startsWith("0") && cleaned.length === 11) {
     return `234${cleaned.substring(1)}`;
   }
@@ -78,8 +84,7 @@ export function formatPhoneNumber(phone: string): string {
 export function capitalize(str: string): string {
   if (!str) return "";
   return str
-    .toLowerCase()
-    .split(" ")
-    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+    .split(/\s+/)
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
     .join(" ");
 }

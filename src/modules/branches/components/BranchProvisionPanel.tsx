@@ -3,7 +3,7 @@
 
 import React, { useState, useRef, useEffect } from "react";
 
-import { ProvisionBranchPayload } from "@/types";
+import { ProvisionBranchPayload } from "../types";
 
 interface BranchProvisionPanelProps {
   onClose: () => void;
@@ -54,7 +54,7 @@ export function BranchProvisionPanel({ onClose, onRefresh, dispatch }: BranchPro
       const data = await res.json();
       if (!res.ok) throw new Error(data?.error || "Failed to deploy branch.");
 
-      dispatch({ kind: "TOAST", type: "SUCCESS", title: "Deployed", message: "Node deployed successfully." });
+      dispatch({ kind: "TOAST", type: "SUCCESS", title: "Deployed", message: "Branch deployed successfully." });
       await onRefresh();
       onClose();
     } catch (err: any) {
@@ -74,7 +74,7 @@ export function BranchProvisionPanel({ onClose, onRefresh, dispatch }: BranchPro
             <i className="bx bx-server text-lg" aria-hidden="true" />
           </div>
           <div>
-            <h2 className="text-sm md:text-[13px] font-black uppercase  text-slate-900">Deploy New Node</h2>
+            <h2 className="text-sm md:text-[13px] font-black uppercase  text-slate-900">Deploy New Branch</h2>
           </div>
         </div>
 
@@ -93,9 +93,9 @@ export function BranchProvisionPanel({ onClose, onRefresh, dispatch }: BranchPro
       <div className="flex-1 overflow-y-auto p-5 md:p-6 bg-[#FAFAFC]">
         <div className="max-w-3xl mx-auto space-y-6">
           <section className="space-y-2">
-            <h3 className="text-xl md:text-2xl font-extrabold text-slate-900">Node Provisioning</h3>
+            <h3 className="text-xl md:text-2xl font-extrabold text-slate-900">Branch Provisioning</h3>
             <p className="text-sm text-slate-600">
-              Initialize a new node in the infrastructure network. You can manage assignments and settings from the Node Inspector after deployment.
+              Initialize a new node in the infrastructure network. You can manage assignments and settings from the Branch Inspector after deployment.
             </p>
           </section>
 
@@ -170,10 +170,10 @@ export function BranchProvisionPanel({ onClose, onRefresh, dispatch }: BranchPro
             {isSaving ? (
               <>
                 <i className="bx bx-loader-alt animate-spin text-lg" aria-hidden="true" />
-                <span>Deploying Node...</span>
+                <span>Deploying Branch...</span>
               </>
             ) : (
-              <span>Deploy Node</span>
+              <span>Deploy Branch</span>
             )}
           </button>
 

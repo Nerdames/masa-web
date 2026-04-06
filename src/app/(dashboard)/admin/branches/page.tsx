@@ -1,4 +1,3 @@
-// File: @/modules/branches/page.tsx
 "use client";
 
 import React, { useState, useEffect, useCallback, useRef } from "react";
@@ -19,7 +18,7 @@ import { BranchRow } from "@/modules/branches/components/BranchRow";
 export default function BranchManagementPage(): JSX.Element {
   const { data: session } = useSession();
   const { dispatch } = useAlerts();
-  const { openPanel, closePanel, resetToDefault } = useSidePanel();
+  const { openPanel, resetToDefault, isLoading: isPanelOpen } = useSidePanel();
 
   const userRole = session?.user?.role;
   const isOrgOwner = session?.user?.isOrgOwner;
@@ -41,11 +40,6 @@ export default function BranchManagementPage(): JSX.Element {
     setSelectedBranchId(null);
   }, [resetToDefault]);
 
-  // Sync panel closure on page unmount
-  useEffect(() => {
-    return () => closePanel();
-  }, [closePanel]);
-
   const fetchBranches = useCallback(async () => {
     if (abortControllerRef.current) abortControllerRef.current.abort();
     abortControllerRef.current = new AbortController();
@@ -55,7 +49,7 @@ export default function BranchManagementPage(): JSX.Element {
       const res = await fetch(`/api/branches?search=${encodeURIComponent(searchTerm)}&status=${filterStatus}`, {
         signal: abortControllerRef.current.signal,
       });
-      if (!res.ok) throw new Error("Infrastructure Sync Failed");
+      if (!res.ok) throw new Error("Branch Sync Failed");
 
       const json: BranchListResponse = await res.json();
       setBranches(json.data || []);
@@ -104,164 +98,107 @@ export default function BranchManagementPage(): JSX.Element {
 
   return (
     <div className="flex flex-col h-full w-full bg-white relative z-0 overflow-hidden">
-      <header className="px-4 py-4 shrink-0 border-b border-black/[0.04] bg-white">
+      <header className="px-4 py-4 shrink-0 border-b border-black/[0.04] bg-white sticky top-0 z-[100] backdrop-blur-md">
         <div className="flex items-center justify-between gap-4">
           <div className="px-2 min-w-0 flex-1">
             <h1
               className="block w-full truncate text-[14px] sm:text-[15px] md:text-[18px] lg:text-2xl font-semibold tracking-tight text-slate-900 leading-tight"
-              title="Infrastructure"
+              title="Branches Operations"
             >
-              Infrastructure
+              Branches Operations
             </h1>
           </div>
 
           <div className="flex items-center gap-2 shrink-0">
+            {/* Search Input - Top Layer */}
+            <div className="hidden sm:relative sm:block">
+              <i className="bx bx-search absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 text-xs" />
+              <input
+                type="text"
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+                placeholder="SEARCH_BRANCHES..."
+                className="bg-slate-100 border-none py-1.5 pl-8 pr-4 text-[11px] font-medium w-40 md:w-64 rounded-lg focus:ring-1 focus:ring-black transition-all outline-none"
+              />
+            </div>
+
             <button
               onClick={handleOpenLogs}
               title="Audit Trail"
-              className="p-2 md:px-4 md:py-2 text-[12px] font-semibold border rounded-lg transition-colors flex items-center gap-2 bg-white border-black/5 text-slate-500 hover:bg-slate-50 hover:text-slate-800 shadow-sm"
+              className="p-2 md:px-3 md:py-2 text-[12px] font-semibold border rounded-lg transition-colors flex items-center gap-2 bg-white border-black/5 text-slate-500 hover:bg-slate-50 shadow-sm"
             >
               <i className="bx bx-history text-base md:text-sm" />
-              <span className="hidden md:inline whitespace-nowrap">Audit Trail</span>
+              <span className="hidden md:inline">Audit Trail</span>
             </button>
 
             {hasFullClearance && (
               <button
                 onClick={handleOpenProvision}
-                title="Deploy Node"
-                className="p-2 md:px-5 md:py-2 bg-blue-600 text-white text-[12px] font-semibold rounded-lg shadow-sm hover:bg-blue-700 transition-all flex items-center gap-2"
+                className="p-2 md:px-4 md:py-2 bg-blue-600 text-white text-[12px] font-semibold rounded-lg shadow-sm hover:bg-blue-700 transition-all flex items-center gap-2"
               >
                 <i className="bx bx-plus text-base md:text-sm" />
-                <span className="hidden md:inline whitespace-nowrap">Deploy Node</span>
+                <span className="hidden md:inline">Deploy Branch</span>
               </button>
             )}
-          </div>
-        </div>
 
-        {/* Horizontal Summary Bar */}
-        <div
-          aria-label="summary"
-          className="flex items-center gap-3 md:gap-4 mt-6 pt-4 border-t border-black/5 overflow-hidden whitespace-nowrap"
-          style={{ minWidth: 0 }}
-        >
-          <div className="flex items-center gap-3 shrink-0 min-w-0">
-            <div className="flex flex-col min-w-0">
-              <span className="text-[10px] md:text-[11px] font-bold text-slate-400 uppercase tracking-widest truncate max-w-[72px] md:max-w-[120px]">
-                Total
-              </span>
-              <span className="text-sm md:text-lg font-medium text-slate-800 truncate max-w-[84px] md:max-w-[140px]">
-                {summary.total}
-              </span>
-            </div>
-          </div>
-
-          <div className="w-px h-8 bg-black/5 self-center" />
-
-          <div className="flex items-center gap-3 shrink-0 min-w-0">
-            <div className="flex flex-col min-w-0">
-              <span className="text-[10px] md:text-[11px] font-bold text-emerald-500 uppercase tracking-widest truncate max-w-[72px] md:max-w-[120px]">
-                Active
-              </span>
-              <span className="text-sm md:text-lg font-medium text-slate-800 truncate max-w-[84px] md:max-w-[140px]">
-                {summary.active}
-              </span>
-            </div>
-          </div>
-
-          <div className="w-px h-8 bg-black/5 self-center" />
-
-          <div className="flex items-center gap-3 shrink-0 min-w-0">
-            <div className="flex flex-col min-w-0">
-              <span className="text-[10px] md:text-[11px] font-bold text-slate-400 uppercase tracking-widest truncate max-w-[72px] md:max-w-[120px]">
-                Inactive
-              </span>
-              <span className="text-sm md:text-lg font-medium text-slate-800 truncate max-w-[84px] md:max-w-[140px]">
-                {summary.inactive}
-              </span>
-            </div>
-          </div>
-
-          <div className="w-px h-8 bg-black/5 self-center" />
-
-          <div className="flex items-center gap-3 shrink-0 min-w-0">
-            <div className="flex flex-col min-w-0">
-              <span className="text-[10px] md:text-[11px] font-bold text-rose-500 uppercase tracking-widest truncate max-w-[72px] md:max-w-[120px]">
-                Deleted
-              </span>
-              <span className="text-sm md:text-lg font-medium text-slate-800 truncate max-w-[84px] md:max-w-[140px]">
-                {summary.deleted}
-              </span>
-            </div>
-          </div>
-        </div>
-
-        <style jsx>{`
-          header { min-width: 0; }
-          @media (max-width: 340px) {
-            header > div:first-child { transform-origin: left center; transform: scale(0.96); }
-          }
-        `}</style>
-      </header>
-
-      {/* Filter Row */}
-      <div className="px-4 md:px-10 py-3 shrink-0 flex items-center gap-3 bg-slate-50/50 border-b border-black/[0.04]">
-        <div className="relative flex-1 md:flex-none md:w-80 shrink-0">
-          <i className="bx bx-search absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 text-base" />
-          <input
-            type="text"
-            placeholder="Search nodes..."
-            value={searchTerm}
-            onChange={(e) => setSearchTerm(e.target.value)}
-            className="w-full pl-9 pr-4 py-1.5 bg-white border border-black/5 rounded-md text-[12px] outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500/30 transition-all truncate"
-          />
-        </div>
-
-        <div className="h-4 w-px bg-black/10 shrink-0" />
-
-        <div className="flex items-center shrink-0">
-          <div className="md:hidden">
-            <select
-              value={filterStatus}
-              onChange={(e) => setFilterStatus(e.target.value as any)}
-              className="bg-white border border-black/5 text-[11px] font-semibold px-2 py-1.5 rounded-md outline-none text-slate-700 capitalize"
+            <button
+              onClick={() => fetchBranches()}
+              className="p-2 md:px-2 md:py-2 text-[12px] font-semibold border rounded-lg transition-colors flex justify-items-center gap-2 bg-white border-black/5 text-slate-500 hover:bg-slate-50 shadow-sm"
             >
-              {["all", "active", "inactive", "deleted"].map((status) => (
-                <option key={status} value={status}>{status}</option>
-              ))}
-            </select>
+              <i className={`bx bx-refresh text-base md:text-sm ${isLoading ? "bx-spin" : ""}`} />
+            </button>
           </div>
-          <div className="hidden md:flex gap-1">
-            {["all", "active", "inactive", "deleted"].map((status) => (
+        </div>
+
+        {/* Status Filters - Bottom Layer of Header */}
+        <div
+          aria-label="status filters"
+          className="flex items-center justify-between md:justify-start gap-2 sm:gap-4 md:gap-6 mt-1 pt-4 border-t border-black/5 overflow-x-auto whitespace-nowrap [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden"
+        >
+          {[
+            { key: "all", label: "TOTAL", count: summary.total, color: "text-slate-400" },
+            { key: "active", label: "ACTIVE", count: summary.active, color: "text-emerald-500" },
+            { key: "inactive", label: "INACTIVE", count: summary.inactive, color: "text-slate-400" },
+            { key: "deleted", label: "DELETED", count: summary.deleted, color: "text-rose-500" },
+          ].map((s, idx) => (
+            <React.Fragment key={s.key}>
+              {idx > 0 && <div className="w-px h-3 bg-black/10 self-center shrink-0" />}
               <button
-                key={status}
-                onClick={() => setFilterStatus(status as any)}
-                className={`px-3 py-1 rounded text-[11px] font-semibold capitalize transition-colors whitespace-nowrap ${
-                  filterStatus === status
-                    ? "bg-white border shadow-sm text-slate-800"
-                    : "text-slate-500 hover:text-slate-800 hover:bg-black/5"
+                onClick={() => {
+                  setFilterStatus(s.key as any);
+                  setSearchTerm("");
+                }}
+                className={`group flex items-baseline gap-1 sm:gap-1.5 transition-all shrink-0 ${
+                  filterStatus === s.key ? "text-blue-600 underline underline-offset-[14px] decoration-2" : "text-slate-400 hover:text-blue-600"
                 }`}
               >
-                {status}
+                <span
+                  className={`text-[8px] sm:text-[10px] md:text-[11px] font-bold uppercase tracking-[0.1em] sm:tracking-[0.2em] ${
+                    filterStatus === s.key ? "text-blue-600" : s.color
+                  }`}
+                >
+                  {s.label}
+                </span>
+                <span className={`text-[8px] md:text-[10px] font-medium tabular-nums ${filterStatus === s.key ? "text-slate-900" : "text-slate-300"}`}>
+                  {s.count}
+                </span>
               </button>
-            ))}
-          </div>
+            </React.Fragment>
+          ))}
         </div>
-      </div>
+      </header>
 
-      {/* --- Node Registry Table Header (Hidden on Mobile) --- */}
+      {/* --- Desktop Table Header --- */}
       <div className="hidden sm:flex px-4 md:px-8 py-2 shrink-0 items-center text-[10px] font-bold text-slate-400 uppercase tracking-widest border-b border-black/[0.04] bg-white overflow-hidden whitespace-nowrap">
-        <div className="w-[90px] md:w-[120px] shrink-0 truncate">Node ID</div>
+        <div className="w-[100px] md:w-[140px] shrink-0 truncate">Branch ID</div>
         <div className="flex-1 min-w-[120px] truncate">Branch Name</div>
-        
-        {/* Location remains hidden until desktop (md) to prioritize Name/Revenue on tablets */}
         <div className="w-[100px] md:w-[180px] hidden md:block shrink-0 truncate">Location</div>
-        
         <div className="w-[70px] text-center shrink-0 truncate">Staff</div>
         <div className="w-[100px] md:w-[140px] text-right shrink-0 truncate">Total Revenue</div>
-        <div className="w-[70px] text-right shrink-0 truncate">Status</div>
+        <div className="w-[80px] shrink-0 truncate text-right">Status</div>
       </div>
 
-      {/* Main Content Area */}
+      {/* Main List Area */}
       <div className="flex-1 overflow-y-auto custom-scrollbar bg-white relative">
         {isLoading && branches.length === 0 ? (
           <div className="absolute inset-0 flex items-center justify-center bg-white/50 backdrop-blur-sm z-10">
@@ -270,7 +207,7 @@ export default function BranchManagementPage(): JSX.Element {
         ) : branches.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-full text-center space-y-3 opacity-50 p-6">
             <i className="bx bx-buildings text-4xl text-black/20" />
-            <p className="text-[12px] font-bold tracking-widest uppercase">No Infrastructure Found</p>
+            <p className="text-[12px] font-bold tracking-widest uppercase">No Branch Found</p>
           </div>
         ) : (
           branches.map((branch) => (

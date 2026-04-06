@@ -3,12 +3,22 @@
 import React, { useState, useEffect, useCallback, useMemo } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 
+// Types and Enums imported from your module paths
 import { Personnel, UpdatePayload, AlertAction, Role } from "./types";
 import { PropertyRow } from "./PropertyRow";
 
+// Utilities
+import {
+  getDepartmentColor,
+  getBranchColor,
+  generateSecurePassword,
+  copyToClipboard
+} from "./utils";
+import { getInitials } from "@/core/utils";
+
 /* ==========================================================================
-TYPES & INTERFACES
-========================================================================== */
+   TYPES & INTERFACES
+   ========================================================================== */
 
 export interface ActivityLogDTO {
   id: string;
@@ -29,7 +39,7 @@ export interface ActivityLogDTO {
 
 interface PersonnelDetailsPanelProps {
   personnel: Personnel;
-  logs?: ActivityLogDTO[]; // Passed down or dynamically fetched
+  logs?: ActivityLogDTO[];
   onClose: () => void;
   onUpdate: (id: string, payload: UpdatePayload) => Promise<void>;
   onDelete: (id: string) => Promise<void>;
@@ -43,16 +53,14 @@ const LOG_TABS = {
   UPDATE: "UPDATE",
 } as const;
 
-/* ==========================================================================
-UTILS
-========================================================================== */
+type FormState = {
+  name: string;
+  role: Role;
+};
 
-function getDepartmentColor(name?: string): string {
-  if (!name) return "bg-slate-300";
-  const hash = name.split("").reduce((acc, char) => char.charCodeAt(0) + ((acc << 5) - acc), 0);
-  const colors = ["bg-blue-500", "bg-emerald-500", "bg-amber-500", "bg-purple-500", "bg-rose-500", "bg-cyan-500"];
-  return colors[Math.abs(hash) % colors.length];
-}
+/* ==========================================================================
+   LOCAL UTILS
+   ========================================================================== */
 
 const parseDevice = (ua?: string | null) => {
   if (!ua) return "System Process";
@@ -65,51 +73,16 @@ const parseDevice = (ua?: string | null) => {
   return ua.split(" ")[0] || "Unknown Device";
 };
 
-const getInitials = (name?: string) => {
-  if (!name) return "SY";
-  const parts = name
-    .trim()
-    .split(/\s+/)
-    .filter(Boolean)
-    .map((p) => p.replace(/[^A-Za-z]/g, ""));
-  if (parts.length === 0) return "SY";
-  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
-  return (parts[0][0] + parts[1][0]).toUpperCase();
-};
-
-const copyToClipboard = async (text: string) => {
-  try {
-    if (navigator?.clipboard?.writeText) {
-      await navigator.clipboard.writeText(text);
-      return true;
-    }
-    throw new Error("Clipboard API unavailable");
-  } catch {
-    const ta = document.createElement("textarea");
-    ta.value = text;
-    ta.style.position = "fixed";
-    ta.style.left = "-9999px";
-    document.body.appendChild(ta);
-    ta.select();
-    try {
-      document.execCommand("copy");
-      return true;
-    } catch {
-      return false;
-    } finally {
-      document.body.removeChild(ta);
-    }
-  }
-};
-
 /* ==========================================================================
-SUB-COMPONENT: ACTIVITY CARD
-========================================================================== */
+   SUB-COMPONENT: COMPACT ACTIVITY CARD
+   ========================================================================== */
 
-const ActivityCard = ({ log, onToast }: { log: ActivityLogDTO; onToast?: (a: AlertAction) => void }) => {
+const ActivityCard = ({ log, onToast }: { log: ActivityLogDTO; onToast: (a: AlertAction) => void }) => {
   const [expanded, setExpanded] = useState(false);
+
+  // Logic: Performer Name -> Initials (Fallback to "System Authority" for System)
   const performerName = log.personnel?.name ?? log.performedBy ?? log.personnelName ?? "System Authority";
-  const targetName = (log.metadata as any)?.targetName ?? "General Context";
+
   const dateStr = (() => {
     try {
       return new Date(log.createdAt).toLocaleString("en-US", {
@@ -122,17 +95,18 @@ const ActivityCard = ({ log, onToast }: { log: ActivityLogDTO; onToast?: (a: Ale
       return String(log.createdAt);
     }
   })();
+
   const action = (log.action || "").toUpperCase();
   const isRed = /DELETE|DEACTIVATED|REJECTED|REMOVE|TERMINATE|PURGE/.test(action);
   const isAmber = /DISABLED|LOCKED|WARN|BLOCK|SUSPENDED/.test(action);
 
-  const getStatusStyles = () => {
-    if (isRed) return { badge: "bg-red-50 text-red-600 border-red-100", avatar: "bg-red-600" };
-    if (isAmber) return { badge: "bg-amber-50 text-amber-600 border-amber-100", avatar: "bg-amber-500" };
-    return { badge: "bg-slate-50 text-slate-500 border-slate-100", avatar: "bg-slate-900" };
+  const getTheme = () => {
+    if (isRed) return { dot: "bg-red-500 ring-red-100", text: "text-red-600", bg: "bg-red-50" };
+    if (isAmber) return { dot: "bg-amber-500 ring-amber-100", text: "text-amber-600", bg: "bg-amber-50" };
+    return { dot: "bg-slate-400 ring-slate-100", text: "text-slate-600", bg: "bg-slate-100" };
   };
 
-  const styles = getStatusStyles();
+  const theme = getTheme();
 
   const handleCopyMeta = async () => {
     const payload = JSON.stringify(
@@ -144,113 +118,100 @@ const ActivityCard = ({ log, onToast }: { log: ActivityLogDTO; onToast?: (a: Ale
       null,
       2
     );
-    const ok = await copyToClipboard(payload);
-    if (onToast) {
-      onToast({
-        kind: "TOAST",
-        type: ok ? "SUCCESS" : "ERROR",
-        title: ok ? "Copied" : "Copy Failed",
-        message: ok ? "Payload copied to clipboard." : "Please manually copy the value.",
-      });
-    }
+    await copyToClipboard(payload, onToast);
   };
 
   return (
-    <motion.div
-      initial={{ opacity: 0, y: 8 }}
-      animate={{ opacity: 1, y: 0 }}
-      className="p-3 bg-white border border-black/[0.04] rounded-xl transition-all shadow-sm hover:shadow-md"
-    >
-      <div className="flex items-center gap-2.5 mb-2.5 min-w-0">
-        <div
-          className={`w-7 h-7 rounded-lg flex items-center justify-center text-[9px] font-bold text-white shrink-0 shadow-sm ${styles.avatar}`}
-        >
-          {getInitials(performerName)}
-        </div>
+    <div className="relative group">
+      {/* Timeline Dot */}
+      <span className={`absolute -left-[21px] top-1.5 w-2 h-2 rounded-full border-2 border-white ring-2 ${theme.dot}`} />
 
-        <div className="flex flex-col truncate">
-          <span className="text-[10px] font-black text-slate-800 uppercase tracking-tight leading-none whitespace-nowrap mb-1">
-            {performerName}
-          </span>
-
-          <div className="flex">
-            <span
-              className={`text-[7px] font-black uppercase px-1.5 py-0.5 rounded border tracking-[0.05em] ${styles.badge}`}
-            >
+      <motion.div
+        initial={{ opacity: 0, y: 5 }}
+        animate={{ opacity: 1, y: 0 }}
+        className="flex flex-col min-w-0 bg-white border border-slate-100 rounded-lg p-3 hover:shadow-sm transition-all"
+      >
+        <div className="flex justify-between items-start gap-2 mb-1.5">
+          <div className="flex flex-col min-w-0">
+            <span className="text-[10px] font-black text-slate-800 uppercase tracking-tight truncate">
+              {performerName}
+            </span>
+            <span className={`text-[8px] font-bold uppercase mt-0.5 px-1.5 py-0.5 rounded w-fit tracking-wider ${theme.bg} ${theme.text}`}>
               {log.action.replace(/_/g, " ")}
             </span>
           </div>
+          <span className="text-[9px] font-medium text-slate-400 whitespace-nowrap shrink-0">
+            {dateStr}
+          </span>
         </div>
-      </div>
 
-      <div className="pl-9.5 space-y-2">
-        <p className="text-[10px] font-medium text-slate-600 leading-snug">
+        <p className="text-[11px] font-medium text-slate-600 leading-snug break-words">
           {log.details || (log.metadata as any)?.details || "Audit sequence completed successfully."}
         </p>
 
-        <button
-          onClick={() => setExpanded(!expanded)}
-          className="text-[8px] font-black text-slate-400 hover:text-slate-900 flex items-center gap-1 uppercase tracking-widest transition-colors"
-        >
-          {expanded ? "Collapse_Data" : "Inspect_Payload"}
-          <i className={`bx bx-chevron-${expanded ? "up" : "down"} text-xs`} />
-        </button>
-
-        <AnimatePresence>
-          {expanded && (
-            <motion.div
-              initial={{ height: 0, opacity: 0 }}
-              animate={{ height: "auto", opacity: 1 }}
-              exit={{ height: 0, opacity: 0 }}
-              className="overflow-hidden"
+        {(log.metadata || log.ipAddress) && (
+          <div className="mt-2 flex flex-col min-w-0">
+            <button
+              onClick={() => setExpanded(!expanded)}
+              className="text-[9px] font-bold text-indigo-500 hover:text-indigo-700 flex items-center gap-1 w-fit transition-colors"
             >
-              <div className="mt-2 relative">
-                <div className="p-2.5 bg-slate-900 rounded-lg border border-white/5 relative">
-                  <button
-                    onClick={handleCopyMeta}
-                    className="absolute right-2 top-2 p-1.5 bg-white/10 hover:bg-white/20 rounded text-emerald-400 transition-colors"
-                  >
-                    <i className="bx bx-copy text-[10px]" />
-                  </button>
+              {expanded ? "Hide Payload" : "View Payload"}
+              <i className={`bx bx-chevron-${expanded ? "up" : "down"}`} />
+            </button>
 
-                  <pre className="text-[9px] font-mono text-emerald-400/90 leading-tight overflow-x-auto custom-scrollbar">
-                    {JSON.stringify(
-                      {
-                        ip: log.ipAddress || "Internal",
-                        ua: parseDevice(log.deviceInfo),
-                        meta: log.metadata || {},
-                      },
-                      null,
-                      2
-                    )}
-                  </pre>
-                </div>
-              </div>
-            </motion.div>
-          )}
-        </AnimatePresence>
-      </div>
-
-      <div className="mt-3 pt-2.5 border-t border-black/[0.03] flex justify-between items-center">
-        <p className="text-[8px] font-bold text-slate-400 font-mono tracking-tight uppercase">{dateStr}</p>
-      </div>
-    </motion.div>
+            <AnimatePresence>
+              {expanded && (
+                <motion.div
+                  initial={{ height: 0, opacity: 0 }}
+                  animate={{ height: "auto", opacity: 1 }}
+                  exit={{ height: 0, opacity: 0 }}
+                  className="overflow-hidden mt-1.5"
+                >
+                  <div className="p-2 bg-slate-900 rounded-md relative min-w-0 group/code">
+                    <button
+                      onClick={handleCopyMeta}
+                      className="absolute right-1 top-1 p-1 bg-white/10 hover:bg-white/20 rounded text-slate-300 opacity-0 group-hover/code:opacity-100 transition-all"
+                      title="Copy Payload"
+                    >
+                      <i className="bx bx-copy text-[10px]" />
+                    </button>
+                    <pre className="text-[9px] font-mono text-emerald-400 leading-relaxed overflow-x-auto custom-scrollbar w-full whitespace-pre-wrap break-words">
+                      {JSON.stringify(
+                        {
+                          ip: log.ipAddress || "Internal",
+                          ua: parseDevice(log.deviceInfo),
+                          meta: log.metadata || {},
+                        },
+                        null,
+                        2
+                      )}
+                    </pre>
+                  </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
+          </div>
+        )}
+      </motion.div>
+    </div>
   );
 };
 
 /* ==========================================================================
-MAIN PANEL COMPONENT
-========================================================================== */
+   MAIN PANEL COMPONENT
+   ========================================================================== */
 
-type FormState = {
-  name: string;
-  role: Role;
-};
-
-export function PersonnelDetailsPanel({ personnel, logs = [], onClose, onUpdate, onDelete, dispatch }: PersonnelDetailsPanelProps) {
+export function PersonnelDetailsPanel({
+  personnel,
+  logs = [],
+  onClose,
+  onUpdate,
+  onDelete,
+  dispatch
+}: PersonnelDetailsPanelProps) {
   const [isEditing, setIsEditing] = useState(false);
-  const [isLogExpanded, setIsLogExpanded] = useState(true); // Default to expanded
-  const [logFilter] = useState<string>(LOG_TABS.ALL);
+  const [isLogExpanded, setIsLogExpanded] = useState(true);
+  const [logFilter, setLogFilter] = useState<string>(LOG_TABS.ALL);
   const [tempPassword, setTempPassword] = useState<string | null>(null);
   const [fetchingTemp, setFetchingTemp] = useState(false);
   const [rotationEvent, setRotationEvent] = useState<{ time: Date; key: string } | null>(null);
@@ -261,13 +222,14 @@ export function PersonnelDetailsPanel({ personnel, logs = [], onClose, onUpdate,
   });
 
   const isActive = !personnel.disabled && !personnel.isLocked;
+  const isOrgOwner = (personnel as any).isOrgOwner === true;
+  const requiresPasswordChange = (personnel as any).requiresPasswordChange === true;
 
   /**
-   * MASA Protocol: Vault Sync (Backend Persistence)
-   * Fetches from exact GET /api/preferences endpoint payload structure
+   * MASA Protocol: Vault Sync (Backend Persistence Retrieval)
    */
   const fetchTempCredential = useCallback(async () => {
-    if (!personnel.requiresPasswordChange) {
+    if (!requiresPasswordChange) {
       setTempPassword(null);
       return;
     }
@@ -289,47 +251,26 @@ export function PersonnelDetailsPanel({ personnel, logs = [], onClose, onUpdate,
     } finally {
       setFetchingTemp(false);
     }
-  }, [personnel.email, personnel.requiresPasswordChange]);
+  }, [personnel.email, requiresPasswordChange]);
 
   useEffect(() => {
     fetchTempCredential();
   }, [fetchTempCredential]);
 
-  const handleCopy = async (text: string, label: string) => {
-    try {
-      const ok = await copyToClipboard(text);
-      if (ok) {
-        dispatch({ kind: "TOAST", type: "SUCCESS", title: "Copied", message: `${label} saved to clipboard.` });
-      } else {
-        throw new Error("Fallback copy failed");
-      }
-    } catch {
-      dispatch({ kind: "TOAST", type: "ERROR", title: "Copy Failed", message: "Please manually copy the value." });
-    }
-  };
-
   /**
-   * MASA Protocol: Secure Rotation -> Backend Persist
+   * MASA Protocol: Secure Rotation -> Vault-First Write Strategy
    */
   const handleResetPassword = async () => {
-    const confirmMsg = !personnel.requiresPasswordChange
+    const confirmMsg = !requiresPasswordChange
       ? `Force password change for ${personnel.name}?`
       : `Generate a new temporary password? The existing one will be overwritten in the vault.`;
     if (!confirm(confirmMsg)) return;
 
     setFetchingTemp(true);
-    const charset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*";
-    let newPass = "";
-    for (let i = 0; i < 12; i++) newPass += charset[Math.floor(Math.random() * charset.length)];
+    const newPass = generateSecurePassword();
 
     try {
-      // 1. Update Core DB identity
-      await onUpdate(personnel.id, {
-        newPassword: newPass,
-        requiresPasswordChange: true,
-      } as any);
-
-      // 2. Persist safely in remote Preferences cache/DB (Not Local Storage)
+      // 1. Persist safely in remote Vault cache/DB First
       const res = await fetch("/api/preferences", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -343,16 +284,21 @@ export function PersonnelDetailsPanel({ personnel, logs = [], onClose, onUpdate,
         }),
       });
 
-      if (!res.ok) {
-        throw new Error("Vault persist failed");
-      }
+      if (!res.ok) throw new Error("Vault persist failed");
 
+      // 2. Update Core DB identity (Activation)
+      await onUpdate(personnel.id, {
+        newPassword: newPass, // If backend natively consumes this
+        requiresPasswordChange: true,
+      } as any);
+
+      // 3. Sync UI State
       setTempPassword(newPass);
       setRotationEvent({ time: new Date(), key: newPass });
       dispatch({ kind: "TOAST", type: "SUCCESS", title: "Key Rotated", message: "New temporary credential vaulted and active." });
     } catch (err) {
       console.error("Rotation error:", err);
-      dispatch({ kind: "TOAST", type: "ERROR", title: "Rotation Failed", message: "Could not sync credential to vault." });
+      dispatch({ kind: "TOAST", type: "ERROR", title: "Rotation Failed", message: "Could not sync credential to secure vault." });
     } finally {
       setFetchingTemp(false);
     }
@@ -383,7 +329,8 @@ export function PersonnelDetailsPanel({ personnel, logs = [], onClose, onUpdate,
   };
 
   const handlePurge = async () => {
-    if (!confirm(`Purge ${personnel.name} from registry?`)) return;
+    if (!confirm(`Purge ${personnel.name} from registry? This action is irreversible.`)) return;
+
     try {
       await onDelete(personnel.id);
       dispatch({ kind: "TOAST", type: "SUCCESS", title: "Purged", message: `${personnel.name} removed from registry.` });
@@ -394,11 +341,11 @@ export function PersonnelDetailsPanel({ personnel, logs = [], onClose, onUpdate,
     }
   };
 
-  // Automated log generation if API doesn't pass strict logs array
+  // Automated log generation and filtering
   const displayLogs = useMemo(() => {
     const sourceLogs: ActivityLogDTO[] = [...(logs || [])];
 
-    // Auto-generate synthetic telemetry if blank to guarantee UI robustness
+    // Synthetic Provisioning Log
     if (sourceLogs.length === 0) {
       sourceLogs.push({
         id: "synth-prov",
@@ -407,17 +354,18 @@ export function PersonnelDetailsPanel({ personnel, logs = [], onClose, onUpdate,
         createdAt: (personnel as any).createdAt || new Date(),
         details: "Account identity initially provisioned in the global registry.",
       });
-      if ((personnel as any).lastActivityAt) {
+      if (personnel.lastActivityAt) {
         sourceLogs.push({
           id: "synth-sync",
           action: "ACCESS",
           critical: false,
-          createdAt: (personnel as any).lastActivityAt,
+          createdAt: personnel.lastActivityAt,
           details: "Last known system handshake recorded.",
         });
       }
     }
 
+    // Synthetic Rotation Log
     if (rotationEvent) {
       sourceLogs.unshift({
         id: "synth-rot",
@@ -428,7 +376,7 @@ export function PersonnelDetailsPanel({ personnel, logs = [], onClose, onUpdate,
       });
     }
 
-    // Apply Filter Tab Logic
+    // Applying Filter
     if (logFilter === LOG_TABS.ALL) {
       return sourceLogs.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
     }
@@ -445,11 +393,11 @@ export function PersonnelDetailsPanel({ personnel, logs = [], onClose, onUpdate,
   }, [logs, logFilter, rotationEvent, personnel]);
 
   return (
-    <div className="h-full flex flex-col w-[340px] bg-white relative font-sans shadow-[-10px_0_30px_rgba(0,0,0,0.02)]">
+    <div className="h-full flex flex-col w-[340px] bg-white relative font-sans shadow-[-10px_0_40px_rgba(0,0,0,0.04)] border-l border-slate-100">
       {/* --- Inspector Header --- */}
-      <div className="p-4 border-b border-black/[0.04] flex justify-between items-center bg-white/80 backdrop-blur-md shrink-0 z-10">
+      <div className="p-4 border-b border-black/[0.04] flex justify-between items-center bg-white/80 backdrop-blur-md shrink-0 sticky top-0 z-20">
         <div className="flex items-center gap-2 px-1 text-[10px] font-black text-slate-400 uppercase tracking-[0.2em]">
-          <i className="bx bx-sidebar text-sm" /> Personnel Inspector
+          <i className="bx bx-shield-quarter text-sm text-indigo-500" /> Personnel Inspector
         </div>
 
         <div className="flex gap-1">
@@ -457,6 +405,7 @@ export function PersonnelDetailsPanel({ personnel, logs = [], onClose, onUpdate,
             <button
               onClick={() => setIsEditing(true)}
               className="w-8 h-8 rounded-lg hover:bg-slate-100 flex items-center justify-center text-slate-500 transition-all active:scale-90"
+              title="Edit Profile"
             >
               <i className="bx bx-edit-alt text-base" />
             </button>
@@ -471,15 +420,15 @@ export function PersonnelDetailsPanel({ personnel, logs = [], onClose, onUpdate,
         </div>
       </div>
 
-      <div className="flex-1 overflow-y-auto p-6 space-y-8 custom-scrollbar">
+      <div className="flex-1 overflow-y-auto p-6 space-y-8 custom-scrollbar pb-12">
         {/* --- Identity Block --- */}
         <div className="flex items-center gap-5">
           <div className="relative group">
             <div className="w-16 h-16 shrink-0 rounded-[1.25rem] bg-gradient-to-br from-slate-800 to-slate-950 text-white flex items-center justify-center text-2xl font-black shadow-lg shadow-slate-200">
-              {personnel.name?.charAt(0) ?? "?"}
+              {getInitials(personnel.name)}
             </div>
 
-            {personnel.isOrgOwner && (
+            {isOrgOwner && (
               <div className="absolute -top-1 -right-1 w-6 h-6 bg-amber-400 border-2 border-white rounded-full flex items-center justify-center text-white shadow-sm">
                 <i className="bx bxs-crown text-[10px]" />
               </div>
@@ -500,8 +449,7 @@ export function PersonnelDetailsPanel({ personnel, logs = [], onClose, onUpdate,
 
             <div className="flex items-center gap-1.5 mt-0.5">
               <p className="text-[12px] font-medium text-slate-400 truncate lowercase">{personnel.email}</p>
-
-              <button onClick={() => handleCopy(personnel.email, "Email")} className="text-slate-300 hover:text-indigo-500 transition-colors">
+              <button onClick={() => copyToClipboard(personnel.email, dispatch)} className="text-slate-300 hover:text-indigo-500 transition-colors">
                 <i className="bx bx-copy text-xs" />
               </button>
             </div>
@@ -509,29 +457,42 @@ export function PersonnelDetailsPanel({ personnel, logs = [], onClose, onUpdate,
         </div>
 
         {/* --- Primary Details --- */}
-        <div className="space-y-4 border-t border-black/[0.03] pt-4">
+        <div className="space-y-4 border-t border-black/[0.03] pt-6">
           <PropertyRow
             icon="bx bx-pulse"
-            label="Integrity"
+            label="Integrity State"
             value={
-              <div
-                className={`flex items-center gap-2 px-2 py-1 rounded-md border text-[10px] font-black uppercase w-fit ${
-                  isActive ? "bg-emerald-50 text-emerald-600 border-emerald-100" : "bg-red-50 text-red-600 border-red-100"
-                }`}
+              <div className={`flex items-center gap-2 px-2 py-1 rounded-md border text-[10px] font-black uppercase w-fit ${
+                isActive ? "bg-emerald-50 text-emerald-600 border-emerald-100" : "bg-red-50 text-red-600 border-red-100"
+              }`}
               >
                 <span className={`w-1.5 h-1.5 rounded-full ${isActive ? "bg-emerald-500 animate-pulse" : "bg-red-500"}`} />
-                {isActive ? "Active" : "Disabled"}
+                {isActive ? "Clear & Active" : personnel.isLocked ? "Locked" : "Disabled"}
               </div>
             }
           />
 
           <PropertyRow
             icon="bx bx-folder"
-            label="Branch"
+            label="Branch Registry"
             value={
-              <div className="flex items-center gap-2 bg-slate-50 w-fit px-2.5 py-1 rounded-md border border-black/[0.04] truncate">
-                <span className={`w-2 h-2 shrink-0 rounded-full ${getDepartmentColor(personnel.branch?.name || "Unassigned")}`} />
-                <span className="text-[12px] font-medium text-slate-700 truncate">{personnel.branch?.name || "None"}</span>
+              <div className="flex flex-col gap-1.5 w-full">
+                {personnel.branchAssignments?.length > 0 ? (
+                  personnel.branchAssignments.map((assignment) => (
+                    <div
+                      key={assignment.branchId}
+                      className={`flex items-center gap-2 px-2.5 py-1 rounded-md border border-black/[0.04] text-[12px] font-medium truncate w-fit ${getBranchColor(assignment.isPrimary)} ${assignment.isPrimary ? 'bg-slate-50' : 'bg-transparent'}`}
+                    >
+                      <span className={`w-2 h-2 shrink-0 rounded-full ${getDepartmentColor(assignment.branch.name)}`} />
+                      <span className="truncate">{assignment.branch.name} {assignment.isPrimary && <span className="text-[10px] text-slate-400 ml-1">(Primary)</span>}</span>
+                    </div>
+                  ))
+                ) : (
+                  <div className="flex items-center gap-2 bg-slate-50 w-fit px-2.5 py-1 rounded-md border border-black/[0.04] truncate">
+                    <span className={`w-2 h-2 shrink-0 rounded-full ${getDepartmentColor(personnel.branch?.name || "Unassigned")}`} />
+                    <span className="text-[12px] font-medium text-slate-700 truncate">{personnel.branch?.name || "Global / Unassigned"}</span>
+                  </div>
+                )}
               </div>
             }
           />
@@ -541,7 +502,7 @@ export function PersonnelDetailsPanel({ personnel, logs = [], onClose, onUpdate,
             label="Staff Code"
             value={
               <span className="font-mono text-[11px] font-bold bg-slate-100 text-slate-700 px-2 py-1 rounded border border-black/[0.03]">
-                {personnel.staffCode || "GUEST-PRMN"}
+                {personnel.staffCode || "SYS-PROVISIONED"}
               </span>
             }
           />
@@ -557,9 +518,7 @@ export function PersonnelDetailsPanel({ personnel, logs = [], onClose, onUpdate,
                   className="text-[11px] font-black text-slate-700 bg-slate-50 px-2 py-1.5 rounded-md border border-black/5 w-full outline-none"
                 >
                   {Object.values(Role).map((r) => (
-                    <option key={r} value={r}>
-                      {r}
-                    </option>
+                    <option key={r} value={r}>{r}</option>
                   ))}
                 </select>
               ) : (
@@ -573,7 +532,7 @@ export function PersonnelDetailsPanel({ personnel, logs = [], onClose, onUpdate,
           {/* Credential Rotation UI */}
           <PropertyRow
             icon="bx bx-key"
-            label={personnel.requiresPasswordChange ? "Temp Credential" : "Security State"}
+            label={requiresPasswordChange ? "Vault Credential" : "Security State"}
             value={
               fetchingTemp ? (
                 <i className="bx bx-loader-alt animate-spin text-slate-400" />
@@ -581,23 +540,26 @@ export function PersonnelDetailsPanel({ personnel, logs = [], onClose, onUpdate,
                 <div className="flex items-center gap-1">
                   <div className="flex items-center gap-2 bg-amber-50 border border-amber-200 rounded px-2 py-1">
                     <span className="font-mono text-[11px] font-black text-amber-700 tracking-wider">{tempPassword}</span>
-                    <button onClick={() => handleCopy(tempPassword, "Temporary Password")} className="text-amber-500 hover:text-amber-700">
+                    <button onClick={() => copyToClipboard(tempPassword, dispatch)} className="text-amber-500 hover:text-amber-700">
                       <i className="bx bx-copy text-xs" />
                     </button>
                   </div>
 
                   <button
                     onClick={handleResetPassword}
-                    className="ml-1 w-6 h-6 flex items-center justify-center rounded-md text-slate-400 hover:bg-slate-100 hover:text-blue-600 transition-all active:scale-90"
-                    title="Refresh Credential"
+                    className="ml-1 w-6 h-6 flex items-center justify-center rounded-md transition-all active:scale-90 text-slate-400 hover:bg-slate-100 hover:text-blue-600"
+                    title="Regenerate Key"
                   >
                     <i className="bx bx-refresh text-lg" />
                   </button>
                 </div>
               ) : (
-                <button onClick={handleResetPassword} className="text-[10px] font-bold text-blue-500 hover:text-blue-700 uppercase flex items-center gap-1 group">
-                  <i className="bx bx-reset group-hover:rotate-180 transition-transform duration-500" />
-                  {personnel.requiresPasswordChange ? "Generate New" : "Rotate Key"}
+                <button
+                  onClick={handleResetPassword}
+                  className="text-[10px] font-bold uppercase flex items-center gap-1 group text-blue-500 hover:text-blue-700"
+                >
+                  <i className="bx bx-reset transition-transform duration-500 group-hover:rotate-180" />
+                  {requiresPasswordChange ? "Generate New" : "Rotate Key"}
                 </button>
               )
             }
@@ -612,7 +574,7 @@ export function PersonnelDetailsPanel({ personnel, logs = [], onClose, onUpdate,
                 onClick={handleSave}
                 className="flex-1 py-3 bg-slate-900 text-white text-[11px] font-black uppercase tracking-widest rounded-xl hover:bg-slate-800 shadow-lg shadow-slate-200 transition-all active:scale-[0.98]"
               >
-                Commit changes
+                Commit Context
               </button>
 
               <button
@@ -628,13 +590,13 @@ export function PersonnelDetailsPanel({ personnel, logs = [], onClose, onUpdate,
           ) : (
             <div className="space-y-6">
               <div className="space-y-3">
-                <h4 className="text-[9px] font-black text-slate-400 uppercase tracking-[0.2em]">Security Protocol</h4>
+                <h4 className="text-[9px] font-black text-slate-400 uppercase tracking-[0.2em]">Security Interventions</h4>
 
                 <div className="grid grid-cols-2 gap-2">
                   <button
                     onClick={() => toggleSecurity("isLocked", !personnel.isLocked)}
                     className={`flex items-center justify-center gap-2 px-3 py-3 text-[11px] font-bold border rounded-xl transition-all active:scale-95 ${
-                      personnel.isLocked ? "bg-emerald-50 text-emerald-600 border-emerald-100" : "bg-amber-50 text-amber-600 border-amber-100"
+                      personnel.isLocked ? "bg-emerald-50 text-emerald-600 border-emerald-100 hover:bg-emerald-100" : "bg-amber-50 text-amber-600 border-amber-100 hover:bg-amber-100"
                     }`}
                   >
                     <i className={`bx ${personnel.isLocked ? "bx-lock-open" : "bx-lock-alt"} text-base`} />
@@ -644,7 +606,7 @@ export function PersonnelDetailsPanel({ personnel, logs = [], onClose, onUpdate,
                   <button
                     onClick={() => toggleSecurity("disabled", !personnel.disabled)}
                     className={`flex items-center justify-center gap-2 px-3 py-3 text-[11px] font-bold border rounded-xl transition-all active:scale-95 ${
-                      personnel.disabled ? "bg-slate-900 text-white border-slate-900 shadow-lg shadow-slate-200" : "bg-red-50 text-red-600 border-red-100"
+                      personnel.disabled ? "bg-slate-900 text-white border-slate-900 shadow-lg shadow-slate-200 hover:bg-slate-800" : "bg-red-50 text-red-600 border-red-100 hover:bg-red-100"
                     }`}
                   >
                     <i className={`bx ${personnel.disabled ? "bx-user-check" : "bx-user-x"} text-base`} />
@@ -656,46 +618,74 @@ export function PersonnelDetailsPanel({ personnel, logs = [], onClose, onUpdate,
           )}
         </div>
 
-        {/* --- Collapsible Activity Log (Expanded by default) --- */}
-        <div className="pt-6">
+        {/* --- Collapsible Activity Log (Redesigned) --- */}
+        <div className="pt-6 border-t border-black/[0.03]">
           <button
             onClick={() => setIsLogExpanded(!isLogExpanded)}
-            className="w-full flex items-center justify-between p-4 bg-slate-50 rounded-2xl group transition-all border border-black/[0.01]"
+            className="w-full flex items-center justify-between p-4 bg-slate-50 hover:bg-slate-100 rounded-2xl group transition-all border border-black/[0.01]"
           >
             <span className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Historical Telemetry</span>
-            <i className={`bx bx-chevron-down text-lg transition-transform duration-300 ${isLogExpanded ? "rotate-180" : ""}`} />
+            <div className="flex items-center gap-2">
+              <span className="text-[10px] font-bold text-slate-300 font-mono">{displayLogs.length} Events</span>
+              <i className={`bx bx-chevron-down text-lg text-slate-400 transition-transform duration-300 ${isLogExpanded ? "rotate-180" : ""}`} />
+            </div>
           </button>
 
           {isLogExpanded && (
-            <div className="mt-4 space-y-4 px-2 animate-in fade-in slide-in-from-top-2">
-              <div className="border-l-2 border-slate-100 pl-4 space-y-5">
-                {rotationEvent && (
+            <div className="mt-4 animate-in fade-in slide-in-from-top-2">
+              {/* Log Filters */}
+              <div className="flex gap-1 p-1 bg-slate-50 rounded-lg border border-black/[0.02] mb-5">
+                {Object.entries(LOG_TABS).map(([key, value]) => (
+                  <button
+                    key={key}
+                    onClick={() => setLogFilter(value)}
+                    className={`flex-1 py-1.5 text-[9px] font-black uppercase tracking-wider rounded-md transition-all ${
+                      logFilter === value ? "bg-white text-indigo-600 shadow-sm" : "text-slate-400 hover:text-slate-600"
+                    }`}
+                  >
+                    {key}
+                  </button>
+                ))}
+              </div>
+
+              {/* Seamless Log Timeline */}
+              <div className="px-2">
+                <div className="border-l-2 border-slate-100 pl-4 space-y-4">
+                  
+                  {/* System Level Events */}
+                  {rotationEvent && (
+                    <div className="relative">
+                      <span className="absolute -left-[21px] top-1 w-2 h-2 rounded-full bg-amber-500 border-2 border-white ring-4 ring-amber-50" />
+                      <p className="text-[10px] font-bold text-amber-600 uppercase tracking-tight">Credential Rotated</p>
+                      <p className="text-[9px] text-slate-400">Vault entry synchronized at {rotationEvent.time.toLocaleTimeString()}</p>
+                    </div>
+                  )}
+
                   <div className="relative">
-                    <span className="absolute -left-[21px] top-1 w-2 h-2 rounded-full bg-amber-500 border-2 border-white ring-4 ring-amber-50" />
-                    <p className="text-[10px] font-bold text-amber-600 uppercase">Credential Rotated</p>
-                    <p className="text-[9px] text-slate-400">Vault entry updated: {rotationEvent.time.toLocaleTimeString()}</p>
+                    <span className="absolute -left-[21px] top-1 w-2 h-2 rounded-full bg-slate-300 border-2 border-white" />
+                    <p className="text-[10px] font-bold text-slate-800 uppercase tracking-tight">Account Provisioned</p>
+                    <p className="text-[9px] text-slate-400">Registry entry: {(personnel as any).createdAt ? new Date((personnel as any).createdAt).toLocaleString() : "Initial deployment"}</p>
                   </div>
-                )}
 
-                <div className="relative">
-                  <span className="absolute -left-[21px] top-1 w-2 h-2 rounded-full bg-slate-300 border-2 border-white" />
-                  <p className="text-[10px] font-bold text-slate-800 uppercase">Account Provisioned</p>
-                  <p className="text-[9px] text-slate-400">Registry entry: {new Date(personnel.createdAt).toLocaleString()}</p>
-                </div>
+                  {personnel.lastActivityAt && (
+                    <div className="relative">
+                      <span className="absolute -left-[21px] top-1 w-2 h-2 rounded-full bg-indigo-500 border-2 border-white ring-4 ring-indigo-50" />
+                      <p className="text-[10px] font-bold text-slate-800 uppercase tracking-tight">Last Registry Sync</p>
+                      <p className="text-[9px] text-slate-400">
+                        {new Date(personnel.lastActivityAt).toLocaleString()}
+                      </p>
+                    </div>
+                  )}
 
-                <div className="relative">
-                  <span className="absolute -left-[21px] top-1 w-2 h-2 rounded-full bg-indigo-500 border-2 border-white" />
-                  <p className="text-[10px] font-bold text-slate-800 uppercase">Last Registry Sync</p>
-                  <p className="text-[9px] text-slate-400">
-                    {personnel.lastActivityAt ? new Date(personnel.lastActivityAt).toLocaleString() : "No telemetry recorded"}
-                  </p>
-                </div>
-
-                {/* Render computed logs */}
-                <div className="space-y-3">
-                  {displayLogs.map((log) => (
-                    <ActivityCard key={log.id} log={log} onToast={(a) => dispatch(a)} />
-                  ))}
+                  {/* Render computed/filtered logs via Redesigned ActivityCard */}
+                  <div className="space-y-4 pt-4 relative">
+                    {displayLogs.map((log) => (
+                      <ActivityCard key={log.id} log={log} onToast={(a) => dispatch(a)} />
+                    ))}
+                    {displayLogs.length === 0 && (
+                      <div className="text-[10px] text-slate-400 font-medium italic text-center py-4">No events found for this filter.</div>
+                    )}
+                  </div>
                 </div>
               </div>
             </div>
@@ -704,10 +694,10 @@ export function PersonnelDetailsPanel({ personnel, logs = [], onClose, onUpdate,
 
         {/* --- Danger Zone --- */}
         {!isEditing && (
-          <div className="pt-6 border-t border-black/[0.03]">
+          <div className="pt-8 border-t border-red-50 mt-8">
             <button
               onClick={handlePurge}
-              className="w-full flex items-center justify-center gap-2 px-3 py-4 text-[10px] font-black uppercase tracking-[0.2em] border border-red-100 text-red-500 bg-red-50/50 rounded-2xl hover:bg-red-500 hover:text-white transition-all group"
+              className="w-full flex items-center justify-center gap-2 px-3 py-4 text-[10px] font-black uppercase tracking-[0.2em] border rounded-2xl transition-all group border-red-100 text-red-500 bg-red-50/50 hover:bg-red-500 hover:text-white"
             >
               <i className="bx bx-trash text-lg group-hover:animate-bounce" /> Purge Account Data
             </button>

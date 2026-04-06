@@ -19,7 +19,7 @@ export default function PersonnelManagementPage() {
 
   const userRole = session?.user?.role;
   const isOrgOwner = session?.user?.isOrgOwner;
-  
+
   const hasFullClearance = isOrgOwner || userRole === "ADMIN" || userRole === "DEV";
   const canProvision = hasFullClearance;
   const canDelete = hasFullClearance;
@@ -36,16 +36,10 @@ export default function PersonnelManagementPage() {
 
   const abortControllerRef = useRef<AbortController | null>(null);
 
-  // FIX: Use resetToDefault to return to previous view without closing panel
   const handleClosePanel = useCallback(() => {
     resetToDefault();
     setSelectedPersonId(null);
   }, [resetToDefault]);
-
-  // FIX: Dependency array must be empty to only fire on actual Page unmount
-  useEffect(() => {
-    return () => closePanel();
-  }, []); 
 
   const fetchPersonnel = useCallback(async () => {
     if (abortControllerRef.current) abortControllerRef.current.abort();
@@ -54,7 +48,7 @@ export default function PersonnelManagementPage() {
     setIsLoading(true);
     try {
       const res = await fetch(`/api/personnels?search=${encodeURIComponent(searchTerm)}&status=${filterStatus}`, {
-        signal: abortControllerRef.current.signal
+        signal: abortControllerRef.current.signal,
       });
       if (!res.ok) throw new Error("Sync Failed");
       const json: PaginatedResponse = await res.json();
@@ -63,7 +57,7 @@ export default function PersonnelManagementPage() {
       setBranches(json.branchSummaries || []);
       setLogs(json.recentLogs || []);
     } catch (err: unknown) {
-      if (err instanceof Error && err.name === 'AbortError') return;
+      if (err instanceof Error && err.name === "AbortError") return;
       dispatch({ kind: "TOAST", type: "ERROR", title: "Sync Failed", message: "Unable to load data." });
     } finally {
       setIsLoading(false);
@@ -83,7 +77,7 @@ export default function PersonnelManagementPage() {
     const res = await fetch("/api/personnels", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload)
+      body: JSON.stringify(payload),
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.message || "Failed to provision");
@@ -92,23 +86,36 @@ export default function PersonnelManagementPage() {
 
   const handleUpdate = async (id: string, payload: UpdatePayload) => {
     const originalList = [...personnelList];
-    setPersonnelList(prev => prev.map(p => p.id === id ? { ...p, ...payload } : p));
+    setPersonnelList((prev) => prev.map((p) => (p.id === id ? { ...p, ...payload } : p)));
     try {
       const res = await fetch("/api/personnels", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ id, ...payload })
+        body: JSON.stringify({ id, ...payload }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.message || "Failed to update");
       await fetchPersonnel();
-      const updatedPerson = { ...(personnelList.find(p => p.id === id)), ...data };
+      const updatedPerson = { ...personnelList.find((p) => p.id === id), ...data };
       if (isOpen && selectedPersonId === id) {
-        openPanel(<PersonnelDetailsPanel personnel={updatedPerson} onClose={handleClosePanel} onUpdate={handleUpdate} onDelete={handleDelete} dispatch={dispatch} />);
+        openPanel(
+          <PersonnelDetailsPanel
+            personnel={updatedPerson}
+            onClose={handleClosePanel}
+            onUpdate={handleUpdate}
+            onDelete={handleDelete}
+            dispatch={dispatch}
+          />
+        );
       }
     } catch (err: unknown) {
       setPersonnelList(originalList);
-      dispatch({ kind: "TOAST", type: "ERROR", title: "Update Failed", message: err instanceof Error ? err.message : "Persistence failed." });
+      dispatch({
+        kind: "TOAST",
+        type: "ERROR",
+        title: "Update Failed",
+        message: err instanceof Error ? err.message : "Persistence failed.",
+      });
     }
   };
 
@@ -127,13 +134,26 @@ export default function PersonnelManagementPage() {
       handleClosePanel();
       await fetchPersonnel();
     } catch (error: unknown) {
-      dispatch({ kind: "TOAST", type: "ERROR", title: "Action Failed", message: error instanceof Error ? error.message : "Deletion failed." });
+      dispatch({
+        kind: "TOAST",
+        type: "ERROR",
+        title: "Action Failed",
+        message: error instanceof Error ? error.message : "Deletion failed.",
+      });
     }
   };
 
   const handleOpenDetails = (person: Personnel) => {
     setSelectedPersonId(person.id);
-    openPanel(<PersonnelDetailsPanel personnel={person} onClose={handleClosePanel} onUpdate={handleUpdate} onDelete={handleDelete} dispatch={dispatch} />);
+    openPanel(
+      <PersonnelDetailsPanel
+        personnel={person}
+        onClose={handleClosePanel}
+        onUpdate={handleUpdate}
+        onDelete={handleDelete}
+        dispatch={dispatch}
+      />
+    );
   };
 
   const handleOpenProvision = () => {
@@ -149,156 +169,86 @@ export default function PersonnelManagementPage() {
 
   return (
     <div className="flex flex-col h-full w-full bg-white relative z-0 overflow-hidden">
-      <header className="px-4 py-4 shrink-0 border-b border-black/[0.04] bg-white">
+      <header className="px-4 py-4 shrink-0 border-b border-black/[0.04] bg-white sticky top-0 z-[100] backdrop-blur-md">
         <div className="flex items-center justify-between gap-4">
-          {/* Title: single-line, truncates, responsive size */}
           <div className="px-2 min-w-0 flex-1">
             <h1
               className="block w-full truncate text-[14px] sm:text-[15px] md:text-[18px] lg:text-2xl font-semibold tracking-tight text-slate-900 leading-tight"
               title="Personnel Operations"
-              aria-label="Personnel Operations"
             >
               Personnel Operations
             </h1>
           </div>
 
-          {/* Actions: icons always visible; labels appear md+ */}
           <div className="flex items-center gap-2 shrink-0">
-            <button
-              onClick={handleOpenLogs}
-              title="Audit Trail"
-              className="p-2 md:px-4 md:py-2 text-[12px] font-semibold border rounded-lg transition-colors flex items-center gap-2 bg-white border-black/5 text-slate-500 hover:bg-slate-50 hover:text-slate-800 shadow-sm"
-            >
-              <i className="bx bx-history text-base md:text-sm" />
-              <span className="hidden md:inline whitespace-nowrap">Audit Trail</span>
-            </button>
+            <div className="hidden sm:relative sm:block">
+              <i className="bx bx-search absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 text-xs" />
+              <input
+                type="text"
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+                placeholder="SEARCH_PERSONNEL..."
+                className="bg-slate-100 border-none py-1.5 pl-8 pr-4 text-[11px] font-medium w-40 md:w-64 rounded-lg focus:ring-1 focus:ring-black transition-all outline-none"
+              />
+            </div>
 
             {canProvision && (
               <button
                 onClick={handleOpenProvision}
-                title="Provision Access"
-                className="p-2 md:px-5 md:py-2 bg-blue-600 text-white text-[12px] font-semibold rounded-lg shadow-sm hover:bg-blue-700 transition-all flex items-center gap-2"
+                className="p-2 md:px-4 md:py-2 bg-blue-600 text-white text-[12px] font-semibold rounded-lg shadow-sm hover:bg-blue-700 transition-all flex items-center gap-2"
               >
                 <i className="bx bx-plus text-base md:text-sm" />
-                <span className="hidden md:inline whitespace-nowrap">Provision Access</span>
+                <span className="hidden md:inline">Provision</span>
               </button>
             )}
+
+            <button
+              onClick={() => fetchPersonnel()}
+              className="p-2 md:px-2 md:py-2 text-[12px] font-semibold border rounded-lg transition-colors flex justify-items-center gap-2 bg-white border-black/5 text-slate-500 hover:bg-slate-50 shadow-sm"
+            >
+              <i className={`bx bx-refresh text-base md:text-sm ${isLoading ? "bx-spin" : ""}`} />
+            </button>
           </div>
         </div>
 
-        {/* Single-line summary — forced single row, truncates labels and values */}
         <div
-          aria-label="summary"
-          className="flex items-center gap-3 md:gap-4 mt-6 pt-4 border-t border-black/5 overflow-hidden whitespace-nowrap"
-          style={{ minWidth: 0 }}
+          aria-label="status filters"
+          className="flex items-center justify-between md:justify-start gap-2 sm:gap-4 md:gap-6 mt-1 pt-4 border-t border-black/5 overflow-x-auto whitespace-nowrap [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden"
         >
-          {/* Total */}
-          <div className="flex items-center gap-3 shrink-0 min-w-0">
-            <div className="flex flex-col min-w-0">
-              <span className="text-[10px] md:text-[11px] font-bold text-slate-400 uppercase tracking-widest truncate max-w-[72px] md:max-w-[120px]">
-                Total
-              </span>
-              <span className="text-sm md:text-lg font-medium text-slate-800 truncate max-w-[84px] md:max-w-[140px]">
-                {summary.total}
-              </span>
-            </div>
-          </div>
-
-          <div className="w-px h-8 bg-black/5 self-center" />
-
-          {/* Active */}
-          <div className="flex items-center gap-3 shrink-0 min-w-0">
-            <div className="flex flex-col min-w-0">
-              <span className="text-[10px] md:text-[11px] font-bold text-emerald-500 uppercase tracking-widest truncate max-w-[72px] md:max-w-[120px]">
-                Active
-              </span>
-              <span className="text-sm md:text-lg font-medium text-slate-800 truncate max-w-[84px] md:max-w-[140px]">
-                {summary.active}
-              </span>
-            </div>
-          </div>
-
-          <div className="w-px h-8 bg-black/5 self-center" />
-
-          {/* Disabled */}
-          <div className="flex items-center gap-3 shrink-0 min-w-0">
-            <div className="flex flex-col min-w-0">
-              <span className="text-[10px] md:text-[11px] font-bold text-slate-400 uppercase tracking-widest truncate max-w-[72px] md:max-w-[120px]">
-                Disabled
-              </span>
-              <span className="text-sm md:text-lg font-medium text-slate-800 truncate max-w-[84px] md:max-w-[140px]">
-                {summary.disabled}
-              </span>
-            </div>
-          </div>
-
-          <div className="w-px h-8 bg-black/5 self-center" />
-
-          {/* Locked */}
-          <div className="flex items-center gap-3 shrink-0 min-w-0">
-            <div className="flex flex-col min-w-0">
-              <span className="text-[10px] md:text-[11px] font-bold text-amber-500 uppercase tracking-widest truncate max-w-[72px] md:max-w-[120px]">
-                Locked
-              </span>
-              <span className="text-sm md:text-lg font-medium text-slate-800 truncate max-w-[84px] md:max-w-[140px]">
-                {summary.locked}
-              </span>
-            </div>
-          </div>
+          {[
+            { key: "all", label: "TOTAL", count: summary.total, color: "text-slate-400" },
+            { key: "active", label: "ACTIVE", count: summary.active, color: "text-emerald-500" },
+            { key: "disabled", label: "DISABLED", count: summary.disabled, color: "text-slate-400" },
+            { key: "locked", label: "LOCKED", count: summary.locked, color: "text-amber-500" },
+          ].map((s, idx) => (
+            <React.Fragment key={s.key}>
+              {idx > 0 && <div className="w-px h-3 bg-black/10 self-center shrink-0" />}
+              <button
+                onClick={() => {
+                  setFilterStatus(s.key);
+                  setSearchTerm("");
+                }}
+                className={`group flex items-baseline gap-1 sm:gap-1.5 transition-all shrink-0 ${
+                  filterStatus === s.key ? "text-blue-600 underline underline-offset-[14px] decoration-2" : "text-slate-400 hover:text-blue-600"
+                }`}
+              >
+                <span
+                  className={`text-[8px] sm:text-[10px] md:text-[11px] font-bold uppercase tracking-[0.1em] sm:tracking-[0.2em] ${
+                    filterStatus === s.key ? "text-blue-600" : s.color
+                  }`}
+                >
+                  {s.label}
+                </span>
+                <span className={`text-[8px] md:text-[10px] font-medium tabular-nums ${filterStatus === s.key ? "text-slate-900" : "text-slate-300"}`}>
+                  {s.count}
+                </span>
+              </button>
+            </React.Fragment>
+          ))}
         </div>
-
-        {/* Small helper CSS to ensure truncation and prevent overflow in extreme cases */}
-        <style jsx>{`
-          header { min-width: 0; }
-          /* Slight scale down on very narrow screens to avoid overflow while keeping single-line */
-          @media (max-width: 340px) {
-            header > div:first-child { transform-origin: left center; transform: scale(0.96); }
-          }
-        `}</style>
       </header>
 
-
-      <div className="px-4 md:px-10 py-3 shrink-0 flex items-center gap-3 bg-slate-50/50 border-b border-black/[0.04]">
-        <div className="relative flex-1 md:flex-none md:w-80 shrink-0">
-          <i className="bx bx-search absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 text-base" />
-          <input 
-            type="text" 
-            placeholder="Search..." 
-            value={searchTerm} 
-            onChange={e => setSearchTerm(e.target.value)} 
-            className="w-full pl-9 pr-4 py-1.5 bg-white border border-black/5 rounded-md text-[12px] outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500/30 transition-all truncate" 
-          />
-        </div>
-        
-        <div className="h-4 w-px bg-black/10 shrink-0" />
-
-        <div className="flex items-center shrink-0">
-          <div className="md:hidden">
-            <select 
-              value={filterStatus} 
-              onChange={(e) => setFilterStatus(e.target.value)}
-              className="bg-white border border-black/5 text-[11px] font-semibold px-2 py-1.5 rounded-md outline-none text-slate-700 capitalize"
-            >
-              {["all", "active", "locked", "disabled"].map(status => (
-                <option key={status} value={status}>{status}</option>
-              ))}
-            </select>
-          </div>
-          <div className="hidden md:flex gap-1">
-            {["all", "active", "locked", "disabled"].map(status => (
-              <button 
-                key={status} 
-                onClick={() => setFilterStatus(status)} 
-                className={`px-3 py-1 rounded text-[11px] font-semibold capitalize transition-colors whitespace-nowrap ${filterStatus === status ? "bg-white border shadow-sm text-slate-800" : "text-slate-500 hover:text-slate-800 hover:bg-black/5"}`}
-              >
-                {status}
-              </button>
-            ))}
-          </div>
-        </div>
-      </div>
-
-      {/* --- Desktop Table Header (Hidden on Mobile) --- */}
+      {/* --- Desktop Table Header --- */}
       <div className="hidden sm:flex px-4 md:px-8 py-2 shrink-0 items-center text-[10px] font-bold text-slate-400 uppercase tracking-widest border-b border-black/[0.04] bg-white overflow-hidden whitespace-nowrap">
         <div className="w-[100px] md:w-[140px] shrink-0 truncate">Staff ID</div>
         <div className="w-[100px] md:w-[160px] shrink-0 truncate">Primary Branch</div>
@@ -310,11 +260,16 @@ export default function PersonnelManagementPage() {
 
       <div className="flex-1 overflow-y-auto custom-scrollbar bg-white relative">
         {isLoading && personnelList.length === 0 ? (
-          <div className="absolute inset-0 flex items-center justify-center bg-white/50 backdrop-blur-sm z-10"><i className="bx bx-loader-alt animate-spin text-3xl text-blue-500" /></div>
+          <div className="absolute inset-0 flex items-center justify-center bg-white/50 backdrop-blur-sm z-10">
+            <i className="bx bx-loader-alt animate-spin text-3xl text-blue-500" />
+          </div>
         ) : personnelList.length === 0 ? (
-          <div className="flex flex-col items-center justify-center h-full text-center space-y-3 opacity-50 p-6"><i className="bx bx-group text-4xl text-black/20" /><p className="text-[12px] font-bold tracking-widest uppercase">No Personnel Found</p></div>
+          <div className="flex flex-col items-center justify-center h-full text-center space-y-3 opacity-50 p-6">
+            <i className="bx bx-group text-4xl text-black/20" />
+            <p className="text-[12px] font-bold tracking-widest uppercase">No Personnel Found</p>
+          </div>
         ) : (
-          personnelList.map(person => (
+          personnelList.map((person) => (
             <PersonnelRow
               key={person.id}
               personnel={person}

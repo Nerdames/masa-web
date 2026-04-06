@@ -11,15 +11,91 @@ import {
 import { getToken } from "next-auth/jwt";
 import bcrypt from "bcryptjs";
 import crypto from "crypto";
+import { z } from "zod";
 import { 
   validateManagementRights, 
   canPerformAction,
   ManagementAction
-} from "@/core/lib/permission"; // Adjust path to your permission file
+} from "@/core/lib/permission";
 
 const JWT_SECRET = process.env.NEXTAUTH_SECRET;
 
-/* -------------------- HELPERS -------------------- */
+/* -------------------- VALIDATION SCHEMAS -------------------- */
+
+const ProvisionSchema = z.object({
+  name: z.string().min(2, "Name must be at least 2 characters").trim(),
+  email: z.string().email("Invalid email format").trim().toLowerCase(),
+  password: z.string().min(8, "Password must be at least 8 characters").optional().or(z.literal('')),
+  branchId: z.string().cuid("Invalid Branch ID format").optional().nullable(),
+  role: z.nativeEnum(Role).optional().default(Role.CASHIER),
+  isOrgOwner: z.boolean().optional().default(false),
+  preferences: z.any().optional()
+});
+
+const UpdatePersonnelSchema = z.object({
+  id: z.string().cuid("Invalid Personnel ID"),
+  name: z.string().min(2).trim().optional(),
+  email: z.string().email().trim().toLowerCase().optional(),
+  role: z.nativeEnum(Role).optional(),
+  disabled: z.boolean().optional(),
+  isLocked: z.boolean().optional(),
+  lockReason: z.string().optional().nullable(),
+  newPassword: z.string().min(8).optional(),
+  branchAssignments: z.array(z.object({
+    branchId: z.string().cuid(),
+    role: z.nativeEnum(Role).optional(),
+    isPrimary: z.boolean().default(false)
+  })).optional(),
+  preferences: z.any().optional()
+});
+
+/* -------------------- FORENSIC AUDIT HELPER -------------------- */
+
+/**
+ * Creates a cryptographically chained activity log.
+ * Generates a SHA-256 hash of the current log combined with the previous hash.
+ */
+async function createSecureActivityLog(
+  tx: Prisma.TransactionClient,
+  logData: Prisma.ActivityLogUncheckedCreateInput
+) {
+  // Retrieve the most recent log for this organization to establish the chain
+  const lastLog = await tx.activityLog.findFirst({
+    where: { organizationId: logData.organizationId },
+    orderBy: { createdAt: 'desc' },
+    select: { hash: true }
+  });
+
+  const previousHash = lastLog?.hash || crypto.randomBytes(32).toString('hex');
+  const timestamp = new Date().toISOString();
+
+  // Deterministic payload for hashing
+  const payload = JSON.stringify({
+    organizationId: logData.organizationId,
+    actorId: logData.actorId,
+    action: logData.action,
+    targetId: logData.targetId,
+    severity: logData.severity,
+    before: logData.before || null,
+    after: logData.after || null,
+    requestId: logData.requestId,
+    previousHash,
+    timestamp
+  });
+
+  const hash = crypto.createHash('sha256').update(payload).digest('hex');
+
+  return tx.activityLog.create({
+    data: {
+      ...logData,
+      previousHash,
+      hash,
+      createdAt: timestamp,
+    }
+  });
+}
+
+/* -------------------- CORE HELPERS -------------------- */
 
 async function getAuthContext(req: NextRequest) {
   const token = await getToken({ req, secret: JWT_SECRET });
@@ -31,17 +107,14 @@ async function getAuthContext(req: NextRequest) {
     organizationId: token.organizationId as string,
     branchId: (token.branchId as string) ?? null,
     isOrgOwner: !!token.isOrgOwner,
+    ipAddress: req.headers.get("x-forwarded-for") || req.ip || "UNKNOWN",
+    deviceInfo: req.headers.get("user-agent") || "UNKNOWN"
   };
 }
 
 const ROLE_CODE: Record<Role, string> = {
-  DEV: "00",
-  ADMIN: "01",
-  MANAGER: "02",
-  AUDITOR: "03",
-  INVENTORY: "04",
-  SALES: "05",
-  CASHIER: "06",
+  DEV: "00", ADMIN: "01", MANAGER: "02", AUDITOR: "03", 
+  INVENTORY: "04", SALES: "05", CASHIER: "06",
 };
 
 async function generateStaffCode(
@@ -55,18 +128,17 @@ async function generateStaffCode(
   return `STF-${nn}-${rr}`;
 }
 
-// Generates a secure temporary password if none is provided
 function generateTempPassword(): string {
-  return crypto.randomBytes(5).toString("hex") + "X1@"; // e.g., 9f2b3c4d5eX1@
+  return crypto.randomBytes(6).toString("hex") + "X1@"; 
 }
 
-/* -------------------- GET: LIST, ANALYTICS & PREFERENCES -------------------- */
+/* -------------------- HTTP METHODS -------------------- */
 
 export async function GET(req: NextRequest) {
   const auth = await getAuthContext(req);
   if (!auth) return NextResponse.json({ message: "Unauthorized" }, { status: 401 });
 
-  if (![Role.DEV, Role.ADMIN, Role.MANAGER].includes(auth.role)) {
+  if (![Role.DEV, Role.ADMIN, Role.MANAGER, Role.AUDITOR].includes(auth.role)) {
     return NextResponse.json({ message: "Access denied" }, { status: 403 });
   }
 
@@ -80,7 +152,6 @@ export async function GET(req: NextRequest) {
     const baseWhere: Prisma.AuthorizedPersonnelWhereInput = {
       deletedAt: null,
       organizationId: auth.organizationId,
-      // Managers only see personnel assigned to their branch (unless OrgOwner)
       ...(auth.role === Role.MANAGER && auth.branchId && !auth.isOrgOwner && {
         branchAssignments: { some: { branchId: auth.branchId } }
       }),
@@ -112,19 +183,10 @@ export async function GET(req: NextRequest) {
         take: pageSize,
         orderBy: { createdAt: "desc" },
         select: {
-          id: true,
-          name: true,
-          email: true,
-          staffCode: true,
-          role: true,
-          disabled: true,
-          isLocked: true,
-          lastLogin: true,
-          lastActivityAt: true,
-          createdAt: true,
-          branch: { select: { id: true, name: true } },
+          id: true, name: true, email: true, staffCode: true, role: true,
+          disabled: true, isLocked: true, lastLogin: true, lastActivityAt: true,
+          createdAt: true, branch: { select: { id: true, name: true } },
           branchAssignments: { include: { branch: { select: { id: true, name: true } } } },
-          // Fetching preferences attached to the personnel
           preferences: true 
         }
       }),
@@ -147,15 +209,9 @@ export async function GET(req: NextRequest) {
     };
 
     return NextResponse.json({
-      data,
-      total,
-      page,
-      pageSize,
-      summary,
+      data, total, page, pageSize, summary,
       branchSummaries: branches.map(b => ({
-        id: b.id,
-        name: b.name,
-        count: b._count.personnel
+        id: b.id, name: b.name, count: b._count.personnel
       })),
     });
   } catch (error) {
@@ -164,31 +220,34 @@ export async function GET(req: NextRequest) {
   }
 }
 
-/* -------------------- POST: PROVISIONING (W/ TEMP CREDENTIALS) -------------------- */
-
 export async function POST(req: NextRequest) {
   const auth = await getAuthContext(req);
-
   if (!auth || (!auth.isOrgOwner && auth.role !== Role.ADMIN && auth.role !== Role.DEV)) {
-    return NextResponse.json({ message: "You do not have clearance to provision new personnel." }, { status: 403 });
+    return NextResponse.json({ message: "Clearance level insufficient to provision personnel." }, { status: 403 });
   }
 
-  try {
-    const body = await req.json();
-    const { name, email, password, branchId, role, isOrgOwner, preferences } = body;
+  const requestId = crypto.randomUUID();
 
-    const cleanEmail = email.toLowerCase().trim();
-    const assignedRole = (role as Role) || Role.CASHIER;
+  try {
+    const rawBody = await req.json();
+    const parsed = ProvisionSchema.safeParse(rawBody);
+    
+    if (!parsed.success) {
+      return NextResponse.json({ message: "Validation failed", errors: parsed.error.format() }, { status: 400 });
+    }
+
+    const { name, email, password, branchId, role, isOrgOwner, preferences } = parsed.data;
+
+    const assignedRole = role as Role;
     const assignedBranchId = branchId || auth.branchId || null;
 
-    // Logic: Temp Credential Generation
     const isTempCredential = !password || password.trim() === "";
-    const plainPassword = isTempCredential ? generateTempPassword() : password;
+    const plainPassword = isTempCredential ? generateTempPassword() : password!;
     const hashedPassword = await bcrypt.hash(plainPassword, 12);
 
     const personnel = await prisma.$transaction(async (tx) => {
       const conflict = await tx.authorizedPersonnel.findFirst({
-        where: { email: cleanEmail, organizationId: auth.organizationId, deletedAt: null }
+        where: { email, organizationId: auth.organizationId, deletedAt: null }
       });
 
       if (conflict) throw new Error("Email already registered in this organization.");
@@ -197,17 +256,10 @@ export async function POST(req: NextRequest) {
 
       const created = await tx.authorizedPersonnel.create({
         data: {
-          name: name.trim(),
-          email: cleanEmail,
-          password: hashedPassword,
-          staffCode: finalStaffCode,
-          role: assignedRole,
-          organizationId: auth.organizationId,
-          branchId: assignedBranchId,
-          isOrgOwner: auth.isOrgOwner ? (isOrgOwner || false) : false,
-          disabled: false,
-          isLocked: false,
-          requiresPasswordChange: true, // Forces change on first login
+          name, email, password: hashedPassword, staffCode: finalStaffCode,
+          role: assignedRole, organizationId: auth.organizationId, branchId: assignedBranchId,
+          isOrgOwner: auth.isOrgOwner ? isOrgOwner : false,
+          disabled: false, isLocked: false, requiresPasswordChange: true,
           ...(preferences && { preferences: { create: preferences } })
         },
       });
@@ -215,42 +267,37 @@ export async function POST(req: NextRequest) {
       if (assignedBranchId) {
         await tx.branchAssignment.create({
           data: {
-            personnelId: created.id,
-            branchId: assignedBranchId,
-            role: created.role,
-            isPrimary: true,
+            personnelId: created.id, branchId: assignedBranchId,
+            role: created.role, isPrimary: true,
           }
         });
       }
 
-      await tx.activityLog.create({
-        data: {
-          organizationId: auth.organizationId,
-          branchId: auth.branchId,
-          actorId: auth.userId,
-          actorType: ActorType.USER,
-          actorRole: auth.role,
-          action: "PERSONNEL_CREATED",
-          severity: Severity.MEDIUM,
-          targetId: created.id,
-          targetType: "PERSONNEL",
-          after: { email: created.email, role: created.role, branchId: assignedBranchId } as Prisma.InputJsonObject,
-          metadata: { 
-            details: `Provisioned account (${finalStaffCode}). Force reset enabled.`,
-            isTempCredential 
-          } as Prisma.InputJsonObject
-        }
+      await createSecureActivityLog(tx, {
+        requestId,
+        organizationId: auth.organizationId,
+        branchId: auth.branchId,
+        actorId: auth.userId,
+        actorType: ActorType.USER,
+        actorRole: auth.role,
+        action: "PERSONNEL_CREATED",
+        severity: Severity.MEDIUM,
+        targetId: created.id,
+        targetType: "PERSONNEL",
+        ipAddress: auth.ipAddress,
+        deviceInfo: auth.deviceInfo,
+        after: { email: created.email, role: created.role, branchId: assignedBranchId } as Prisma.InputJsonObject,
+        metadata: { details: `Provisioned account (${finalStaffCode}). Force reset enabled.`, isTempCredential } as Prisma.InputJsonObject
       });
 
       return created;
     });
 
-    // Exclude the hashed password, but securely return the temporary credential ONCE for the admin
     const { password: _, ...safePersonnel } = personnel;
     
     return NextResponse.json({
       ...safePersonnel,
-      tempPassword: isTempCredential ? plainPassword : null, // Surface this to the frontend Admin UI
+      tempPassword: isTempCredential ? plainPassword : null, 
       message: isTempCredential ? "Personnel created with temporary credentials." : "Personnel created successfully."
     }, { status: 201 });
 
@@ -262,19 +309,21 @@ export async function POST(req: NextRequest) {
   }
 }
 
-/* -------------------- PATCH: IAM CONTROL -------------------- */
-
 export async function PATCH(req: NextRequest) {
   const auth = await getAuthContext(req);
   if (!auth) return NextResponse.json({ message: "Unauthorized" }, { status: 401 });
 
-  try {
-    const body = await req.json();
-    const {
-      id, name, email, role, disabled, isLocked, lockReason, newPassword, branchAssignments, preferences
-    } = body;
+  const requestId = crypto.randomUUID();
 
-    if (!id) return NextResponse.json({ message: "Personnel ID is required" }, { status: 400 });
+  try {
+    const rawBody = await req.json();
+    const parsed = UpdatePersonnelSchema.safeParse(rawBody);
+    
+    if (!parsed.success) {
+      return NextResponse.json({ message: "Validation failed", errors: parsed.error.format() }, { status: 400 });
+    }
+
+    const { id, name, email, role, disabled, isLocked, lockReason, newPassword, branchAssignments, preferences } = parsed.data;
 
     const targetUser = await prisma.authorizedPersonnel.findUnique({
       where: { id, organizationId: auth.organizationId, deletedAt: null }
@@ -282,32 +331,27 @@ export async function PATCH(req: NextRequest) {
 
     if (!targetUser) return NextResponse.json({ message: "Personnel not found" }, { status: 404 });
 
-    // Determine highest-level action for management validation
     let managementAction: ManagementAction = "UPDATE_STATUS";
     if (newPassword) managementAction = "RESET_PASSWORD";
     else if (role !== undefined && role !== targetUser.role) managementAction = "UPDATE_ROLE";
     else if (branchAssignments) managementAction = "TRANSFER_BRANCH";
 
-    // Unified Management Rights Check
     const rights = validateManagementRights(auth, targetUser, managementAction);
     if (!rights.authorized) {
       return NextResponse.json({ message: rights.reason }, { status: 403 });
     }
 
-    // Critical Action Capability Checks
     if (newPassword && !canPerformAction(auth.role, "PASSWORD_CHANGE")) {
       return NextResponse.json({ message: "Admin elevation required for password resets." }, { status: 403 });
     }
-    if (email && email.toLowerCase().trim() !== targetUser.email && !canPerformAction(auth.role, "EMAIL_CHANGE")) {
+    if (email && email !== targetUser.email && !canPerformAction(auth.role, "EMAIL_CHANGE")) {
       return NextResponse.json({ message: "Admin elevation required for email modifications." }, { status: 403 });
     }
 
-    const cleanEmail = email?.toLowerCase().trim();
-
     const updatedPersonnel = await prisma.$transaction(async (tx) => {
-      if (cleanEmail && cleanEmail !== targetUser.email) {
+      if (email && email !== targetUser.email) {
         const conflict = await tx.authorizedPersonnel.findFirst({
-          where: { email: cleanEmail, organizationId: auth.organizationId, id: { not: id }, deletedAt: null }
+          where: { email, organizationId: auth.organizationId, id: { not: id }, deletedAt: null }
         });
         if (conflict) throw new Error("Email already in use in this organization.");
       }
@@ -318,21 +362,19 @@ export async function PATCH(req: NextRequest) {
       let notificationMessage: string | null = null;
       let criticalActionTrigger: CriticalAction | undefined = undefined;
 
-      // Extract Before State for Audit
       const beforeState: any = {
          name: targetUser.name, email: targetUser.email, role: targetUser.role,
          disabled: targetUser.disabled, isLocked: targetUser.isLocked, branchId: targetUser.branchId
       };
       const afterState: any = { ...beforeState };
 
-      // Field Updates
-      if (name !== undefined && name.trim() !== targetUser.name) {
-        updateData.name = name.trim();
-        afterState.name = name.trim();
+      if (name !== undefined && name !== targetUser.name) {
+        updateData.name = name;
+        afterState.name = name;
       }
-      if (cleanEmail !== undefined && cleanEmail !== targetUser.email) {
-        updateData.email = cleanEmail;
-        afterState.email = cleanEmail;
+      if (email !== undefined && email !== targetUser.email) {
+        updateData.email = email;
+        afterState.email = email;
         criticalActionTrigger = CriticalAction.EMAIL_CHANGE;
       }
       if (role !== undefined && role !== targetUser.role) {
@@ -341,12 +383,10 @@ export async function PATCH(req: NextRequest) {
         severity = Severity.HIGH;
       }
       if (preferences) {
-        // Upsert logic for preferences
         updateData.preferences = { upsert: { create: preferences, update: preferences } };
         actions.push("PREFERENCES_UPDATED");
       }
       
-      // Security Controls
       if (disabled !== undefined && disabled !== targetUser.disabled) {
         updateData.disabled = disabled;
         afterState.disabled = disabled;
@@ -371,7 +411,6 @@ export async function PATCH(req: NextRequest) {
         }
       }
 
-      // Handle Forced Password Resets
       if (newPassword) {
         updateData.password = await bcrypt.hash(newPassword, 12);
         updateData.requiresPasswordChange = true; 
@@ -381,16 +420,15 @@ export async function PATCH(req: NextRequest) {
         notificationMessage = "Your password has been reset by an administrator. You will be required to change it upon your next login.";
       }
 
-      // Branch Reassignment logic
       if (branchAssignments && Array.isArray(branchAssignments)) {
         await tx.branchAssignment.deleteMany({ where: { personnelId: id } });
         if (branchAssignments.length > 0) {
-          const primaryCount = branchAssignments.filter((ba: any) => ba.isPrimary).length;
+          const primaryCount = branchAssignments.filter((ba) => ba.isPrimary).length;
           if (primaryCount > 1) throw new Error("Only one branch can be marked as primary.");
           if (primaryCount === 0) branchAssignments[0].isPrimary = true;
 
           await tx.branchAssignment.createMany({
-            data: branchAssignments.map((ba: any) => ({
+            data: branchAssignments.map((ba) => ({
               personnelId: id,
               branchId: ba.branchId,
               role: ba.role || targetUser.role,
@@ -398,7 +436,7 @@ export async function PATCH(req: NextRequest) {
             }))
           });
 
-          const primaryBranch = branchAssignments.find((ba: any) => ba.isPrimary);
+          const primaryBranch = branchAssignments.find((ba) => ba.isPrimary);
           updateData.branchId = primaryBranch ? primaryBranch.branchId : null;
           afterState.branchId = updateData.branchId;
           actions.push("BRANCH_REASSIGNED");
@@ -419,7 +457,6 @@ export async function PATCH(req: NextRequest) {
         select: { id: true, name: true, email: true, role: true, disabled: true, isLocked: true, branchId: true }
       });
 
-      // Unified Notification System mapping
       if (notificationMessage) {
         await tx.notification.create({
           data: {
@@ -434,24 +471,24 @@ export async function PATCH(req: NextRequest) {
         });
       }
 
-      // Forensic Auditing
       if (actions.length > 0) {
-        await tx.activityLog.create({
-          data: {
-            organizationId: auth.organizationId,
-            branchId: auth.branchId,
-            actorId: auth.userId,
-            actorType: ActorType.USER,
-            actorRole: auth.role,
-            action: actions.join(" | "),
-            severity,
-            critical: severity === Severity.HIGH || severity === Severity.CRITICAL,
-            targetId: id,
-            targetType: "PERSONNEL",
-            before: beforeState as Prisma.InputJsonObject,
-            after: afterState as Prisma.InputJsonObject,
-            metadata: { updates: Object.keys(updateData) } as Prisma.InputJsonObject
-          }
+        await createSecureActivityLog(tx, {
+          requestId,
+          organizationId: auth.organizationId,
+          branchId: auth.branchId,
+          actorId: auth.userId,
+          actorType: ActorType.USER,
+          actorRole: auth.role,
+          action: actions.join(" | "),
+          severity,
+          critical: severity === Severity.HIGH || severity === Severity.CRITICAL,
+          targetId: id,
+          targetType: "PERSONNEL",
+          ipAddress: auth.ipAddress,
+          deviceInfo: auth.deviceInfo,
+          before: beforeState as Prisma.InputJsonObject,
+          after: afterState as Prisma.InputJsonObject,
+          metadata: { updates: Object.keys(updateData) } as Prisma.InputJsonObject
         });
       }
 
@@ -465,11 +502,11 @@ export async function PATCH(req: NextRequest) {
   }
 }
 
-/* -------------------- DELETE: SOFT DEACTIVATION -------------------- */
-
 export async function DELETE(req: NextRequest) {
   const auth = await getAuthContext(req);
   if (!auth) return NextResponse.json({ message: "Unauthorized" }, { status: 401 });
+
+  const requestId = crypto.randomUUID();
 
   try {
     const { searchParams } = new URL(req.url);
@@ -483,13 +520,11 @@ export async function DELETE(req: NextRequest) {
 
     if (!targetUser) return NextResponse.json({ message: "Personnel not found" }, { status: 404 });
 
-    // Validate using the new action-aware permission rule
     const rights = validateManagementRights(auth, targetUser, "DELETE");
     if (!rights.authorized) {
        return NextResponse.json({ message: rights.reason }, { status: 403 });
     }
 
-    // Secondary strict validation as fallback
     if (!auth.isOrgOwner && auth.role !== Role.ADMIN && auth.role !== Role.DEV) {
       return NextResponse.json({ message: "Account deactivation requires Admin clearance." }, { status: 403 });
     }
@@ -516,22 +551,23 @@ export async function DELETE(req: NextRequest) {
         }
       });
 
-      await tx.activityLog.create({
-        data: {
-          organizationId: auth.organizationId,
-          branchId: auth.branchId,
-          actorId: auth.userId,
-          actorType: ActorType.USER,
-          actorRole: auth.role,
-          action: "PERSONNEL_DELETED",
-          severity: Severity.CRITICAL,
-          critical: true,
-          targetId: id,
-          targetType: "PERSONNEL",
-          before: { status: "ACTIVE", lockReason: targetUser.lockReason } as Prisma.InputJsonObject,
-          after: { status: "DELETED", lockReason: "Account deactivated/archived by administrator" } as Prisma.InputJsonObject,
-          metadata: { details: `Account securely archived.` } as Prisma.InputJsonObject
-        }
+      await createSecureActivityLog(tx, {
+        requestId,
+        organizationId: auth.organizationId,
+        branchId: auth.branchId,
+        actorId: auth.userId,
+        actorType: ActorType.USER,
+        actorRole: auth.role,
+        action: "PERSONNEL_DELETED",
+        severity: Severity.CRITICAL,
+        critical: true,
+        targetId: id,
+        targetType: "PERSONNEL",
+        ipAddress: auth.ipAddress,
+        deviceInfo: auth.deviceInfo,
+        before: { status: "ACTIVE", lockReason: targetUser.lockReason } as Prisma.InputJsonObject,
+        after: { status: "DELETED", lockReason: "Account deactivated/archived by administrator" } as Prisma.InputJsonObject,
+        metadata: { details: `Account securely archived.` } as Prisma.InputJsonObject
       });
     });
 

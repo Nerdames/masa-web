@@ -1,4 +1,3 @@
-// @/modules/branches/components/types.ts
 import { Role } from "@prisma/client";
 
 export interface BranchPersonnelDTO {
@@ -7,6 +6,15 @@ export interface BranchPersonnelDTO {
   email: string;
   role: Role;
   staffCode: string | null;
+}
+
+/**
+ * Payload for deploying a new infrastructure node (Branch)
+ */
+export interface ProvisionBranchPayload {
+  name: string;
+  location: string;
+  active: boolean;
 }
 
 export interface Branch {
@@ -30,7 +38,7 @@ export interface Branch {
     orders: number;
     activityLogs: number;
   };
-  salesTotal: number; // Enriched by the API
+  salesTotal: number;
 }
 
 export interface BranchSummary {
