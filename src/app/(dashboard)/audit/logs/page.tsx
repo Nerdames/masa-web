@@ -30,7 +30,15 @@ interface ForensicLog {
   actorType: "USER" | "SYSTEM";
   personnelName: string;
   personnelRole: string;
-  target?: { id: string | null; type: string | null };
+  personnelCode?: string; // Added for Traceability
+  branchName?: string;    // Added for Traceability
+  target?: { 
+    id: string | null; 
+    type: string | null;
+    name?: string;
+    sku?: string;
+    branch?: string;
+  };
   requestId: string | null;
   ipAddress: string;
   deviceInfo: string;
@@ -41,13 +49,34 @@ interface ForensicLog {
 }
 
 /* ==========================================================================
-   THE SIGNAL NODE (TIMELINE SPINE)
+   HELPERS
    ========================================================================== */
-const SignalNode = ({ log, isExpanded }: { log: ForensicLog; isExpanded: boolean }) => {
+export const formatNaira = (amount: number) => {
+  return new Intl.NumberFormat("en-NG", {
+    style: "currency",
+    currency: "NGN",
+    minimumFractionDigits: 2,
+  }).format(amount);
+};
+
+const getSeverityStyles = (severity: string) => {
+  switch (severity) {
+    case "CRITICAL": return "bg-red-600 text-white border-red-700";
+    case "HIGH": return "bg-amber-500 text-white border-amber-600";
+    case "MEDIUM": return "bg-blue-600 text-white border-blue-700";
+    default: return "bg-slate-500 text-white border-slate-600";
+  }
+};
+
+/* ==========================================================================
+   THE SIGNAL NODE (TIMELINE SPINE) - MEMOIZED & CSS-ONLY
+   ========================================================================== */
+const SignalNode = React.memo(({ log, isExpanded }: { log: ForensicLog; isExpanded: boolean }) => {
   const isSecurity = log.module === "SECURITY" || log.severity === "CRITICAL";
 
   return (
     <div className="relative w-10 md:w-12 shrink-0 flex justify-center">
+      {/* CSS-Only Dynamic Vertical Spine handles scrolling/gaps perfectly without JS math */}
       <div className="absolute inset-y-0 w-[1px] md:w-[2px] bg-slate-100 group-hover:bg-slate-200 transition-colors" />
 
       <div className="sticky top-1/2 -translate-y-1/2 z-10">
@@ -58,7 +87,7 @@ const SignalNode = ({ log, isExpanded }: { log: ForensicLog; isExpanded: boolean
           }`}
         >
           <span className="text-[9px] md:text-[10px] font-black tracking-tighter">
-            {log.actorType === "SYSTEM" ? "SYS" : log.personnelName.split(" ").map((n) => n[0]).join("").substring(0, 2)}
+            {log.actorType === "SYSTEM" ? "SYS" : log.personnelName.split(" ").map((n) => n[0]).join("").substring(0, 2).toUpperCase()}
           </span>
 
           <div className={`absolute -inset-1 rounded-full border border-dashed ${
@@ -66,18 +95,19 @@ const SignalNode = ({ log, isExpanded }: { log: ForensicLog; isExpanded: boolean
           }`} />
 
           {isSecurity && (
-            <div className="absolute -inset-2 bg-red-500/10 rounded-full animate-ping" />
+            <div className="absolute -inset-2 bg-red-500/10 rounded-full animate-ping pointer-events-none" />
           )}
         </motion.div>
       </div>
     </div>
   );
-};
+});
+SignalNode.displayName = "SignalNode";
 
 /* ==========================================================================
-   FORENSIC PACKET (THE DATA ROW)
+   FORENSIC PACKET (THE DATA ROW) - MEMOIZED & TRACEABILITY UPGRADED
    ========================================================================== */
-const ForensicPacket = ({
+const ForensicPacket = React.memo(({
   log,
   similarCount,
   isActiveFilter,
@@ -91,25 +121,16 @@ const ForensicPacket = ({
   const [isOpen, setIsOpen] = useState(false);
   const [copiedType, setCopiedType] = useState<string | null>(null);
 
-  const handleCopy = (e: React.MouseEvent, content: any, type: string) => {
+  const handleCopy = useCallback((e: React.MouseEvent, content: any, type: string) => {
     e.stopPropagation();
     navigator.clipboard.writeText(typeof content === "string" ? content : JSON.stringify(content, null, 2));
     setCopiedType(type);
     setTimeout(() => setCopiedType(null), 2000);
-  };
-
-  const getSeverityStyles = (severity: string) => {
-    switch (severity) {
-      case "CRITICAL": return "bg-red-600 text-white border-red-700";
-      case "HIGH": return "bg-amber-500 text-white border-amber-600";
-      case "MEDIUM": return "bg-blue-600 text-white border-blue-700";
-      default: return "bg-slate-500 text-white border-slate-600";
-    }
-  };
+  }, []);
 
   return (
     <div className="group relative flex min-h-[100px] md:min-h-[120px]">
-      {/* Telemetry: Hidden on mobile, sticky on desktop */}
+      {/* Telemetry: Hidden on mobile, sticky on desktop for Floating Timeline */}
       <div className="hidden md:flex w-32 shrink-0 py-6 pr-6 text-right flex-col justify-start">
         <div className="sticky top-24">
           <p className="font-mono text-[11px] font-black text-slate-900 tabular-nums">
@@ -123,7 +144,7 @@ const ForensicPacket = ({
 
       <SignalNode log={log} isExpanded={isOpen} />
 
-      <div className="flex-1 py-4 md:py-6 pl-4 md:pl-8 pr-2 md:pr-4">
+      <div className="flex-1 py-4 md:py-6 pl-4 md:pl-8 pr-2 md:pr-4 min-w-0">
         <div
           onClick={() => setIsOpen(!isOpen)}
           className={`cursor-pointer transition-all duration-300 border-l-2 pl-4 md:pl-6 ${
@@ -131,11 +152,11 @@ const ForensicPacket = ({
           }`}
         >
           <div className="flex flex-col gap-1">
-            {/* Mobile-Only Telemetry Header */}
+            {/* Mobile-Only Telemetry Header (Prevents layout breakages on small screens) */}
             <div className="flex md:hidden items-center justify-between mb-1">
-               <span className="font-mono text-[10px] font-bold text-slate-400">
+              <span className="font-mono text-[10px] font-bold text-slate-400">
                 {new Date(log.createdAt).toLocaleTimeString([], { hour12: false, hour: "2-digit", minute: "2-digit" })} — {log.ipAddress}
-               </span>
+              </span>
             </div>
 
             <div className="flex items-center gap-2 md:gap-3 flex-wrap">
@@ -152,22 +173,40 @@ const ForensicPacket = ({
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-4 gap-3 md:gap-4 mt-3">
+              {/* Identity Traceability: Originator */}
               <div className="md:col-span-2">
-                <p className="text-[8px] md:text-[10px] text-slate-400 font-bold uppercase tracking-widest">Originator</p>
+                <p className="text-[8px] md:text-[10px] text-slate-400 font-bold uppercase tracking-widest mb-0.5">Originator</p>
                 {log.actorType === "SYSTEM" ? (
                   <span className="text-[10px] md:text-[11px] font-medium text-slate-700 italic">SYSTEM_AUTOMATED</span>
                 ) : (
-                  <Link href={`/personnel/${log.actorId}`} className="text-[10px] md:text-[11px] font-medium text-slate-700 hover:underline" onClick={(e) => e.stopPropagation()}>
-                    {log.personnelName} <span className="text-slate-300 mx-1">|</span> {log.personnelRole}
-                  </Link>
+                  <div className="text-[10px] md:text-[11px] font-medium text-slate-700 truncate">
+                    <span className="font-bold text-slate-900">PERSONNEL</span>
+                    <span className="text-slate-400">/{log.branchName || "HQ"}</span>
+                    <span className="text-slate-300 mx-1.5">|</span>
+                    <Link href={`/personnel/${log.actorId}`} className="hover:underline text-blue-600" onClick={(e) => e.stopPropagation()}>
+                      {log.personnelName}
+                    </Link>
+                    <span className="text-slate-400 ml-1">({log.personnelCode || "EMP-XXX"})</span>
+                  </div>
                 )}
               </div>
 
-              <div className="hidden md:block">
-                <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest">Target_Resource</p>
-                <p className="text-[11px] font-mono text-slate-700">
-                  {log.target?.type ? `${log.target.type} | ${log.target.id?.slice(-8).toUpperCase() || "N/A"}` : "SYSTEM_WIDE"}
-                </p>
+              {/* Identity Traceability: Target */}
+              <div className="hidden md:block md:col-span-1">
+                <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest mb-0.5">Target_Resource</p>
+                <div className="text-[10px] md:text-[11px] font-medium text-slate-700 truncate">
+                  {log.target?.type ? (
+                     <>
+                       <span className="font-bold text-slate-900 uppercase">{log.target.type}</span>
+                       <span className="text-slate-400 uppercase">/{log.target.branch || "GLOBAL"}</span>
+                       <span className="text-slate-300 mx-1.5">|</span>
+                       <span className="text-slate-800">{log.target.name || log.target.id?.slice(-8).toUpperCase() || "UNNAMED"}</span>
+                       {log.target.sku && <span className="text-slate-400 ml-1">({log.target.sku})</span>}
+                     </>
+                  ) : (
+                     <span className="italic text-slate-400">SYSTEM_WIDE</span>
+                  )}
+                </div>
               </div>
 
               <div className="flex justify-end items-center">
@@ -178,7 +217,7 @@ const ForensicPacket = ({
             <div className="flex flex-col md:flex-row md:items-center justify-between mt-2 gap-3">
               <div className="flex items-center gap-2 overflow-hidden">
                 <p className="text-[10px] md:text-[11px] text-slate-500 truncate">{log.description}</p>
-                <button 
+                <button
                   onClick={(e) => handleCopy(e, log.requestId, "trace")}
                   className="hidden md:block text-[10px] text-slate-300 font-mono hover:text-slate-900 transition-colors shrink-0"
                 >
@@ -189,7 +228,8 @@ const ForensicPacket = ({
               {(similarCount > 0 || isActiveFilter) && (
                 <button
                   onClick={(e) => { e.stopPropagation(); onFilterSimilar(log.action); }}
-                  className={`relative px-3 py-1 rounded-full text-[8px] md:text-[9px] font-black uppercase tracking-widest transition-all border shadow-sm flex items-center justify-center gap-1 w-fit ${getSeverityStyles(log.severity)} ${isActiveFilter ? "opacity-100 ring-2 ring-offset-1 ring-slate-200" : "hover:opacity-90"}`}
+                  className={`relative px-3 py-1 rounded-full text-[8px] md:text-[9px] font-black uppercase tracking-widest transition-all border shadow-sm flex items-center justify-center gap-1 w-fit ${getSeverityStyles(log.severity)} ${isActiveFilter ? 
+                    "opacity-100 ring-2 ring-offset-1 ring-slate-200" : "hover:opacity-90"}`}
                 >
                   {isActiveFilter ? (
                     <>
@@ -258,10 +298,10 @@ const ForensicPacket = ({
                       <i className="bx bx-shield-quarter text-4xl md:text-5xl text-white" />
                     </div>
                     <div className="flex items-center gap-2 mb-4">
-                        <h4 className="text-[8px] md:text-[9px] font-black text-slate-500 uppercase tracking-[0.2em]">Audit_Integrity_Chain</h4>
-                        {log.integrity?.isChainValid && (
-                            <span className="bg-emerald-500/20 text-emerald-400 text-[7px] md:text-[8px] px-1.5 py-0.5 rounded-full font-bold">VERIFIED</span>
-                        )}
+                      <h4 className="text-[8px] md:text-[9px] font-black text-slate-500 uppercase tracking-[0.2em]">Audit_Integrity_Chain</h4>
+                      {log.integrity?.isChainValid && (
+                        <span className="bg-emerald-500/20 text-emerald-400 text-[7px] md:text-[8px] px-1.5 py-0.5 rounded-full font-bold">VERIFIED</span>
+                      )}
                     </div>
                     <div className="space-y-3 font-mono">
                       <div>
@@ -301,7 +341,8 @@ const ForensicPacket = ({
       </div>
     </div>
   );
-};
+});
+ForensicPacket.displayName = "ForensicPacket";
 
 /* ==========================================================================
    MAIN TERMINAL
@@ -320,7 +361,7 @@ export default function ForensicAuditPage() {
       const res = await fetch(`/api/audit/logs?severity=${severityFilter}`);
       const data = await res.json();
       if (data.success) {
-          setLogs(data.logs || []);
+        setLogs(data.logs || []);
       }
     } catch (err) {
       dispatch({
@@ -337,7 +378,7 @@ export default function ForensicAuditPage() {
 
   useEffect(() => { fetchLogs(); }, [fetchLogs]);
 
-  const handleFilterSimilar = (action: string) => {
+  const handleFilterSimilar = useCallback((action: string) => {
     if (actionFilter === action) {
       setActionFilter(null);
       setSearchQuery("");
@@ -345,7 +386,7 @@ export default function ForensicAuditPage() {
       setActionFilter(action);
       setSearchQuery(action);
     }
-  };
+  }, [actionFilter]);
 
   const actionCounts = useMemo(() => {
     const counts: Record<string, number> = {};
@@ -380,12 +421,11 @@ export default function ForensicAuditPage() {
 
   return (
     <div className="flex flex-col h-full w-full bg-white relative z-0 overflow-hidden">
-      <header className="px-4 py-4  shrink-0 border-b border-black/[0.04] bg-white sticky top-0 z-[100] backdrop-blur-md">
+      <header className="px-4 py-4 shrink-0 border-b border-black/[0.04] bg-white sticky top-0 z-[100] backdrop-blur-md">
         <div className="flex items-center justify-between gap-4">
-          {/* Title: single-line, truncates, responsive size */}
           <div className="px-2 min-w-0 flex-1">
             <h1
-               className="block w-full truncate text-[14px] sm:text-[15px] md:text-[18px] lg:text-2xl font-semibold tracking-tight text-slate-900 leading-tight"
+              className="block w-full truncate text-[14px] sm:text-[15px] md:text-[18px] lg:text-2xl font-semibold tracking-tight text-slate-900 leading-tight"
               title="MASA Forensic Audit Terminal"
               aria-label="MASA Forensic Audit Terminal"
             >
@@ -393,9 +433,7 @@ export default function ForensicAuditPage() {
             </h1>
           </div>
 
-          {/* Actions: Refresh & Search */}
           <div className="flex items-center gap-2 shrink-0">
-            {/* Search Bar - hidden on tiny mobile, visible sm+ */}
             <div className="hidden sm:relative sm:block">
               <i className="bx bx-search absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 text-xs" />
               <input
@@ -410,7 +448,6 @@ export default function ForensicAuditPage() {
               />
             </div>
 
-            {/* Extreme Right Refresh Trigger */}
             <button
               onClick={() => fetchLogs()}
               title="Refresh Ledger"
@@ -421,47 +458,47 @@ export default function ForensicAuditPage() {
           </div>
         </div>
 
-      {/* Filters Row - Combined labels with counts */}
-      <div
-        aria-label="severity filters"
-        className="flex items-center justify-between md:justify-start gap-2 sm:gap-4 md:gap-6 mt-1 pt-4 border-t border-black/5 overflow-x-auto whitespace-nowrap [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden"
-      >
-        {[
-          { key: "ALL", label: "ALL", count: logs.length },
-          { key: "CRITICAL", label: "CRITICAL", count: logs.filter((l) => l.severity === "CRITICAL").length },
-          { key: "HIGH", label: "HIGH", count: logs.filter((l) => l.severity === "HIGH").length },
-          { key: "MEDIUM", label: "MEDIUM", count: logs.filter((l) => l.severity === "MEDIUM").length },
-          { key: "LOW", label: "LOW", count: logs.filter((l) => l.severity === "LOW").length },
-        ].map((s, idx) => (
-          <React.Fragment key={s.key}>
-            {idx > 0 && <div className="w-px h-3 bg-black/10 self-center shrink-0" />}
-            <button
-              onClick={() => {
-                setSeverityFilter(s.key);
-                setActionFilter(null);
-                setSearchQuery("");
-              }}
-              className={`group flex items-baseline gap-1 sm:gap-1.5 transition-all shrink-0 ${
-                severityFilter === s.key
-                  ? "text-blue-600 underline underline-offset-[14px] decoration-2"
-                  : "text-slate-400 hover:text-blue-600"
-              }`}
-            >
-              <span className="text-[8px] sm:text-[10px] md:text-[11px] font-bold uppercase tracking-[0.1em] sm:tracking-[0.2em]">
-                {s.label}
-              </span>
-              <span className={`text-[8px] md:text-[10px] font-medium tabular-nums ${
-                severityFilter === s.key ? "text-slate-900" : "text-slate-300"
-              }`}>
-                {s.count}
-              </span>
-            </button>
-          </React.Fragment>
-        ))}
-      </div>
+        <div
+          aria-label="severity filters"
+          className="flex items-center justify-between md:justify-start gap-2 sm:gap-4 md:gap-6 mt-1 pt-4 border-t border-black/5 overflow-x-auto whitespace-nowrap scrollbar-hide" 
+          style={{ msOverflowStyle: 'none', scrollbarWidth: 'none' }}
+        >
+          {[
+            { key: "ALL", label: "ALL", count: logs.length },
+            { key: "CRITICAL", label: "CRITICAL", count: logs.filter((l) => l.severity === "CRITICAL").length },
+            { key: "HIGH", label: "HIGH", count: logs.filter((l) => l.severity === "HIGH").length },
+            { key: "MEDIUM", label: "MEDIUM", count: logs.filter((l) => l.severity === "MEDIUM").length },
+            { key: "LOW", label: "LOW", count: logs.filter((l) => l.severity === "LOW").length },
+          ].map((s, idx) => (
+            <React.Fragment key={s.key}>
+              {idx > 0 && <div className="w-px h-3 bg-black/10 self-center shrink-0" />}
+              <button
+                onClick={() => {
+                  setSeverityFilter(s.key);
+                  setActionFilter(null);
+                  setSearchQuery("");
+                }}
+                className={`group flex items-baseline gap-1 sm:gap-1.5 transition-all shrink-0 ${
+                  severityFilter === s.key
+                    ? "text-blue-600 underline underline-offset-[14px] decoration-2"
+                    : "text-slate-400 hover:text-blue-600"
+                }`}
+              >
+                <span className="text-[8px] sm:text-[10px] md:text-[11px] font-bold uppercase tracking-[0.1em] sm:tracking-[0.2em]">
+                  {s.label}
+                </span>
+                <span className={`text-[8px] md:text-[10px] font-medium tabular-nums ${
+                  severityFilter === s.key ? "text-slate-900" : "text-slate-300"
+                }`}>
+                  {s.count}
+                </span>
+              </button>
+            </React.Fragment>
+          ))}
+        </div>
       </header>
 
-      <div className="max-w-[1100px] mx-auto px-4 md:px-6 py-8 md:py-12">
+      <div className="max-w-[1100px] mx-auto px-4 md:px-6 py-8 md:py-12 overflow-y-auto flex-1 w-full">
         {isLoading ? (
           <div className="flex flex-col items-center justify-center py-40 opacity-30">
             <i className="bx bx-loader-alt bx-spin text-4xl mb-4" />
@@ -480,9 +517,6 @@ export default function ForensicAuditPage() {
           Object.entries(filteredGroupedLogs).map(([date, entries]) => (
             <div key={date} className="mb-12 md:mb-16">
               <div className="relative mb-8 md:mb-12">
-                <div className="absolute inset-0 flex items-center">
-                  <div className="w-full h-[1px] bg-slate-100" />
-                </div>
                 <div className="relative flex justify-center">
                   <span className="bg-[#FDFDFD] px-4 md:px-6 text-[8px] md:text-[10px] font-black text-slate-400 uppercase tracking-[0.3em] md:tracking-[0.5em] text-center">
                     {date}
