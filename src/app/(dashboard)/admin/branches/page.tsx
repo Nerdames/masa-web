@@ -4,7 +4,6 @@ import React, { useState, useEffect, useCallback, useRef } from "react";
 import { useSession } from "next-auth/react";
 import { useSidePanel } from "@/core/components/layout/SidePanelContext";
 import { useAlerts } from "@/core/components/feedback/AlertProvider";
-import { ActivityLogsPanel } from "@/modules/audit/components/ActivityLogsPanel";
 
 import { Branch, BranchSummary, BranchListResponse } from "@/modules/branches/types";
 import { BranchDetailsPanel } from "@/modules/branches/components/BranchDetailsPanel";
@@ -18,7 +17,7 @@ import { BranchRow } from "@/modules/branches/components/BranchRow";
 export default function BranchManagementPage(): JSX.Element {
   const { data: session } = useSession();
   const { dispatch } = useAlerts();
-  const { openPanel, resetToDefault, isLoading: isPanelOpen } = useSidePanel();
+  const { openPanel, resetToDefault } = useSidePanel();
 
   const userRole = session?.user?.role;
   const isOrgOwner = session?.user?.isOrgOwner;
@@ -91,11 +90,6 @@ export default function BranchManagementPage(): JSX.Element {
     );
   };
 
-  const handleOpenLogs = () => {
-    setSelectedBranchId(null);
-    openPanel(<ActivityLogsPanel logs={logs} onClose={handleClosePanel} />);
-  };
-
   return (
     <div className="flex flex-col h-full w-full bg-white relative z-0 overflow-hidden">
       <header className="px-4 py-4 shrink-0 border-b border-black/[0.04] bg-white sticky top-0 z-[100] backdrop-blur-md">
@@ -121,15 +115,6 @@ export default function BranchManagementPage(): JSX.Element {
                 className="bg-slate-100 border-none py-1.5 pl-8 pr-4 text-[11px] font-medium w-40 md:w-64 rounded-lg focus:ring-1 focus:ring-black transition-all outline-none"
               />
             </div>
-
-            <button
-              onClick={handleOpenLogs}
-              title="Audit Trail"
-              className="p-2 md:px-3 md:py-2 text-[12px] font-semibold border rounded-lg transition-colors flex items-center gap-2 bg-white border-black/5 text-slate-500 hover:bg-slate-50 shadow-sm"
-            >
-              <i className="bx bx-history text-base md:text-sm" />
-              <span className="hidden md:inline">Audit Trail</span>
-            </button>
 
             {hasFullClearance && (
               <button
@@ -189,13 +174,24 @@ export default function BranchManagementPage(): JSX.Element {
       </header>
 
       {/* --- Desktop Table Header --- */}
-      <div className="hidden sm:flex px-4 md:px-8 py-2 shrink-0 items-center text-[10px] font-bold text-slate-400 uppercase tracking-widest border-b border-black/[0.04] bg-white overflow-hidden whitespace-nowrap">
-        <div className="w-[100px] md:w-[140px] shrink-0 truncate">Branch ID</div>
-        <div className="flex-1 min-w-[120px] truncate">Branch Name</div>
-        <div className="w-[100px] md:w-[180px] hidden md:block shrink-0 truncate">Location</div>
-        <div className="w-[70px] text-center shrink-0 truncate">Staff</div>
-        <div className="w-[100px] md:w-[140px] text-right shrink-0 truncate">Total Revenue</div>
-        <div className="w-[80px] shrink-0 truncate text-right">Status</div>
+      <div className="hidden md:flex px-4 md:px-8 py-2 shrink-0 items-center text-[10px] font-bold text-slate-400 uppercase tracking-widest border-b border-black/[0.04] bg-white overflow-hidden whitespace-nowrap">
+        {/* Node ID - matches w-[120px] */}
+        <div className="w-[120px] shrink-0 truncate">Node ID</div>
+
+        {/* Branch Name - matches flex-[1.5] */}
+        <div className="flex-[1.5] min-w-[150px] truncate">Branch Name</div>
+
+        {/* Location - matches flex-1 */}
+        <div className="flex-1 min-w-[150px] truncate">Location</div>
+
+        {/* Type - matches w-[110px] */}
+        <div className="w-[110px] shrink-0 truncate">Type</div>
+
+        {/* Performance - matches w-[160px] */}
+        <div className="w-[160px] shrink-0 truncate">Performance</div>
+
+        {/* Status - matches w-[90px] */}
+        <div className="w-[90px] shrink-0 truncate text-right">Status</div>
       </div>
 
       {/* Main List Area */}

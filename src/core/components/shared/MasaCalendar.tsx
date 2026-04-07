@@ -415,10 +415,6 @@ export default function MasaCalendar() {
         )}
       </AnimatePresence>
 
-      <style jsx global>{`
-        .hide-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
-        .hide-scrollbar::-webkit-scrollbar { display: none; }
-      `}</style>
     </div>
   );
 }

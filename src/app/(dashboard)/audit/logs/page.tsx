@@ -385,11 +385,11 @@ export default function ForensicAuditPage() {
           {/* Title: single-line, truncates, responsive size */}
           <div className="px-2 min-w-0 flex-1">
             <h1
-              className="block w-full truncate text-[14px] sm:text-[15px] md:text-[18px] lg:text-2xl font-semibold tracking-tight text-slate-900 leading-tight"
+               className="block w-full truncate text-[14px] sm:text-[15px] md:text-[18px] lg:text-2xl font-semibold tracking-tight text-slate-900 leading-tight"
               title="MASA Forensic Audit Terminal"
               aria-label="MASA Forensic Audit Terminal"
             >
-              MASA_Forensics
+              MASA Forensics
             </h1>
           </div>
 
@@ -414,10 +414,9 @@ export default function ForensicAuditPage() {
             <button
               onClick={() => fetchLogs()}
               title="Refresh Ledger"
-              className="p-2 md:px-4 md:py-2 text-[12px] font-semibold border rounded-lg transition-colors flex items-center gap-2 bg-white border-black/5 text-slate-500 hover:bg-slate-50 hover:text-slate-800 shadow-sm"
+              className="p-2 md:px-2 md:py-2 text-[12px] font-semibold border rounded-lg transition-colors flex justify-items-center gap-2 bg-white border-black/5 text-slate-500 hover:bg-slate-50 shadow-sm"
             >
               <i className={`bx bx-refresh text-base md:text-sm ${isLoading ? "bx-spin" : ""}`} />
-              <span className="hidden md:inline whitespace-nowrap">Refresh</span>
             </button>
           </div>
         </div>

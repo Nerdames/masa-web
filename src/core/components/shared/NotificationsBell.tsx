@@ -3,7 +3,7 @@
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { useRouter } from "next/navigation";
 import useSWR from "swr";
-import { useMemo, useState, useEffect } from "react";
+import { useMemo, useState, useEffect, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { useSession } from "next-auth/react";
 import { getPusherClient } from "@/core/lib/pusher";
@@ -12,11 +12,12 @@ import { NotificationType } from "@prisma/client";
 import "boxicons/css/boxicons.min.css";
 
 /* -------------------------------------------------- */
-/* TYPES & CONFIG (Mirrored from AlertProvider) */
+/* TYPES & CONFIG */
 /* -------------------------------------------------- */
 
 export interface Notification {
-  id: string;
+  id: string; // The notificationId for the DB join table
+  recipientEntryId?: string;
   read: boolean;
   title: string;
   message: string;
@@ -24,7 +25,13 @@ export interface Notification {
   createdAt: string;
   actionTrigger?: string;
   approvalId?: string; 
-  entityId?: string;   
+  entityId?: string;
+  context?: {
+    type: "APPROVAL" | "ACTIVITY";
+    id: string;
+    status?: string;
+    actionType?: string;
+  } | null;
 }
 
 const TYPE_CONFIG: Record<NotificationType, { icon: string; bg: string }> = {
@@ -64,48 +71,85 @@ export function NotificationsBell() {
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
 
-  const { data, mutate, isValidating } = useSWR<{ notifications: Notification[] }>(
-    "/api/notifications?limit=20",
-    (url) => fetch(url).then((res) => res.json())
+  // Upgraded SWR to match the backend's exact response structure
+  const { data, mutate, isValidating } = useSWR<{ notifications: Notification[], unreadCount: number }>(
+    session?.user?.id ? "/api/notifications?limit=20" : null,
+    (url) => fetch(url).then((res) => res.json()),
+    { revalidateOnFocus: false }
   );
 
   const notifications = useMemo(() => data?.notifications ?? [], [data]);
-  const unreadCount = useMemo(() => notifications.filter((n) => !n.read).length, [notifications]);
+  const unreadCount = data?.unreadCount ?? notifications.filter((n) => !n.read).length;
   const grouped = useMemo(() => groupNotifications(notifications), [notifications]);
 
+  // Real-time listener aligned with the backend
   useEffect(() => {
     if (!session?.user?.id) return;
     const pusher = getPusherClient();
     const channel = pusher.subscribe(`user-${session.user.id}`);
+    
     const sync = () => mutate();
     channel.bind("new-alert", sync);
     channel.bind("notifications-read", sync);
-    return () => { pusher.unsubscribe(`user-${session.user.id}`); };
+    channel.bind("approval-resolved", sync); // Listen for resolutions by other managers
+    
+    return () => { 
+      channel.unbind_all();
+      pusher.unsubscribe(`user-${session.user.id}`); 
+    };
   }, [session?.user?.id, mutate]);
 
+  // Upgraded: Optimistic Rollback & Aligned PATCH body
   const handleMarkAllRead = async () => {
     setLoading(true);
-    mutate({ notifications: notifications.map(n => ({ ...n, read: true })) }, false);
-    await fetch("/api/notifications", {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ markAll: true }),
-    });
-    setLoading(false);
-    mutate();
-  };
-
-  const handleNotificationClick = async (n: Notification) => {
-    if (!n.read) {
-      mutate({ notifications: notifications.map(x => x.id === n.id ? { ...x, read: true } : x) }, false);
-      fetch(`/api/notifications/${n.id}`, { 
+    const previousData = data;
+    mutate({ ...data!, notifications: notifications.map(n => ({ ...n, read: true })), unreadCount: 0 }, false);
+    
+    try {
+      const res = await fetch("/api/notifications", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ read: true }) 
+        body: JSON.stringify({ markAll: true }),
       });
+      if (!res.ok) throw new Error("Failed");
+    } catch (err) {
+      mutate(previousData, false); // Rollback if network fails
+    } finally {
+      setLoading(false);
+      mutate();
     }
+  };
+
+  // Upgraded: Extracted single read logic for reuse (Clicking Item vs Clicking Checkmark)
+  const markAsRead = useCallback(async (id: string) => {
+    const previousData = data;
+    const updatedList = notifications.map(x => x.id === id ? { ...x, read: true } : x);
+    mutate({ ...data!, notifications: updatedList, unreadCount: Math.max(0, unreadCount - 1) }, false);
+    
+    try {
+      const res = await fetch("/api/notifications", { 
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id, read: true }) // Uses correct payload for base /api/notifications endpoint
+      });
+      if (!res.ok) throw new Error("Failed");
+    } catch (err) {
+      mutate(previousData, false); // Rollback
+    }
+  }, [data, notifications, unreadCount, mutate]);
+
+  const handleNotificationClick = async (n: Notification) => {
+    if (!n.read) await markAsRead(n.id);
     setOpen(false);
-    router.push(n.entityId ? `/dashboard/context/${n.entityId}` : '/notifications');
+
+    // Intelligent Routing Context Alignment
+    if (n.type === "APPROVAL" && (n.context?.id || n.approvalId)) {
+      router.push(`/dashboard/approvals/${n.context?.id || n.approvalId}`);
+    } else if (n.entityId) {
+      router.push(`/dashboard/context/${n.entityId}`);
+    } else {
+      router.push('/notifications');
+    }
   };
 
   return (
@@ -138,7 +182,7 @@ export function NotificationsBell() {
             animate={{ opacity: 1, scale: 1, y: 0 }}
             transition={{ type: "spring", duration: 0.4, bounce: 0.3 }}
           >
-            {/* Header - Matching Alert Group Header */}
+            {/* Header */}
             <div className="flex items-center justify-between px-5 py-4 border-b border-black/5 dark:border-white/5 bg-slate-50/50 dark:bg-white/5">
               <div className="flex items-center gap-2">
                 <i className="bx bxs-bell text-blue-500 text-xs" />
@@ -180,6 +224,7 @@ export function NotificationsBell() {
                           key={n.id} 
                           notification={n} 
                           onClick={() => handleNotificationClick(n)}
+                          onMarkRead={() => markAsRead(n.id)}
                           onActionComplete={() => mutate()} 
                         />
                       ))}
@@ -207,28 +252,39 @@ export function NotificationsBell() {
 }
 
 /* -------------------------------------------------- */
-/* ITEM COMPONENT (Matches AlertProvider PushItem style) */
+/* ITEM COMPONENT */
 /* -------------------------------------------------- */
 
 function NotificationItem({ 
   notification: n, 
   onClick,
+  onMarkRead,
   onActionComplete 
 }: { 
   notification: Notification; 
   onClick: () => void;
+  onMarkRead: () => void;
   onActionComplete: () => void; 
 }) {
   const config = TYPE_CONFIG[n.type] || TYPE_CONFIG.INFO;
   const [actingOn, setActingOn] = useState<"approve" | "reject" | null>(null);
 
+  // Upgraded: Aligned with backend POST/PATCH structure for decisions
   const handleAction = async (e: React.MouseEvent, type: "approve" | "reject") => {
     e.stopPropagation();
     setActingOn(type);
     try {
-      await fetch(`/api/approvals/${n.approvalId}/${type}`, { method: "POST" });
+      const approvalId = n.context?.id || n.approvalId;
+      const res = await fetch(`/api/approvals/${approvalId}`, { 
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ decision: type === "approve" ? "APPROVED" : "REJECTED" })
+      });
+      if (!res.ok) throw new Error("Action failed");
+      onMarkRead(); // Clear from UI automatically if successful
       onActionComplete();
-    } catch {
+    } catch (err) {
+      console.error(err);
     } finally {
       setActingOn(null);
     }
@@ -253,14 +309,30 @@ function NotificationItem({
             <span className={`text-[12px] truncate pr-4 ${!n.read ? "font-bold text-slate-900 dark:text-white" : "font-semibold text-slate-500 dark:text-slate-400"}`}>
               {n.title}
             </span>
-            <span className="text-[10px] font-medium text-slate-400 whitespace-nowrap mt-0.5 uppercase tracking-tighter">
-              {formatDistanceToNowStrict(new Date(n.createdAt))}
-            </span>
+            <div className="flex items-center gap-2">
+              <span className="text-[10px] font-medium text-slate-400 whitespace-nowrap mt-0.5 uppercase tracking-tighter">
+                {formatDistanceToNowStrict(new Date(n.createdAt))}
+              </span>
+              {/* NEW ADDITION: Individual "Mark as Read" Button */}
+              {!n.read && (
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onMarkRead();
+                  }}
+                  className="text-slate-300 hover:text-blue-500 dark:text-slate-500 dark:hover:text-blue-400 transition-colors focus:outline-none"
+                  aria-label="Mark as read"
+                  title="Mark as read"
+                >
+                  <i className="bx bx-check-circle text-[15px]" />
+                </button>
+              )}
+            </div>
           </div>
           <p className="text-[12px] text-slate-500 dark:text-slate-400 leading-snug line-clamp-2">{n.message}</p>
 
           {/* Quick Actions */}
-          {n.type === "APPROVAL" && !n.read && n.approvalId && (
+          {n.type === "APPROVAL" && !n.read && (n.context?.id || n.approvalId) && (
             <div className="flex gap-2 mt-3">
               <button 
                 disabled={actingOn !== null}

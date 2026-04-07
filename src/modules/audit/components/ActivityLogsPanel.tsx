@@ -11,18 +11,27 @@ import { useRouter } from "next/navigation";
 export interface ActivityLogDTO {
   id: string;
   action: string;
-  critical: boolean;
+  description?: string;
+  details?: string;
+  severity?: "LOW" | "MEDIUM" | "HIGH" | "CRITICAL" | string;
+  critical?: boolean;
+  module?: string;
+  targetType?: string;
   createdAt: string | Date;
   ipAddress?: string | null;
   deviceInfo?: string | null;
-  metadata?: any; 
-  personnel?: {
-    name: string;
-    email: string;
-  } | null;
-  performedBy?: string; 
+  requestId?: string | null;
+  actorType?: "USER" | "SYSTEM" | string;
+  actorRole?: string;
+  personnel?: { name: string; email: string } | null;
+  performedBy?: string;
   personnelName?: string;
-  details?: string;
+  diff?: { before: any; after: any };
+  before?: any;
+  after?: any;
+  integrity?: { hash: string | null; previousHash?: string | null; isChainValid: boolean };
+  hash?: string | null;
+  metadata?: any;
 }
 
 interface ActivityLogsPanelProps {
@@ -44,18 +53,33 @@ const LOG_TABS = {
    ========================================================================== */
 
 const parseDevice = (ua?: string | null) => {
-  if (!ua) return "System Process";
+  if (!ua) return "SYS_PROC";
   const lowUA = ua.toLowerCase();
-  if (lowUA.includes("windows")) return "Windows PC";
-  if (lowUA.includes("iphone") || lowUA.includes("ipad")) return "iOS Device";
-  if (lowUA.includes("android")) return "Android";
-  if (lowUA.includes("macintosh")) return "MacBook / iMac";
-  if (lowUA.includes("postman") || lowUA.includes("curl")) return "API/Dev Tool";
-  return ua.split(" ")[0] || "Unknown Device";
+  if (lowUA.includes("windows")) return "WIN_PC";
+  if (lowUA.includes("iphone") || lowUA.includes("ipad")) return "IOS_NODE";
+  if (lowUA.includes("android")) return "ANDR_NODE";
+  if (lowUA.includes("macintosh")) return "MAC_OS";
+  return "WEB_NODE";
 };
 
 const getInitials = (name: string) => {
+  if (!name || name.includes("Unknown")) return "?";
   return name.split(" ").map((n) => n[0]).join("").toUpperCase().slice(0, 2);
+};
+
+const formatDateGroup = (date: string | Date) => {
+  const d = new Date(date);
+  const now = new Date();
+  if (d.toDateString() === now.toDateString()) return "TODAY_SESSIONS";
+  const yesterday = new Date();
+  yesterday.setDate(now.getDate() - 1);
+  if (d.toDateString() === yesterday.toDateString()) return "YESTERDAY_SESSIONS";
+  return d.toLocaleDateString('en-US', { 
+    weekday: 'short', 
+    month: 'short', 
+    day: 'numeric', 
+    year: 'numeric' 
+  }).toUpperCase();
 };
 
 /* ==========================================================================\
@@ -64,105 +88,112 @@ const getInitials = (name: string) => {
 
 const ActivityCard = ({ log }: { log: ActivityLogDTO }) => {
   const [expanded, setExpanded] = useState(false);
+  const [copied, setCopied] = useState(false);
   const router = useRouter();
 
-  const performerName = log.personnel?.name ?? log.performedBy ?? log.personnelName ?? "System";
-  const targetName = (log.metadata as any)?.targetName ?? "General Context";
-  const dateStr = new Date(log.createdAt).toLocaleString('en-US', { 
-    month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' 
-  });
+  const isSystem = log.actorType === "SYSTEM" || log.performedBy === "System";
+  const performerName = isSystem 
+    ? "SYSTEM_KERNEL" 
+    : (log.personnel?.name || log.personnelName || log.performedBy || "ANONYMOUS");
+    
+  // Priority: Direct Description > Details > Metadata Details > Action Name fallback
+  const description = log.description || log.details || log.metadata?.details || `Event ${log.action} processed successfully.`;
+  const moduleName = (log.module || log.targetType || "CORE").toUpperCase();
+  const severity = (log.severity || "LOW").toUpperCase();
+  const actionName = log.action.replace(/_/g, " ").toUpperCase();
+  const timeStr = new Date(log.createdAt).toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit' });
 
-  // 1. DYNAMIC COLOR LOGIC
-  const action = log.action.toUpperCase();
-  const isRed = /DELETE|DEACTIVATED|REJECTED|REMOVE|TERMINATE/.test(action);
-  const isAmber = /DISABLED|LOCKED|WARN|BLOCK|SUSPENDED/.test(action);
+  const stateBefore = log.diff?.before || log.before;
+  const stateAfter = log.diff?.after || log.after;
+  const hasDiff = !!(stateBefore || stateAfter);
 
-  const getStatusStyles = () => {
-    if (isRed) return {
+  const styles = useMemo(() => {
+    if (severity === "CRITICAL" || log.critical) return {
       badge: "bg-red-50 text-red-600 border-red-100",
-      avatar: "bg-red-600",
-      dot: "bg-red-500"
+      avatar: "bg-red-600 shadow-[0_0_8px_rgba(220,38,38,0.2)]",
+      dot: "bg-red-500",
     };
-    if (isAmber) return {
+    if (severity === "HIGH" || severity === "MEDIUM") return {
       badge: "bg-amber-50 text-amber-600 border-amber-100",
       avatar: "bg-amber-500",
-      dot: "bg-amber-500"
+      dot: "bg-amber-500",
     };
     return {
       badge: "bg-slate-50 text-slate-500 border-slate-100",
-      avatar: "bg-slate-900",
-      dot: "bg-emerald-500"
+      avatar: isSystem ? "bg-indigo-600" : "bg-slate-900",
+      dot: "bg-emerald-500",
     };
-  };
-
-  const styles = getStatusStyles();
+  }, [severity, log.critical, isSystem]);
 
   return (
-    <motion.div 
-      initial={{ opacity: 0, y: 8 }} 
-      animate={{ opacity: 1, y: 0 }} 
-      className="p-3 bg-white border border-black/[0.04] rounded-xl transition-all shadow-sm hover:shadow-md"
-    >
-      {/* 1. HEADER: Performer + Action (Replacing Auth_Identity) */}
-      <div className="flex items-center gap-2.5 mb-2.5 min-w-0">
-        <div className={`w-7 h-7 rounded-lg flex items-center justify-center text-[9px] font-bold text-white shrink-0 shadow-sm ${styles.avatar}`}>
-          {getInitials(performerName)}
+    <div className="p-3 bg-white border border-black/[0.04] rounded-xl shadow-sm hover:shadow-md transition-all">
+      <div className="flex items-center gap-2.5 mb-2.5">
+        <div className={`w-7 h-7 rounded-lg flex items-center justify-center text-[9px] font-bold text-white shrink-0 ${styles.avatar}`}>
+          {isSystem ? <i className="bx bx-chip text-sm" /> : getInitials(performerName)}
         </div>
-        <div className="flex flex-col truncate">
-          <span className="text-[10px] font-black text-slate-800 uppercase tracking-tight leading-none whitespace-nowrap mb-1">
-            {performerName}
-          </span>
-          <div className="flex">
-            <span className={`text-[7px] font-black uppercase px-1.5 py-0.5 rounded border tracking-[0.05em] ${styles.badge}`}>
-                {log.action.replace(/_/g, " ")}
-            </span>
+        <div className="flex-1 min-w-0">
+          <div className="flex justify-between items-center">
+            <span className="text-[10px] font-black text-slate-800 uppercase truncate">{performerName}</span>
+            <span className="text-[9px] font-mono text-slate-400">{timeStr}</span>
+          </div>
+          <div className="flex items-center gap-2 mt-0.5">
+            <span className={`text-[7px] font-black uppercase px-1.5 py-0.5 rounded border ${styles.badge}`}>{actionName}</span>
+            {log.requestId && (
+              <button 
+                onClick={(e) => { 
+                  e.stopPropagation(); 
+                  navigator.clipboard.writeText(log.requestId!); 
+                  setCopied(true); 
+                  setTimeout(() => setCopied(false), 2000); 
+                }}
+                className="text-[7px] font-bold text-slate-300 hover:text-slate-600 uppercase tracking-tighter"
+              >
+                {copied ? "COPIED" : `TRC_${log.requestId.slice(-6).toUpperCase()}`}
+              </button>
+            )}
           </div>
         </div>
       </div>
 
-      {/* 2. BODY CONTENT */}
       <div className="pl-9.5 space-y-2">
-        <p className="text-[10px] font-medium text-slate-600 leading-snug">
-          {log.details || (log.metadata as any)?.details || "Audit sequence completed successfully."}
-        </p>
+        <p className="text-[10px] font-medium text-slate-600 leading-snug">{description}</p>
         
-        <div className="flex items-center gap-2">
-          <span className="text-[7px] font-black text-slate-400 uppercase tracking-tighter shrink-0">Target:</span>
-          <span className="text-[9px] font-bold text-slate-700 truncate">
-            {targetName}
+        <div className="flex items-center gap-3">
+          <span className="text-[8px] font-bold text-slate-400 uppercase tracking-tighter flex items-center gap-1">
+            <i className="bx bx-map-alt" />{log.ipAddress || "INTERNAL"}
+          </span>
+          <span className="text-[8px] font-bold text-slate-400 uppercase tracking-tighter flex items-center gap-1">
+            <i className="bx bx-devices" />{parseDevice(log.deviceInfo)}
           </span>
         </div>
 
-        <button 
-          onClick={() => setExpanded(!expanded)}
-          className="text-[8px] font-black text-slate-400 hover:text-slate-900 flex items-center gap-1 uppercase tracking-widest transition-colors"
-        >
-          {expanded ? 'Collapse_Data' : 'Inspect_Payload'}
-          <i className={`bx bx-chevron-${expanded ? 'up' : 'down'} text-xs`} />
+        <button onClick={() => setExpanded(!expanded)} className="text-[8px] font-black text-slate-400 hover:text-slate-900 uppercase tracking-widest flex items-center gap-1 transition-colors">
+          {expanded ? 'Collapse_Trace' : 'Inspect_State_Data'} <i className={`bx bx-chevron-${expanded ? 'up' : 'down'}`} />
         </button>
 
         <AnimatePresence>
           {expanded && (
-            <motion.div 
-              initial={{ height: 0, opacity: 0 }} 
-              animate={{ height: "auto", opacity: 1 }} 
-              exit={{ height: 0, opacity: 0 }}
-              className="overflow-hidden"
-            >
-              <div className="mt-2 relative">
-                <div className="p-2.5 bg-slate-900 rounded-lg border border-white/5 relative">
-                  <button 
-                    onClick={() => navigator.clipboard.writeText(JSON.stringify(log.metadata))}
-                    className="absolute right-2 top-2 p-1.5 bg-white/10 hover:bg-white/20 rounded text-emerald-400 transition-colors"
-                  >
-                    <i className="bx bx-copy text-[10px]" />
-                  </button>
-                  <pre className="text-[9px] font-mono text-emerald-400/90 leading-tight overflow-x-auto custom-scrollbar">
-                    {JSON.stringify({ 
-                      ip: log.ipAddress || "null", 
-                      ua: parseDevice(log.deviceInfo), 
-                      meta: log.metadata || {}
-                    }, null, 2)}
+            <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: "auto", opacity: 1 }} exit={{ height: 0, opacity: 0 }} className="overflow-hidden">
+              <div className="mt-2 space-y-2">
+                {hasDiff && (
+                  <div className="grid grid-cols-2 gap-1.5">
+                    <div className="p-1.5 bg-red-50 border border-red-100 rounded">
+                      <span className="text-[6px] font-black text-red-400 uppercase block mb-1">State_Before</span>
+                      <pre className="text-[8px] font-mono text-slate-500 truncate">{JSON.stringify(stateBefore)}</pre>
+                    </div>
+                    <div className="p-1.5 bg-emerald-50 border border-emerald-100 rounded">
+                      <span className="text-[6px] font-black text-emerald-400 uppercase block mb-1">State_After</span>
+                      <pre className="text-[8px] font-mono text-slate-500 truncate">{JSON.stringify(stateAfter)}</pre>
+                    </div>
+                  </div>
+                )}
+                <div className="p-2.5 bg-[#0F172A] rounded-lg border border-white/5">
+                  <div className="flex justify-between items-center mb-1 pb-1 border-b border-white/10">
+                    <span className="text-[7px] font-black text-indigo-400/50 uppercase">Raw_Payload</span>
+                    <i className="bx bx-data text-[10px] text-indigo-400/30" />
+                  </div>
+                  <pre className="text-[9px] font-mono text-indigo-300/80 overflow-x-auto custom-scrollbar">
+                    {JSON.stringify(log.metadata || { info: "No additional data" }, null, 2)}
                   </pre>
                 </div>
               </div>
@@ -171,20 +202,19 @@ const ActivityCard = ({ log }: { log: ActivityLogDTO }) => {
         </AnimatePresence>
       </div>
 
-      {/* 3. FOOTER */}
       <div className="mt-3 pt-2.5 border-t border-black/[0.03] flex justify-between items-center">
-        <p className="text-[8px] font-bold text-slate-400 font-mono tracking-tight uppercase">
-          {dateStr}
+        <p className="text-[8px] font-bold text-slate-400 font-mono uppercase">
+          <span className={`inline-block w-1 h-1 rounded-full mr-1.5 ${styles.dot}`} />
+          {moduleName}_SYSTEM
         </p>
-        
         <button 
-          onClick={() => router.push(`/dashboard/activity/${log.id}`)}
-          className="px-2 py-1 bg-slate-50 hover:bg-slate-900 rounded-md text-[8px] font-black text-slate-400 hover:text-white uppercase tracking-tighter transition-all"
+          onClick={() => router.push(`/audit/logs?id=${log.id}`)}
+          className="px-3 py-1 bg-slate-50 hover:bg-slate-900 rounded-md text-[8px] font-black text-slate-400 hover:text-white uppercase transition-all"
         >
-          Details
+          View_Full
         </button>
       </div>
-    </motion.div>
+    </div>
   );
 };
 
@@ -195,63 +225,95 @@ const ActivityCard = ({ log }: { log: ActivityLogDTO }) => {
 export function ActivityLogsPanel({ 
   logs, 
   onClose, 
-  title = "Live_Audit_Trail",
-  emptyMessage = "No activity records found."
+  title = "MASA_AUDIT_STREAM",
+  emptyMessage = "NO_ACTIVITY_IN_BUFFER"
 }: ActivityLogsPanelProps) {
   const [filter, setFilter] = useState<string>(LOG_TABS.ALL);
 
-  const filteredLogs = useMemo(() => {
-    if (filter === LOG_TABS.ALL) return logs;
-    return logs.filter((l) => {
-      const action = l.action.toUpperCase();
-      if (filter === LOG_TABS.SECURITY) return /LOCK|ACCESS|LOGIN|PASSWORD|AUTH|SECURITY/.test(action);
-      if (filter === LOG_TABS.PROVISION) return /CREATE|ASSIGN|DELETE|PROVISION/.test(action);
-      if (filter === LOG_TABS.UPDATE) return /UPDATE|PATCH|EDIT|ENABLE|DISABLE|STOCK_ADJUST/.test(action);
-      return action.includes(filter);
+  const counts = useMemo(() => ({
+    [LOG_TABS.ALL]: logs.length,
+    [LOG_TABS.SECURITY]: logs.filter(l => /LOCK|ACCESS|LOGIN|AUTH|SECURITY/.test(l.action.toUpperCase()) || l.severity === "CRITICAL").length,
+    [LOG_TABS.PROVISION]: logs.filter(l => /CREATE|DELETE|PROVISION/.test(l.action.toUpperCase())).length,
+    [LOG_TABS.UPDATE]: logs.filter(l => /UPDATE|PATCH|EDIT|STOCK/.test(l.action.toUpperCase())).length,
+  }), [logs]);
+
+  const groupedLogs = useMemo(() => {
+    const filtered = logs.filter((l) => {
+      if (filter === LOG_TABS.ALL) return true;
+      const act = l.action.toUpperCase();
+      if (filter === LOG_TABS.SECURITY) return /LOCK|ACCESS|LOGIN|AUTH|SECURITY/.test(act) || l.severity === "CRITICAL";
+      if (filter === LOG_TABS.PROVISION) return /CREATE|DELETE|PROVISION/.test(act);
+      if (filter === LOG_TABS.UPDATE) return /UPDATE|PATCH|EDIT|STOCK/.test(act);
+      return true;
     });
+
+    return filtered.reduce((acc: Record<string, ActivityLogDTO[]>, log) => {
+      const group = formatDateGroup(log.createdAt);
+      if (!acc[group]) acc[group] = [];
+      acc[group].push(log);
+      return acc;
+    }, {});
   }, [logs, filter]);
 
   return (
-    <div className="h-full flex flex-col w-full bg-[#FAFAFC] relative border-l border-black/5 shadow-2xl">
-      <div className="p-4 border-b border-black/5 bg-white shrink-0 space-y-4">
+    <div className="h-full flex flex-col w-full bg-[#FAFAFC] border-l border-black/5 shadow-2xl overflow-hidden font-sans">
+      {/* HEADER */}
+      <div className="p-4 bg-white border-b border-black/5 shrink-0 space-y-4">
         <div className="flex justify-between items-center">
-          <h2 className="text-[10px] font-black uppercase tracking-[0.25em] text-slate-900 flex items-center gap-2">
-            <span className="w-1.5 h-1.5 rounded-sm bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.3)] animate-pulse" /> 
-            {title}
-          </h2>
-          <button onClick={onClose} className="w-8 h-8 rounded-lg hover:bg-slate-100 flex items-center justify-center text-slate-500 transition-all active:scale-90">
+          <div className="flex flex-col">
+            <h2 className="text-[10px] font-black uppercase tracking-[0.25em] text-slate-900 flex items-center gap-2">
+              <span className="w-1.5 h-1.5 rounded-sm bg-emerald-500 animate-pulse shadow-[0_0_8px_rgba(16,185,129,0.4)]" /> 
+              {title}
+            </h2>
+          </div>
+          <button onClick={onClose} className="w-8 h-8 rounded-lg hover:bg-slate-100 flex items-center justify-center text-slate-500 active:scale-90 transition-all">
             <i className="bx bx-x text-lg" />
           </button>
         </div>
 
+        {/* FILTER TABS (No horizontal scroll as requested) */}
         <div className="flex gap-1.5 overflow-x-auto pb-1 scrollbar-hide" style={{ msOverflowStyle: 'none', scrollbarWidth: 'none' }}>
-          {Object.values(LOG_TABS).map((tab) => (
+          {Object.entries(LOG_TABS).map(([key, value]) => (
             <button 
-              key={tab} 
-              onClick={() => setFilter(tab)} 
-              className={`shrink-0 px-3 py-1.5 rounded-md text-[8px] font-black uppercase tracking-tight transition-all border ${
-                filter === tab 
-                  ? "bg-slate-900 text-white border-slate-900 shadow-sm" 
-                  : "bg-white text-slate-400 border-slate-200 hover:border-slate-300"
+              key={key} 
+              onClick={() => setFilter(value)} 
+              className={`whitespace-nowrap px-3 py-1.5 rounded-md text-[8px] font-black uppercase tracking-tight border flex items-center gap-2 transition-all ${
+                filter === value ? "bg-slate-900 text-white border-slate-900 shadow-sm" : "bg-white text-slate-400 border-slate-200 hover:border-slate-300"
               }`}
             >
-              {tab.replace(/_/g, " ")}
+              {value.replace(/_/g, " ")}
+              <span className={`px-1 rounded-sm text-[7px] ${filter === value ? "bg-white/20 text-white" : "bg-slate-100 text-slate-500"}`}>
+                {counts[value as keyof typeof counts]}
+              </span>
             </button>
           ))}
         </div>
       </div>
 
-      <div className="flex-1 overflow-y-auto p-3.5 space-y-3 custom-scrollbar">
-        {filteredLogs.length === 0 ? (
+      {/* GROUPED LIST */}
+      <div className="flex-1 overflow-y-auto p-4 space-y-8 custom-scrollbar">
+        {Object.keys(groupedLogs).length === 0 ? (
           <div className="h-60 flex flex-col items-center justify-center text-slate-300">
              <i className="bx bx-radar text-4xl mb-2 opacity-20" />
              <p className="text-[9px] font-black uppercase tracking-[0.2em]">{emptyMessage}</p>
           </div>
         ) : (
-          filteredLogs.map((log) => (
-            <ActivityCard key={log.id} log={log} />
+          Object.entries(groupedLogs).map(([group, entries]) => (
+            <div key={group} className="space-y-3">
+              <div className="flex items-center gap-3 sticky top-0 bg-[#FAFAFC]/95 backdrop-blur-sm py-1 z-10">
+                <span className="text-[8px] font-black text-slate-400 uppercase tracking-widest whitespace-nowrap">{group}</span>
+                <div className="h-[1px] w-full bg-black/[0.05]" />
+              </div>
+              {entries.map((log) => <ActivityCard key={log.id} log={log} />)}
+            </div>
           ))
         )}
+      </div>
+
+      {/* FOOTER */}
+      <div className="p-3 px-4 bg-white border-t border-black/5 flex justify-between items-center text-[7px] font-mono text-slate-400 uppercase tracking-widest">
+        <span className="flex items-center gap-1.5"><span className="w-1 h-1 rounded-full bg-emerald-500" />SECURE_LINK_ACTIVE</span>
+        <span>© 2026 MASA_ENGINE</span>
       </div>
     </div>
   );

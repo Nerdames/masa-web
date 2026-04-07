@@ -3,7 +3,6 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import { useSession } from "next-auth/react";
 import { useSidePanel } from "@/core/components/layout/SidePanelContext";
-import { ActivityLogsPanel } from "@/modules/audit/components/ActivityLogsPanel";
 import { ActivityLog } from "@prisma/client";
 import { useAlerts } from "@/core/components/feedback/AlertProvider";
 
@@ -15,7 +14,7 @@ import { PersonnelRow } from "@/modules/personnel/components/PersonnelRow";
 export default function PersonnelManagementPage() {
   const { data: session } = useSession();
   const { dispatch } = useAlerts();
-  const { openPanel, closePanel, resetToDefault, isOpen } = useSidePanel();
+  const { openPanel, resetToDefault, isOpen } = useSidePanel();
 
   const userRole = session?.user?.role;
   const isOrgOwner = session?.user?.isOrgOwner;
@@ -162,10 +161,6 @@ export default function PersonnelManagementPage() {
     openPanel(<ProvisionPanel branches={branches} onClose={handleClosePanel} onCreate={handleCreate} dispatch={dispatch} />);
   };
 
-  const handleOpenLogs = () => {
-    setSelectedPersonId(null);
-    openPanel(<ActivityLogsPanel logs={logs} onClose={handleClosePanel} />);
-  };
 
   return (
     <div className="flex flex-col h-full w-full bg-white relative z-0 overflow-hidden">
@@ -249,13 +244,24 @@ export default function PersonnelManagementPage() {
       </header>
 
       {/* --- Desktop Table Header --- */}
-      <div className="hidden sm:flex px-4 md:px-8 py-2 shrink-0 items-center text-[10px] font-bold text-slate-400 uppercase tracking-widest border-b border-black/[0.04] bg-white overflow-hidden whitespace-nowrap">
-        <div className="w-[100px] md:w-[140px] shrink-0 truncate">Staff ID</div>
-        <div className="w-[100px] md:w-[160px] shrink-0 truncate">Primary Branch</div>
-        <div className="flex-1 min-w-[100px] hidden lg:block truncate">Email Address</div>
-        <div className="w-[70px] md:w-[120px] shrink-0 truncate">Role</div>
-        <div className="flex-1 min-w-[120px] truncate">Personnel Name</div>
-        <div className="w-[70px] md:w-[100px] shrink-0 truncate text-right md:text-left">Access</div>
+      <div className="hidden md:flex px-4 md:px-8 py-2 shrink-0 items-center text-[10px] font-bold text-slate-400 uppercase tracking-widest border-b border-black/[0.04] bg-white overflow-hidden whitespace-nowrap">
+        {/* Staff ID - matches w-[120px] */}
+        <div className="w-[120px] shrink-0 truncate">Staff ID</div>
+
+        {/* Personnel Name - matches flex-[1.5] */}
+        <div className="flex-[1.5] min-w-[150px] truncate">Personnel Name</div>
+
+        {/* Email Address - matches flex-1 */}
+        <div className="flex-1 min-w-[150px] truncate">Email Address</div>
+
+        {/* Role - matches w-[110px] */}
+        <div className="w-[110px] shrink-0 truncate">Role</div>
+
+        {/* Primary Branch - matches w-[160px] */}
+        <div className="w-[160px] shrink-0 truncate">Primary Branch</div>
+
+        {/* Access/Status - matches w-[90px] */}
+        <div className="w-[90px] shrink-0 truncate text-right">Access</div>
       </div>
 
       <div className="flex-1 overflow-y-auto custom-scrollbar bg-white relative">
