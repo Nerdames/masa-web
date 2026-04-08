@@ -157,7 +157,7 @@ export default function NotificationsPage() {
   }, [data, mutate]);
 
   return (
-    <div className="min-h-screen bg-[#FAFAFC] dark:bg-[#09090b] text-slate-900 dark:text-slate-100 pb-20 font-sans selection:bg-blue-100 dark:selection:bg-blue-500/30">
+    <div className="min-h-screen bg-[#FAFAFC] dark:bg-[#09090b] text-slate-900 dark:text-slate-100 pb-20 font-sans selection:bg-blue-100 dark:selection:bg-blue-500/30 overflow-y-auto">
       {/* RESPONSIVE STICKY HEADER */}
       <header className="sticky top-0 z-50 bg-white/80 dark:bg-[#09090b]/80 backdrop-blur-md border-b border-black/[0.05] dark:border-white/5 px-4 sm:px-6 py-4 sm:py-4">
         <div className="max-w-2xl mx-auto">

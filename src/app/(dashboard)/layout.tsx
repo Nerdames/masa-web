@@ -19,10 +19,10 @@ export default function DashboardRootLayout({ children }: DashboardRootLayoutPro
 
   return (
     <SidePanelProvider>
-      {/* 1. ROOT CONTAINER: Mimics WelcomePage Background & Lock */}
+      {/* 1. ROOT CONTAINER */}
       <div className="h-screen w-full bg-gradient-to-br from-[#DBEAFE] via-[#E0F2FE] to-[#EFF6FF] text-slate-900 relative overflow-hidden flex flex-col">
         
-        {/* Background Decorative Elements (SVG Mimicry) */}
+        {/* Background Decorative Elements */}
         <div className="absolute inset-0 pointer-events-none z-0">
           <svg className="absolute -left-20 -top-20 opacity-10" viewBox="0 0 600 600" style={{ width: "min(45vw, 450px)" }}>
             <defs>
@@ -44,7 +44,7 @@ export default function DashboardRootLayout({ children }: DashboardRootLayoutPro
           </svg>
         </div>
 
-        {/* 2. TOPBAR: Fixed Height, High Z-Index */}
+        {/* 2. TOPBAR */}
         <header className="flex-none relative z-[1000] bg-white/80 backdrop-blur-md border-b border-black/5">
           <TopBar />
           {status === "loading" && (
@@ -59,20 +59,16 @@ export default function DashboardRootLayout({ children }: DashboardRootLayoutPro
           <Sidebar />
 
           <div className="flex flex-1 min-w-0 min-h-0 overflow-hidden relative">
-            {/* 4. MAIN CONTAINER: 
-                - overflow-hidden: Prevents the whole page from scrolling.
-                - flex-col: Allows children to stack (Header then Scrollable Content).
-            */}
             <main className={`flex-1 flex flex-col min-w-0 min-h-0 transition-opacity duration-300 ${status === "loading" ? "opacity-0" : "opacity-100"}`}>
-               {/* Children will handle their own internal scrolling */}
                {children}
             </main>
 
+            {/* The Fixed SidePanel */}
             <DynamicSidePanel />
           </div>
         </div>
 
-        {/* Global Styles for "Strict Fit" */}
+        {/* Global Styles */}
         <style jsx global>{`
           html, body { 
             height: 100%; 
@@ -85,7 +81,6 @@ export default function DashboardRootLayout({ children }: DashboardRootLayoutPro
           .animate-progress-slide {
             animation: progress-slide 1.5s infinite linear;
           }
-          /* Custom scrollbar to keep UI clean */
           .scrollbar-hide::-webkit-scrollbar { display: none; }
           .scrollbar-hide { -ms-overflow-style: none; scrollbar-width: none; }
         `}</style>
@@ -96,18 +91,21 @@ export default function DashboardRootLayout({ children }: DashboardRootLayoutPro
 
 function DynamicSidePanel() {
   const { isOpen, content, width, isFullScreen } = useSidePanel();
-  const [isMobile, setIsMobile] = useState(false);
+  const [isOverlayMode, setIsOverlayMode] = useState(false);
 
   useEffect(() => {
-    const check = () => setIsMobile(window.innerWidth < 768);
+    // 1024px captures both mobile and most tablets (iPad/Android) in portrait/landscape
+    const check = () => setIsOverlayMode(window.innerWidth < 1024);
     check();
     window.addEventListener("resize", check);
     return () => window.removeEventListener("resize", check);
   }, []);
 
-  const shouldShow = isMobile ? !!content : isOpen;
-  const panelWidth = isMobile
-    ? isFullScreen ? "100%" : `${width}px`
+  // On mobile/tablet, we only show if there is specific content injected
+  const shouldShow = isOverlayMode ? !!content : isOpen;
+  
+  const panelWidth = isOverlayMode
+    ? (isFullScreen ? "100%" : `${width}px`)
     : `${Math.min(width, 340)}px`;
 
   return (
@@ -115,11 +113,16 @@ function DynamicSidePanel() {
       {shouldShow && (
         <motion.aside
           key="side-panel"
-          initial={{ width: 0, opacity: 0 }}
-          animate={{ width: panelWidth, opacity: 1 }}
-          exit={{ width: 0, opacity: 0 }}
+          // Slide in from right for a cleaner feel than width animation
+          initial={{ x: "100%", opacity: 0 }}
+          animate={{ x: 0, opacity: 1 }}
+          exit={{ x: "100%", opacity: 0 }}
           transition={{ type: "spring", damping: 25, stiffness: 200 }}
-          className="relative h-full min-h-0 max-w-full bg-white/90 backdrop-blur-xl border-l border-black/5 shrink-0 overflow-hidden flex flex-col z-[50]"
+          className={`
+            h-full min-h-0 max-w-full bg-white/95 backdrop-blur-xl 
+            border-l border-black/5 shrink-0 overflow-hidden flex flex-col z-[50]
+            ${isOverlayMode ? "absolute right-0 top-0 shadow-2xl" : "relative"}
+          `}
           style={{ width: panelWidth }}
         >
           <div className="flex-1 min-h-0 overflow-y-auto scrollbar-hide">

@@ -8,6 +8,7 @@ import { useSidePanel } from "@/core/components/layout/SidePanelContext";
 // Components
 import ContactForm from "@/core/components/shared/SupportForm";
 import { ActivityLogsPanel } from "@/modules/audit/components/ActivityLogsPanel";
+import { c } from "node_modules/@upstash/redis/error-8y4qG0W2.mjs";
 
 /* ================= TYPES ================= */
 
@@ -289,81 +290,88 @@ const EditProfilePanel = ({
 /* ================= SUB-COMPONENTS ================= */
 
 const ProfileHeader = ({ profile, onSupport, onLogs }: { profile: ProfileDTO, onSupport: () => void, onLogs: () => void }) => (
-  <header className="px-4 py-4 shrink-0 border-b border-black/[0.04] bg-white">
-    <div className="flex items-center justify-between gap-4">
-      <div className="px-2 truncate">
-        <h1 className="text-lg md:text-2xl font-semibold tracking-tight text-slate-900 truncate">Personnel Profile</h1>
-        <p className="hidden md:block text-[13px] text-slate-500 mt-1 truncate">
-          {profile.organization.name} • System Interface Signature
-        </p>
+  <header className="w-full flex flex-col bg-white border-b border-black/[0.04]">
+    {/* LAYER 1: The Main Top Bar (Sticky exactly like Forensic Audit) */}
+    <div className="sticky top-0 z-[120] bg-white flex items-center justify-between gap-4 px-4 py-3 min-w-0">
+      
+      {/* Left Side: Title */}
+      <div className="min-w-0 flex-1 md:flex-none">
+        <h1 className="truncate text-[18px] font-semibold tracking-tight text-slate-900">
+          Personnel Profile
+        </h1>
       </div>
+
+      {/* MIDDLE: Spacer */}
+      <div className="hidden md:flex flex-1 justify-center px-4 overflow-hidden" />
+
+      {/* Right Side: Primary Actions */}
       <div className="flex items-center gap-2 shrink-0">
         <button 
-          onClick={onSupport} 
+          onClick={onSupport}
+          className="p-2 text-[12px] font-semibold border rounded-lg transition-colors flex items-center justify-center bg-white border-black/5 text-slate-500 hover:bg-slate-50 shadow-sm shrink-0"
           title="Support"
-          className="p-2 md:px-4 md:py-2 text-[12px] font-semibold border rounded-lg transition-colors flex items-center gap-2 bg-white border-black/5 text-slate-500 hover:bg-slate-50 hover:text-slate-800 shadow-sm"
         >
-          <i className="bx bx-help-circle text-base md:text-sm" />
-          <span className="hidden md:inline whitespace-nowrap">Support</span>
+          <i className="bx bx-help-circle text-lg" />
         </button>
-        <button 
-          onClick={onLogs} 
-          title="Audit Logs"
-          className="p-2 md:px-5 md:py-2 bg-slate-900 text-white text-[12px] font-semibold rounded-lg shadow-sm hover:bg-slate-800 transition-all flex items-center gap-2"
+
+        <button
+          onClick={onLogs}
+          className="p-2 bg-slate-900 text-white text-[10px] font-bold uppercase tracking-widest rounded-lg hover:bg-blue-600 transition-all flex items-center gap-2"
         >
-          <i className="bx bx-history text-base md:text-sm" />
-          <span className="hidden md:inline whitespace-nowrap">Audit Logs</span>
+          <i className="bx bx-history text-lg" />
+          <span className="hidden md:inline">Audit Logs</span>
         </button>
       </div>
     </div>
 
-    <div className="mt-6 pt-4 border-t border-black/5">
-      {/* flex-row: Always horizontal 
-          md:justify-start: Align left on larger screens
-          items-stretch: Ensures dividers are full height
-      */}
-      <div className="flex flex-row items-stretch md:justify-start w-full gap-0 md:gap-12">
-        
-        {/* Global Role - flex-1 on mobile to fill 1/3 of width */}
-        <div className="flex flex-1 md:flex-none flex-col min-w-0">
-          <span className="text-[9px] md:text-[10px] font-black text-slate-400 uppercase tracking-widest truncate">
-            Global Role
-          </span>
-          <span className="text-sm md:text-xl font-bold text-slate-800 truncate">
-            {profile.role}
-          </span>
-        </div>
-
-        {/* Divider (Mobile only) - subtle vertical line */}
-        <div className="w-px bg-black/5 mx-2 md:hidden" />
-
-        {/* Active Nodes */}
-        <div className="flex flex-1 md:flex-none flex-col min-w-0 md:border-l md:border-black/5 md:pl-12">
-          <span className="text-[9px] md:text-[10px] font-black text-slate-400 uppercase tracking-widest truncate">
-            Nodes
-          </span>
-          <span className="text-sm md:text-xl font-bold text-slate-800 truncate">
-            {profile.assignments.length}
-          </span>
-        </div>
-
-        {/* Divider (Mobile only) */}
-        <div className="w-px bg-black/5 mx-2 md:hidden" />
-
-        {/* Integrity Status */}
-        <div className="flex flex-1 md:flex-none flex-col min-w-0 md:border-l md:border-black/5 md:pl-12">
-          <span className={`text-[9px] md:text-[10px] font-black uppercase tracking-widest truncate ${
-            profile.isLocked ? 'text-red-500' : 'text-emerald-500'
-          }`}>
-            Status
-          </span>
-          <span className="text-sm md:text-xl font-bold text-slate-800 truncate">
-            {profile.isLocked ? "Locked" : "Active"}
-          </span>
-        </div>
-
-      </div>
+{/* LAYER 2: Personnel Telemetry Layer (High-Density Smart Design) */}
+<div className="bg-slate-50/50 px-4 md:px-8 py-2 border-t border-black/[0.04]  md:relative z-[115]">
+  <div className="flex flex-wrap items-center gap-2 md:gap-6">
+    
+    {/* Global Role Pill */}
+    <div className="flex items-center gap-2 bg-white border border-black/[0.06] rounded-full px-3 py-1 shadow-sm">
+      <span className="text-[8px] font-black text-slate-400 uppercase tracking-tighter border-r border-black/5 pr-2">
+        Role
+      </span>
+      <span className="text-[11px] font-bold text-slate-700 truncate max-w-[100px] md:max-w-none">
+        {profile.role}
+      </span>
     </div>
+
+    {/* Active Nodes Pill */}
+    <div className="flex items-center gap-2 bg-white border border-black/[0.06] rounded-full px-3 py-1 shadow-sm">
+      <span className="text-[8px] font-black text-slate-400 uppercase tracking-tighter border-r border-black/5 pr-2">
+        Nodes
+      </span>
+      <span className="text-[11px] font-bold text-slate-700">
+        {profile.assignments.length.toString().padStart(2, '0')}
+      </span>
+    </div>
+
+    {/* Integrity Status - Minimalist Glow */}
+    <div className={`flex items-center gap-2 px-3 py-1 rounded-full border shadow-sm transition-all ${
+      profile.isLocked 
+        ? 'bg-red-50 border-red-100 text-red-700' 
+        : 'bg-emerald-50 border-emerald-100 text-emerald-700'
+    }`}>
+      <div className={`w-1.5 h-1.5 rounded-full ${
+        profile.isLocked ? 'bg-red-500 animate-pulse' : 'bg-emerald-500 shadow-[0_0_4px_rgba(16,185,129,0.4)]'
+      }`} />
+      <span className="text-[8px] font-black uppercase tracking-widest">
+        {profile.isLocked ? "System Locked" : "Integrity Valid"}
+      </span>
+    </div>
+
+    {/* Optional: Small Quick Metric (Visible only on desktop) */}
+    <div className="hidden lg:flex items-center gap-2 ml-auto text-slate-400">
+      <i className="bx bx-subdirectory-right text-xs" />
+      <span className="text-[9px] font-medium uppercase tracking-tighter">
+        Trace: {profile.staffCode || "SYS-00"}
+      </span>
+    </div>
+
+  </div>
+</div>
   </header>
 );
 
@@ -371,12 +379,13 @@ export default function ProfilePage() {
   const [profile, setProfile] = useState<ProfileDTO | null>(null);
   const [loading, setLoading] = useState(true);
   const { dispatch } = useAlerts();
-  const { openPanel, closePanel, resetToDefault } = useSidePanel();
+  const { openPanel, closePanel} = useSidePanel();
+  const containerRef = useRef<HTMLDivElement | null>(null);
 
   // Reference lock to prevent the auto-open effect from looping
   const hasAttemptedAutoOpen = useRef(false);
 
-  // Close panel on unmount to match PersonnelOperations cleanup logic
+  // Close panel on unmount
   useEffect(() => {
     return () => closePanel();
   }, [closePanel]);
@@ -415,24 +424,24 @@ export default function ProfilePage() {
       openPanel(
         <ActivityLogsPanel 
           logs={profile.activityLogs} 
-          onClose={resetToDefault} 
+          onClose={closePanel} 
         />
       );
       sessionStorage.setItem('masa_logs_auto_opened', 'true');
     }
 
     hasAttemptedAutoOpen.current = true;
-  }, [loading, profile, openPanel, resetToDefault]);
+  }, [loading, profile, openPanel, closePanel]);
 
   const triggerEdit = (field: "name" | "email" | "password", initialValue: string) => {
     openPanel(
       <EditProfilePanel
         field={field}
         initialValue={initialValue}
-        onClose={resetToDefault}
+        onClose={closePanel}
         onSuccess={() => {
           loadProfile();
-          resetToDefault();
+          closePanel();
         }}
       />
     );
@@ -443,8 +452,8 @@ export default function ProfilePage() {
     openPanel(
       <ContactForm 
         user={profile} 
-        onSuccess={resetToDefault} 
-        onCancel={resetToDefault} 
+        onSuccess={closePanel} 
+        onCancel={closePanel} 
       />
     );
   };
@@ -454,7 +463,7 @@ export default function ProfilePage() {
     openPanel(
       <ActivityLogsPanel 
         logs={profile.activityLogs} 
-        onClose={resetToDefault} 
+        onClose={closePanel} 
       />
     );
   };
@@ -469,168 +478,189 @@ export default function ProfilePage() {
   );
 
   return (
+    // EXACT MATCH TO FORENSIC AUDIT ROOT: flex col, h-full, overflow-hidden
     <div className="flex flex-col h-full w-full bg-white relative z-0 overflow-hidden">
-      {/* Profile Header matching the Management Header style */}
-      <ProfileHeader 
-        profile={profile}
-        onSupport={triggerSupport}
-        onLogs={triggerLogs}
-      />
+      
+      {/* EXACT MATCH TO FORENSIC AUDIT SCROLL CONTAINER: 
+        The header AND the body go inside here. 
+      */}
+      <div
+        ref={containerRef}
+        className="overflow-y-auto flex-1 w-full custom-scrollbar bg-white"
+        role="main"
+      >
+        {/* Profile Header is inside the scroll container, its Layer 1 is sticky */}
+        <ProfileHeader 
+          profile={profile}
+          onSupport={triggerSupport}
+          onLogs={triggerLogs}
+        />
 
-      {/* Critical Security Notices */}
-      {(profile.isLocked || profile.requiresPasswordChange) && (
-        <div className="px-4 py-2 bg-red-50/50 border-b border-red-100 shrink-0">
-          <div className="text-[10px] font-bold text-red-600 uppercase tracking-tight flex items-center gap-2">
-            <i className="bx bxs-error-alt text-base" /> 
-            {profile.isLocked ? `Locked: ${profile.lockReason || "Security Violation"}` : "Password Change Required"}
+        {/* Main Content Area Container (Matches Forensic Audit max-w and padding style) */}
+        <div className="mx-auto w-full max-w-7xl pb-12">
+          
+          {/* Critical Security Notices */}
+          {(profile.isLocked || profile.requiresPasswordChange) && (
+            <div className="px-4 md:px-8 py-3 bg-red-50/50 border-b border-red-100">
+              <div className="text-[10px] font-bold text-red-600 uppercase tracking-tight flex items-center gap-2">
+                <i className="bx bxs-error-alt text-base" /> 
+                {profile.isLocked ? `Locked: ${profile.lockReason || "Security Violation"}` : "Password Change Required"}
+              </div>
+            </div>
+          )}
+
+          {/* Table-Style Header */}
+          <div className="px-4 md:px-8 py-3 flex items-center text-[10px] font-bold text-slate-400 uppercase tracking-widest border-b border-black/[0.04] bg-white ">
+            <div className="w-[140px] md:w-[180px] shrink-0 truncate">Credential Type</div>
+            <div className="flex-1 min-w-[120px] truncate">Current Value / Status</div>
+            <div className="w-[70px] md:w-[100px] shrink-0 text-right md:text-right">Update</div>
           </div>
-        </div>
-      )}
 
-      {/* Table-Style Header: Matched to PersonnelOperations */}
-      <div className="px-4 md:px-8 py-2 shrink-0 flex items-center text-[10px] font-bold text-slate-400 uppercase tracking-widest border-b border-black/[0.04] bg-white overflow-hidden whitespace-nowrap">
-        <div className="w-[140px] md:w-[180px] shrink-0 truncate">Credential Type</div>
-        <div className="flex-1 min-w-[120px] truncate">Current Value / Status</div>
-        <div className="w-[70px] md:w-[100px] shrink-0 text-right md:text-right">Update</div>
+          {/* Table Body Area */}
+          <div className="divide-y divide-black/[0.02]">
+            
+            {/* Row: Name */}
+            <div className="px-4 md:px-8 py-4 flex items-center hover:bg-slate-50/50 group cursor-pointer transition-colors" onClick={() => triggerEdit("name", profile.name || "")}>
+              <div className="w-[140px] md:w-[180px] shrink-0 flex items-center gap-3">
+                <div className="w-8 h-8 rounded-lg bg-slate-50 flex items-center justify-center text-slate-600 border border-slate-100 shrink-0">
+                  <i className="bx bx-user text-lg" />
+                </div>
+                <span className="text-[11px] font-bold text-slate-500 uppercase truncate">Full Name</span>
+              </div>
+              <div className="flex-1 min-w-[120px]">
+                <span className="text-[13px] font-medium text-slate-900 uppercase tracking-tight truncate block">{profile.name || "N/A"}</span>
+              </div>
+              <div className="w-[70px] md:w-[100px] shrink-0 text-right opacity-0 group-hover:opacity-100 transition-opacity">
+                 <i className="bx bx-edit-alt text-xl text-slate-400 hover:text-slate-900" />
+              </div>
+            </div>
+
+            {/* Row: Email */}
+            <div className="px-4 md:px-8 py-4 flex items-center hover:bg-slate-50/50 group cursor-pointer transition-colors" onClick={() => triggerEdit("email", profile.email)}>
+              <div className="w-[140px] md:w-[180px] shrink-0 flex items-center gap-3">
+                <div className="w-8 h-8 rounded-lg bg-blue-50 flex items-center justify-center text-blue-600 border border-blue-100 shrink-0">
+                  <i className="bx bx-envelope text-lg" />
+                </div>
+                <span className="text-[11px] font-bold text-slate-500 uppercase truncate">Primary Email</span>
+              </div>
+              <div className="flex-1 flex flex-col min-w-[120px]">
+                <span className="text-[13px] font-medium text-slate-900 truncate block">{profile.email}</span>
+                {profile.pendingEmail && (
+                  <span className="text-[10px] text-blue-500 font-bold uppercase animate-pulse truncate block">Pending: {profile.pendingEmail}</span>
+                )}
+              </div>
+              <div className="w-[70px] md:w-[100px] shrink-0 text-right opacity-0 group-hover:opacity-100 transition-opacity">
+                 <i className="bx bx-edit-alt text-xl text-slate-400 hover:text-slate-900" />
+              </div>
+            </div>
+
+            {/* Row: Staff Code (Read Only) */}
+            <div className="px-4 md:px-8 py-4 flex items-center hover:bg-slate-50/50 transition-colors">
+              <div className="w-[140px] md:w-[180px] shrink-0 flex items-center gap-3">
+                <div className="w-8 h-8 rounded-lg bg-slate-50 flex items-center justify-center text-slate-600 border border-slate-100 shrink-0">
+                  <i className="bx bx-barcode-reader text-lg" />
+                </div>
+                <span className="text-[11px] font-bold text-slate-500 uppercase truncate">Staff Code</span>
+              </div>
+              <div className="flex-1 min-w-[120px] font-mono text-[13px] font-medium text-slate-900 truncate">{profile.staffCode ?? "UNASSIGNED"}</div>
+              <div className="w-[70px] md:w-[100px] shrink-0 text-right">
+                 <i className="bx bx-lock-alt text-lg text-slate-300" />
+              </div>
+            </div>
+
+            {/* Row: Security */}
+            <div className="px-4 md:px-8 py-4 flex items-center hover:bg-slate-50/50 group cursor-pointer transition-colors" onClick={() => triggerEdit("password", "")}>
+              <div className="w-[140px] md:w-[180px] shrink-0 flex items-center gap-3">
+                <div className="w-8 h-8 rounded-lg bg-purple-50 flex items-center justify-center text-purple-600 border border-purple-100 shrink-0">
+                  <i className="bx bx-lock-alt text-lg" />
+                </div>
+                <span className="text-[11px] font-bold text-slate-500 uppercase truncate">Security</span>
+              </div>
+              <div className="flex-1 min-w-[120px] font-mono tracking-[0.4em] text-slate-900 truncate">••••••••••••</div>
+              <div className="w-[70px] md:w-[100px] shrink-0 text-right opacity-0 group-hover:opacity-100 transition-opacity">
+                 <i className="bx bx-edit-alt text-xl text-slate-400 hover:text-slate-900" />
+              </div>
+            </div>
+
+            {/* Subsection: Branch Topology */}
+            <div className="px-4 md:px-8 py-3 bg-slate-50/50 border-y border-black/[0.04] flex items-center justify-between mt-4">
+              <h3 className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Branch Topology</h3>
+            </div>
+
+            {profile.assignments.map((a) => (
+               <div key={a.id} className="px-4 md:px-8 py-4 flex items-center hover:bg-slate-50/50 transition-colors">
+                  <div className="w-[140px] md:w-[180px] shrink-0 flex items-center gap-4">
+                    <div className={`w-2 h-2 rounded-full shrink-0 ${a.isPrimary ? 'bg-blue-500 shadow-[0_0_8px_rgba(59,130,246,0.5)]' : 'bg-slate-200'}`} />
+                    <span className="text-[11px] font-bold text-slate-500 uppercase truncate">{a.isPrimary ? "Primary" : "Secondary"}</span>
+                  </div>
+                  <div className="flex-1 min-w-[120px]">
+                    <p className="text-[13px] font-medium text-slate-900 truncate">{a.branchName}</p>
+                  </div>
+                  <div className="w-[70px] md:w-[100px] shrink-0 text-right">
+                    <span className={`px-2.5 py-1 rounded-md text-[9px] font-bold uppercase border tracking-widest bg-white text-slate-600 border-black/5`}>
+                      {a.role}
+                    </span>
+                  </div>
+               </div>
+            ))}
+          </div>
+
+{/* Device & Network (Full Width Mimic with all Telemetry Details) */}
+<div className="w-full space-y-4">
+  <div className="bg-slate-50 p-3 md:p-4 rounded-sm border border-slate-100">
+    <div className="flex items-center justify-between mb-3">
+      <h4 className="text-[8px] md:text-[9px] font-black text-slate-400 uppercase tracking-widest">
+        Device & Network Signature
+      </h4>
+      <div className="flex items-center gap-2">
+        <span className="text-[8px] font-black text-emerald-500 uppercase tracking-widest flex items-center gap-1">
+          <span className="w-1 h-1 bg-emerald-500 rounded-full animate-pulse" />
+          Active Terminal
+        </span>
+        <i className="bx bx-broadcast text-slate-300 text-xs" />
+      </div>
+    </div>
+
+    <div className="grid grid-cols-1 md:grid-cols-3 gap-4 md:gap-6">
+      {/* Network IP */}
+      <div>
+        <p className="text-[8px] text-slate-500 uppercase mb-1">Network IP</p>
+        <p className="text-[9px] md:text-[10px] font-mono font-bold text-slate-700 break-all leading-none">
+          {profile.lastLoginIp || "::1"}
+        </p>
       </div>
 
-      {/* Main Content Area */}
-      <div className="flex-1 overflow-y-auto custom-scrollbar bg-white relative">
-        <div className="divide-y divide-black/[0.02]">
-          
-          {/* Row: Name */}
-          <div className="px-4 md:px-8 py-4 flex items-center hover:bg-slate-50/50 group cursor-pointer transition-colors" onClick={() => triggerEdit("name", profile.name || "")}>
-            <div className="w-[140px] md:w-[180px] shrink-0 flex items-center gap-3">
-              <div className="w-8 h-8 rounded-lg bg-slate-50 flex items-center justify-center text-slate-600 border border-slate-100 shrink-0">
-                <i className="bx bx-user text-lg" />
-              </div>
-              <span className="text-[11px] font-bold text-slate-500 uppercase truncate">Full Name</span>
-            </div>
-            <div className="flex-1 min-w-[120px]">
-              <span className="text-[13px] font-medium text-slate-900 uppercase tracking-tight truncate block">{profile.name || "N/A"}</span>
-            </div>
-            <div className="w-[70px] md:w-[100px] shrink-0 text-right opacity-0 group-hover:opacity-100 transition-opacity">
-               <i className="bx bx-edit-alt text-xl text-slate-400 hover:text-slate-900" />
-            </div>
-          </div>
+      {/* Auth Timestamp */}
+      <div>
+        <p className="text-[8px] text-slate-500 uppercase mb-1">Auth Timestamp</p>
+        <p className="text-[9px] md:text-[10px] font-mono font-bold text-slate-700 leading-none">
+          {new Date(profile.lastLogin || "").toLocaleString()}
+        </p>
+      </div>
 
-          {/* Row: Email */}
-          <div className="px-4 md:px-8 py-4 flex items-center hover:bg-slate-50/50 group cursor-pointer transition-colors" onClick={() => triggerEdit("email", profile.email)}>
-            <div className="w-[140px] md:w-[180px] shrink-0 flex items-center gap-3">
-              <div className="w-8 h-8 rounded-lg bg-blue-50 flex items-center justify-center text-blue-600 border border-blue-100 shrink-0">
-                <i className="bx bx-envelope text-lg" />
-              </div>
-              <span className="text-[11px] font-bold text-slate-500 uppercase truncate">Primary Email</span>
-            </div>
-            <div className="flex-1 flex flex-col min-w-[120px]">
-              <span className="text-[13px] font-medium text-slate-900 truncate block">{profile.email}</span>
-              {profile.pendingEmail && (
-                <span className="text-[10px] text-blue-500 font-bold uppercase animate-pulse truncate block">Pending: {profile.pendingEmail}</span>
-              )}
-            </div>
-            <div className="w-[70px] md:w-[100px] shrink-0 text-right opacity-0 group-hover:opacity-100 transition-opacity">
-               <i className="bx bx-edit-alt text-xl text-slate-400 hover:text-slate-900" />
-            </div>
-          </div>
-
-          {/* Row: Staff Code (Read Only) */}
-          <div className="px-4 md:px-8 py-4 flex items-center hover:bg-slate-50/50 transition-colors">
-            <div className="w-[140px] md:w-[180px] shrink-0 flex items-center gap-3">
-              <div className="w-8 h-8 rounded-lg bg-slate-50 flex items-center justify-center text-slate-600 border border-slate-100 shrink-0">
-                <i className="bx bx-barcode-reader text-lg" />
-              </div>
-              <span className="text-[11px] font-bold text-slate-500 uppercase truncate">Staff Code</span>
-            </div>
-            <div className="flex-1 min-w-[120px] font-mono text-[13px] font-medium text-slate-900 truncate">{profile.staffCode ?? "UNASSIGNED"}</div>
-            <div className="w-[70px] md:w-[100px] shrink-0 text-right">
-               <i className="bx bx-lock-alt text-lg text-slate-300" />
-            </div>
-          </div>
-
-          {/* Row: Security */}
-          <div className="px-4 md:px-8 py-4 flex items-center hover:bg-slate-50/50 group cursor-pointer transition-colors" onClick={() => triggerEdit("password", "")}>
-            <div className="w-[140px] md:w-[180px] shrink-0 flex items-center gap-3">
-              <div className="w-8 h-8 rounded-lg bg-purple-50 flex items-center justify-center text-purple-600 border border-purple-100 shrink-0">
-                <i className="bx bx-shield-lock text-lg" />
-              </div>
-              <span className="text-[11px] font-bold text-slate-500 uppercase truncate">Security</span>
-            </div>
-            <div className="flex-1 min-w-[120px] font-mono tracking-[0.4em] text-slate-900 truncate">••••••••••••</div>
-            <div className="w-[70px] md:w-[100px] shrink-0 text-right opacity-0 group-hover:opacity-100 transition-opacity">
-               <i className="bx bx-edit-alt text-xl text-slate-400 hover:text-slate-900" />
-            </div>
-          </div>
-
-          {/* Subsection: Branch Topology */}
-          <div className="px-4 md:px-8 py-3 bg-slate-50/50 border-y border-black/[0.04] flex items-center justify-between">
-            <h3 className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Branch Topology</h3>
-          </div>
-
-          {profile.assignments.map((a) => (
-             <div key={a.id} className="px-4 md:px-8 py-4 flex items-center hover:bg-slate-50/50 transition-colors">
-                <div className="w-[140px] md:w-[180px] shrink-0 flex items-center gap-4">
-                  <div className={`w-2 h-2 rounded-full shrink-0 ${a.isPrimary ? 'bg-blue-500 shadow-[0_0_8px_rgba(59,130,246,0.5)]' : 'bg-slate-200'}`} />
-                  <span className="text-[11px] font-bold text-slate-500 uppercase truncate">{a.isPrimary ? "Primary" : "Secondary"}</span>
-                </div>
-                <div className="flex-1 min-w-[120px]">
-                  <p className="text-[13px] font-medium text-slate-900 truncate">{a.branchName}</p>
-                </div>
-                <div className="w-[70px] md:w-[100px] shrink-0 text-right">
-                  <span className={`px-2.5 py-1 rounded-md text-[9px] font-bold uppercase border tracking-widest bg-white text-slate-600 border-black/5`}>
-                    {a.role}
-                  </span>
-                </div>
-             </div>
-          ))}
+      {/* Terminal Agent String */}
+      <div className="md:border-l md:border-slate-200 md:pl-6">
+        <p className="text-[8px] text-slate-500 uppercase mb-1">Environment_Agent</p>
+        <div className="flex items-start gap-1.5 font-mono italic">
+          <span className="text-emerald-500 text-[10px] leading-none">$</span>
+          <p className="text-[9px] md:text-[10px] text-slate-600 break-all leading-tight line-clamp-2">
+            {profile.lastLoginDevice || "Unknown Terminal / Null_Agent"}
+          </p>
         </div>
+      </div>
+    </div>
 
-        {/* Telemetry Footer matching the terminal aesthetic */}
-        <div className="p-4 md:p-8 mt-4 border-t border-black/[0.03] grid grid-cols-1 lg:grid-cols-3 gap-6 md:gap-8">
-            <div className="lg:col-span-1 space-y-4">
-                <h4 className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] px-1">Interface Signature</h4>
-                <div className="p-5 bg-white rounded-2xl border border-black/[0.05] shadow-sm space-y-5">
-                    <div className="flex justify-between items-end">
-                        <div className="flex flex-col gap-1">
-                            <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest">Network IP</span>
-                            <span className="text-[13px] font-mono font-bold text-slate-900 leading-none">{profile.lastLoginIp || "::1"}</span>
-                        </div>
-                        <i className="bx bx-broadcast text-slate-200 text-xl" />
-                    </div>
-                    <div className="h-px bg-black/[0.04] w-full" />
-                    <div className="flex flex-col gap-1">
-                        <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest">Auth Timestamp</span>
-                        <span className="text-[12px] font-bold text-slate-700">
-                            {new Date(profile.lastLogin || "").toLocaleString()}
-                        </span>
-                    </div>
-                </div>
-            </div>
-
-            <div className="lg:col-span-2 space-y-4">
-                <div className="flex items-center justify-between px-1">
-                    <h4 className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em]">Environment Telemetry</h4>
-                    <span className="text-[9px] font-black text-emerald-500 uppercase tracking-widest flex items-center gap-1">
-                        <span className="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-pulse" />
-                        Active Terminal
-                    </span>
-                </div>
-                <div className="p-5 bg-slate-900 rounded-2xl border border-black shadow-xl h-[108px] relative overflow-hidden group">
-                    <div className="absolute top-0 right-0 p-4 opacity-[0.03] pointer-events-none">
-                        <i className="bx bx-terminal text-6xl text-white" />
-                    </div>
-                    <div className="relative z-10 flex flex-col h-full justify-between">
-                        <div className="flex gap-1.5 mb-2">
-                            <div className="w-2 h-2 rounded-full bg-red-500/20" />
-                            <div className="w-2 h-2 rounded-full bg-amber-500/20" />
-                            <div className="w-2 h-2 rounded-full bg-emerald-500/20" />
-                        </div>
-                        <p className="text-[11px] text-slate-400 font-mono leading-relaxed line-clamp-2 break-all italic">
-                            <span className="text-emerald-500 mr-2">$</span>
-                            {profile.lastLoginDevice || "Unknown Terminal / Null_Agent"}
-                        </p>
-                    </div>
-                </div>
-            </div>
+    {/* Console Interface Decoration (Mimicking the 3 dots from the black terminal) */}
+    <div className="mt-4 pt-3 border-t border-slate-200/50 flex justify-between items-center">
+      <div className="flex gap-1">
+        <div className="w-1.5 h-1.5 rounded-full bg-red-500/20" />
+        <div className="w-1.5 h-1.5 rounded-full bg-amber-500/20" />
+        <div className="w-1.5 h-1.5 rounded-full bg-emerald-500/20" />
+      </div>
+      <span className="text-[7px] font-mono text-slate-300 uppercase">SYS_TELEMETRY_STREAM</span>
+    </div>
+  </div>
+</div>
         </div>
       </div>
     </div>

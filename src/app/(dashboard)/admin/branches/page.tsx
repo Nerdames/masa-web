@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect, useCallback, useRef } from "react";
+import React, { useState, useEffect, useCallback, useRef} from "react";
 import { useSession } from "next-auth/react";
 import { useSidePanel } from "@/core/components/layout/SidePanelContext";
 import { useAlerts } from "@/core/components/feedback/AlertProvider";
@@ -10,14 +10,54 @@ import { BranchDetailsPanel } from "@/modules/branches/components/BranchDetailsP
 import { BranchProvisionPanel } from "@/modules/branches/components/BranchProvisionPanel";
 import { BranchRow } from "@/modules/branches/components/BranchRow";
 
-/**
- * BranchManagementPage
- * Refactored to match Personnel Operations high-fidelity UI.
- */
+/* ==========================================================================
+   Filter Component (Refined Status Filter)
+   ========================================================================== */
+function StatusFilters({ summary, filterStatus, setFilterStatus, setSearchTerm }: any) {
+  const filterList = [
+    { key: "all", label: "TOTAL", count: summary.total },
+    { key: "active", label: "ACTIVE", count: summary.active },
+    { key: "inactive", label: "INACTIVE", count: summary.inactive },
+    { key: "deleted", label: "DELETED", count: summary.deleted },
+  ];
+
+  return (
+    <div className="flex items-center gap-2 sm:gap-4 md:gap-6 overflow-x-auto whitespace-nowrap scrollbar-hide">
+      {filterList.map((s, idx) => {
+        const isActive = filterStatus === s.key;
+        return (
+          <React.Fragment key={s.key}>
+            {idx > 0 && <div className="w-px h-3 bg-black/10 self-center shrink-0" />}
+            <button
+              onClick={() => {
+                setFilterStatus(s.key);
+                setSearchTerm("");
+              }}
+              className={`group flex items-center gap-2 transition-all shrink-0 relative border-b-2 min-h-[30px] ${
+                isActive ? "text-blue-600 border-blue-600" : "text-slate-400 border-transparent hover:text-slate-600"
+              }`}
+            >
+              <span className="text-[10px] md:text-[11px] font-bold uppercase tracking-widest">
+                {s.label}
+              </span>
+              <span className={`
+                min-w-[34px] text-center px-1.5 py-0.5 rounded-md text-[9px] md:text-[10px] font-bold tabular-nums transition-colors
+                ${isActive ? "bg-blue-50 text-blue-700" : "bg-slate-100 text-slate-400 group-hover:bg-slate-200"}
+              `}>
+                {s.count}
+              </span>
+            </button>
+          </React.Fragment>
+        );
+      })}
+    </div>
+  );
+}
+
 export default function BranchManagementPage(): JSX.Element {
   const { data: session } = useSession();
   const { dispatch } = useAlerts();
-  const { openPanel, resetToDefault } = useSidePanel();
+  const { openPanel, closePanel } = useSidePanel();
 
   const userRole = session?.user?.role;
   const isOrgOwner = session?.user?.isOrgOwner;
@@ -25,19 +65,31 @@ export default function BranchManagementPage(): JSX.Element {
 
   const [branches, setBranches] = useState<Branch[]>([]);
   const [summary, setSummary] = useState<BranchSummary>({ total: 0, active: 0, inactive: 0, deleted: 0 });
-  const [logs, setLogs] = useState<any[]>([]);
   const [isLoading, setIsLoading] = useState(true);
-
-  const [selectedBranchId, setSelectedBranchId] = useState<string | null>(null);
+  const [mounted, setMounted] = useState(false);
+  const [isOnline, setIsOnline] = useState(true);
   const [searchTerm, setSearchTerm] = useState("");
   const [filterStatus, setFilterStatus] = useState<"all" | "active" | "inactive" | "deleted">("all");
+  const [selectedBranchId, setSelectedBranchId] = useState<string | null>(null);
 
   const abortControllerRef = useRef<AbortController | null>(null);
 
+  useEffect(() => {
+    setMounted(true);
+    setIsOnline(navigator.onLine);
+    const handleStatus = () => setIsOnline(navigator.onLine);
+    window.addEventListener("online", handleStatus);
+    window.addEventListener("offline", handleStatus);
+    return () => {
+      window.removeEventListener("online", handleStatus);
+      window.removeEventListener("offline", handleStatus);
+    };
+  }, []);
+
   const handleClosePanel = useCallback(() => {
-    resetToDefault();
+    closePanel();
     setSelectedBranchId(null);
-  }, [resetToDefault]);
+  }, [closePanel]);
 
   const fetchBranches = useCallback(async () => {
     if (abortControllerRef.current) abortControllerRef.current.abort();
@@ -53,7 +105,6 @@ export default function BranchManagementPage(): JSX.Element {
       const json: BranchListResponse = await res.json();
       setBranches(json.data || []);
       setSummary(json.summary || { total: 0, active: 0, inactive: 0, deleted: 0 });
-      setLogs(json.recentLogs || []);
     } catch (err: unknown) {
       if (err instanceof Error && err.name === "AbortError") return;
       dispatch({ kind: "TOAST", type: "ERROR", title: "Sync Failed", message: "Unable to load infrastructure data." });
@@ -91,130 +142,105 @@ export default function BranchManagementPage(): JSX.Element {
   };
 
   return (
-    <div className="flex flex-col h-full w-full bg-white relative z-0 overflow-hidden">
-      <header className="px-4 py-4 shrink-0 border-b border-black/[0.04] bg-white sticky top-0 z-[100] backdrop-blur-md">
-        <div className="flex items-center justify-between gap-4">
-          <div className="px-2 min-w-0 flex-1">
-            <h1
-              className="block w-full truncate text-[14px] sm:text-[15px] md:text-[18px] lg:text-2xl font-semibold tracking-tight text-slate-900 leading-tight"
-              title="Branches Operations"
-            >
+    <div className="flex flex-col h-full w-full bg-white relative z-0 overflow-hidden font-sans">
+      <header className="w-full flex flex-col bg-white border-b border-black/[0.04] shrink-0 sticky top-0 z-[100]">
+        <div className="w-full flex items-center justify-between gap-4 px-4 py-3 min-w-0">
+          <div className="min-w-0 flex-1 md:flex-none">
+            <h1 className="truncate text-[18px] font-semibold tracking-tight text-slate-900">
               Branches Operations
             </h1>
           </div>
 
+          <div className="hidden md:flex flex-1 justify-center px-4 overflow-hidden">
+            <StatusFilters summary={summary} filterStatus={filterStatus} setFilterStatus={setFilterStatus} setSearchTerm={setSearchTerm} />
+          </div>
+
           <div className="flex items-center gap-2 shrink-0">
-            {/* Search Input - Top Layer */}
             <div className="hidden sm:relative sm:block">
               <i className="bx bx-search absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 text-xs" />
               <input
                 type="text"
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
-                placeholder="SEARCH_BRANCHES..."
-                className="bg-slate-100 border-none py-1.5 pl-8 pr-4 text-[11px] font-medium w-40 md:w-64 rounded-lg focus:ring-1 focus:ring-black transition-all outline-none"
+                placeholder="REGISTRY_SEARCH..."
+                className="bg-slate-100 border-none py-1.5 pl-8 pr-4 text-[11px] font-medium w-32 md:w-64 rounded-lg focus:ring-1 focus:ring-black transition-all outline-none"
               />
             </div>
+
+            <button onClick={() => fetchBranches()} className="p-2 text-[12px] font-semibold border rounded-lg transition-colors flex items-center justify-center bg-white border-black/5 text-slate-500 hover:bg-slate-50 shadow-sm shrink-0">
+              <i className={`bx bx-refresh text-lg ${isLoading ? "bx-spin" : ""}`} />
+            </button>
 
             {hasFullClearance && (
               <button
                 onClick={handleOpenProvision}
-                className="p-2 md:px-4 md:py-2 bg-blue-600 text-white text-[12px] font-semibold rounded-lg shadow-sm hover:bg-blue-700 transition-all flex items-center gap-2"
+                className="hidden md:flex h-8 px-4 bg-slate-900 text-white text-[10px] font-bold uppercase tracking-widest rounded-lg hover:bg-blue-600 transition-all items-center gap-2"
               >
-                <i className="bx bx-plus text-base md:text-sm" />
-                <span className="hidden md:inline">Deploy Branch</span>
+                <i className="bx bx-plus" />
+                <span>Deploy Branch</span>
               </button>
             )}
-
-            <button
-              onClick={() => fetchBranches()}
-              className="p-2 md:px-2 md:py-2 text-[12px] font-semibold border rounded-lg transition-colors flex justify-items-center gap-2 bg-white border-black/5 text-slate-500 hover:bg-slate-50 shadow-sm"
-            >
-              <i className={`bx bx-refresh text-base md:text-sm ${isLoading ? "bx-spin" : ""}`} />
-            </button>
           </div>
         </div>
 
-        {/* Status Filters - Bottom Layer of Header */}
-        <div
-          aria-label="status filters"
-          className="flex items-center justify-between md:justify-start gap-2 sm:gap-4 md:gap-6 mt-1 pt-4 border-t border-black/5 overflow-x-auto whitespace-nowrap [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden"
-        >
-          {[
-            { key: "all", label: "TOTAL", count: summary.total, color: "text-slate-400" },
-            { key: "active", label: "ACTIVE", count: summary.active, color: "text-emerald-500" },
-            { key: "inactive", label: "INACTIVE", count: summary.inactive, color: "text-slate-400" },
-            { key: "deleted", label: "DELETED", count: summary.deleted, color: "text-rose-500" },
-          ].map((s, idx) => (
-            <React.Fragment key={s.key}>
-              {idx > 0 && <div className="w-px h-3 bg-black/10 self-center shrink-0" />}
-              <button
-                onClick={() => {
-                  setFilterStatus(s.key as any);
-                  setSearchTerm("");
-                }}
-                className={`group flex items-baseline gap-1 sm:gap-1.5 transition-all shrink-0 ${
-                  filterStatus === s.key ? "text-blue-600 underline underline-offset-[14px] decoration-2" : "text-slate-400 hover:text-blue-600"
-                }`}
-              >
-                <span
-                  className={`text-[8px] sm:text-[10px] md:text-[11px] font-bold uppercase tracking-[0.1em] sm:tracking-[0.2em] ${
-                    filterStatus === s.key ? "text-blue-600" : s.color
-                  }`}
-                >
-                  {s.label}
-                </span>
-                <span className={`text-[8px] md:text-[10px] font-medium tabular-nums ${filterStatus === s.key ? "text-slate-900" : "text-slate-300"}`}>
-                  {s.count}
-                </span>
-              </button>
-            </React.Fragment>
-          ))}
+        {/* Mobile Filter Layer */}
+        <div className="md:hidden bg-white/95 px-4 py-3 border-t border-black/[0.02]">
+          <StatusFilters summary={summary} filterStatus={filterStatus} setFilterStatus={setFilterStatus} setSearchTerm={setSearchTerm} />
         </div>
       </header>
 
-      {/* --- Desktop Table Header --- */}
-      <div className="hidden md:flex px-4 md:px-8 py-2 shrink-0 items-center text-[10px] font-bold text-slate-400 uppercase tracking-widest border-b border-black/[0.04] bg-white overflow-hidden whitespace-nowrap">
-        {/* Node ID - matches w-[120px] */}
-        <div className="w-[120px] shrink-0 truncate">Node ID</div>
+      {/* BODY AREA */}
+      <div className="flex-1 overflow-y-auto scrollbar-hide bg-white">
+        <div className="w-full">
+          {mounted && !isOnline && (
+            <div className="py-2 flex items-center justify-center gap-3 bg-amber-50 border-b border-amber-100">
+              <span className="h-1.5 w-1.5 rounded-full bg-amber-500 animate-ping" />
+              <span className="text-[10px] font-bold text-amber-700 uppercase tracking-widest">
+                Local Buffer Active
+              </span>
+            </div>
+          )}
 
-        {/* Branch Name - matches flex-[1.5] */}
-        <div className="flex-[1.5] min-w-[150px] truncate">Branch Name</div>
+          {isLoading && branches.length === 0 ? (
+            <div className="flex flex-col items-center justify-center py-48">
+              <div className="relative mb-10">
+                <div className="h-10 w-10 border-[1px] border-slate-100 rounded-full" />
+                <div className="absolute top-0 h-10 w-10 border-t-[1px] border-blue-600 rounded-full animate-spin" />
+              </div>
+              <h3 className="text-[10px] font-bold uppercase tracking-[0.8em] text-slate-900 ml-[0.8em]">
+                Synchronizing
+              </h3>
+            </div>
+          ) : branches.length === 0 ? (
+            <div className="flex flex-col items-center justify-center py-48 opacity-30">
+              <i className="bx bx-buildings text-4xl mb-4" />
+              <p className="text-[10px] font-bold uppercase tracking-[0.4em]">Zero infrastructure records</p>
+            </div>
+          ) : (
+            <>
+              {/* DESKTOP TABLE HEADERS */}
+              <div className="hidden md:flex items-center px-4 md:px-8 py-3 bg-slate-50/50 border-b border-black/[0.03] sticky top-0 z-10 backdrop-blur-sm">
+                <div className="w-[120px] shrink-0 text-[9px] font-black uppercase tracking-[0.2em] text-slate-400">Node ID</div>
+                <div className="flex-[1.5] min-w-[150px] text-[9px] font-black uppercase tracking-[0.2em] text-slate-400">Branch Name</div>
+                <div className="flex-1 min-w-[150px] text-[9px] font-black uppercase tracking-[0.2em] text-slate-400">Location</div>
+                <div className="w-[110px] shrink-0 text-[9px] font-black uppercase tracking-[0.2em] text-slate-400">Type</div>
+                <div className="w-[160px] shrink-0 text-[9px] font-black uppercase tracking-[0.2em] text-slate-400">Performance</div>
+                <div className="w-[90px] shrink-0 text-right text-[9px] font-black uppercase tracking-[0.2em] text-slate-400">Status</div>
+              </div>
 
-        {/* Location - matches flex-1 */}
-        <div className="flex-1 min-w-[150px] truncate">Location</div>
-
-        {/* Type - matches w-[110px] */}
-        <div className="w-[110px] shrink-0 truncate">Type</div>
-
-        {/* Performance - matches w-[160px] */}
-        <div className="w-[160px] shrink-0 truncate">Performance</div>
-
-        {/* Status - matches w-[90px] */}
-        <div className="w-[90px] shrink-0 truncate text-right">Status</div>
-      </div>
-
-      {/* Main List Area */}
-      <div className="flex-1 overflow-y-auto custom-scrollbar bg-white relative">
-        {isLoading && branches.length === 0 ? (
-          <div className="absolute inset-0 flex items-center justify-center bg-white/50 backdrop-blur-sm z-10">
-            <i className="bx bx-loader-alt animate-spin text-3xl text-blue-500" />
-          </div>
-        ) : branches.length === 0 ? (
-          <div className="flex flex-col items-center justify-center h-full text-center space-y-3 opacity-50 p-6">
-            <i className="bx bx-buildings text-4xl text-black/20" />
-            <p className="text-[12px] font-bold tracking-widest uppercase">No Branch Found</p>
-          </div>
-        ) : (
-          branches.map((branch) => (
-            <BranchRow
-              key={branch.id}
-              branch={branch}
-              isSelected={selectedBranchId === branch.id}
-              onClick={() => handleOpenDetails(branch)}
-            />
-          ))
-        )}
+              <div className="space-y-px">
+                {branches.map((branch) => (
+                  <BranchRow
+                    key={branch.id}
+                    branch={branch}
+                    isSelected={selectedBranchId === branch.id}
+                    onClick={() => handleOpenDetails(branch)}
+                  />
+                ))}
+              </div>
+            </>
+          )}
+        </div>
       </div>
     </div>
   );
