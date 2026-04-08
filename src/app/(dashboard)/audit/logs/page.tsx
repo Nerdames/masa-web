@@ -6,7 +6,7 @@ import Link from "next/link";
 import { useAlerts } from "@/core/components/feedback/AlertProvider";
 
 /* ==========================================================================
-   Types (kept and tightened)
+   Types
    ========================================================================== */
 
 export type Severity = "LOW" | "MEDIUM" | "HIGH" | "CRITICAL";
@@ -85,7 +85,7 @@ function computeStickyTop(): number {
 }
 
 /* ==========================================================================
-   Small components (lazy where heavy)
+   Small components
    ========================================================================== */
 
 const SignalNode = React.memo(
@@ -162,7 +162,7 @@ const SignalNode = React.memo(
 SignalNode.displayName = "SignalNode";
 
 /* ==========================================================================
-   ForensicPacket (kept layout, added accessibility, copy safety, and small UX)
+   ForensicPacket
    ========================================================================== */
 
 const ForensicPacket = React.memo(function ForensicPacket({
@@ -261,7 +261,10 @@ const ForensicPacket = React.memo(function ForensicPacket({
                 <div className="flex items-center gap-2">
                   <span className="font-mono text-[9px] text-slate-400">Originator</span>
                   <span className="text-[10px] font-bold text-slate-900">
-                    PERSONNEL/HQ|{log.personnelName || "MASA Developer"}({log.personnelCode || "EMP-XXX"})
+                    {log.actorType === "SYSTEM" 
+                      ? "SYSTEM" 
+                      : `${log.personnelName || "Unknown"}${log.personnelCode ? ` (${log.personnelCode})` : ""}`
+                    }
                   </span>
                 </div>
 
@@ -295,13 +298,12 @@ const ForensicPacket = React.memo(function ForensicPacket({
             <div className="grid grid-cols-1 md:grid-cols-4 gap-3 md:gap-4 mt-3">
               <div className="md:col-span-2">
                 <p className="text-[8px] md:text-[10px] text-slate-400 font-bold uppercase tracking-widest mb-0.5">Originator</p>
-
                 {log.actorType === "SYSTEM" ? (
-                  <span className="text-[10px] md:text-[11px] font-medium text-slate-700 italic">SYSTEM_AUTOMATED</span>
+                  <span className="text-[10px] md:text-[11px] font-medium text-slate-700 italic">SYSTEM</span>
                 ) : (
                   <div className="text-[10px] md:text-[11px] font-medium text-slate-700 truncate">
-                    <span className="font-bold text-slate-900">{log.personnelName || "MASA Developer"}</span>
-                    <span className="text-slate-400">({log.personnelCode || "EMP-XXX"})</span>
+                    <span className="font-bold text-slate-900">{log.personnelName || "Unknown"}</span>
+                    {log.personnelCode && <span className="text-slate-400 ml-1">({log.personnelCode})</span>}
                     <span className="text-slate-300 mx-1.5">|</span>
                     <span className="text-slate-700">
                       Role: <span className="font-bold text-slate-900">{log.personnelRole || "Unknown"}</span>
@@ -334,7 +336,6 @@ const ForensicPacket = React.memo(function ForensicPacket({
             <div className="flex flex-col md:flex-row md:items-center justify-between mt-2 gap-3">
               <div className="flex items-center gap-2 overflow-hidden">
                 <p className="text-[10px] md:text-[11px] text-slate-500 truncate">{log.description}</p>
-
                 <button
                   onClick={(e) => handleCopy(e, log.requestId || "INTERNAL", "trace")}
                   className="hidden md:block text-[10px] text-slate-300 font-mono hover:text-slate-900 transition-colors shrink-0"
@@ -480,7 +481,7 @@ const ForensicPacket = React.memo(function ForensicPacket({
 ForensicPacket.displayName = "ForensicPacket";
 
 /* ==========================================================================
-   Data fetching hook: supports pagination, abort, retry
+   Data fetching hook: supports pagination, abort, retry, deduplication
    ========================================================================== */
 
 type FetchResult = { success: boolean; logs?: ForensicLog[]; nextCursor?: string };
@@ -521,9 +522,15 @@ function useForensicLogs(severity: string, query: string) {
 
         const res = await fetch(`/api/audit/logs?${params.toString()}`, { signal: controller.signal });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        
         const data: FetchResult = await res.json();
+        
         if (data.success) {
-          setLogs((prev) => [...prev, ...(data.logs || [])]);
+          setLogs((prev) => {
+            const existingIds = new Set(prev.map((l) => l.id));
+            const newLogs = (data.logs || []).filter((l) => !existingIds.has(l.id));
+            return [...prev, ...newLogs];
+          });
           setCursor(data.nextCursor || null);
           setHasMore(Boolean(data.nextCursor));
         } else {
@@ -545,6 +552,66 @@ function useForensicLogs(severity: string, query: string) {
   return { logs, isLoading, error, fetchPage, hasMore, reset };
 }
 
+function SeverityFilters({ logs, severityFilter, setSeverityFilter, setActionFilter, setSearchQuery }: any) {
+  const formatCount = (num: number) => {
+    return new Intl.NumberFormat('en-US', {
+      notation: 'compact',
+      compactDisplay: 'short',
+      maximumFractionDigits: 1
+    }).format(num);
+  };
+
+  const filterList = [
+    { key: "ALL", label: "ALL", count: logs.length },
+    { key: "CRITICAL", label: "CRITICAL", count: logs.filter((l: any) => l.severity === "CRITICAL").length },
+    { key: "HIGH", label: "HIGH", count: logs.filter((l: any) => l.severity === "HIGH").length },
+    { key: "MEDIUM", label: "MEDIUM", count: logs.filter((l: any) => l.severity === "MEDIUM").length },
+    { key: "LOW", label: "LOW", count: logs.filter((l: any) => l.severity === "LOW").length },
+  ];
+
+  return (
+    <div
+      className="flex items-center gap-2 sm:gap-4 md:gap-6 overflow-x-auto whitespace-nowrap scrollbar-hide"
+      style={{ msOverflowStyle: "none", scrollbarWidth: "none" }}
+    >
+      {filterList.map((s, idx) => {
+        const isActive = severityFilter === s.key;
+
+        return (
+          <React.Fragment key={s.key}>
+            {idx > 0 && <div className="w-px h-3 bg-black/10 self-center shrink-0" />}
+
+            <button
+              onClick={() => {
+                setSeverityFilter(s.key);
+                setActionFilter(null);
+                setSearchQuery("");
+              }}
+              className={`group flex items-center gap-2 transition-all shrink-0 relative border-b-2 min-h-[30px] ${
+                isActive
+                  ? "text-blue-600 border-blue-600"
+                  : "text-slate-400 border-transparent hover:text-slate-600"
+              }`}
+              aria-pressed={isActive}
+            >
+              <span className="text-[10px] md:text-[11px] font-bold uppercase tracking-widest">
+                {s.label}
+              </span>
+
+              <span className={`
+                min-w-[34px] text-center px-1.5 py-0.5 rounded-md text-[9px] md:text-[10px] font-bold tabular-nums transition-colors
+                ${isActive ? "bg-blue-50 text-blue-700" : "bg-slate-100 text-slate-400 group-hover:bg-slate-200"}
+              `}>
+                {formatCount(s.count)}
+              </span>
+            </button>
+          </React.Fragment>
+        );
+      })}
+    </div>
+  );
+}
+
 /* ==========================================================================
    Main page
    ========================================================================== */
@@ -555,23 +622,29 @@ export default function ForensicAuditPage() {
   const [actionFilter, setActionFilter] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState<string>("");
   const [debouncedQuery, setDebouncedQuery] = useState<string>("");
-  const [isOnline, setIsOnline] = useState<boolean>(typeof navigator !== "undefined" ? navigator.onLine : true);
+
 
   useEffect(() => {
     const t = setTimeout(() => setDebouncedQuery(searchQuery.trim()), 300);
     return () => clearTimeout(t);
   }, [searchQuery]);
 
-  useEffect(() => {
-    const onOnline = () => setIsOnline(true);
-    const onOffline = () => setIsOnline(false);
-    window.addEventListener("online", onOnline);
-    window.addEventListener("offline", onOffline);
-    return () => {
-      window.removeEventListener("online", onOnline);
-      window.removeEventListener("offline", onOffline);
-    };
-  }, []);
+  const [isOnline, setIsOnline] = useState<boolean>(true);
+  const [mounted, setMounted] = useState(false);
+
+    useEffect(() => {
+        setMounted(true);
+        setIsOnline(navigator.onLine);
+
+        const onOnline = () => setIsOnline(true);
+        const onOffline = () => setIsOnline(false);
+        window.addEventListener("online", onOnline);
+        window.addEventListener("offline", onOffline);
+        return () => {
+          window.removeEventListener("online", onOnline);
+          window.removeEventListener("offline", onOffline);
+        };
+      }, []);
 
   const { logs, isLoading, error, fetchPage, hasMore, reset } = useForensicLogs(severityFilter, debouncedQuery);
 
@@ -648,161 +721,169 @@ export default function ForensicAuditPage() {
 
   return (
     <div className="flex flex-col h-full w-full bg-white relative z-0 overflow-hidden">
-      {/* Fixed title */}
-<header className="w-full bg-white">
-  {/* Top Bar */}
-  <div className="fixed flex items-center justify-between gap-4 px-4 py-3 border-b border-black/[0.04] bg-white z-[120] w-full">
-    {/* Left Side: Title */}
-    <div className="min-w-0 flex-1">
-      <h1 className="truncate text-[18px] font-semibold text-slate-900" title="MASA Forensic Audit Terminal" aria-label="MASA Forensic Audit Terminal">
-        MASA Forensics
-      </h1>
-    </div>
+      <header className="w-full flex flex-col bg-white border-b border-black/[0.04]">
+        {/* LAYER 1: The Main Top Bar */}
+        <div className="sticky top-0 z-[120] bg-white flex items-center justify-between gap-4 px-4 py-3 min-w-0">
 
-    {/* Right Side: Search & Refresh */}
-    <div className="flex items-center gap-2 shrink-0">
-      <div className="hidden sm:relative sm:block">
-        <i className="bx bx-search absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 text-xs" />
-        <input
-          type="text"
-          value={searchQuery}
-          onChange={(e) => {
-            setSearchQuery(e.target.value);
-            if (actionFilter && e.target.value !== actionFilter) setActionFilter(null);
-          }}
-          placeholder="TRACE_ID_OR_HASH..."
-          className="bg-slate-100 border-none py-1.5 pl-8 pr-4 text-[11px] font-medium w-40 md:w-64 rounded-lg focus:ring-1 focus:ring-black transition-all outline-none"
-          aria-label="Search traces"
-        />
-      </div>
-
-      <button
-        onClick={() => {
-          reset();
-          fetchPage(null);
-        }}
-        title="Refresh Ledger"
-        className="p-2 md:px-2 md:py-2 text-[12px] font-semibold border rounded-lg transition-colors flex justify-items-center gap-2 bg-white border-black/5 text-slate-500 hover:bg-slate-50 shadow-sm"
-        aria-label="Refresh ledger"
-      >
-        <i className={`bx bx-refresh text-base md:text-sm ${isLoading ? "bx-spin" : ""}`} />
-      </button>
-    </div>
-  </div>
-
-  {/* Filters - sticky below title */}
-  <div className="pt-[57px]"> {/* Matches the height of the fixed header */}
-    <div className="px-4 py-3 border-b border-black/[0.04] sticky top-[57px] z-[115] bg-white">
-      <div
-        aria-label="severity filters"
-        className="flex items-center justify-between md:justify-start gap-2 sm:gap-4 md:gap-6 mt-1 pt-0 border-t-0 overflow-x-auto whitespace-nowrap scrollbar-hide"
-        style={{ msOverflowStyle: "none", scrollbarWidth: "none" }}
-      >
-        {[
-          { key: "ALL", label: "ALL", count: logs.length },
-          { key: "CRITICAL", label: "CRITICAL", count: logs.filter((l) => l.severity === "CRITICAL").length },
-          { key: "HIGH", label: "HIGH", count: logs.filter((l) => l.severity === "HIGH").length },
-          { key: "MEDIUM", label: "MEDIUM", count: logs.filter((l) => l.severity === "MEDIUM").length },
-          { key: "LOW", label: "LOW", count: logs.filter((l) => l.severity === "LOW").length },
-        ].map((s, idx) => (
-          <React.Fragment key={s.key}>
-            {idx > 0 && <div className="w-px h-3 bg-black/10 self-center shrink-0" />}
-            <button
-              onClick={() => {
-                setSeverityFilter(s.key);
-                setActionFilter(null);
-                setSearchQuery("");
-              }}
-              className={`group flex items-baseline gap-1 sm:gap-1.5 transition-all shrink-0 ${
-                severityFilter === s.key ? "text-blue-600 underline underline-offset-[14px] decoration-2" : "text-slate-400 hover:text-blue-600"
-              }`}
-              aria-pressed={severityFilter === s.key}
+          {/* Left Side: Title - flex-1 on mobile, flex-none on desktop to prevent center shift */}
+          <div className="min-w-0 flex-1 md:flex-none">
+            <h1
+              className="truncate text-[18px] font-semibold text-slate-900"
+              title="MASA Forensic Audit Terminal"
             >
-              <span className="text-[8px] sm:text-[10px] md:text-[11px] font-bold uppercase tracking-[0.1em] sm:tracking-[0.2em]">{s.label}</span>
-              <span className={`text-[8px] md:text-[10px] font-medium tabular-nums ${severityFilter === s.key ? "text-slate-900" : "text-slate-300"}`}>
-                {s.count}
-              </span>
-            </button>
-          </React.Fragment>
-        ))}
-      </div>
-    </div>
-  </div>
-</header>
-
-      <div ref={containerRef} className="max-w-[1100px] mx-auto px-4 md:px-6 py-8 md:py-12 overflow-y-auto flex-1 w-full" role="list" aria-label="Forensic logs list">
-        {!isOnline && <div className="mb-4 text-center text-sm text-amber-600">You are offline. Showing cached buffer where available.</div>}
-
-        {isLoading && logs.length === 0 ? (
-          <div className="flex flex-col items-center justify-center py-40 opacity-60">
-            <div className="animate-pulse space-y-2">
-              <div className="h-6 w-64 bg-slate-100 rounded" />
-              <div className="h-4 w-40 bg-slate-100 rounded" />
-            </div>
-            <span className="text-[10px] font-black uppercase tracking-[0.5em] text-center mt-6">Synchronizing_Nodes...</span>
+              MASA Forensics
+            </h1>
           </div>
-        ) : Object.keys(filteredGroupedLogs).length === 0 ? (
-          <div className="text-center py-32 border border-dashed border-slate-200 rounded-lg">
-            <p className="text-[10px] font-black text-slate-300 uppercase tracking-widest px-4">No matching traces in current buffer.</p>
-            {(actionFilter || searchQuery) && (
-              <button
-                onClick={() => {
-                  setActionFilter(null);
-                  setSearchQuery("");
+
+          {/* MIDDLE: Filters (Desktop View Only) */}
+          <div className="hidden md:flex flex-1 justify-center px-4 overflow-hidden">
+            <SeverityFilters
+              logs={logs}
+              severityFilter={severityFilter}
+              setSeverityFilter={setSeverityFilter}
+              setActionFilter={setActionFilter}
+              setSearchQuery={setSearchQuery}
+            />
+          </div>
+
+          {/* Right Side: Search & Refresh */}
+          <div className="flex items-center gap-2 shrink-0">
+            <div className="hidden sm:relative sm:block">
+              <i className="bx bx-search absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 text-xs" />
+              <input
+                type="text"
+                value={searchQuery}
+                onChange={(e) => {
+                  setSearchQuery(e.target.value);
+                  if (actionFilter && e.target.value !== actionFilter) setActionFilter(null);
                 }}
-                className="mt-4 text-[10px] font-bold text-slate-900 underline uppercase tracking-widest"
-              >
-                Reset Ledger View
-              </button>
-            )}
-            {!isLoading && (
-              <div className="mt-4">
+                placeholder="TRACE_ID..."
+                className="bg-slate-100 border-none py-1.5 pl-8 pr-4 text-[11px] font-medium w-32 md:w-48 lg:w-64 rounded-lg focus:ring-1 focus:ring-black transition-all outline-none"
+              />
+            </div>
+
+            <button
+              onClick={() => { reset(); fetchPage(null); }}
+              className="p-2 text-[12px] font-semibold border rounded-lg transition-colors flex items-center justify-center bg-white border-black/5 text-slate-500 hover:bg-slate-50 shadow-sm shrink-0"
+              title="Refresh Ledger"
+            >
+              <i className={`bx bx-refresh text-lg md:text-sm ${isLoading ? "bx-spin" : ""}`} />
+            </button>
+          </div>
+        </div>
+
+        {/* LAYER 2: The Filter Bar (Mobile View Only) */}
+        <div className="md:hidden sticky top-[53px] z-[115] bg-white/95 px-4 py-3 border-t border-black/[0.02]">
+          <SeverityFilters
+            logs={logs}
+            severityFilter={severityFilter}
+            setSeverityFilter={setSeverityFilter}
+            setActionFilter={setActionFilter}
+            setSearchQuery={setSearchQuery}
+          />
+        </div>
+      </header>
+
+      <div
+              ref={containerRef}
+              className="mx-auto px-4 md:px-8 py-8 md:py-12 overflow-y-auto flex-1 w-full max-w-7xl scrollbar-hide bg-white"
+              role="list"
+              aria-label="Forensic logs list"
+            >
+              {/* FIX 2: Only render the offline indicator if mounted is true */}
+              {mounted && !isOnline && (
+                <div className="mb-8 flex items-center justify-center gap-3">
+                  <span className="h-1 w-1 rounded-full bg-amber-500 animate-ping" />
+                  <span className="text-[10px] font-bold text-amber-600 uppercase tracking-[0.2em]">
+                    Offline Mode — Local Buffer
+                  </span>
+                </div>
+              )}
+
+              {isLoading && logs.length === 0 ? (
+                <div className="flex flex-col items-center justify-center py-48">
+                  <div className="relative mb-10">
+                    <div className="h-10 w-10 border-[1px] border-slate-100 rounded-full" />
+                    <div className="absolute top-0 h-10 w-10 border-t-[1px] border-blue-600 rounded-full animate-spin" />
+                  </div>
+                  <h3 className="text-[10px] font-bold uppercase tracking-[0.8em] text-slate-900 ml-[0.8em]">
+                    Synchronizing
+                  </h3>
+                </div>
+        ) : Object.keys(filteredGroupedLogs).length === 0 ? (
+          /* 2. Empty State */
+          <div className="flex flex-col items-center justify-center py-40">
+            <span className="text-[10px] font-bold text-slate-300 uppercase tracking-[0.3em]">
+              No traces found
+            </span>
+
+            <div className="mt-6 flex items-center gap-6">
+              {(actionFilter || searchQuery) && (
                 <button
-                  onClick={() => {
-                    reset();
-                    fetchPage(null);
-                  }}
-                  className="px-3 py-2 bg-blue-600 text-white rounded-md"
+                  onClick={() => { setActionFilter(null); setSearchQuery(""); }}
+                  className="text-[10px] font-black text-slate-900 uppercase tracking-widest hover:text-blue-600 transition-colors"
                 >
-                  Re-sync Ledger
+                  Reset
                 </button>
-              </div>
-            )}
+              )}
+              {!isLoading && (
+                <button
+                  onClick={() => { reset(); fetchPage(null); }}
+                  className="text-[10px] font-black text-blue-600 uppercase tracking-widest hover:text-slate-900 transition-colors"
+                >
+                  Re-sync
+                </button>
+              )}
+            </div>
           </div>
         ) : (
-          Object.entries(filteredGroupedLogs).map(([date, entries]) => (
-            <div key={date} className="mb-12 md:mb-16">
-              <div className="relative mb-8 md:mb-12">
-                <div className="relative flex justify-center">
-                  <span className="bg-[#FDFDFD] px-4 md:px-6 text-[8px] md:text-[10px] font-black text-slate-400 uppercase tracking-[0.3em] md:tracking-[0.5em] text-center">
+          /* 3. Grouped Logs */
+          <div className="space-y-20">
+            {Object.entries(filteredGroupedLogs).map(([date, entries]) => (
+              <div key={date}>
+                {/* Subtle Floating Date Header */}
+                <div className="flex justify-center mb-12">
+                  <span className="text-[9px] md:text-[10px] font-black text-slate-400 uppercase tracking-[0.6em] ml-[0.6em]">
                     {date}
                   </span>
                 </div>
-              </div>
 
-              <div className="flex flex-col">
-                {entries.map((log, idx) => (
-                  <Suspense key={log.id} fallback={<div className="h-28 bg-slate-50 rounded mb-4" />}>
-                    <ForensicPacket
-                      log={log}
-                      similarCount={actionCounts[log.action] ? actionCounts[log.action] - 1 : 0}
-                      isActiveFilter={actionFilter === log.action}
-                      onFilterSimilar={handleFilterSimilar}
-                    />
-                  </Suspense>
-                ))}
+                <div className="flex flex-col gap-2">
+                  {entries.map((log) => (
+                    <Suspense key={log.id} fallback={<div className="h-16 opacity-10" />}>
+                      <div className="transition-opacity duration-300 hover:opacity-80">
+                        <ForensicPacket
+                          log={log}
+                          similarCount={actionCounts[log.action] ? actionCounts[log.action] - 1 : 0}
+                          isActiveFilter={actionFilter === log.action}
+                          onFilterSimilar={handleFilterSimilar}
+                        />
+                      </div>
+                    </Suspense>
+                  ))}
+                </div>
               </div>
-            </div>
-          ))
+            ))}
+          </div>
         )}
 
-        <div className="flex items-center justify-center mt-6">
+        {/* Pagination Footer */}
+        <div className="flex justify-center mt-24 pb-12">
           {hasMore ? (
-            <button onClick={() => fetchPage()} disabled={isLoading} className="px-4 py-2 bg-white border rounded-md text-slate-700 hover:bg-slate-50">
-              {isLoading ? "Loading..." : "Load more"}
+            <button
+              onClick={() => fetchPage()}
+              disabled={isLoading}
+              className="flex flex-col items-center gap-2 group disabled:opacity-30"
+            >
+              <span className="text-[10px] font-black uppercase tracking-[0.4em] text-slate-900 group-hover:text-blue-600 transition-colors">
+                {isLoading ? "Syncing" : "More"}
+              </span>
+              {!isLoading && <i className="bx bx-chevron-down text-slate-400 group-hover:translate-y-1 transition-transform" />}
             </button>
           ) : (
-            <span className="text-sm text-slate-400">End of buffer</span>
+            <span className="text-[9px] font-bold uppercase tracking-[0.5em] text-slate-200">
+              Buffer Complete
+            </span>
           )}
         </div>
       </div>

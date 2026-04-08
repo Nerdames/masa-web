@@ -2,13 +2,13 @@ import { NextRequest, NextResponse } from "next/server";
 import prisma from "@/core/lib/prisma";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/core/lib/auth";
-import { Role, Severity } from "@prisma/client";
+import { Prisma, Role, Severity } from "@prisma/client";
 import { authorize, RESOURCES } from "@/core/lib/permission";
 
 export async function GET(req: NextRequest) {
   try {
     const session = await getServerSession(authOptions);
-    
+
     if (!session?.user) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
@@ -17,22 +17,24 @@ export async function GET(req: NextRequest) {
     const userRole = session.user.role as Role;
 
     // 1. STRICT RBAC: Ensure user has AUDIT READ permissions
-    const auth = authorize({ 
-      role: userRole, 
-      action: "READ", 
-      resource: RESOURCES.AUDIT 
+    const auth = authorize({
+      role: userRole,
+      action: "READ",
+      resource: RESOURCES.AUDIT,
     });
-    
+
     if (!auth.allowed) {
       return NextResponse.json({ error: "Access Denied" }, { status: 403 });
     }
 
     const { searchParams } = new URL(req.url);
-    const limit = Math.min(parseInt(searchParams.get("limit") || "100"), 500);
+    const limit = Math.min(parseInt(searchParams.get("limit") || "50"), 100);
     const severityFilter = searchParams.get("severity") || "ALL";
+    const cursor = searchParams.get("cursor");
+    const query = searchParams.get("q");
 
     // 2. Build Query Filters for the specific Organization
-    const whereClause: any = {
+    const whereClause: Prisma.ActivityLogWhereInput = {
       organizationId: orgId,
       deletedAt: null,
     };
@@ -41,40 +43,98 @@ export async function GET(req: NextRequest) {
       whereClause.severity = severityFilter as Severity;
     }
 
-    // 3. Fetch Raw Ledger Data strictly from Schema
+    if (query) {
+      whereClause.OR = [
+        { action: { contains: query, mode: "insensitive" } },
+        { description: { contains: query, mode: "insensitive" } },
+        { requestId: { contains: query, mode: "insensitive" } },
+        { targetId: { contains: query, mode: "insensitive" } },
+        { hash: { contains: query, mode: "insensitive" } },
+        {
+          personnel: {
+            OR: [
+              { name: { contains: query, mode: "insensitive" } },
+              { staffCode: { contains: query, mode: "insensitive" } },
+            ],
+          },
+        },
+      ];
+    }
+
+    // 3. Fetch Raw Ledger Data strictly from Schema (with Pagination)
     const rawLogs = await prisma.activityLog.findMany({
       where: whereClause,
+      take: limit + 1, // Fetch +1 to determine if there's a next page
+      ...(cursor && {
+        cursor: { id: cursor },
+        skip: 1, // Skip the cursor itself
+      }),
       include: {
         personnel: {
-          select: { name: true, role: true }
-        }
+          select: { name: true, role: true, staffCode: true },
+        },
+        branch: {
+          select: { name: true },
+        },
       },
       orderBy: { createdAt: "desc" },
-      take: limit,
     });
 
-    // 4. Forensic Processing & Heuristic Chain-Link Engine
-    const chainMap = new Map<string, any[]>();
-    
-    rawLogs.forEach(log => {
-      const meta = (log.metadata as any) || {};
-      
-      // Correlation Logic: Use native RequestID, fallback to metadata traceId, then safe temporal-actor fallback
-      const safeIp = log.ipAddress || "0.0.0.0";
-      const traceKey = log.requestId || meta.traceId || 
-        `HEURISTIC_${log.actorId || 'SYS'}_${safeIp}_${new Date(log.createdAt).getHours()}`;
+    // 4. Resolve Pagination
+    let nextCursor: string | undefined = undefined;
+    if (rawLogs.length > limit) {
+      const nextItem = rawLogs.pop(); // Remove the extra item
+      nextCursor = nextItem!.id;
+    }
+
+    // 5. Chain-Link Completeness Engine
+    // If we paginated into the middle of a request chain, we need to fetch the rest of the hops
+    // so the frontend packet isn't fragmented.
+    const requestIds = rawLogs
+      .map((log) => log.requestId)
+      .filter((id): id is string => id !== null && id.trim() !== "");
+
+    const missingCorrelatedLogs = requestIds.length > 0 
+      ? await prisma.activityLog.findMany({
+          where: {
+            organizationId: orgId,
+            requestId: { in: requestIds },
+            id: { notIn: rawLogs.map((l) => l.id) }, // Only fetch what we missed
+          },
+          include: {
+            personnel: { select: { name: true, role: true, staffCode: true } },
+            branch: { select: { name: true } },
+          },
+        })
+      : [];
+
+    const allRelevantLogs = [...rawLogs, ...missingCorrelatedLogs];
+
+    // 6. Forensic Processing & Grouping
+    const chainMap = new Map<string, typeof allRelevantLogs>();
+    const orderedTraceKeys: string[] = [];
+
+    allRelevantLogs.forEach((log) => {
+      // TraceKey prioritizes actual Request ID. If null, log is standalone (prevent massive null-grouping)
+      const traceKey = log.requestId || log.id;
 
       if (!chainMap.has(traceKey)) {
         chainMap.set(traceKey, []);
+        // Only track keys from the original paginated fetch to maintain cursor ordering
+        if (rawLogs.some(r => r.id === log.id)) {
+            orderedTraceKeys.push(traceKey); 
+        }
       }
       chainMap.get(traceKey)!.push(log);
     });
 
-    // 5. Assemble the Process Trace Packets
-    const processedLogs = Array.from(chainMap.entries()).map(([traceId, chain]) => {
-      // Sort chain by time (ascending) to identify the true trigger event
-      chain.sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+    // 7. Assemble the Process Trace Packets exactly matching the Frontend Interface
+    const processedLogs = Array.from(new Set(orderedTraceKeys)).map((traceKey) => {
+      const chain = chainMap.get(traceKey)!;
       
+      // Sort chain by time (ascending) to identify the true trigger event vs downstream hops
+      chain.sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
+
       const trigger = chain[0];
       const downstream = chain.slice(1);
       const meta = (trigger.metadata as any) || {};
@@ -87,11 +147,10 @@ export async function GET(req: NextRequest) {
         moduleType = "SECURITY";
       } else if (/PAYMENT|INVOICE|REFUND|EXPENSE|NGN|TRANSACTION/.test(actionStr)) {
         moduleType = "FINANCIAL";
-      } else if (/STOCK|PRODUCT|WAREHOUSE|ADJUST|TRANSFER/.test(actionStr)) {
+      } else if (/STOCK|PRODUCT|WAREHOUSE|ADJUST|TRANSFER|GRN|PO/.test(actionStr)) {
         moduleType = "INVENTORY";
       }
 
-      // Exact Mapping to the Frontend UI ForensicPacket Interface
       return {
         id: trigger.id,
         action: trigger.action,
@@ -100,64 +159,67 @@ export async function GET(req: NextRequest) {
         severity: trigger.severity,
         critical: trigger.critical,
         createdAt: trigger.createdAt.toISOString(),
-        
-        // Originator Details
+
+        // Originator Details (Aligned with UI Badges)
         actorId: trigger.actorId,
         actorType: trigger.actorType,
-        personnelName: trigger.personnel?.name || "System Automated",
+        personnelName: trigger.personnel?.name || (trigger.actorType === "SYSTEM" ? "SYSTEM_AUTOMATED" : "Unknown"),
         personnelRole: trigger.actorRole || trigger.personnel?.role || "SYSTEM",
-        
-        // Telemetry
-        requestId: trigger.requestId || traceId,
-        ipAddress: trigger.ipAddress || "0.0.0.0",
-        deviceInfo: trigger.deviceInfo || "INTERNAL_SERVICE",
-        
+        personnelCode: trigger.personnel?.staffCode || undefined,
+        branchName: trigger.branch?.name || "HQ/GLOBAL",
+
         // Target Resource Mapping
         target: {
           id: trigger.targetId || null,
-          type: trigger.targetType || null
+          type: trigger.targetType || null,
+          branch: trigger.branch?.name || "GLOBAL",
         },
 
-        // State Diffing Logic (Extracted from metadata blob)
+        // Telemetry
+        requestId: trigger.requestId || traceKey,
+        ipAddress: trigger.ipAddress || "0.0.0.0",
+        deviceInfo: trigger.deviceInfo || "INTERNAL_SERVICE",
+
+        // State Diffing Logic (Mapped straight to Schema)
         diff: {
-          before: meta.before || null,
-          after: meta.after || null
+          before: trigger.before || null,
+          after: trigger.after || null,
         },
 
         // Fortress Integrity Verification Data
         integrity: {
           hash: trigger.hash || null,
           previousHash: trigger.previousHash || null,
-          isChainValid: trigger.isChainValid ?? true
+          isChainValid: !!trigger.hash, // Simplistic validation, expand based on crypto needs
         },
 
         metadata: meta,
 
-        // Downstream Correlated Hops (Request Chain)
-        correlatedLogs: downstream.map(hop => ({
+        // Downstream Correlated Hops
+        correlatedLogs: downstream.map((hop) => ({
           id: hop.id,
           action: hop.action,
           description: hop.description,
           severity: hop.severity,
           critical: hop.critical,
           createdAt: hop.createdAt.toISOString(),
-          metadata: (hop.metadata as any) || {}
-        }))
+          metadata: (hop.metadata as any) || {},
+        })),
       };
     });
 
-    // 6. Final sort to ensure the latest "Traces" appear at the top of the terminal
+    // 8. Final safety sort to ensure absolute descending chronological order
     processedLogs.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
 
-    return NextResponse.json({ 
-      success: true, 
-      logs: processedLogs 
+    return NextResponse.json({
+      success: true,
+      logs: processedLogs,
+      nextCursor,
     });
-
   } catch (error) {
     console.error("[FORENSIC_API_ERROR]", error);
     return NextResponse.json(
-      { error: "Audit ledger compilation failed." }, 
+      { error: "Audit ledger compilation failed." },
       { status: 500 }
     );
   }
