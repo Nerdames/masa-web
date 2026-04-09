@@ -6,7 +6,6 @@ import { useState, useCallback } from "react";
 import { UserMenu } from "@/core/components/shared/UserMenu";
 import { NotificationsBell } from "@/core/components/shared/NotificationsBell";
 import { getInitials } from "@/core/utils";
-import { useSidePanel } from "@/core/components/layout/SidePanelContext";
 
 interface TopBarProps {
   isLoading?: boolean;
@@ -20,10 +19,6 @@ export default function TopBar({ isLoading }: TopBarProps) {
   // Track unread count for the logo badge
   const [unreadCount, setUnreadCount] = useState(0);
 
-  /**
-   * Side Panel Controls
-   */
-  const { isOpen, toggleLayout } = useSidePanel();
 
   /**
    * Memoized change handler to prevent infinite loops 
@@ -76,18 +71,7 @@ export default function TopBar({ isLoading }: TopBarProps) {
               {/* Notification System */}
               <NotificationsBell onUnreadChange={handleUnreadChange} />
               
-              {/* LAYOUT TOGGLE BUTTON - Hidden on Mobile (md:flex) */}
-              <button
-                onClick={toggleLayout}
-                aria-label={isOpen ? "Hide Side Panel" : "Show Side Panel"}
-                className={`hidden md:flex w-8 h-8 items-center justify-center rounded-lg transition-all duration-200 
-                  ${isOpen 
-                    ? "bg-blue-50 text-blue-600 shadow-inner" 
-                    : "text-slate-400 hover:bg-slate-100 hover:text-slate-600"
-                  }`}
-              >
-                <i className={`bx bx-layout text-[18px] ${isOpen ? "animate-pulse-subtle" : ""}`} />
-              </button>
+
             </div>
 
             {/* User Profile Menu */}

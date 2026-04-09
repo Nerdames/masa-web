@@ -7,9 +7,8 @@ import { authOptions } from "@/core/lib/auth";
 import {
   Role,
   Prisma,
-  ApprovalStatus,
-  CriticalAction,
-  NotificationType,
+  ActorType,
+  Severity,
 } from "@prisma/client";
 
 ////////////////////////////////////////////////////////////
@@ -33,9 +32,12 @@ interface UpdateProfileBody {
   newPassword?: string;
 }
 
-interface ProfileApprovalPayload {
-  email?: string;
-  password?: string;
+interface AuditLogAction {
+  action: string;
+  severity: Severity;
+  critical: boolean;
+  before?: Record<string, any>;
+  after?: Record<string, any>;
 }
 
 type PersonnelWithRelations = Prisma.AuthorizedPersonnelGetPayload<{
@@ -94,33 +96,9 @@ function safeParseJSON(meta: unknown) {
 // DTO MAPPER
 ////////////////////////////////////////////////////////////
 
-async function mapProfileDTO(personnel: PersonnelWithRelations) {
-  const pendingRequests = await prisma.approvalRequest.findMany({
-    where: {
-      requesterId: personnel.id,
-      status: ApprovalStatus.PENDING,
-      actionType: {
-        in: [CriticalAction.EMAIL_CHANGE, CriticalAction.PASSWORD_CHANGE],
-      },
-    },
-  });
-
-  let pendingEmail: string | null = null;
-  let pendingPassword: string | null = null;
-
-  for (const req of pendingRequests) {
-    const changes = req.changes as Record<string, any>;
-
-    if (req.actionType === CriticalAction.EMAIL_CHANGE && changes?.email) {
-      pendingEmail = changes.email;
-    }
-
-    if (req.actionType === CriticalAction.PASSWORD_CHANGE) {
-      pendingPassword = "APPROVAL_REQUIRED";
-    }
-  }
-
-  let primaryRole: Role = Role.CASHIER;
+function mapProfileDTO(personnel: PersonnelWithRelations) {
+  // Fallback to the personnel's base role, overriding hardcoded cashiers
+  let primaryRole: Role = personnel.role;
 
   if (personnel.isOrgOwner) {
     primaryRole = Role.ADMIN;
@@ -135,12 +113,11 @@ async function mapProfileDTO(personnel: PersonnelWithRelations) {
   const isTemporarilyLocked =
     personnel.lockoutUntil && personnel.lockoutUntil > new Date();
 
-  const lockReason =
-    personnel.isLocked
-      ? "Administrative Lock"
-      : isTemporarilyLocked
-      ? "Temporary Security Lockout"
-      : null;
+  const lockReason = personnel.isLocked
+    ? "Administrative Lock"
+    : isTemporarilyLocked
+    ? "Temporary Security Lockout"
+    : null;
 
   return {
     id: personnel.id,
@@ -159,11 +136,9 @@ async function mapProfileDTO(personnel: PersonnelWithRelations) {
     lastLogin: personnel.lastLogin?.toISOString() ?? null,
     lastActivityAt: personnel.lastActivityAt?.toISOString() ?? null,
 
-    lastLoginIp: (personnel as any).lastLoginIp ?? "0.0.0.0",
-    lastLoginDevice: (personnel as any).lastLoginDevice ?? "System Interface",
-
-    pendingEmail,
-    pendingPassword,
+    // Schema typed fields mapped directly without 'any' casting
+    lastLoginIp: personnel.lastLoginIp ?? "0.0.0.0",
+    lastLoginDevice: personnel.lastLoginDevice ?? "System Interface",
 
     organization: {
       id: personnel.organization.id,
@@ -182,13 +157,11 @@ async function mapProfileDTO(personnel: PersonnelWithRelations) {
     activityLogs: personnel.activityLogs.map((log) => ({
       id: log.id,
       action: log.action,
-      critical:
-        log.action.includes("LOCK") ||
-        log.action.includes("PASSWORD") ||
-        log.action.includes("SECURITY"),
+      severity: log.severity,
+      critical: log.critical,
       createdAt: log.createdAt.toISOString(),
-      ipAddress: (log as any).ipAddress ?? "0.0.0.0",
-      deviceInfo: (log as any).deviceInfo ?? "Internal Call",
+      ipAddress: log.ipAddress ?? "0.0.0.0",
+      deviceInfo: log.deviceInfo ?? "Internal Call",
       personnel: { name: personnel.name },
       metadata: safeParseJSON(log.metadata),
     })),
@@ -210,7 +183,7 @@ export async function GET(): Promise<NextResponse> {
       );
     }
 
-    const profileDTO = await mapProfileDTO(personnel);
+    const profileDTO = mapProfileDTO(personnel);
 
     return NextResponse.json({
       success: true,
@@ -257,17 +230,18 @@ export async function PATCH(request: NextRequest): Promise<NextResponse> {
     const body: UpdateProfileBody = await request.json();
 
     const updateData: Prisma.AuthorizedPersonnelUpdateInput = {};
-    const logActions: string[] = [];
-
-    const isAdmin =
-      personnel.isOrgOwner ||
-      personnel.branchAssignments.some((a) => a.role === Role.ADMIN);
+    const logActions: AuditLogAction[] = [];
 
     const isEmailChange = !!(body.email && body.email !== personnel.email);
     const isPasswordChange = !!body.newPassword;
 
+    // Derived primary role for audit tracking
+    const actorRole = personnel.isOrgOwner
+      ? Role.ADMIN
+      : personnel.branchAssignments.find((a) => a.isPrimary)?.role || personnel.role;
+
     ////////////////////////////////////////////////////////////
-    // PASSWORD VALIDATION
+    // PASSWORD VALIDATION (SECURITY CHALLENGE)
     ////////////////////////////////////////////////////////////
 
     if (isEmailChange || isPasswordChange) {
@@ -285,11 +259,8 @@ export async function PATCH(request: NextRequest): Promise<NextResponse> {
 
       if (!isValid) {
         const newFailCount = (personnel.failedLoginAttempts || 0) + 1;
-
         const lockoutTime =
-          newFailCount >= 5
-            ? new Date(Date.now() + 15 * 60 * 1000)
-            : null;
+          newFailCount >= 5 ? new Date(Date.now() + 15 * 60 * 1000) : null;
 
         await prisma.authorizedPersonnel.update({
           where: { id: personnel.id },
@@ -299,12 +270,29 @@ export async function PATCH(request: NextRequest): Promise<NextResponse> {
           },
         });
 
+        // Log failed attempt
+        await prisma.activityLog.create({
+          data: {
+            organizationId: personnel.organizationId,
+            branchId: personnel.branchId,
+            actorId: personnel.id,
+            actorType: ActorType.USER,
+            actorRole,
+            action: "FAILED_SECURITY_CHALLENGE",
+            severity: Severity.HIGH,
+            critical: true,
+            description: `Failed security challenge during profile update. Attempt ${newFailCount}/5.`,
+            metadata: { lockedOut: !!lockoutTime },
+          },
+        });
+
         return NextResponse.json(
           { error: "Invalid security credentials." },
           { status: 400 }
         );
       }
 
+      // Reset strikes upon successful challenge
       updateData.failedLoginAttempts = 0;
       updateData.lockoutUntil = null;
     }
@@ -315,20 +303,26 @@ export async function PATCH(request: NextRequest): Promise<NextResponse> {
 
     if (body.name && body.name !== personnel.name) {
       updateData.name = body.name;
-      logActions.push("PROFILE_IDENTITY_UPDATED");
+      logActions.push({
+        action: "PROFILE_IDENTITY_UPDATED",
+        severity: Severity.LOW,
+        critical: false,
+        before: { name: personnel.name },
+        after: { name: body.name },
+      });
     }
 
     ////////////////////////////////////////////////////////////
-    // EMAIL CHANGE
+    // EMAIL CHANGE (SELF-SERVICE)
     ////////////////////////////////////////////////////////////
 
-    let emailApproval: ProfileApprovalPayload | null = null;
-
     if (isEmailChange && body.email) {
+      const normalizedEmail = body.email.toLowerCase().trim();
+      
       const existing = await prisma.authorizedPersonnel.findFirst({
         where: {
           organizationId: personnel.organizationId,
-          email: body.email.toLowerCase().trim(),
+          email: normalizedEmail,
           deletedAt: null,
           id: { not: personnel.id },
         },
@@ -341,45 +335,42 @@ export async function PATCH(request: NextRequest): Promise<NextResponse> {
         );
       }
 
-      if (isAdmin) {
-        updateData.email = body.email.toLowerCase().trim();
-        logActions.push("EMAIL_UPDATED_DIRECTLY");
-      } else {
-        emailApproval = { email: body.email.toLowerCase().trim() };
-        logActions.push("EMAIL_CHANGE_REQUESTED");
-      }
+      updateData.email = normalizedEmail;
+      logActions.push({
+        action: "EMAIL_UPDATED_DIRECTLY",
+        severity: Severity.HIGH,
+        critical: true,
+        before: { email: personnel.email },
+        after: { email: normalizedEmail },
+      });
     }
 
     ////////////////////////////////////////////////////////////
-    // PASSWORD CHANGE
+    // PASSWORD CHANGE (SELF-SERVICE)
     ////////////////////////////////////////////////////////////
-
-    let passwordApproval: ProfileApprovalPayload | null = null;
 
     if (isPasswordChange && body.newPassword) {
       const hashedPass = await bcrypt.hash(body.newPassword, 12);
+      
+      updateData.password = hashedPass;
 
-      // CRITICAL: If mandatory reset, bypass admin approval and process directly
-      if (isAdmin || personnel.requiresPasswordChange) {
-        updateData.password = hashedPass;
-        
-        if (personnel.requiresPasswordChange) {
-          updateData.requiresPasswordChange = false; // Lift the flag
-          logActions.push("MANDATORY_PASSWORD_RESET_COMPLETED");
-        } else {
-          logActions.push("PASSWORD_UPDATED_DIRECTLY");
-        }
+      if (personnel.requiresPasswordChange) {
+        updateData.requiresPasswordChange = false; 
+        logActions.push({
+          action: "MANDATORY_PASSWORD_RESET_COMPLETED",
+          severity: Severity.HIGH,
+          critical: true,
+        });
       } else {
-        passwordApproval = { password: hashedPass };
-        logActions.push("PASSWORD_CHANGE_REQUESTED");
+        logActions.push({
+          action: "PASSWORD_UPDATED_DIRECTLY",
+          severity: Severity.HIGH,
+          critical: true,
+        });
       }
     }
 
-    if (
-      Object.keys(updateData).length === 0 &&
-      !emailApproval &&
-      !passwordApproval
-    ) {
+    if (Object.keys(updateData).length === 0) {
       return NextResponse.json(
         { error: "No changes detected or submitted" },
         { status: 400 }
@@ -391,118 +382,52 @@ export async function PATCH(request: NextRequest): Promise<NextResponse> {
     ////////////////////////////////////////////////////////////
 
     const result = await prisma.$transaction(async (tx) => {
-      let user = personnel;
-
-      if (Object.keys(updateData).length > 0) {
-        user = await tx.authorizedPersonnel.update({
-          where: { id: personnel.id },
-          data: updateData,
-          include: {
-            organization: true,
-            branch: true,
-            branchAssignments: { include: { branch: true } },
-            preferences: true,
-            activityLogs: {
-              take: 10,
-              orderBy: { createdAt: "desc" },
-            },
+      // 1. Commit Direct Profile Changes
+      const updatedUser = await tx.authorizedPersonnel.update({
+        where: { id: personnel.id },
+        data: updateData,
+        include: {
+          organization: true,
+          branch: true,
+          branchAssignments: { include: { branch: true } },
+          preferences: true,
+          activityLogs: {
+            take: 10,
+            orderBy: { createdAt: "desc" },
           },
-        });
-      }
+        },
+      });
 
-      const approvals = [];
-
-      if (emailApproval) {
-        approvals.push(
-          tx.approvalRequest.create({
-            data: {
-              organizationId: personnel.organizationId,
-              branchId: personnel.branchId,
-              requesterId: personnel.id,
-              actionType: CriticalAction.EMAIL_CHANGE,
-              status: ApprovalStatus.PENDING,
-              requiredRole: Role.ADMIN,
-              changes: emailApproval,
-            },
-          })
-        );
-      }
-
-      if (passwordApproval) {
-        approvals.push(
-          tx.approvalRequest.create({
-            data: {
-              organizationId: personnel.organizationId,
-              branchId: personnel.branchId,
-              requesterId: personnel.id,
-              actionType: CriticalAction.PASSWORD_CHANGE,
-              status: ApprovalStatus.PENDING,
-              requiredRole: Role.ADMIN,
-              changes: passwordApproval,
-            },
-          })
-        );
-      }
-
-      const approvalResults = await Promise.all(approvals);
-
-      if (approvalResults.length > 0) {
-        await tx.notification.create({
-          data: {
-            organizationId: personnel.organizationId,
-            branchId: personnel.branchId,
-            targetRole: Role.ADMIN,
-            type: NotificationType.APPROVAL_REQUIRED,
-            title: "Security Change Approval Required",
-            message: `${
-              personnel.name || personnel.email
-            } requested a core security change.`,
-          },
-        });
-
-        for (const req of approvalResults) {
-          await tx.activityLog.create({
-            data: {
-              organizationId: personnel.organizationId,
-              branchId: personnel.branchId,
-              personnelId: personnel.id,
-              approvalRequestId: req.id,
-              action:
-                req.actionType === CriticalAction.EMAIL_CHANGE
-                  ? "SECURITY_EMAIL_REQUEST"
-                  : "SECURITY_PASSWORD_REQUEST",
-              metadata: { status: "PENDING_ADMIN" },
-            },
-          });
-        }
-      }
-
-      for (const action of logActions) {
+      // 2. Commit Forensic Action Logs
+      for (const log of logActions) {
         await tx.activityLog.create({
           data: {
             organizationId: personnel.organizationId,
             branchId: personnel.branchId,
-            personnelId: personnel.id,
-            action,
-            metadata: { changes: Object.keys(updateData) } as Prisma.InputJsonValue,
+            actorId: personnel.id,
+            actorType: ActorType.USER,
+            actorRole,
+            action: log.action,
+            severity: log.severity,
+            critical: log.critical,
+            before: log.before ? (log.before as Prisma.InputJsonValue) : Prisma.DbNull,
+            after: log.after ? (log.after as Prisma.InputJsonValue) : Prisma.DbNull,
+            metadata: { 
+              directCommit: true,
+              selfService: true 
+            } as Prisma.InputJsonValue,
           },
         });
       }
 
-      return user;
+      return updatedUser;
     });
 
-    const updatedProfileDTO = await mapProfileDTO(
-      result as PersonnelWithRelations
-    );
+    const updatedProfileDTO = mapProfileDTO(result as PersonnelWithRelations);
 
     return NextResponse.json({
       success: true,
-      requiresApproval: !!(emailApproval || passwordApproval),
-      message:
-        emailApproval || passwordApproval
-          ? "Security changes have been queued for Admin approval."
-          : "Identity updated successfully.",
+      message: "Profile updated successfully.",
       profile: updatedProfileDTO,
     });
   } catch (error) {

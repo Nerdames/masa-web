@@ -2,7 +2,6 @@
 
 import { ReactNode, useEffect, useState } from "react";
 import { useSession } from "next-auth/react";
-import Sidebar from "@/core/components/layout/Sidebar";
 import TopBar from "@/core/components/layout/TopBar";
 import { usePusherNotifications } from "@/core/hooks/usePusherNotifications";
 import { SidePanelProvider, useSidePanel } from "@/core/components/layout/SidePanelContext";
@@ -56,7 +55,6 @@ export default function DashboardRootLayout({ children }: DashboardRootLayoutPro
 
         {/* 3. LAYOUT WRAPPER */}
         <div className="flex flex-1 min-h-0 overflow-hidden relative z-10">
-          <Sidebar />
 
           <div className="flex flex-1 min-w-0 min-h-0 overflow-hidden relative">
             <main className={`flex-1 flex flex-col min-w-0 min-h-0 transition-opacity duration-300 ${status === "loading" ? "opacity-0" : "opacity-100"}`}>
