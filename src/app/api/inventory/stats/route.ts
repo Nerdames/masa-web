@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { prisma } from "@/core/lib/prisma"; // Adjust based on your prisma client export path
+import prisma from "@/core/lib/prisma"; // Adjust based on your prisma client export path
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/core/lib/auth";
 

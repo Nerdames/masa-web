@@ -30,7 +30,7 @@ export default function TopBar({ isLoading }: TopBarProps) {
   // Render skeleton during loading states
   if (isLoading || status === "loading") {
     return (
-      <header className="w-full h-10 flex items-center justify-between px-4 bg-white border-b border-slate-100">
+      <header className="w-full h-10 flex items-center justify-between px-4  border-b border-slate-100">
         <div className="flex items-center gap-2">
           <div className="w-6 h-6 bg-slate-200 animate-pulse rounded" />
           <div className="h-4 w-24 bg-slate-100 animate-pulse rounded" />
@@ -45,7 +45,7 @@ export default function TopBar({ isLoading }: TopBarProps) {
   }
 
   return (
-    <header className="w-full h-10 flex justify-between items-center px-4 bg-white border-b border-slate-100">
+    <header className="w-full h-10 flex justify-between items-center px-4  border-b border-slate-100">
       
       {/* Left Section: Logo & Navigation */}
       <div

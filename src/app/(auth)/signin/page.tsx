@@ -99,12 +99,16 @@ const SignInForm = () => {
         });
 
         // Delay slightly for visual feedback/sync
+        // NEW LOGIC
         setTimeout(() => {
           if (user?.requiresPasswordChange) {
             router.replace("/reset-password");
           } else {
-            router.replace(callbackUrl === "/" ? "/admin/overview" : callbackUrl);
+            // Just go to root; let the Server Component (page.tsx) 
+            // handle the role-based dashboard sorting.
+            router.replace("/");
           }
+          // This is critical to trigger the Server Component check
           router.refresh(); 
         }, 800);
       }

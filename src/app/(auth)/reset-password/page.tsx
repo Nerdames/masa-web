@@ -27,7 +27,7 @@ const getRoleRoute = (role?: string) => {
 };
 
 const ResetPasswordForm: React.FC = () => {
-  const { data: session, update } = useSession();
+  const { data: update } = useSession();
   const [currentPassword, setCurrentPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
@@ -85,21 +85,19 @@ const ResetPasswordForm: React.FC = () => {
 
       // CRITICAL: Force the session update and wait for it.
       // We pass the flag explicitly so the JWT callback knows to refresh.
+      // NEW LOGIC
       await update({ requiresPasswordChange: false });
 
       dispatch({
         kind: "PUSH",
         type: "SUCCESS",
         title: "Protocol Success",
-        message: "Terminal access granted. Redirecting...",
+        message: "Terminal access granted. Synchronizing...",
       });
 
-      const destination = getRoleRoute(session?.user?.role as string);
-
-      // We use a small timeout and window.location.href to ensure the cookie 
-      // is 100% written to the browser before the next request hits the middleware.
       setTimeout(() => {
-        window.location.href = destination;
+        // Send to root and let the server-side controller handle the rest
+        window.location.href = "/";
       }, 1000);
 
     } catch (err: any) {
@@ -271,7 +269,8 @@ export default function PasswordResetPage(): JSX.Element | null {
     if (status === "unauthenticated") {
       router.replace("/signin");
     } else if (status === "authenticated" && !session?.user?.requiresPasswordChange) {
-      router.replace(getRoleRoute(session?.user?.role as string));
+      // Redirect to root so the traffic controller can sort them
+      router.replace("/");
     }
   }, [status, session, router]);
 
@@ -336,7 +335,7 @@ export default function PasswordResetPage(): JSX.Element | null {
         <div className="max-w-7xl mx-auto px-6 lg:px-12 h-full flex items-center justify-between text-[10px] font-bold uppercase tracking-[0.2em] text-slate-400">
           <div className="flex gap-8">
             <button onClick={() => signOut({ callbackUrl: "/signin" })} className="hover:text-red-500 transition-colors"> Abort & Sign Out </button>
-            <Link href="/support" className="hover:text-slate-800 transition-colors">Security HQ</Link>
+            <Link href="/support" className="hover:text-slate-800 transition-colors">Lagos Tech Support</Link>
           </div>
           <span className="text-[9px] font-black tracking-widest uppercase text-slate-300">MASA-CORE-V3.0</span>
         </div>

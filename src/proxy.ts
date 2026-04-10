@@ -17,22 +17,25 @@ const PUBLIC_FILE = /\.(.*)$/;
 
 /**
  * Hardened Unauthorized Handler
- * Ensures API calls receive JSON while browser requests are redirected.
  */
 function handleUnauthorized(req: NextRequest, destination: string, error?: string) {
   const { pathname, origin } = req.nextUrl;
 
   if (pathname.startsWith("/api/")) {
     return NextResponse.json(
-      { error: error || "Unauthorized", message: "Session expired or insufficient permissions." },
+      { error: error || "Unauthorized", message: "Insufficient permissions or session invalid." },
       { status: 403 }
     );
   }
 
   const url = new URL(destination, origin);
+  
+  // Only set callbackUrl if we are heading to signin
   if (destination === "/signin") {
     url.searchParams.set("callbackUrl", pathname);
   }
+  
+  // Attach error code for the SignInPage ERROR_MAP to catch
   if (error) {
     url.searchParams.set("error", error);
   }
@@ -41,7 +44,7 @@ function handleUnauthorized(req: NextRequest, destination: string, error?: strin
 }
 
 /**
- * PRODUCTION LOGGING
+ * FORENSIC SECURITY LOGGING
  */
 function logSecurityEvent(ev: NextFetchEvent, origin: string, action: string, meta: Record<string, any>) {
   const logPromise = fetch(`${origin}/api/logs`, {
@@ -50,8 +53,13 @@ function logSecurityEvent(ev: NextFetchEvent, origin: string, action: string, me
       "Content-Type": "application/json",
       "x-masa-internal-key": process.env.INTERNAL_API_KEY || "" 
     },
-    body: JSON.stringify({ action, ...meta, timestamp: new Date().toISOString() }),
-  }).catch((err) => console.error("[PROXY_LOG_ERROR]", err));
+    body: JSON.stringify({ 
+      action, 
+      ...meta, 
+      timestamp: new Date().toISOString(),
+      source: "MIDDLEWARE_PROXY"
+    }),
+  }).catch((err) => console.error("[SECURITY_LOG_FAILURE]", err));
 
   ev.waitUntil(logPromise);
 }
@@ -82,19 +90,25 @@ export async function proxy(req: NextRequest, ev: NextFetchEvent) {
 
   // 3. GUEST ACCESS CONTROL
   if (!token) {
+    // Let guests hit auth pages or the root (which might have a landing state)
     if (isAuthPage || pathname === "/") return NextResponse.next();
     return handleUnauthorized(req, "/signin");
   }
 
-  // 4. ACCOUNT INTEGRITY & REVOCATION
+  // 4. ACCOUNT INTEGRITY (Synchronized with Fortress UI Error Codes)
   if (token.disabled || token.locked || token.expired) {
     if (pathname === "/signin" || pathname.startsWith("/api/auth")) return NextResponse.next();
 
-    const errorCode = token.expired ? "Verification" : "AccessDenied";
+    // Mapping token flags to frontend ERROR_MAP keys
+    const errorCode = token.disabled ? "ACCOUNT_DISABLED" : 
+                     token.locked ? "ACCOUNT_LOCKED_ADMIN" : 
+                     "SessionExpired";
+
     logSecurityEvent(ev, origin, `SECURITY_BLOCK_${errorCode}`, {
       personnelId: token.id,
       email: token.email,
       path: pathname,
+      ip: req.ip || "unknown"
     });
 
     return handleUnauthorized(req, "/signin", errorCode);
@@ -105,21 +119,15 @@ export async function proxy(req: NextRequest, ev: NextFetchEvent) {
     return handleUnauthorized(req, "/reset-password", "PasswordResetRequired");
   }
 
-  // 6. SILOED LANDING & AUTH PAGE REDIRECTION
-  // Maps roles to their primary entry points based on your App Router groups.
-  if (isAuthPage || pathname === "/") {
-    const roleLanding: Record<Role, string> = {
-      [Role.DEV]: "/db-inspector",        // (tools)
-      [Role.ADMIN]: "/dashboard",         // (dashboard)
-      [Role.MANAGER]: "/dashboard",       // (dashboard)
-      [Role.AUDITOR]: "/audit/logs",      // (dashboard)/audit
-      [Role.INVENTORY]: "/inventory",     // (terminal)
-      [Role.SALES]: "/pos",               // (terminal)
-      [Role.CASHIER]: "/pos",             // (terminal)
-    };
+  // 6. TRAFFIC CONTROLLER HANDOFF
+  // If user is logged in and hits /signin, send them to root.
+  if (isAuthPage) {
+    return NextResponse.redirect(new URL("/", origin));
+  }
 
-    const destination = roleLanding[token.role as Role] || "/dashboard";
-    return NextResponse.redirect(new URL(destination, origin));
+  // If user hits root, let the Server Component page.tsx handle the role-sorting.
+  if (pathname === "/") {
+    return NextResponse.next();
   }
 
   // 7. RBAC ENGINE (Permission Logic)
@@ -136,18 +144,22 @@ export async function proxy(req: NextRequest, ev: NextFetchEvent) {
       path: pathname,
     });
 
-    // Handle Silo-Specific Fallbacks to avoid "Logout Loops"
-    // If a POS user hits a dashboard link, they get bounced back to POS.
+    // Handle Silo-Specific Fallbacks to keep users in their environment
     const siloFallbacks: Record<string, string> = {
-      [Role.INVENTORY]: "/inventory",
-      [Role.SALES]: "/pos",
-      [Role.CASHIER]: "/pos",
-      [Role.AUDITOR]: "/audit/logs",
+      [Role.INVENTORY]: "/terminal/inventory",
+      [Role.SALES]: "/terminal/pos",
+      [Role.CASHIER]: "/terminal/pos",
+      [Role.AUDITOR]: "/dashboard/audit/logs",
       [Role.DEV]: "/db-inspector",
+      [Role.ADMIN]: "/admin/overview",
+      [Role.MANAGER]: "/admin/overview",
     };
     
-    const fallback = siloFallbacks[token.role as string] || "/dashboard";
-    return handleUnauthorized(req, fallback, "AccessDenied");
+    const fallback = siloFallbacks[token.role as string] || "/admin/overview";
+    
+    // If they are already on their fallback and still failing, bounce to root
+    const finalDestination = pathname === fallback ? "/" : fallback;
+    return handleUnauthorized(req, finalDestination, "AccessDenied");
   }
 
   return NextResponse.next();
