@@ -13,21 +13,9 @@ import { Role } from "@prisma/client";
  * Security Protocol: Optimized for Single-Screen Stability (Zero Scroll)
  */
 
-const getRoleRoute = (role?: string) => {
-  switch (role) {
-    case Role.INVENTORY: return "/dashboard";
-    case Role.SALES:
-    case Role.CASHIER: return "/pos";
-    case Role.AUDITOR: return "/audit/logs";
-    case Role.MANAGER:
-    case Role.ADMIN:
-    case Role.DEV: return "/admin/personnels";
-    default: return "/admin/personnels";
-  }
-};
-
 const ResetPasswordForm: React.FC = () => {
-  const { data: update } = useSession();
+  // CORRECTED: Correctly destructure 'update' from useSession
+  const { update } = useSession();
   const [currentPassword, setCurrentPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
@@ -83,10 +71,15 @@ const ResetPasswordForm: React.FC = () => {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Security protocol rejection.");
 
-      // CRITICAL: Force the session update and wait for it.
-      // We pass the flag explicitly so the JWT callback knows to refresh.
-      // NEW LOGIC
-      await update({ requiresPasswordChange: false });
+      /**
+       * CRITICAL: Force the session update.
+       * This re-triggers the 'jwt' callback in auth.ts. 
+       * The middleware check (Stage 5) depends on this fresh token.
+       */
+      await update({
+        ...data.profile,
+        requiresPasswordChange: false,
+      });
 
       dispatch({
         kind: "PUSH",
@@ -95,10 +88,10 @@ const ResetPasswordForm: React.FC = () => {
         message: "Terminal access granted. Synchronizing...",
       });
 
+      // Delay briefly so the user sees the success state before the hard redirect
       setTimeout(() => {
-        // Send to root and let the server-side controller handle the rest
         window.location.href = "/";
-      }, 1000);
+      }, 1200);
 
     } catch (err: any) {
       await controls.start({ x: [-8, 8, -6, 6, -4, 4, 0], transition: { duration: 0.4 } });
@@ -269,7 +262,6 @@ export default function PasswordResetPage(): JSX.Element | null {
     if (status === "unauthenticated") {
       router.replace("/signin");
     } else if (status === "authenticated" && !session?.user?.requiresPasswordChange) {
-      // Redirect to root so the traffic controller can sort them
       router.replace("/");
     }
   }, [status, session, router]);

@@ -106,10 +106,10 @@ export function NotificationsBell() {
     }
   };
 
-  return (
+return (
     <DropdownMenu.Root open={open} onOpenChange={setOpen}>
       <DropdownMenu.Trigger asChild>
-        <button className="relative w-9 h-9 flex items-center justify-center rounded-lg hover:bg-slate-100 transition-all outline-none group">
+        <button className="relative w-9 h-9 flex-shrink-0 flex items-center justify-center rounded-lg hover:bg-slate-100 transition-all outline-none group">
           <i className={`bx bx-bell text-xl ${unreadCount > 0 ? "text-blue-600 animate-[bell-ring_2s_infinite]" : "text-slate-400 group-hover:text-slate-900"}`} />
           {unreadCount > 0 && (
             <span className="absolute top-2.5 right-2.5 flex h-2 w-2">
@@ -123,7 +123,12 @@ export function NotificationsBell() {
         <DropdownMenu.Content
           align="end"
           sideOffset={8}
-          className="w-[400px] bg-white border border-slate-200 shadow-2xl rounded-2xl overflow-hidden z-[100] outline-none flex flex-col"
+          /* MOBILE FIX: 
+             1. Changed w-[400px] to w-[calc(100vw-32px)] for mobile.
+             2. Added md:w-[400px] to restore original desktop size.
+             3. Added max-h-[85vh] to ensure it doesn't grow past the viewport on small phones.
+          */
+          className="w-[calc(100vw-32px)] md:w-[400px] max-h-[85vh] bg-white border border-slate-200 shadow-2xl rounded-2xl overflow-hidden z-[100] outline-none flex flex-col animate-in fade-in zoom-in-95 duration-200"
           onCloseAutoFocus={(e) => e.preventDefault()}
         >
           {/* Operational Header */}
@@ -146,7 +151,8 @@ export function NotificationsBell() {
           </div>
 
           {/* Buffer List */}
-          <div className="max-h-[450px] overflow-y-auto">
+          {/* MOBILE FIX: flex-1 ensures the list takes up available space between header/footer */}
+          <div className="flex-1 overflow-y-auto overscroll-contain">
             <AnimatePresence initial={false} mode="popLayout">
               {activeNotifications.length === 0 ? (
                 <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="py-16 flex flex-col items-center opacity-40">
@@ -167,10 +173,10 @@ export function NotificationsBell() {
           </div>
 
           {/* Redirect to Persistent Feed */}
-          <div className="p-3 bg-white border-t border-slate-100">
+          <div className="p-3 bg-white border-t border-slate-100 mt-auto">
             <button
               onClick={() => { setOpen(false); router.push("/notifications"); }}
-              className="w-full py-2.5 rounded-xl border border-slate-200 text-[11px] font-bold text-slate-500 hover:bg-slate-50 transition-all flex items-center justify-center gap-2"
+              className="w-full py-3 md:py-2.5 rounded-xl border border-slate-200 text-[11px] font-bold text-slate-500 hover:bg-slate-50 active:bg-slate-100 transition-all flex items-center justify-center gap-2"
             >
               Access Full Activity Terminal <i className="bx bx-right-arrow-alt" />
             </button>

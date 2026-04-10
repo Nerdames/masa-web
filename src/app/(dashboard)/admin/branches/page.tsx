@@ -128,7 +128,7 @@ export default function BranchManagementPage(): JSX.Element {
         branchId={branch.id}
         onClose={handleClosePanel}
         onRefresh={fetchBranches}
-        dispatch={dispatch}
+        dispatch={useAlerts}
       />
     );
   };
@@ -137,7 +137,7 @@ export default function BranchManagementPage(): JSX.Element {
     if (!hasFullClearance) return;
     setSelectedBranchId(null);
     openPanel(
-      <BranchProvisionPanel onClose={handleClosePanel} onRefresh={fetchBranches} dispatch={dispatch} />
+      <BranchProvisionPanel onClose={handleClosePanel} onRefresh={fetchBranches} dispatch={useAlerts} />
     );
   };
 

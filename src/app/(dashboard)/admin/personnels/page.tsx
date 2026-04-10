@@ -1,19 +1,32 @@
 "use client";
 
-import React, { useState, useEffect, useCallback, useRef, useMemo } from "react";
+import React, { useState, useEffect, useCallback, useRef } from "react";
 import { useSession } from "next-auth/react";
 import { useSidePanel } from "@/core/components/layout/SidePanelContext";
 import { useAlerts } from "@/core/components/feedback/AlertProvider";
 
-import { Personnel, Branch, SummaryStats, PaginatedResponse, ProvisionPayload, UpdatePayload } from "@/modules/personnel/components/types";
+import { 
+  Personnel, 
+  Branch, 
+  SummaryStats, 
+  PaginatedResponse, 
+  UpdatePayload 
+} from "@/modules/personnel/components/types";
 import { PersonnelDetailsPanel } from "@/modules/personnel/components/PersonnelDetailsPanel";
 import { ProvisionPanel } from "@/modules/personnel/components/ProvisionPanel";
 import { PersonnelRow } from "@/modules/personnel/components/PersonnelRow";
 
 /* ==========================================================================
-   Filter Component (Refined Status Filter)
+   Filter Component (Strictly Typed)
    ========================================================================== */
-function StatusFilters({ summary, filterStatus, setFilterStatus, setSearchTerm }: any) {
+interface StatusFiltersProps {
+  summary: SummaryStats;
+  filterStatus: string;
+  setFilterStatus: (status: string) => void;
+  setSearchTerm: (term: string) => void;
+}
+
+function StatusFilters({ summary, filterStatus, setFilterStatus, setSearchTerm }: StatusFiltersProps) {
   const filterList = [
     { key: "all", label: "TOTAL", count: summary.total },
     { key: "active", label: "ACTIVE", count: summary.active },
@@ -54,17 +67,22 @@ function StatusFilters({ summary, filterStatus, setFilterStatus, setSearchTerm }
   );
 }
 
+/* ==========================================================================
+   Main Management Page
+   ========================================================================== */
 export default function PersonnelManagementPage() {
   const { data: session } = useSession();
   const { dispatch } = useAlerts();
-  const { openPanel, closePanel, isOpen } = useSidePanel();
+  const { openPanel, closePanel } = useSidePanel();
 
+  // RBAC Checks
   const userRole = session?.user?.role;
   const isOrgOwner = session?.user?.isOrgOwner;
   const hasFullClearance = isOrgOwner || userRole === "ADMIN" || userRole === "DEV";
   const canProvision = hasFullClearance;
   const canDelete = hasFullClearance;
 
+  // State Management
   const [personnelList, setPersonnelList] = useState<Personnel[]>([]);
   const [branches, setBranches] = useState<Branch[]>([]);
   const [summary, setSummary] = useState<SummaryStats>({ total: 0, active: 0, disabled: 0, locked: 0 });
@@ -89,67 +107,112 @@ export default function PersonnelManagementPage() {
     };
   }, []);
 
-  /* TOTAL PANEL DISMISSAL 
-     Forces side panel to close entirely rather than resetting to a default view.
-  */
   const handleClosePanel = useCallback(() => {
-    closePanel(); 
+    closePanel();
     setSelectedPersonId(null);
   }, [closePanel]);
 
   const fetchPersonnel = useCallback(async () => {
+    // Abort previous request to prevent race conditions during typing
     if (abortControllerRef.current) abortControllerRef.current.abort();
-    abortControllerRef.current = new AbortController();
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
+
     setIsLoading(true);
     try {
-      const res = await fetch(`/api/personnels?search=${encodeURIComponent(searchTerm)}&status=${filterStatus}`, {
-        signal: abortControllerRef.current.signal,
+      const queryParams = new URLSearchParams({
+        search: searchTerm,
+        status: filterStatus,
       });
-      if (!res.ok) throw new Error("Sync Failed");
+
+      const res = await fetch(`/api/personnels?${queryParams.toString()}`, {
+        signal: controller.signal,
+      });
+
+      if (!res.ok) {
+        const errorData = await res.json().catch(() => ({}));
+        throw new Error(errorData.message || "Registry Sync Failed");
+      }
+
       const json: PaginatedResponse = await res.json();
       setPersonnelList(json.data || []);
       setSummary(json.summary || { total: 0, active: 0, disabled: 0, locked: 0 });
       setBranches(json.branchSummaries || []);
     } catch (err) {
       if (err instanceof Error && err.name === "AbortError") return;
-      dispatch({ kind: "TOAST", type: "ERROR", title: "Sync Failed", message: "Unable to load data." });
+      dispatch({ 
+        kind: "TOAST", 
+        type: "ERROR", 
+        title: "Connection Error", 
+        message: err instanceof Error ? err.message : "Unable to reach the Fortress Registry." 
+      });
     } finally {
       setIsLoading(false);
     }
   }, [searchTerm, filterStatus, dispatch]);
 
+  // Debounced search logic
   useEffect(() => {
-    const delay = setTimeout(() => fetchPersonnel(), 300);
+    const delay = setTimeout(() => fetchPersonnel(), 400);
     return () => clearTimeout(delay);
   }, [fetchPersonnel]);
 
   const handleUpdate = async (id: string, payload: UpdatePayload) => {
     const originalList = [...personnelList];
+    
+    // Optimistic UI Update
     setPersonnelList((prev) => prev.map((p) => (p.id === id ? { ...p, ...payload } : p)));
+
     try {
       const res = await fetch("/api/personnels", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ id, ...payload }),
       });
+
       const data = await res.json();
-      if (!res.ok) throw new Error(data.message || "Failed to update");
-      await fetchPersonnel();
+
+      if (!res.ok) {
+        // Handle specific Fortress API error codes
+        if (res.status === 403) throw new Error("Permission Denied: Insufficient Clearance.");
+        if (res.status === 400) throw new Error(data.error || "Validation Failed: Check data integrity.");
+        throw new Error(data.message || "Persistence Failed.");
+      }
+
+      dispatch({ kind: "TOAST", type: "SUCCESS", title: "Record Secured", message: "Personnel data updated successfully." });
+      await fetchPersonnel(); // Sync to confirm database state
     } catch (err) {
-      setPersonnelList(originalList);
-      dispatch({ kind: "TOAST", type: "ERROR", title: "Update Failed", message: "Persistence failed." });
+      setPersonnelList(originalList); // Revert on failure
+      dispatch({ 
+        kind: "TOAST", 
+        type: "ERROR", 
+        title: "Update Blocked", 
+        message: err instanceof Error ? err.message : "The operation was rejected by the server." 
+      });
     }
   };
 
   const handleDelete = async (id: string) => {
-    if (!canDelete || !confirm("Are you sure?")) return;
+    if (!canDelete || !confirm("CRITICAL: Deactivating this record will terminate all active sessions. Proceed?")) return;
+    
     try {
       const res = await fetch(`/api/personnels?id=${id}`, { method: "DELETE" });
-      if (!res.ok) throw new Error("Deletion failed");
+      
+      if (!res.ok) {
+        const data = await res.json();
+        throw new Error(data.message || "Deactivation failed");
+      }
+
+      dispatch({ kind: "TOAST", type: "SUCCESS", title: "Access Revoked", message: "Personnel has been successfully deactivated." });
       handleClosePanel();
       await fetchPersonnel();
     } catch (error) {
-      dispatch({ kind: "TOAST", type: "ERROR", title: "Action Failed", message: "Deactivation failed." });
+      dispatch({ 
+        kind: "TOAST", 
+        type: "ERROR", 
+        title: "Action Refused", 
+        message: error instanceof Error ? error.message : "The system refused to deactivate the record." 
+      });
     }
   };
 
@@ -161,15 +224,38 @@ export default function PersonnelManagementPage() {
         onClose={handleClosePanel}
         onUpdate={handleUpdate}
         onDelete={handleDelete}
-        dispatch={dispatch}
+        dispatch={useAlerts}
       />
     );
   };
 
-  const handleOpenProvision = () => {
+const handleOpenProvision = () => {
     if (!canProvision) return;
     setSelectedPersonId(null);
-    openPanel(<ProvisionPanel branches={branches} onClose={handleClosePanel} onCreate={async () => { await fetchPersonnel(); }} dispatch={dispatch} />);
+    openPanel(
+      <ProvisionPanel 
+        branches={branches} 
+        onClose={handleClosePanel} 
+        // FIX: Add the fetch logic here
+        onCreate={async (payload) => { 
+          const res = await fetch("/api/personnels", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+          });
+
+          if (!res.ok) {
+            const errorData = await res.json();
+            throw new Error(errorData.message || "Provisioning failed");
+          }
+
+          // Refresh the registry and close the panel on success
+          await fetchPersonnel(); 
+          handleClosePanel();
+        }} 
+        dispatch={useAlerts} 
+      />
+    );
   };
 
   return (
@@ -183,7 +269,12 @@ export default function PersonnelManagementPage() {
           </div>
 
           <div className="hidden md:flex flex-1 justify-center px-4 overflow-hidden">
-            <StatusFilters summary={summary} filterStatus={filterStatus} setFilterStatus={setFilterStatus} setSearchTerm={setSearchTerm} />
+            <StatusFilters 
+              summary={summary} 
+              filterStatus={filterStatus} 
+              setFilterStatus={setFilterStatus} 
+              setSearchTerm={setSearchTerm} 
+            />
           </div>
 
           <div className="flex items-center gap-2 shrink-0">
@@ -198,7 +289,11 @@ export default function PersonnelManagementPage() {
               />
             </div>
             
-            <button onClick={() => fetchPersonnel()} className="p-2 text-[12px] font-semibold border rounded-lg transition-colors flex items-center justify-center bg-white border-black/5 text-slate-500 hover:bg-slate-50 shadow-sm shrink-0">
+            <button 
+              onClick={() => fetchPersonnel()} 
+              disabled={isLoading}
+              className="p-2 text-[12px] font-semibold border rounded-lg transition-colors flex items-center justify-center bg-white border-black/5 text-slate-500 hover:bg-slate-50 shadow-sm shrink-0 disabled:opacity-50"
+            >
               <i className={`bx bx-refresh text-lg ${isLoading ? "bx-spin" : ""}`} />
             </button>
 
@@ -214,16 +309,18 @@ export default function PersonnelManagementPage() {
           </div>
         </div>
 
-        {/* Mobile Filter Layer */}
         <div className="md:hidden bg-white/95 px-4 py-3 border-t border-black/[0.02]">
-          <StatusFilters summary={summary} filterStatus={filterStatus} setFilterStatus={setFilterStatus} setSearchTerm={setSearchTerm} />
+          <StatusFilters 
+            summary={summary} 
+            filterStatus={filterStatus} 
+            setFilterStatus={setFilterStatus} 
+            setSearchTerm={setSearchTerm} 
+          />
         </div>
       </header>
 
-      {/* BODY AREA - PADDING REMOVED */}
       <div className="flex-1 overflow-y-auto scrollbar-hide bg-white">
         <div className="w-full">
-          
           {mounted && !isOnline && (
             <div className="py-2 flex items-center justify-center gap-3 bg-amber-50 border-b border-amber-100">
               <span className="h-1.5 w-1.5 rounded-full bg-amber-500 animate-ping" />
@@ -250,34 +347,22 @@ export default function PersonnelManagementPage() {
             </div>
           ) : (
             <>
-              {/* DESKTOP TABLE HEADERS */}
               <div className="hidden md:flex items-center px-4 md:px-8 py-3 bg-slate-50/50 border-b border-black/[0.03] sticky top-0 z-10 backdrop-blur-sm">
-                {/* Staff ID - Matches PersonnelRow w-[120px] + gap-2 */}
                 <div className="w-[120px] shrink-0 text-[9px] font-black uppercase tracking-[0.2em] text-slate-400">
                   Staff ID
                 </div>
-
-                {/* Name - Matches PersonnelRow flex-[1.5] */}
                 <div className="flex-[1.5] min-w-[150px] text-[9px] font-black uppercase tracking-[0.2em] text-slate-400">
                   Name
                 </div>
-
-                {/* Email Address - Matches PersonnelRow flex-1 */}
                 <div className="flex-1 min-w-[150px] text-[9px] font-black uppercase tracking-[0.2em] text-slate-400">
                   Email Address
                 </div>
-
-                {/* Role - Matches PersonnelRow w-[110px] */}
                 <div className="w-[110px] shrink-0 text-[9px] font-black uppercase tracking-[0.2em] text-slate-400">
                   Role
                 </div>
-
-                {/* Primary Branch - Matches PersonnelRow w-[160px] */}
                 <div className="w-[160px] shrink-0 text-[9px] font-black uppercase tracking-[0.2em] text-slate-400">
                   Primary Branch
                 </div>
-
-                {/* Status - Matches PersonnelRow w-[90px] + flex justify-end */}
                 <div className="w-[90px] shrink-0 text-right text-[9px] font-black uppercase tracking-[0.2em] text-slate-400">
                   Status
                 </div>

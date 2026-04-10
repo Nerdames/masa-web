@@ -7,25 +7,20 @@ import { Role } from "@prisma/client";
 export default async function RootPage() {
   const session = await getServerSession(authOptions);
 
+  // 1. If no session, go to public welcome page
   if (!session) {
     redirect("/welcome");
   }
 
   const role = session.user.role as Role;
 
-  // --- AUTOMATIC REDIRECTS FOR SPECIFIC ROLES ---
-  // If they aren't leadership, don't show the hub, just send them to work.
-  switch (role) {
-    case "CASHIER":
-      redirect("/terminal/pos");
-    case "INVENTORY":
-      redirect("/terminal/inventory");
-    case "AUDITOR":
-      redirect("/audit");
-    // Add other specific role redirects here
-  }
+  // 2. Role-based routing
+  // Using return redirect() ensures execution stops immediately.
+  if (role === Role.CASHIER) return redirect("/pos");
+  if (role === Role.INVENTORY) return redirect("/inventory");
+  if (role === Role.AUDITOR) return redirect("/audit");
 
-  // --- LEADERSHIP PORTAL ---
-  // ADMIN, MANAGER, and ORG_OWNER stay here to see the "Operations Hub"
+  // 3. LEADERSHIP PORTAL
+  // Fallback for ADMIN, MANAGER, DEV, etc.
   return <OperationsHub session={session} />;
 }

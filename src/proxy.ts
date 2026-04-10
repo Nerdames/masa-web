@@ -4,7 +4,7 @@ import { Role } from "@prisma/client";
 import { hasPagePermission } from "@/core/lib/permission";
 
 /* -------------------------------------------------- */
-/* CONFIGURATION & CONSTANTS */
+/* CONFIGURATION & CONSTANTS                  */
 /* -------------------------------------------------- */
 
 const AUTH_ROUTES = ["/signin", "/register", "/reset-password", "/welcome"];
@@ -12,7 +12,7 @@ const BYPASS_PREFIXES = ["/_next", "/api/auth", "/favicon.ico", "/feedback", "/p
 const PUBLIC_FILE = /\.(.*)$/;
 
 /* -------------------------------------------------- */
-/* HELPERS */
+/* HELPERS                                    */
 /* -------------------------------------------------- */
 
 /**
@@ -21,16 +21,20 @@ const PUBLIC_FILE = /\.(.*)$/;
 function handleUnauthorized(req: NextRequest, destination: string, error?: string) {
   const { pathname, origin } = req.nextUrl;
 
+  // Handle API unauthorized attempts
   if (pathname.startsWith("/api/")) {
     return NextResponse.json(
-      { error: error || "Unauthorized", message: "Insufficient permissions or session invalid." },
+      { 
+        error: error || "Unauthorized", 
+        message: "Insufficient permissions or session invalid." 
+      },
       { status: 403 }
     );
   }
 
   const url = new URL(destination, origin);
   
-  // Only set callbackUrl if we are heading to signin
+  // Only set callbackUrl if we are heading to signin to prevent redirect loops
   if (destination === "/signin") {
     url.searchParams.set("callbackUrl", pathname);
   }
@@ -65,7 +69,7 @@ function logSecurityEvent(ev: NextFetchEvent, origin: string, action: string, me
 }
 
 /* -------------------------------------------------- */
-/* MAIN PROXY LOGIC */
+/* MAIN PROXY LOGIC                           */
 /* -------------------------------------------------- */
 
 export async function proxy(req: NextRequest, ev: NextFetchEvent) {
@@ -90,16 +94,15 @@ export async function proxy(req: NextRequest, ev: NextFetchEvent) {
 
   // 3. GUEST ACCESS CONTROL
   if (!token) {
-    // Let guests hit auth pages or the root (which might have a landing state)
-    if (isAuthPage || pathname === "/") return NextResponse.next();
+    if (pathname === "/") return NextResponse.redirect(new URL("/welcome", origin));
+    if (isAuthPage) return NextResponse.next();
     return handleUnauthorized(req, "/signin");
   }
 
-  // 4. ACCOUNT INTEGRITY (Synchronized with Fortress UI Error Codes)
+  // 4. ACCOUNT INTEGRITY
   if (token.disabled || token.locked || token.expired) {
-    if (pathname === "/signin" || pathname.startsWith("/api/auth")) return NextResponse.next();
+    if (isAuthPage || pathname.startsWith("/api/auth")) return NextResponse.next();
 
-    // Mapping token flags to frontend ERROR_MAP keys
     const errorCode = token.disabled ? "ACCOUNT_DISABLED" : 
                      token.locked ? "ACCOUNT_LOCKED_ADMIN" : 
                      "SessionExpired";
@@ -114,18 +117,32 @@ export async function proxy(req: NextRequest, ev: NextFetchEvent) {
     return handleUnauthorized(req, "/signin", errorCode);
   }
 
-  // 5. MANDATORY PASSWORD ROTATION
-  if (token.requiresPasswordChange && !pathname.startsWith("/reset-password")) {
+  // 5. MANDATORY PASSWORD ROTATION (Fortress Security Protocol)
+  if (token.requiresPasswordChange) {
+    /**
+     * FIX: We must allow the actual PATCH/POST request to /api/profile
+     * Otherwise, the middleware redirects the fetch call to /reset-password, 
+     * causing the "Rotation Blocked" error on the client and no activity in the terminal.
+     */
+    const isResetAction = 
+      pathname.startsWith("/reset-password") || 
+      pathname.startsWith("/api/auth") || 
+      pathname === "/api/profile"; 
+
+    if (isResetAction) {
+      return NextResponse.next();
+    }
+
     return handleUnauthorized(req, "/reset-password", "PasswordResetRequired");
   }
 
   // 6. TRAFFIC CONTROLLER HANDOFF
-  // If user is logged in and hits /signin, send them to root.
+  // If logged in and hitting signin/welcome, redirect to root for role-sorting
   if (isAuthPage) {
     return NextResponse.redirect(new URL("/", origin));
   }
 
-  // If user hits root, let the Server Component page.tsx handle the role-sorting.
+  // CRITICAL: Allow root path for the RootPage server component to handle final redirection
   if (pathname === "/") {
     return NextResponse.next();
   }
@@ -144,22 +161,25 @@ export async function proxy(req: NextRequest, ev: NextFetchEvent) {
       path: pathname,
     });
 
-    // Handle Silo-Specific Fallbacks to keep users in their environment
+    // Define Fallbacks per Role
     const siloFallbacks: Record<string, string> = {
       [Role.INVENTORY]: "/terminal/inventory",
       [Role.SALES]: "/terminal/pos",
       [Role.CASHIER]: "/terminal/pos",
-      [Role.AUDITOR]: "/dashboard/audit/logs",
-      [Role.DEV]: "/db-inspector",
+      [Role.AUDITOR]: "/audit",
+      [Role.DEV]: "/terminal/inventory",
       [Role.ADMIN]: "/admin/overview",
       [Role.MANAGER]: "/admin/overview",
     };
     
-    const fallback = siloFallbacks[token.role as string] || "/admin/overview";
+    const fallback = siloFallbacks[token.role as string] || "/";
     
-    // If they are already on their fallback and still failing, bounce to root
-    const finalDestination = pathname === fallback ? "/" : fallback;
-    return handleUnauthorized(req, finalDestination, "AccessDenied");
+    // Stop redirect loops if already at fallback
+    if (pathname === fallback) {
+      return NextResponse.next(); 
+    }
+
+    return handleUnauthorized(req, fallback, "AccessDenied");
   }
 
   return NextResponse.next();

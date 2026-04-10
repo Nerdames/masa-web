@@ -110,8 +110,9 @@ function mapProfileDTO(personnel: PersonnelWithRelations) {
     if (primaryAssignment) primaryRole = primaryAssignment.role;
   }
 
+  const now = new Date();
   const isTemporarilyLocked =
-    personnel.lockoutUntil && personnel.lockoutUntil > new Date();
+    personnel.lockoutUntil && personnel.lockoutUntil > now;
 
   const lockReason = personnel.isLocked
     ? "Administrative Lock"
@@ -129,6 +130,7 @@ function mapProfileDTO(personnel: PersonnelWithRelations) {
     disabled: personnel.disabled,
     isLocked: personnel.isLocked || isTemporarilyLocked,
     lockReason,
+    lockoutUntil: personnel.lockoutUntil?.toISOString() ?? null,
 
     // Expose mandatory change flag to the frontend
     requiresPasswordChange: personnel.requiresPasswordChange || false,
@@ -207,21 +209,23 @@ export async function PATCH(request: NextRequest): Promise<NextResponse> {
   try {
     const personnel = await requirePersonnel();
 
+    // Context for forensic logging
+    const ipAddress = (request.headers.get("x-forwarded-for")?.split(",")[0]) || "127.0.0.1";
+    const deviceInfo = request.headers.get("user-agent") || "System Interface";
+
     if (!personnel || personnel.disabled) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    if (personnel.isLocked) {
+    // LOCKOUT CHECK: If the account is locked, block the "Rotation" (update)
+    const isTemporarilyLocked = personnel.lockoutUntil && personnel.lockoutUntil > new Date();
+    if (personnel.isLocked || isTemporarilyLocked) {
       return NextResponse.json(
-        { error: "Account is administratively locked." },
-        { status: 403 }
-      );
-    }
-
-    if (personnel.lockoutUntil && personnel.lockoutUntil > new Date()) {
-      return NextResponse.json(
-        {
-          error: `Security lockout active. Try again after ${personnel.lockoutUntil.toLocaleTimeString()}`,
+        { 
+          error: "ROTATION_BLOCKED", 
+          message: personnel.isLocked 
+            ? "Account is administratively locked." 
+            : `Security lockout active. Try again after ${personnel.lockoutUntil?.toLocaleTimeString()}`
         },
         { status: 403 }
       );
@@ -259,8 +263,8 @@ export async function PATCH(request: NextRequest): Promise<NextResponse> {
 
       if (!isValid) {
         const newFailCount = (personnel.failedLoginAttempts || 0) + 1;
-        const lockoutTime =
-          newFailCount >= 5 ? new Date(Date.now() + 15 * 60 * 1000) : null;
+        const isNowLocked = newFailCount >= 5;
+        const lockoutTime = isNowLocked ? new Date(Date.now() + 15 * 60 * 1000) : null;
 
         await prisma.authorizedPersonnel.update({
           where: { id: personnel.id },
@@ -270,7 +274,7 @@ export async function PATCH(request: NextRequest): Promise<NextResponse> {
           },
         });
 
-        // Log failed attempt
+        // Log failed attempt with forensic details
         await prisma.activityLog.create({
           data: {
             organizationId: personnel.organizationId,
@@ -281,14 +285,19 @@ export async function PATCH(request: NextRequest): Promise<NextResponse> {
             action: "FAILED_SECURITY_CHALLENGE",
             severity: Severity.HIGH,
             critical: true,
-            description: `Failed security challenge during profile update. Attempt ${newFailCount}/5.`,
+            ipAddress,
+            deviceInfo,
+            description: `Failed security challenge. Attempt ${newFailCount}/5.`,
             metadata: { lockedOut: !!lockoutTime },
           },
         });
 
         return NextResponse.json(
-          { error: "Invalid security credentials." },
-          { status: 400 }
+          { 
+            error: isNowLocked ? "ROTATION_BLOCKED" : "Invalid security credentials.",
+            strikes: newFailCount 
+          },
+          { status: isNowLocked ? 403 : 400 }
         );
       }
 
@@ -410,10 +419,12 @@ export async function PATCH(request: NextRequest): Promise<NextResponse> {
             action: log.action,
             severity: log.severity,
             critical: log.critical,
+            ipAddress,
+            deviceInfo,
             before: log.before ? (log.before as Prisma.InputJsonValue) : Prisma.DbNull,
             after: log.after ? (log.after as Prisma.InputJsonValue) : Prisma.DbNull,
             metadata: { 
-              directCommit: true,
+              directCommit: true, 
               selfService: true 
             } as Prisma.InputJsonValue,
           },

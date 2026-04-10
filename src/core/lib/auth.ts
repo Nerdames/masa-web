@@ -368,9 +368,14 @@ export const authOptions: NextAuthOptions = {
         };
       }
 
-      // Client-Side Force Session Updates
+      // UPGRADE: Secure Client-Side Update Handler
+      // Prevents malicious privilege escalation by whitelisting allowed fields only.
       if (trigger === "update" && session) {
-        return { ...token, ...session };
+        return { 
+          ...token, 
+          name: session.name ?? token.name,
+          requiresPasswordChange: session.requiresPasswordChange ?? token.requiresPasswordChange 
+        };
       }
 
       // Dynamic Heartbeat & Mid-Session Security Revocation

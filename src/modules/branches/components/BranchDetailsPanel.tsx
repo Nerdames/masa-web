@@ -188,9 +188,22 @@ export function BranchDetailsPanel({ branchId, onRefresh, dispatch }: BranchDeta
 
   if (isLoading || !branch) {
     return (
-      <div className="h-full flex flex-col w-[340px] items-center justify-center p-12 bg-white shadow-[-10px_0_40px_rgba(0,0,0,0.04)] border-l border-slate-100">
-        <i className="bx bx-loader-alt animate-spin text-3xl text-slate-300 mb-4" />
-        <p className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400 whitespace-nowrap">Synchronizing Registry...</p>
+      <div className="fixed inset-y-0 right-0 h-screen flex flex-col w-[340px] items-center justify-center p-12 bg-white shadow-[-10px_0_40px_rgba(0,0,0,0.04)] border-l border-slate-100 z-50">
+        {/* Content Wrapper */}
+        <div className="flex flex-col items-center justify-center">
+          {/* Spinner Stack */}
+          <div className="relative mb-10 flex items-center justify-center">
+            {/* Static base ring */}
+            <div className="h-10 w-10 border-[1px] border-slate-100 rounded-full" />
+            {/* Animated active ring */}
+            <div className="absolute top-0 h-10 w-10 border-t-[1px] border-blue-600 rounded-full animate-spin" />
+          </div>
+
+          {/* Text with optical center adjustment */}
+          <h3 className="text-[10px] font-bold uppercase tracking-[0.8em] text-slate-900 ml-[0.8em] text-center whitespace-nowrap">
+            Synchronizing
+          </h3>
+        </div>
       </div>
     );
   }
