@@ -9,7 +9,6 @@ import {
   RefreshCw,
   ClipboardCheck,
   BarChart3,
-  History,
   AlertTriangle,
   ArrowUpRight,
   PackageCheck,
@@ -49,7 +48,6 @@ const TILES: DashboardTile[] = [
 
 export default function TerminalDashboard() {
   const { data: session } = useSession();
-  const [stats, setStats] = useState<DashboardStats>({ lowStock: 0, pendingApprovals: 0, activeOrders: 0, inTransit: 0 });
   const [isDark, setIsDark] = useState(false);
 
   useEffect(() => {
@@ -62,12 +60,6 @@ export default function TerminalDashboard() {
     return () => clearInterval(timer);
   }, []);
 
-  useEffect(() => {
-    fetch("/api/inventory/stats")
-      .then(res => res.json())
-      .then(data => setStats(data))
-      .catch(() => console.error("Stats offline"));
-  }, []);
 
   const userRole = (session?.user?.role as Role) || Role.CASHIER;
   const allowedTiles = useMemo(() => TILES.filter(t => t.roles.includes(userRole)), [userRole]);
@@ -104,13 +96,7 @@ export default function TerminalDashboard() {
                   <tile.icon className="w-5 h-5 text-white" />
                 </div>
 
-                {tile.statKey && stats[tile.statKey] > 0 && (
-                  <div className={`px-2 py-0.5 rounded-full text-[10px] font-black tracking-tighter border animate-pulse ${
-                    isDark ? "bg-slate-800 border-rose-500/30 text-rose-400" : "bg-rose-50 border-rose-200 text-rose-600"
-                  }`}>
-                    {stats[tile.statKey]} {tile.id === 'inv' ? 'Low' : 'Act.'}
-                  </div>
-                )}
+
               </div>
 
               <div className="z-10">
