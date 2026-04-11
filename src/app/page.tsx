@@ -4,23 +4,37 @@ import { authOptions } from "@/core/lib/auth";
 import OperationsHub from "@/core/components/layout/OperationsHub";
 import { Role } from "@prisma/client";
 
+/**
+ * MASA ROOT CONTROLLER
+ * Ensures strict redirection for unauthenticated users and 
+ * provides role-based silo dispatching.
+ */
 export default async function RootPage() {
   const session = await getServerSession(authOptions);
 
-  // 1. If no session, go to public welcome page
-  if (!session) {
-    redirect("/welcome");
+  // 1. AUTHENTICATION LOCK
+  // If no session exists, force-redirect to the signin page immediately.
+  if (!session || !session.user) {
+    return redirect("/signin");
   }
 
+  // 2. ROLE-BASED TRAFFIC SILOING
+  // Note: Using 'return redirect' ensures the server component stops execution.
   const role = session.user.role as Role;
 
-  // 2. Role-based routing
-  // Using return redirect() ensures execution stops immediately.
-  if (role === Role.CASHIER) return redirect("/pos");
-  if (role === Role.INVENTORY) return redirect("/inventory");
-  if (role === Role.AUDITOR) return redirect("/audit");
+  switch (role) {
+    case Role.CASHIER:
+    case Role.SALES:
+      return redirect("/terminal/pos");
 
-  // 3. LEADERSHIP PORTAL
-  // Fallback for ADMIN, MANAGER, DEV, etc.
-  return <OperationsHub session={session} />;
+    case Role.INVENTORY:
+      return redirect("/terminal/inventory");
+
+    case Role.AUDITOR:
+      return redirect("/audit");
+
+    // LEADERSHIP PORTAL (Admin, Manager, Dev, etc.)
+    default:
+      return <OperationsHub session={session} />;
+  }
 }

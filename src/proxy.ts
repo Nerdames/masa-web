@@ -8,7 +8,6 @@ import { hasPagePermission } from "@/core/lib/permission";
 
 const AUTH_ROUTES = ["/signin", "/register", "/reset-password", "/welcome"];
 
-// STRICT BYPASS: Replaced dangerous Regex with exact path matching
 const STATIC_PREFIXES = [
   "/_next", 
   "/favicon.ico", 
@@ -18,7 +17,7 @@ const STATIC_PREFIXES = [
   "/public"
 ];
 
-// Explicitly define public APIs that don't need token extraction
+// NEXT-AUTH INTERNAL: Must be public to allow session checks and login
 const PUBLIC_API_ROUTES = ["/api/auth", "/api/logs", "/api/webhooks"];
 
 /* -------------------------------------------------- */
@@ -27,45 +26,41 @@ const PUBLIC_API_ROUTES = ["/api/auth", "/api/logs", "/api/webhooks"];
 
 /**
  * Hardened Content-Aware Unauthorized Handler
+ * FIXES: "Unexpected token <" by detecting data requests and returning 401 JSON
  */
 function handleUnauthorized(req: NextRequest, destination: string, errorType?: string) {
   const { pathname, origin } = req.nextUrl;
 
-  // 1. Detect if the request expects data rather than HTML
+  // Detect if the request expects data (JSON, RSC, or Prefetch) rather than HTML
   const isApi = pathname.startsWith("/api/");
-  const isRsc = req.headers.get("rsc") === "1" || req.headers.get("x-middleware-prefetch") === "1";
+  const isRsc = req.headers.get("rsc") === "1";
+  const isPrefetch = req.headers.get("x-middleware-prefetch") === "1" || req.headers.get("x-nextjs-data") !== null;
   const isServerAction = req.headers.has("next-action");
   const expectsJson = req.headers.get("accept")?.includes("application/json");
 
-  // Fixes the `<` JSON error by returning proper 401s for data requests
-  if (isApi || isServerAction || isRsc || expectsJson) {
-    return NextResponse.json(
-      { 
+  // If it's a data request, return a clean 401. This prevents the browser from 
+  // trying to parse the Sign-in page HTML as JSON data.
+  if (isApi || isServerAction || isRsc || isPrefetch || expectsJson) {
+    return new NextResponse(
+      JSON.stringify({ 
         error: errorType || "Unauthenticated", 
-        message: "Session expired, invalid, or access denied." 
-      },
-      { status: 401 }
+        message: "Session required. Please sign in." 
+      }),
+      { status: 401, headers: { "Content-Type": "application/json" } }
     );
   }
 
-  // 2. Handle standard browser page navigations
+  // Handle standard browser page navigations
   const url = new URL(destination, origin);
   
-  if (destination === "/signin" && pathname !== "/") {
+  if (destination === "/signin" && pathname !== "/" && pathname !== "/welcome") {
     url.searchParams.set("callbackUrl", pathname);
   }
   if (errorType) {
     url.searchParams.set("error", errorType);
   }
 
-  const response = NextResponse.redirect(url);
-  
-  // Custom header to signal the client architecture that a force-logout occurred
-  if (errorType === "SessionExpired") {
-    response.headers.set("x-masa-auth-state", "expired");
-  }
-
-  return response;
+  return NextResponse.redirect(url);
 }
 
 /**
@@ -96,7 +91,7 @@ function logSecurityEvent(ev: NextFetchEvent, origin: string, action: string, me
 export async function proxy(req: NextRequest, ev: NextFetchEvent) {
   const { pathname, origin } = req.nextUrl;
 
-  // 1. STRICT BYPASS LOGIC
+  // 1. STRICT BYPASS LOGIC (Public assets and Auth APIs)
   const isInternalAction = req.headers.get("x-masa-internal-key") === process.env.INTERNAL_API_KEY;
   const isStaticFile = STATIC_PREFIXES.some(p => pathname.startsWith(p));
   const isPublicApi = PUBLIC_API_ROUTES.some(p => pathname.startsWith(p));
@@ -113,16 +108,15 @@ export async function proxy(req: NextRequest, ev: NextFetchEvent) {
 
   const isAuthPage = AUTH_ROUTES.some((r) => pathname.startsWith(r));
 
-  // 3. GUEST ACCESS CONTROL
+  // 3. MANDATORY REDIRECT FOR UNKNOWN USERS
   if (!token) {
-    if (pathname === "/") return NextResponse.redirect(new URL("/welcome", origin));
     if (isAuthPage) return NextResponse.next();
     
-    // Explicitly flag unauthenticated to trigger redirects
+    // Safety Force: Redirect root "/" and all protected pages to signin
     return handleUnauthorized(req, "/signin", "Unauthenticated");
   }
 
-  // 4. ACCOUNT INTEGRITY
+  // 4. ACCOUNT INTEGRITY (Disabled/Locked/Expired)
   if (token.disabled || token.locked || token.expired) {
     if (isAuthPage) return NextResponse.next();
 
@@ -142,25 +136,20 @@ export async function proxy(req: NextRequest, ev: NextFetchEvent) {
 
   // 5. MANDATORY PASSWORD ROTATION
   if (token.requiresPasswordChange) {
-    // Allow reset action and profile API for updating the password
     if (pathname.startsWith("/reset-password") || pathname === "/api/profile") {
       return NextResponse.next();
     }
     return handleUnauthorized(req, "/reset-password", "PasswordResetRequired");
   }
 
-  // 6. TRAFFIC CONTROLLER HANDOFF
+  // 6. TRAFFIC CONTROLLER (LoggedIn users cannot see signin page)
   if (isAuthPage) {
     return NextResponse.redirect(new URL("/", origin));
   }
-  if (pathname === "/") {
-    return NextResponse.next();
-  }
 
   // 7. RBAC ENGINE (Permission Logic)
-  // Note: Cast role to string if Prisma Enum is not available in Edge
   const allowed = hasPagePermission(
-    token.role as any, // Bypass edge enum import issues
+    token.role as any, 
     pathname,
     Boolean(token.isOrgOwner)
   );
