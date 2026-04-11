@@ -3,13 +3,12 @@
 import React, { useMemo, useEffect, useState } from "react";
 import Link from "next/link";
 import { 
-    History, FileSearch, Scale, 
-  ArrowUpRight, AlertTriangle, Fingerprint, 
+  History, FileSearch, Scale, 
+  ArrowUpRight, Fingerprint, 
   RefreshCcw, Landmark
 } from "lucide-react";
 import { Role } from "@prisma/client";
 import { Session } from "next-auth";
-
 
 interface DashboardTile {
   id: string;
@@ -21,14 +20,6 @@ interface DashboardTile {
   roles: Role[];
 }
 
-/**
- * TILES DEFINITION: 
- * Mapped specifically to Auditor scenarios found in the schema:
- * - ActivityLog & StockMovement hashing for forensic integrity.
- * - ApprovalRequest for pending critical actions.
- * - StockTake for inventory discrepancy audits.
- * - Refunds/Reconciliation for financial integrity.
- */
 const AUDITOR_TILES: DashboardTile[] = [
   { 
     id: "flogs", 
@@ -87,12 +78,12 @@ const AUDITOR_TILES: DashboardTile[] = [
 ];
 
 export default function AuditorHub({ session }: { session: Session }) {
+  const [mounted, setMounted] = useState(false);
   const [isDark, setIsDark] = useState(false);
 
   const user = session?.user;
   const userRole = (user?.role as Role) || Role.AUDITOR;
 
-  // Real-time theme handler based on operational hours (Auditor view usually high contrast)
   useEffect(() => {
     const handleTheme = () => {
       const hour = new Date().getHours();
@@ -100,6 +91,8 @@ export default function AuditorHub({ session }: { session: Session }) {
     };
 
     handleTheme();
+    setMounted(true); // Prevents theme blinking on load
+
     const timer = setInterval(handleTheme, 60000);
     return () => clearInterval(timer);
   }, []);
@@ -107,6 +100,9 @@ export default function AuditorHub({ session }: { session: Session }) {
   const allowedTiles = useMemo(() => 
     AUDITOR_TILES.filter(t => t.roles.includes(userRole)), 
   [userRole]);
+
+  // Prevent flicker during hydration
+  if (!mounted) return <div className="min-h-screen bg-slate-50 dark:bg-[#020617]" />;
 
   return (
     <main className={`min-h-[100dvh] w-screen flex flex-col transition-colors duration-1000 overflow-x-hidden ${isDark ? "bg-[#020617] text-slate-200" : "bg-slate-50 text-slate-900"}`}>
@@ -134,7 +130,8 @@ export default function AuditorHub({ session }: { session: Session }) {
                 <h3 className="text-xl font-black mb-2 tracking-tight group-hover:text-blue-500 transition-colors">{tile.title}</h3>
                 <p className="text-xs font-medium opacity-50 leading-relaxed max-w-[90%]">{tile.descriptionSm}</p>
                 
-                <div className="absolute top-8 right-8 p-2 rounded-full bg-slate-100 dark:bg-slate-800 opacity-100 md:opacity-0 group-hover:opacity-100 translate-y-0 md:translate-y-4 md:group-hover:translate-y-0 transition-all duration-300">
+                {/* ARROW: Fixed visibility logic */}
+                <div className="absolute top-8 right-8 p-2 rounded-full bg-slate-100 dark:bg-slate-800 opacity-100 transition-all duration-300 group-hover:bg-blue-600 group-hover:text-white">
                   <ArrowUpRight className="w-4 h-4" />
                 </div>
 
