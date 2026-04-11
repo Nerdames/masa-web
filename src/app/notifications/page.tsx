@@ -95,9 +95,19 @@ export default function SystemInboxPage() {
 
   const { data, size, setSize, mutate, isValidating } = useSWRInfinite(getKey, fetcher, { revalidateOnFocus: false });
 
-  const items: InboxItem[] = useMemo(() => 
-    data ? data.flatMap((page) => page.notifications || []) : [], 
-  [data]);
+  // FIXED: Added deduplication logic to prevent React duplicate key errors from SWR/Pusher race conditions
+  const items: InboxItem[] = useMemo(() => {
+    if (!data) return [];
+    const allItems = data.flatMap((page) => page.notifications || []);
+    
+    const uniqueItemsMap = new Map<string, InboxItem>();
+    for (const item of allItems) {
+      if (!uniqueItemsMap.has(item.recipientEntryId)) {
+        uniqueItemsMap.set(item.recipientEntryId, item);
+      }
+    }
+    return Array.from(uniqueItemsMap.values());
+  }, [data]);
 
   const unreadCount = data?.[0]?.unreadCount ?? 0;
   const isLoading = isValidating && (!data || size === 0);
@@ -205,10 +215,16 @@ export default function SystemInboxPage() {
         ref={containerRef}
         className="flex-1 w-full overflow-y-auto bg-white max-w-7xl mx-auto border-x border-black/[0.02]"
       >
-        {isLoading ? (
-          <div className="flex flex-col items-center justify-center py-32">
-             <i className="bx bx-loader-alt bx-spin text-3xl text-slate-300 mb-4" />
-             <p className="text-[10px] font-bold uppercase tracking-[0.4em] text-slate-400">Syncing Ledgers</p>
+{/* UPDATED LOADING DESIGN */}
+        {isLoading && items.length === 0 ? (
+          <div className="flex flex-col items-center justify-center py-48">
+            <div className="relative mb-10">
+              <div className="h-10 w-10 border-[1px] border-slate-100 rounded-full" />
+              <div className="absolute top-0 h-10 w-10 border-t-[1px] border-blue-600 rounded-full animate-spin" />
+            </div>
+            <h3 className="text-[10px] font-bold uppercase tracking-[0.8em] text-slate-900 ml-[0.8em]">
+              Synchronizing
+            </h3>
           </div>
         ) : items.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-40">

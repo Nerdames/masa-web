@@ -48,3 +48,32 @@ masa/
 ├── .env                       # Environment Secrets
 ├── next.config.ts             # Performance tweaks (Asset prefixes, etc.)
 └── package.json
+
+
+
+
+
+      <section className="px-6 pt-6 pb-2">
+        <div className="flex items-center gap-2 mb-4 px-2">
+          <h2 className="text-[11px] font-bold text-slate-500 uppercase tracking-widest">Operations Hub</h2>
+          <div className="h-px bg-slate-200 flex-1"></div>
+        </div>
+        <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-3">
+          {authorizedModules.map((mod) => {
+            const Icon = mod.icon;
+            return (
+              <a 
+                key={mod.id} 
+                href={mod.href}
+                className="group flex flex-col items-start p-3 bg-white rounded-xl border border-slate-200/60 hover:border-blue-200 hover:shadow-md transition-all cursor-pointer"
+              >
+                <div className={`w-8 h-8 rounded-lg bg-gradient-to-br ${mod.color} text-white flex items-center justify-center mb-2 shadow-sm group-hover:scale-105 transition-transform`}>
+                  <Icon className="w-4 h-4" />
+                </div>
+                <h3 className="text-[12px] font-bold text-slate-900 leading-tight">{mod.title}</h3>
+                <p className="text-[10px] text-slate-500 mt-0.5 leading-snug">{mod.descriptionSm}</p>
+              </a>
+            );
+          })}
+        </div>
+      </section>
