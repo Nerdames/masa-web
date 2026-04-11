@@ -7,7 +7,7 @@ import { Role, NotificationType, CriticalAction } from "@prisma/client";
 import { z } from "zod";
 
 /* -------------------------------------------------- */
-/* GET: FETCH NOTIFICATIONS (PAGINATED & OPTIMIZED)   */
+/* GET: FETCH NOTIFICATIONS (PAGINATED & DEDUPLICATED) */
 /* -------------------------------------------------- */
 export async function GET(req: NextRequest) {
   try {
@@ -19,12 +19,32 @@ export async function GET(req: NextRequest) {
     const cursor = searchParams.get("cursor");
     const personnelId = session.user.id;
 
-    // Fetch via strict NotificationRecipient Join Table
+    const filterType = searchParams.get("type");
+    const filterRead = searchParams.get("read");
+    const filterSearch = searchParams.get("search");
+
+    const baseWhere: any = {
+      personnelId,
+      notification: { deletedAt: null }
+    };
+
+    if (filterRead !== null) {
+      baseWhere.read = filterRead === "true";
+    }
+
+    if (filterType && filterType !== "ALL") {
+      baseWhere.notification.type = filterType;
+    }
+
+    if (filterSearch) {
+      baseWhere.notification.OR = [
+        { title: { contains: filterSearch, mode: "insensitive" } },
+        { message: { contains: filterSearch, mode: "insensitive" } }
+      ];
+    }
+
     const recipientEntries = await prisma.notificationRecipient.findMany({
-      where: { 
-        personnelId, 
-        notification: { deletedAt: null } 
-      },
+      where: baseWhere,
       include: {
         notification: {
           include: {
@@ -47,37 +67,45 @@ export async function GET(req: NextRequest) {
       ...(cursor && { skip: 1, cursor: { id: cursor } }),
     });
 
-    const notifications = recipientEntries.map((entry) => {
-      const n = entry.notification;
-      return {
-        id: n.id,
-        recipientEntryId: entry.id,
-        type: n.type,
-        actionTrigger: n.actionTrigger, 
-        title: n.title,
-        message: n.message,
-        createdAt: n.createdAt,
-        updatedAt: n.updatedAt,
-        read: entry.read,
-        context: n.approval ? {
-          type: "APPROVAL",
-          id: n.approval.id,
-          actionType: n.approval.actionType,
-          status: n.approval.status,
-          requester: n.approval.requester,
-          approver: n.approval.approver,
-        } : n.activity ? {
-          type: "ACTIVITY",
-          id: n.activity.id,
-          action: n.activity.action,
-          critical: n.activity.critical,
-          metadata: n.activity.metadata,
-          actor: n.activity.personnel,
-          time: n.activity.createdAt.toISOString(),
-          ip: n.activity.ipAddress ?? "System",
-        } : null,
-      };
-    });
+    // Production Safeguard: Deduplicate by recipientEntryId to prevent frontend crashes
+    const seenIds = new Set();
+    const notifications = recipientEntries
+      .filter((entry) => {
+        if (seenIds.has(entry.id)) return false;
+        seenIds.add(entry.id);
+        return true;
+      })
+      .map((entry) => {
+        const n = entry.notification;
+        return {
+          id: n.id,
+          recipientEntryId: entry.id,
+          type: n.type,
+          actionTrigger: n.actionTrigger, 
+          title: n.title,
+          message: n.message,
+          createdAt: n.createdAt,
+          updatedAt: n.updatedAt,
+          read: entry.read,
+          context: n.approval ? {
+            type: "APPROVAL",
+            id: n.approval.id,
+            actionType: n.approval.actionType,
+            status: n.approval.status,
+            requester: n.approval.requester,
+            approver: n.approval.approver,
+          } : n.activity ? {
+            type: "ACTIVITY",
+            id: n.activity.id,
+            action: n.activity.action,
+            critical: n.activity.critical,
+            metadata: n.activity.metadata,
+            actor: n.activity.personnel,
+            time: n.activity.createdAt.toISOString(),
+            ip: n.activity.ipAddress ?? "System",
+          } : null,
+        };
+      });
 
     const unreadCount = await prisma.notificationRecipient.count({
       where: { personnelId, read: false, notification: { deletedAt: null } },
@@ -85,7 +113,9 @@ export async function GET(req: NextRequest) {
 
     return NextResponse.json({
       notifications,
-      pagination: { nextCursor: recipientEntries.length === limit ? recipientEntries[recipientEntries.length - 1].id : null },
+      pagination: { 
+        nextCursor: recipientEntries.length === limit ? recipientEntries[recipientEntries.length - 1].id : null 
+      },
       unreadCount,
     });
   } catch (error) {
@@ -120,7 +150,6 @@ export async function POST(req: NextRequest) {
     const { type, title, message, branchId, actionTrigger, activityLogId, approvalId, kind } = parsed.data;
     const organizationId = session.user.organizationId;
 
-    // Audience Targeting
     const recipients = await prisma.authorizedPersonnel.findMany({
       where: {
         organizationId,
@@ -128,7 +157,7 @@ export async function POST(req: NextRequest) {
         isLocked: false,
         OR: [
           { role: Role.ADMIN },
-          { role: Role.AUDITOR }, // Explicitly including Auditor from schema updates
+          { role: Role.AUDITOR },
           { isOrgOwner: true },
           branchId ? { role: Role.MANAGER, branchId } : {},
         ],
@@ -139,7 +168,6 @@ export async function POST(req: NextRequest) {
 
     if (!recipients.length) return NextResponse.json({ success: true, message: "No valid targets" });
 
-    // Atomic Creation
     const notification = await prisma.notification.create({
       data: {
         organizationId,
@@ -156,7 +184,6 @@ export async function POST(req: NextRequest) {
       },
     });
 
-    // Real-Time Push Payload
     const alertPayload = {
       id: notification.id,
       kind,
@@ -201,13 +228,23 @@ export async function PATCH(req: NextRequest) {
 
     if (!id || typeof read !== "boolean") return NextResponse.json({ error: "Invalid payload" }, { status: 400 });
 
-    // Uses the exact compound unique index from the schema @unique([notificationId, personnelId])
-    const updated = await prisma.notificationRecipient.update({
-      where: { notificationId_personnelId: { notificationId: id, personnelId } },
+    /**
+     * Optimized Atomic Update:
+     * Handles both 'recipientEntryId' or 'notificationId' in a single query 
+     * using the personnelId as a security boundary.
+     */
+    await prisma.notificationRecipient.updateMany({
+      where: {
+        personnelId,
+        OR: [
+          { id: id },
+          { notificationId: id }
+        ]
+      },
       data: { read },
     });
 
-    await pusherServer.trigger(`user-${personnelId}`, "notifications-read", { type: "single", id, read: updated.read });
+    await pusherServer.trigger(`user-${personnelId}`, "notifications-read", { type: "single", id, read });
     return NextResponse.json({ success: true });
   } catch (error) {
     console.error("[PATCH_NOTIFICATION_ERROR]:", error);

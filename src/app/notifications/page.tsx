@@ -219,7 +219,7 @@ export default function SystemInboxPage() {
         ) : (
           <div className="flex flex-col">
             {items.map((item) => (
-              <InboxRow key={item.id} item={item} onMutate={() => mutate()} />
+              <InboxRow key={item.recipientEntryId} item={item} onMutate={() => mutate()} />
             ))}
           </div>
         )}

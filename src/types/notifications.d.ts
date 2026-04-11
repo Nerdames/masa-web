@@ -1,26 +1,50 @@
-import type { NotificationType } from "./enums";
+import type { NotificationType, CriticalAction } from "./enums";
 
 /* ---------------------------------------------
  * Notification
- * Mirrors Prisma Notification model
+ * Mirrors Prisma Notification model [cite: 1577-1582]
  * ------------------------------------------- */
 export interface Notification {
   id: string;
   organizationId: string;
   branchId?: string | null;
-  personnelId?: string | null;
 
   type: NotificationType;
+  
+  /**
+   * Links to the specific action that triggered this notification [cite: 1578]
+   */
+  actionTrigger?: CriticalAction | null;
+  
+  /**
+   * References to associated activity logs or approval requests 
+   */
+  activityLogId?: string | null;
+  approvalId?: string | null;
+
   title: string;
   message: string;
 
-  read: boolean;
-
   /**
-   * Prisma: Json?
-   * Stores personnelIds who have read the notification
+   * Note: In the Prisma schema, 'read' status and 'personnelId' 
+   * are handled via the NotificationRecipient join table.
+   * If you are flattening this for a frontend view:
    */
-  readBy?: string[] | null;
-
+  read?: boolean; 
+  
   createdAt: Date;
+  updatedAt: Date;
+  deletedAt?: Date | null;
+}
+
+/**
+ * Join table mirroring the NotificationRecipient model 
+ */
+export interface NotificationRecipient {
+  id: string;
+  notificationId: string;
+  personnelId: string;
+  read: boolean; // Default is false 
+  createdAt: Date;
+  updatedAt: Date;
 }

@@ -142,7 +142,6 @@ export function AlertProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const clearActivePushes = useCallback(() => {
-    // Visually dismisses them from the Push overlay without marking them as read in the DB
     setAlerts((prev) => prev.filter((a) => a.kind !== "PUSH"));
   }, []);
 
@@ -229,7 +228,6 @@ function PushGroup({ alerts, isExpanded, setIsExpanded, onClearAll }: any) {
   const { clearActivePushes } = useAlerts();
   const [isHovered, setIsHovered] = useState(false);
 
-  // Intelligent Auto-Hide
   useEffect(() => {
     if (isHovered) return;
     const timer = setTimeout(() => clearActivePushes(), AUTO_HIDE_MS);
@@ -244,11 +242,8 @@ function PushGroup({ alerts, isExpanded, setIsExpanded, onClearAll }: any) {
       layout
       onMouseEnter={() => setIsHovered(true)}
       onMouseLeave={() => setIsHovered(false)}
-      // Removed overflow hidden up here so shadows/swipes aren't clipped aggressively, 
-      // but wrapping the content so the progress bar works
       className="relative bg-white dark:bg-[#18181b] border border-black/5 dark:border-white/10 shadow-2xl rounded-xl overflow-hidden pointer-events-auto flex flex-col"
     >
-      {/* Header - Only renders if there are multiple notifications */}
       <AnimatePresence>
         {isMulti && (
           <motion.div 
@@ -277,7 +272,6 @@ function PushGroup({ alerts, isExpanded, setIsExpanded, onClearAll }: any) {
         )}
       </AnimatePresence>
 
-      {/* Content - No scrollbars, popLayout handles the clean exit animations */}
       <motion.div layout className="flex flex-col p-1.5 pb-2">
         <AnimatePresence initial={false} mode="popLayout">
           {visible.map((a: MASAAlert) => (
@@ -286,10 +280,9 @@ function PushGroup({ alerts, isExpanded, setIsExpanded, onClearAll }: any) {
         </AnimatePresence>
       </motion.div>
 
-      {/* Visual Auto-Hide Progress Bar */}
       {!isHovered && (
         <motion.div
-          key={alerts.length} // Reset animation if new alert comes in
+          key={alerts.length} 
           initial={{ width: "100%" }}
           animate={{ width: "0%" }}
           transition={{ duration: AUTO_HIDE_MS / 1000, ease: "linear" }}
@@ -315,7 +308,6 @@ function PushItem({ alert }: { alert: MASAAlert }) {
       initial={{ opacity: 0, scale: 0.95, y: -10 }}
       animate={{ opacity: 1, scale: 1, y: 0 }}
       exit={{ opacity: 0, scale: 0.95, transition: { duration: 0.2 } }}
-      // touch-none and select-none prevent scrolling/highlighting while swiping
       className="bg-white dark:bg-[#202023] p-3 rounded-lg border border-transparent hover:border-black/5 dark:hover:border-white/5 mb-1 last:mb-0 touch-none select-none"
     >
       <div className="flex gap-3">

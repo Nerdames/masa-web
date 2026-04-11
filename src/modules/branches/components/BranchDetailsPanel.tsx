@@ -6,6 +6,7 @@ import { Branch, UpdateBranchPayload } from "../types";
 import { useSidePanel } from "@/core/components/layout/SidePanelContext";
 import { PersonnelDetailsPanel } from "@/modules/personnel/components/PersonnelDetailsPanel";
 import { getInitials } from "@/core/utils";
+import { useAlerts } from "@/core/components/feedback/AlertProvider";
 
 /* ==========================================================================
    TYPES & UTILS
@@ -45,7 +46,8 @@ interface BranchDetailsPanelProps {
   dispatch: (action: any) => void;
 }
 
-export function BranchDetailsPanel({ branchId, onRefresh, dispatch }: BranchDetailsPanelProps) {
+export function BranchDetailsPanel({ branchId, onRefresh }: BranchDetailsPanelProps) {
+  const { dispatch } = useAlerts();
   const { closePanel, openPanel } = useSidePanel();
   const [branch, setBranch] = useState<Branch | null>(null);
   const [isLoading, setIsLoading] = useState(true);
@@ -127,8 +129,10 @@ export function BranchDetailsPanel({ branchId, onRefresh, dispatch }: BranchDeta
     );
   };
 
+// 2. Use the 'dispatch' function inside your handler
   const handleBulkReassign = async () => {
     if (!targetBranchId || selectedPersonnel.length === 0) return;
+    
     setIsSaving(true);
     try {
       const res = await fetch(`/api/branches/${branchId}/reassign`, {
@@ -136,8 +140,10 @@ export function BranchDetailsPanel({ branchId, onRefresh, dispatch }: BranchDeta
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ personnelIds: selectedPersonnel, newBranchId: targetBranchId }),
       });
+      
       if (!res.ok) throw new Error();
       
+      // ✅ WORKS: Using the dispatch we initialized at the top
       dispatch({ 
         kind: "TOAST", 
         type: "SUCCESS", 
@@ -149,7 +155,13 @@ export function BranchDetailsPanel({ branchId, onRefresh, dispatch }: BranchDeta
       await loadBranchData();
       await onRefresh();
     } catch (err) {
-      dispatch({ kind: "TOAST", type: "ERROR", title: "Transfer Failed", message: "Protocol handshake rejected." });
+      // ✅ WORKS
+      dispatch({ 
+        kind: "TOAST", 
+        type: "WARNING", // Note: Ensure 'WARNING' or 'SECURITY' matches your TYPE_CONFIG
+        title: "Transfer Failed", 
+        message: "Protocol handshake rejected." 
+      });
     } finally {
       setIsSaving(false);
     }
