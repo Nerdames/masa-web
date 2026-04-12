@@ -9,7 +9,7 @@ import { useAlerts } from "@/core/components/feedback/AlertProvider";
 
 /**
  * MASA Terminal v3.0 - Unified SignIn
- * Fully synchronized with "Fortress Protocol" backend logic.
+ * Fixed: Resolved Middleware/Session Race Condition Loops
  */
 
 interface AuthErrorConfig {
@@ -20,16 +20,11 @@ interface AuthErrorConfig {
 }
 
 const ERROR_MAP: Record<string, AuthErrorConfig> = {
-  // Account Status Errors
   ACCOUNT_DISABLED: { title: "Node Decommissioned", message: "Access revoked by Admin.", type: "SECURITY", kind: "PUSH" },
   ORGANIZATION_SUSPENDED: { title: "Sector Offline", message: "Org-level suspension active.", type: "ERROR", kind: "PUSH" },
-  
-  // Lockout & Security Errors (Synchronized with auth.ts lock reasons)
   ACCOUNT_LOCKED_ADMIN: { title: "Security Lockout", message: "Terminal frozen by Admin override.", type: "ERROR", kind: "PUSH" },
   EXCESSIVE_FAILED_ATTEMPTS: { title: "Security Lockout", message: "Too many failed attempts. Cooling down...", type: "ERROR", kind: "PUSH" },
   TEMPORARY_SECURITY_LOCKOUT: { title: "Access Restricted", message: "Terminal cooling down. Please wait 15m.", type: "SECURITY", kind: "PUSH" },
-  
-  // Validation Errors
   INVALID_CREDENTIALS: { title: "Access Denied", message: "Invalid credentials.", type: "ERROR", kind: "TOAST" },
   CredentialsSignin: { title: "Access Denied", message: "Invalid credentials.", type: "ERROR", kind: "TOAST" },
   SessionExpired: { title: "Session Terminated", message: "Re-authentication required.", type: "SECURITY", kind: "PUSH" },
@@ -47,77 +42,86 @@ const SignInForm = () => {
   const searchParams = useSearchParams();
   const { dispatch } = useAlerts();
 
-  const callbackUrl = searchParams.get("callbackUrl") || "/";
+  // ✅ FIX: Removed manual callbackUrl variable to prevent conflicting navigation
   const urlError = searchParams.get("error");
 
   useEffect(() => {
-    // Generate transient Hardware ID for visual fidelity
     setHwId(Math.random().toString(36).substring(2, 8).toUpperCase());
 
-    if (urlError && ERROR_MAP[urlError]) {
-      const config = ERROR_MAP[urlError];
+    // ✅ FIX: Improved error handling for unknown error codes from middleware
+    if (urlError) {
+      const config = ERROR_MAP[urlError] || ERROR_MAP.INVALID_CREDENTIALS;
       dispatch({ kind: config.kind, type: config.type, title: config.title, message: config.message });
       controls.start({ x: [-8, 8, -8, 8, 0], transition: { duration: 0.4 } });
     }
   }, [urlError, dispatch, controls]);
 
-  const handleSignIn = async (e: FormEvent<HTMLFormElement>) => {
-    e.preventDefault();
-    if (loading) return;
-    setLoading(true);
+const handleSignIn = async (e: FormEvent<HTMLFormElement>) => {
+  e.preventDefault();
+  if (loading) return;
+  setLoading(true);
 
-    try {
-      const result = await signIn("credentials", {
-        redirect: false,
-        identifier: identifier.trim(),
-        password: password.trim(),
-        callbackUrl,
-      });
+  try {
+    const result = await signIn("credentials", {
+      redirect: false,
+      identifier: identifier.trim(),
+      password: password.trim(),
+    });
 
-      if (result?.error) {
-        await controls.start({ x: [-8, 8, -8, 8, 0], transition: { duration: 0.4 } });
-        
-        // Match specific error string from backend or fallback
-        const config = ERROR_MAP[result.error] || ERROR_MAP.INVALID_CREDENTIALS;
-        
-        dispatch({ 
-          kind: config.kind, 
-          type: config.type, 
-          title: config.title, 
-          message: config.message 
-        });
-      } else {
-        // Success: Verify session for security flags (e.g. requiresPasswordChange)
-        const session = await getSession();
-        const user = session?.user;
-
-        dispatch({
-          kind: "PUSH",
-          type: user?.requiresPasswordChange ? "WARNING" : "SUCCESS",
-          title: user?.requiresPasswordChange ? "Rotation Required" : "Identity Verified",
-          message: "Synchronizing security protocols...",
-        });
-
-        // Delay slightly for visual feedback/sync
-        // NEW LOGIC
-        setTimeout(() => {
-          if (user?.requiresPasswordChange) {
-            router.replace("/reset-password");
-          } else {
-            // Just go to root; let the Server Component (page.tsx) 
-            // handle the role-based dashboard sorting.
-            router.replace("/");
-          }
-          // This is critical to trigger the Server Component check
-          router.refresh(); 
-        }, 800);
-      }
-    } catch (err) {
-      dispatch({ kind: "TOAST", type: "ERROR", title: "Gateway Fault", message: "Network timeout." });
-    } finally {
+    if (result?.error) {
+      await controls.start({ x: [-8, 8, -8, 8, 0], transition: { duration: 0.4 } });
+      const config = ERROR_MAP[result.error] || ERROR_MAP.INVALID_CREDENTIALS;
+      dispatch({ kind: config.kind, type: config.type, title: config.title, message: config.message });
       setLoading(false);
+      return;
     }
-  };
+
+    // ✅ SESSION POLLING (Stabilization)
+    let attempts = 0;
+    let session = null;
+
+    while (attempts < 8) { // Increased attempts slightly
+      session = await getSession();
+      if (session?.user) break;
+      await new Promise((r) => setTimeout(r, 200));
+      attempts++;
+    }
+
+    // 🚨 Critical Check: If session still null, don't redirect (avoids loop)
+    if (!session?.user) {
+      dispatch({
+        kind: "TOAST",
+        type: "ERROR",
+        title: "Sync Failure",
+        message: "Identity verified, but terminal synchronization failed. Retry login.",
+      });
+      setLoading(false);
+      return;
+    }
+
+    const user = session.user;
+
+    dispatch({
+      kind: "PUSH",
+      type: user?.requiresPasswordChange ? "WARNING" : "SUCCESS",
+      title: user?.requiresPasswordChange ? "Rotation Required" : "Identity Verified",
+      message: "Synchronizing security protocols...",
+    });
+
+    // Final Navigation
+    setTimeout(() => {
+      if (user?.requiresPasswordChange) {
+        router.replace("/reset-password");
+      } else {
+        router.replace("/");
+      }
+    }, 600);
+
+  } catch (err) {
+    dispatch({ kind: "TOAST", type: "ERROR", title: "Gateway Fault", message: "Network timeout." });
+    setLoading(false);
+  }
+};
 
   return (
     <motion.div 

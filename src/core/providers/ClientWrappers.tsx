@@ -10,81 +10,69 @@ import { getPusherClient } from "@/core/lib/pusher";
 /**
  * SECURITY WATCHDOG
  * Monitors session health and enforces absolute session termination.
+ * Optimized to prevent redirect loops during hydration and navigation.
  */
 function SecurityWatchdog({ children }: { children: React.ReactNode }) {
   const { data: session, status } = useSession();
 
   const handleSecurityLogout = useCallback(async (reason: string) => {
+    // 1. Navigation Guard: Never redirect if already on login page
+    if (window.location.pathname.startsWith("/signin")) return;
+
     console.warn(`[SECURITY_ENFORCEMENT] Logging out. Reason: ${reason}`);
     
-    // 1. Immediately sever WebSocket to stop ghost notifications
+    // 2. Immediate socket severance
     getPusherClient().disconnect();
     
-    // 2. Perform a clean sign-out to clear the session cookie
+    // 3. Clean transition
     await signOut({ 
       callbackUrl: `/signin?error=${reason}`,
       redirect: true 
     });
   }, []);
 
-  // Monitor for 'expired' flag or 'unauthenticated' status
+  // Monitor session state changes
   useEffect(() => {
-    if (status === "unauthenticated") {
+    // Only act if we are in an authenticated state
+    if (status === "authenticated" && session?.user) {
+      if (session.user.expired) {
+        handleSecurityLogout("SessionExpired");
+      } else if (session.user.disabled || session.user.locked) {
+        handleSecurityLogout(session.user.disabled ? "ACCOUNT_DISABLED" : "ACCOUNT_LOCKED_ADMIN");
+      }
+    } else if (status === "unauthenticated") {
       getPusherClient().disconnect();
-    }
-
-    if (session?.user?.expired) {
-      handleSecurityLogout("SessionExpired");
-    }
-
-    if (session?.user?.disabled || session?.user?.locked) {
-      handleSecurityLogout(session.user.disabled ? "ACCOUNT_DISABLED" : "ACCOUNT_LOCKED_ADMIN");
     }
   }, [status, session, handleSecurityLogout]);
 
-  /**
-   * GLOBAL FETCH INTERCEPTOR
-   * Solves the [CLIENT_FETCH_ERROR] "Unexpected token '<'" issue.
-   * Instead of letting the browser try to parse a redirect HTML page as JSON,
-   * we catch the 401 and trigger a controlled logout.
-   */
+  // GLOBAL FETCH INTERCEPTOR
   useEffect(() => {
     const { fetch: originalFetch } = window;
 
     window.fetch = async (...args) => {
       const response = await originalFetch(...args);
 
-      // Check if middleware returned 401 (Unauthorized)
+      // Handle 401s without triggering a forced redirect loop
       if (response.status === 401) {
-        const url = typeof args[0] === "string" ? args[0] : args[0] instanceof URL ? args[0].href : "";
+        const url = typeof args[0] === "string" ? args[0] : "";
         
-        // Don't intercept actual auth requests to avoid infinite loops
-        if (!url.includes("/api/auth")) {
-          handleSecurityLogout("SessionExpired");
+        // Only log/handle if authenticated; ignore during loading or auth calls
+        if (!url.includes("/api/auth") && status === "authenticated") {
+           console.warn("[SECURITY] Unauthorized access detected; middleware handling redirect.");
         }
       }
 
       return response;
     };
 
-    return () => {
-      window.fetch = originalFetch;
-    };
-  }, [handleSecurityLogout]);
+    return () => { window.fetch = originalFetch; };
+  }, [status]); // Dependency on status ensures we don't trigger while loading
 
   return <>{children}</>;
 }
 
-/**
- * REAL-TIME LISTENER
- * Only active during an authenticated session.
- */
 function RealTimeListener() {
-  useSession();
-  
-  // Custom hook that manages Pusher subscriptions
   usePusherNotifications();
-  
   return null;
 }
 
@@ -94,7 +82,6 @@ export function ClientWrappers({ children }: { children: React.ReactNode }) {
       <SecurityWatchdog>
         <AlertProvider>
           <RealTimeListener />
-          
           <div className="flex flex-col h-full w-full overflow-hidden bg-inherit">
             <main className="flex-1 flex flex-col min-h-0 relative overflow-hidden">
               {children}
