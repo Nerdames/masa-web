@@ -1,5 +1,9 @@
-// File: app/api/vendors/route.ts (or your existing vendors API file path)
-// Replaces the previous implementation with schema-aligned, audit-hardened logic.
+// File: app/api/vendors/route.ts
+// Production-ready vendors API aligned to MASA schema and RBAC/forensic requirements.
+// - Supports READ, CREATE, UPDATE, ARCHIVE (soft-delete).
+// - Adds a safe "force" archive flow that detaches vendor from branchProducts when requested.
+// - All mutating operations produce cryptographically chained activity logs and optional management notifications.
+// - Strict session + RBAC validation via authorize() and next-auth session.
 
 import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "next-auth/next";
@@ -99,7 +103,7 @@ async function createAuditLog(
   const created = await tx.activityLog.create({
     data: {
       organizationId: data.organizationId,
-      branchId: data.branchId,
+      branchId: data.branchId ?? undefined,
       actorId: data.actorId,
       actorType: ActorType.USER,
       action: data.action,
@@ -155,8 +159,25 @@ async function notifyManagement(
   });
 }
 
+/**
+ * Detach vendor reference from branchProducts (safe detach).
+ * Returns number of updated branchProducts.
+ */
+async function detachVendorFromBranchProducts(tx: Prisma.TransactionClient, vendorId: string) {
+  const updated = await tx.branchProduct.updateMany({
+    where: { vendorId, deletedAt: null },
+    data: { vendorId: null },
+  });
+  return updated.count;
+}
+
 /* -------------------- Handlers -------------------- */
 
+/**
+ * GET /api/vendors
+ * - Supports pagination, search, sort, date filters (for sales metrics)
+ * - Returns vendors with computed metrics and _count fields
+ */
 export async function GET(req: NextRequest) {
   try {
     const user = await validateAccess(PermissionAction.READ);
@@ -288,6 +309,11 @@ export async function GET(req: NextRequest) {
   }
 }
 
+/**
+ * POST /api/vendors
+ * - Create vendor
+ * - Audit log + notify management
+ */
 export async function POST(req: NextRequest) {
   try {
     const user = await validateAccess(PermissionAction.CREATE);
@@ -342,6 +368,11 @@ export async function POST(req: NextRequest) {
   }
 }
 
+/**
+ * PATCH /api/vendors
+ * - Update vendor profile
+ * - Audit log + notify management
+ */
 export async function PATCH(req: NextRequest) {
   try {
     const user = await validateAccess(PermissionAction.UPDATE);
@@ -396,10 +427,25 @@ export async function PATCH(req: NextRequest) {
   }
 }
 
+/**
+ * DELETE /api/vendors?id=...&force=true
+ *
+ * Behavior:
+ * - Default: Prevent archive if vendor has active branchProducts (safe guard).
+ * - If query param force=true and user has DELETE permission, the API will:
+ *    1) Detach vendorId from active branchProducts (set vendorId = null) inside same transaction,
+ *    2) Soft-delete (deletedAt) the vendor,
+ *    3) Create audit log and notify management.
+ *
+ * Rationale:
+ * - Schema links branchProducts -> vendor (nullable). Detaching is safer than cascading deletes.
+ * - This preserves inventory records while allowing archival of vendor nodes when required.
+ */
 export async function DELETE(req: NextRequest) {
   try {
     const user = await validateAccess(PermissionAction.DELETE);
     const id = req.nextUrl.searchParams.get("id");
+    const force = (req.nextUrl.searchParams.get("force") || "false").toLowerCase() === "true";
 
     if (!id) return NextResponse.json({ error: "Vendor ID required" }, { status: 400 });
 
@@ -409,11 +455,25 @@ export async function DELETE(req: NextRequest) {
     });
 
     if (!vendor) return NextResponse.json({ error: "Vendor not found" }, { status: 404 });
-    if (vendor.branchProducts.length > 0) {
-      return NextResponse.json({ error: "Cannot archive vendor with active products" }, { status: 400 });
+
+    // If there are active branchProducts and force is not provided, block with clear guidance.
+    if (vendor.branchProducts.length > 0 && !force) {
+      return NextResponse.json(
+        {
+          error:
+            "Cannot archive vendor with active products. Use ?force=true to detach vendor from products and archive (this will set vendorId=null on related branchProducts).",
+        },
+        { status: 400 }
+      );
     }
 
+    // Proceed with transaction: optionally detach branchProducts, then archive vendor, create log, notify.
     await prisma.$transaction(async (tx) => {
+      let detachedCount = 0;
+      if (vendor.branchProducts.length > 0 && force) {
+        detachedCount = await detachVendorFromBranchProducts(tx, id);
+      }
+
       await tx.vendor.update({
         where: { id },
         data: { deletedAt: new Date(), updatedById: user.id },
@@ -426,15 +486,15 @@ export async function DELETE(req: NextRequest) {
         action: "ARCHIVE_VENDOR",
         resourceId: id,
         severity: Severity.HIGH,
-        description: `Archived vendor node: ${vendor.name}`,
-        metadata: { archivedBy: user.id },
+        description: `Archived vendor node: ${vendor.name}${detachedCount ? ` (detached ${detachedCount} products)` : ""}`,
+        metadata: { archivedBy: user.id, detachedProducts: detachedCount },
       });
 
       await notifyManagement(
         tx,
         user.organizationId,
         "Vendor Archived",
-        `Vendor ${vendor.name} archived.`,
+        `Vendor ${vendor.name} archived.${detachedCount ? ` ${detachedCount} product links detached.` : ""}`,
         log.id,
         user.branchId ?? null
       );

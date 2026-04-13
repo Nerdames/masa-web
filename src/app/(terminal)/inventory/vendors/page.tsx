@@ -2,15 +2,44 @@
 
 import React, { useCallback, useEffect, useMemo, useState, useTransition } from "react";
 import {
-  Search, Plus, Eye, Users, Phone, Mail, MapPin, CheckCircle2,
-  RefreshCw, ShieldCheck, X, Archive, Edit3, Loader2, Package, Save, AlertCircle
+  Search,
+  Plus,
+  Eye,
+  Users,
+  Phone,
+  Mail,
+  MapPin,
+  CheckCircle2,
+  RefreshCw,
+  ShieldCheck,
+  X,
+  Archive,
+  Edit3,
+  Loader2,
+  Package,
+  Save,
 } from "lucide-react";
 import { useAlerts } from "@/core/components/feedback/AlertProvider";
 import { useSidePanel } from "@/core/components/layout/SidePanelContext";
 
 /**
- * Types aligned with server payload
+ * VendorsWorkspace (Production-ready)
+ *
+ * - Consumes the new vendors payload shape:
+ *   { summary, leaders, vendors, pagination }
+ * - Calls /api/logs?resource=VENDOR&limit=20 to retrieve activity logs
+ * - Uses side panel pattern (openPanel) like Personnel page
+ * - Includes Create/Edit modal and Vendor detail panel inline for a single-file production component
+ *
+ * Notes:
+ * - Keep styling and UX consistent with PurchaseOrdersWorkspace and Personnel pages
+ * - All network calls use fetch and handle non-OK responses by reading JSON error
  */
+
+/* -------------------------
+   Types
+   ------------------------- */
+
 type Severity = "LOW" | "MEDIUM" | "HIGH" | "CRITICAL";
 
 interface IVendor {
@@ -22,7 +51,7 @@ interface IVendor {
   deletedAt?: string | null;
   createdAt: string;
   _count?: { purchaseOrders: number; grns: number };
-  // Additional computed fields may be present from server (performanceScore etc.)
+  // computed fields from server
   performanceScore?: number;
   totalRevenue?: number;
   salesVelocity?: number;
@@ -49,9 +78,10 @@ interface VendorsResponse {
   pagination: { total: number; page: number; limit: number; totalPages: number };
 }
 
-/**
- * VendorsWorkspace
- */
+/* -------------------------
+   Main Component
+   ------------------------- */
+
 export default function VendorsWorkspace({ organizationId }: { organizationId: string }) {
   const { dispatch } = useAlerts();
   const { openPanel, closePanel } = useSidePanel();
@@ -60,15 +90,15 @@ export default function VendorsWorkspace({ organizationId }: { organizationId: s
   const [logs, setLogs] = useState<IActivityLog[]>([]);
   const [searchTerm, setSearchTerm] = useState("");
   const [isPending, startTransition] = useTransition();
-
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingVendor, setEditingVendor] = useState<IVendor | null>(null);
   const [selectedVendor, setSelectedVendor] = useState<IVendor | null>(null);
 
   const [page, setPage] = useState(1);
   const [limit] = useState(25);
+  const [pagination, setPagination] = useState<{ total: number; page: number; limit: number; totalPages: number } | null>(null);
 
-  // Time-aware theme
+  // Time-aware theme (same approach as other pages)
   useEffect(() => {
     const applyTheme = () => {
       const hour = new Date().getHours();
@@ -81,25 +111,36 @@ export default function VendorsWorkspace({ organizationId }: { organizationId: s
     return () => clearInterval(id);
   }, []);
 
-  const loadData = useCallback(async (opts?: { page?: number; search?: string }) => {
-    startTransition(async () => {
-      try {
-        const q = new URLSearchParams();
-        q.set("limit", String(limit));
-        q.set("page", String(opts?.page ?? page));
-        if (opts?.search !== undefined) q.set("search", opts.search);
-        else if (searchTerm) q.set("search", searchTerm);
+  /* -------------------------
+     Data Loaders
+     ------------------------- */
 
-        const res = await fetch(`/api/vendors?${q.toString()}`);
-        const data: VendorsResponse = await res.json();
-        if (!res.ok) throw new Error((data as any).error || "Failed to load vendors");
-        setVendors(data.vendors || []);
-      } catch (err: any) {
-        dispatch({ kind: "TOAST", type: "WARNING", title: "Sync Error", message: err.message || "Failed to load vendors" });
-        setVendors([]);
-      }
-    });
-  }, [dispatch, limit, page, searchTerm]);
+  const loadVendors = useCallback(
+    async (opts?: { page?: number; search?: string }) => {
+      startTransition(async () => {
+        try {
+          const q = new URLSearchParams();
+          q.set("limit", String(limit));
+          q.set("page", String(opts?.page ?? page));
+          const search = opts?.search !== undefined ? opts.search : searchTerm;
+          if (search) q.set("search", search);
+
+          const res = await fetch(`/api/vendors?${q.toString()}`);
+          const data: VendorsResponse | { error?: string } = await res.json();
+          if (!res.ok) throw new Error((data as any).error || "Failed to load vendors");
+
+          setVendors((data as VendorsResponse).vendors || []);
+          setPagination((data as VendorsResponse).pagination || null);
+          setPage((data as VendorsResponse).pagination?.page || opts?.page || page);
+        } catch (err: any) {
+          dispatch({ kind: "TOAST", type: "WARNING", title: "Sync Error", message: err.message || "Failed to load vendors" });
+          setVendors([]);
+          setPagination(null);
+        }
+      });
+    },
+    [dispatch, limit, page, searchTerm]
+  );
 
   const loadLogs = useCallback(async () => {
     startTransition(async () => {
@@ -107,8 +148,9 @@ export default function VendorsWorkspace({ organizationId }: { organizationId: s
         const res = await fetch(`/api/logs?resource=VENDOR&limit=20`);
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || "Failed to load logs");
+        // Expecting { logs: IActivityLog[] }
         setLogs(data.logs || []);
-      } catch (err) {
+      } catch (err: any) {
         console.error("Audit retrieval failed:", err);
         setLogs([]);
       }
@@ -116,62 +158,88 @@ export default function VendorsWorkspace({ organizationId }: { organizationId: s
   }, []);
 
   useEffect(() => {
-    loadData({ page: 1, search: "" });
+    // initial load
+    loadVendors({ page: 1, search: "" });
     loadLogs();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [loadData, loadLogs]);
+  }, []);
 
-  // Refresh handler
+  // refresh helper
   const refreshAll = useCallback(() => {
-    loadData({ page: 1, search: searchTerm });
+    loadVendors({ page: 1, search: searchTerm });
     loadLogs();
-  }, [loadData, loadLogs, searchTerm]);
+  }, [loadVendors, loadLogs, searchTerm]);
 
-  // Archive vendor
+  /* -------------------------
+     Archive / Delete Handler
+     ------------------------- */
+
   const handleArchive = async (id: string) => {
-    const ok = confirm("Are you sure you want to archive this vendor node? This action is immutable and will be recorded in the forensic audit log.");
+    const ok = confirm(
+      "Are you sure you want to archive this vendor node? This action is immutable and will be recorded in the forensic audit log."
+    );
     if (!ok) return;
+
     startTransition(async () => {
       try {
         const res = await fetch(`/api/vendors?id=${id}`, { method: "DELETE" });
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || "Failed to archive vendor");
+
         dispatch({ kind: "TOAST", type: "SUCCESS", title: "Vendor Archived", message: "Vendor node archived successfully." });
         setSelectedVendor(null);
         refreshAll();
       } catch (err: any) {
+        // If backend returns 400 because vendor has active products, surface that message
         dispatch({ kind: "TOAST", type: "WARNING", title: "Archive Failed", message: err.message || "Archive failed" });
       }
     });
   };
 
-  // Create / Edit modal submit handled inside modal component (below)
+  /* -------------------------
+     Side panel opener (Personnel-style)
+     ------------------------- */
 
-  // Side panel for vendor details (similar to Personnel page)
   const openVendorPanel = (vendor: IVendor) => {
     setSelectedVendor(vendor);
     openPanel(
       <VendorDetailPanel
         vendor={vendor}
-        onClose={() => { setSelectedVendor(null); closePanel(); }}
-        onEdit={() => { setEditingVendor(vendor); setIsModalOpen(true); }}
+        onClose={() => {
+          setSelectedVendor(null);
+          closePanel();
+        }}
+        onEdit={() => {
+          setEditingVendor(vendor);
+          setIsModalOpen(true);
+        }}
         onArchive={() => handleArchive(vendor.id)}
       />
     );
   };
 
-  // Derived stats
+  /* -------------------------
+     Derived Stats & Filtering
+     ------------------------- */
+
   const stats = useMemo(() => {
-    const active = vendors.filter(v => !v.deletedAt).length;
+    const active = vendors.filter((v) => !v.deletedAt).length;
     const totalOrders = vendors.reduce((acc, v) => acc + (v._count?.purchaseOrders || 0), 0);
     const topVendor = [...vendors].sort((a, b) => (b._count?.purchaseOrders || 0) - (a._count?.purchaseOrders || 0))[0];
     return { active, totalOrders, topVendorName: topVendor?.name || "N/A" };
   }, [vendors]);
 
-  const filteredVendors = vendors.filter(v =>
-    v.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    (v.email || "").toLowerCase().includes(searchTerm.toLowerCase())
-  );
+  const filteredVendors = useMemo(() => {
+    const term = searchTerm.trim().toLowerCase();
+    if (!term) return vendors;
+    return vendors.filter(
+      (v) => v.name.toLowerCase().includes(term) || (v.email || "").toLowerCase().includes(term) || (v.phone || "").toLowerCase().includes(term)
+    );
+  }, [vendors, searchTerm]);
+
+  /* -------------------------
+     Render
+     ------------------------- */
 
   return (
     <div className="h-screen flex flex-col bg-[#FAFAFA] dark:bg-slate-950 text-slate-900 dark:text-slate-100 font-sans relative overflow-hidden transition-colors duration-300">
@@ -202,11 +270,23 @@ export default function VendorsWorkspace({ organizationId }: { organizationId: s
               />
             </div>
 
-            <button onClick={refreshAll} disabled={isPending} className="p-1.5 text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-slate-800 rounded-md transition-colors disabled:opacity-50">
+            <button
+              onClick={() => {
+                refreshAll();
+              }}
+              disabled={isPending}
+              className="p-1.5 text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-slate-800 rounded-md transition-colors disabled:opacity-50"
+            >
               <RefreshCw className={`w-4 h-4 ${isPending ? "animate-spin text-emerald-500" : ""}`} />
             </button>
 
-            <button onClick={() => { setEditingVendor(null); setIsModalOpen(true); }} className="flex h-8 px-3 bg-emerald-600 text-white text-[11px] font-bold uppercase tracking-wider rounded-md hover:bg-emerald-700 transition-all items-center gap-1.5 shadow-sm">
+            <button
+              onClick={() => {
+                setEditingVendor(null);
+                setIsModalOpen(true);
+              }}
+              className="flex h-8 px-3 bg-emerald-600 text-white text-[11px] font-bold uppercase tracking-wider rounded-md hover:bg-emerald-700 transition-all items-center gap-1.5 shadow-sm"
+            >
               <Plus className="w-3.5 h-3.5" />
               <span className="hidden sm:inline">Register Node</span>
             </button>
@@ -237,65 +317,113 @@ export default function VendorsWorkspace({ organizationId }: { organizationId: s
 
                 <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
                   {filteredVendors.length === 0 ? (
-                    <tr><td colSpan={5} className="px-5 py-20 text-center text-slate-400 text-[11px] font-bold uppercase">No records found within directory.</td></tr>
-                  ) : filteredVendors.map((vendor) => (
-                    <tr key={vendor.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors group">
-                      <td className="px-5 py-3">
-                        <div className="flex flex-col">
-                          <span onClick={() => openVendorPanel(vendor)} className="text-[13px] font-bold text-slate-900 dark:text-white hover:text-emerald-600 dark:hover:text-emerald-400 transition-colors cursor-pointer">{vendor.name}</span>
-                          <span className="text-[9px] text-slate-400 font-mono mt-0.5 uppercase tracking-tighter">{vendor.id}</span>
-                        </div>
-                      </td>
-
-                      <td className="px-5 py-3">
-                        <div className="space-y-1">
-                          <div className="flex items-center gap-1.5 text-[11px] text-slate-600 dark:text-slate-400">
-                            <Mail className="w-3 h-3 text-slate-400" /> {vendor.email || "—"}
-                          </div>
-                          <div className="flex items-center gap-1.5 text-[11px] text-slate-600 dark:text-slate-400">
-                            <Phone className="w-3 h-3 text-slate-400" /> {vendor.phone || "—"}
-                          </div>
-                        </div>
-                      </td>
-
-                      <td className="px-5 py-3">
-                        <div className="flex justify-center gap-4">
-                          <div className="flex flex-col items-center">
-                            <span className="text-[11px] font-bold text-slate-900 dark:text-white">{vendor._count?.purchaseOrders}</span>
-                            <span className="text-[8px] font-bold text-slate-400 uppercase tracking-tighter">Orders</span>
-                          </div>
-                          <div className="flex flex-col items-center">
-                            <span className="text-[11px] font-bold text-slate-900 dark:text-white">{vendor._count?.grns}</span>
-                            <span className="text-[8px] font-bold text-slate-400 uppercase tracking-tighter">GRNs</span>
-                          </div>
-                        </div>
-                      </td>
-
-                      <td className="px-5 py-3">
-                        <span className={`inline-flex items-center px-2 py-0.5 rounded text-[9px] font-bold tracking-widest border ${!vendor.deletedAt ? "bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-900/30 dark:text-emerald-400 dark:border-emerald-800" : "bg-red-50 text-red-700 border-red-200 dark:bg-red-900/30 dark:text-red-400 dark:border-red-800"}`}>
-                          {!vendor.deletedAt ? "ACTIVE" : "ARCHIVED"}
-                        </span>
-                      </td>
-
-                      <td className="px-5 py-3 text-right">
-                        <div className="flex justify-end gap-1.5 opacity-100 lg:opacity-0 group-hover:opacity-100 transition-opacity">
-                          <button onClick={() => openVendorPanel(vendor)} className="p-1.5 bg-white dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 rounded text-slate-400 hover:text-emerald-600 dark:hover:text-emerald-400 border border-slate-200 dark:border-slate-700 transition-colors" title="Node Details">
-                            <Eye className="w-3.5 h-3.5" />
-                          </button>
-
-                          {!vendor.deletedAt && (
-                            <button onClick={() => { setEditingVendor(vendor); setIsModalOpen(true); }} className="p-1.5 bg-white dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 rounded text-slate-400 hover:text-blue-600 dark:hover:text-blue-400 border border-slate-200 dark:border-slate-700 transition-colors" title="Update Profile">
-                              <Edit3 className="w-3.5 h-3.5" />
-                            </button>
-                          )}
-                        </div>
+                    <tr>
+                      <td colSpan={5} className="px-5 py-20 text-center text-slate-400 text-[11px] font-bold uppercase">
+                        No records found within directory.
                       </td>
                     </tr>
-                  ))}
+                  ) : (
+                    filteredVendors.map((vendor) => (
+                      <tr key={vendor.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors group">
+                        <td className="px-5 py-3">
+                          <div className="flex flex-col">
+                            <span onClick={() => openVendorPanel(vendor)} className="text-[13px] font-bold text-slate-900 dark:text-white hover:text-emerald-600 dark:hover:text-emerald-400 transition-colors cursor-pointer">
+                              {vendor.name}
+                            </span>
+                            <span className="text-[9px] text-slate-400 font-mono mt-0.5 uppercase tracking-tighter">{vendor.id}</span>
+                          </div>
+                        </td>
+
+                        <td className="px-5 py-3">
+                          <div className="space-y-1">
+                            <div className="flex items-center gap-1.5 text-[11px] text-slate-600 dark:text-slate-400">
+                              <Mail className="w-3 h-3 text-slate-400" /> {vendor.email || "—"}
+                            </div>
+                            <div className="flex items-center gap-1.5 text-[11px] text-slate-600 dark:text-slate-400">
+                              <Phone className="w-3 h-3 text-slate-400" /> {vendor.phone || "—"}
+                            </div>
+                          </div>
+                        </td>
+
+                        <td className="px-5 py-3">
+                          <div className="flex justify-center gap-4">
+                            <div className="flex flex-col items-center">
+                              <span className="text-[11px] font-bold text-slate-900 dark:text-white">{vendor._count?.purchaseOrders}</span>
+                              <span className="text-[8px] font-bold text-slate-400 uppercase tracking-tighter">Orders</span>
+                            </div>
+                            <div className="flex flex-col items-center">
+                              <span className="text-[11px] font-bold text-slate-900 dark:text-white">{vendor._count?.grns}</span>
+                              <span className="text-[8px] font-bold text-slate-400 uppercase tracking-tighter">GRNs</span>
+                            </div>
+                          </div>
+                        </td>
+
+                        <td className="px-5 py-3">
+                          <span
+                            className={`inline-flex items-center px-2 py-0.5 rounded text-[9px] font-bold tracking-widest border ${
+                              !vendor.deletedAt
+                                ? "bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-900/30 dark:text-emerald-400 dark:border-emerald-800"
+                                : "bg-red-50 text-red-700 border-red-200 dark:bg-red-900/30 dark:text-red-400 dark:border-red-800"
+                            }`}
+                          >
+                            {!vendor.deletedAt ? "ACTIVE" : "ARCHIVED"}
+                          </span>
+                        </td>
+
+                        <td className="px-5 py-3 text-right">
+                          <div className="flex justify-end gap-1.5 opacity-100 lg:opacity-0 group-hover:opacity-100 transition-opacity">
+                            <button
+                              onClick={() => openVendorPanel(vendor)}
+                              className="p-1.5 bg-white dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 rounded text-slate-400 hover:text-emerald-600 dark:hover:text-emerald-400 border border-slate-200 dark:border-slate-700 transition-colors"
+                              title="Node Details"
+                            >
+                              <Eye className="w-3.5 h-3.5" />
+                            </button>
+
+                            {!vendor.deletedAt && (
+                              <button
+                                onClick={() => {
+                                  setEditingVendor(vendor);
+                                  setIsModalOpen(true);
+                                }}
+                                className="p-1.5 bg-white dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 rounded text-slate-400 hover:text-blue-600 dark:hover:text-blue-400 border border-slate-200 dark:border-slate-700 transition-colors"
+                                title="Update Profile"
+                              >
+                                <Edit3 className="w-3.5 h-3.5" />
+                              </button>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                    ))
+                  )}
                 </tbody>
               </table>
             </div>
           </div>
+
+          {/* Pagination controls (simple) */}
+          {pagination && pagination.totalPages > 1 && (
+            <div className="flex items-center justify-between px-4 lg:px-6 py-3">
+              <div className="text-sm text-slate-500">Page {pagination.page} of {pagination.totalPages}</div>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => loadVendors({ page: Math.max(1, (pagination.page || 1) - 1), search: searchTerm })}
+                  disabled={(pagination.page || 1) <= 1}
+                  className="px-3 py-1 rounded bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-slate-600"
+                >
+                  Prev
+                </button>
+                <button
+                  onClick={() => loadVendors({ page: Math.min(pagination.totalPages, (pagination.page || 1) + 1), search: searchTerm })}
+                  disabled={(pagination.page || 1) >= pagination.totalPages}
+                  className="px-3 py-1 rounded bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-slate-600"
+                >
+                  Next
+                </button>
+              </div>
+            </div>
+          )}
         </main>
 
         <aside className="w-full xl:w-[320px] flex-shrink-0 mt-6 xl:mt-0 xl:border-l xl:border-slate-200/60 dark:border-slate-800 px-4 xl:px-0">
@@ -354,8 +482,13 @@ export default function VendorsWorkspace({ organizationId }: { organizationId: s
         <CreateEditVendorModal
           vendor={editingVendor}
           organizationId={organizationId}
-          onClose={() => { setIsModalOpen(false); setEditingVendor(null); }}
-          onRefresh={() => { refreshAll(); }}
+          onClose={() => {
+            setIsModalOpen(false);
+            setEditingVendor(null);
+          }}
+          onRefresh={() => {
+            refreshAll();
+          }}
         />
       )}
     </div>
@@ -370,22 +503,23 @@ function StatCard({ title, value, sub, icon: Icon, color }: any) {
   const colorMap: any = {
     emerald: "text-emerald-600 dark:text-emerald-400",
     blue: "text-blue-600 dark:text-blue-400",
-    amber: "text-amber-600 dark:text-amber-400"
+    amber: "text-amber-600 dark:text-amber-400",
   };
   const iconBgMap: any = {
     emerald: "bg-emerald-50 dark:bg-emerald-900/20",
     blue: "bg-blue-50 dark:bg-blue-900/20",
-    amber: "bg-amber-50 dark:bg-amber-900/20"
+    amber: "bg-amber-50 dark:bg-amber-900/20",
   };
 
   return (
     <div className="bg-white dark:bg-slate-900 p-5 rounded-xl border border-slate-200/60 dark:border-slate-800 shadow-sm flex flex-col justify-between transition-colors">
       <div className="flex justify-between items-start">
-        <p className={`text-[10px] font-bold ${colorMap[color] || 'text-slate-500'} uppercase tracking-widest`}>{title}</p>
+        <p className={`text-[10px] font-bold ${colorMap[color] || "text-slate-500"} uppercase tracking-widest`}>{title}</p>
         <div className={`p-1.5 rounded-lg ${iconBgMap[color]}`}>
           <Icon className={`w-3.5 h-3.5 ${colorMap[color]}`} />
         </div>
       </div>
+
       <div className="mt-3">
         <h3 className="text-xl lg:text-2xl font-bold text-slate-900 dark:text-white">{value}</h3>
         {sub && <span className="text-[9px] text-slate-400 font-bold uppercase tracking-tighter mt-0.5">{sub}</span>}
@@ -393,6 +527,11 @@ function StatCard({ title, value, sub, icon: Icon, color }: any) {
     </div>
   );
 }
+
+/* -------------------------
+   Vendor Detail Panel
+   (matches PersonnelDetailsPanel width & animation)
+   ------------------------- */
 
 function VendorDetailPanel({ vendor, onClose, onEdit, onArchive }: { vendor: IVendor; onClose: () => void; onEdit: () => void; onArchive: () => void; }) {
   return (
@@ -475,6 +614,9 @@ function VendorDetailPanel({ vendor, onClose, onEdit, onArchive }: { vendor: IVe
   );
 }
 
+/* -------------------------
+   Small UI helpers
+   ------------------------- */
 
 function ContactRow({ icon: Icon, label, value }: { icon: any; label: string; value: string }) {
   return (
@@ -482,6 +624,7 @@ function ContactRow({ icon: Icon, label, value }: { icon: any; label: string; va
       <div className="p-2 bg-slate-50 dark:bg-slate-800/50 rounded-lg border border-slate-100 dark:border-slate-700/50">
         <Icon className="w-3.5 h-3.5 text-slate-400 group-hover/row:text-emerald-500 transition-colors" />
       </div>
+
       <div className="flex flex-col">
         <span className="text-[9px] font-bold text-slate-400 uppercase tracking-widest mb-0.5">{label}</span>
         <span className="text-[12px] font-medium text-slate-700 dark:text-slate-300">{value}</span>
@@ -510,7 +653,7 @@ function CreateEditVendorModal({ vendor, organizationId, onClose, onRefresh }: {
     name: vendor?.name || "",
     email: vendor?.email || "",
     phone: vendor?.phone || "",
-    address: vendor?.address || ""
+    address: vendor?.address || "",
   });
   const [isSubmitting, setIsSubmitting] = useState(false);
 
@@ -519,7 +662,7 @@ function CreateEditVendorModal({ vendor, organizationId, onClose, onRefresh }: {
       name: vendor?.name || "",
       email: vendor?.email || "",
       phone: vendor?.phone || "",
-      address: vendor?.address || ""
+      address: vendor?.address || "",
     });
   }, [vendor]);
 
@@ -529,14 +672,17 @@ function CreateEditVendorModal({ vendor, organizationId, onClose, onRefresh }: {
     try {
       const payload: any = { ...formData };
       if (vendor) payload.id = vendor.id;
-      const res = await fetch('/api/vendors', {
-        method: vendor ? 'PATCH' : 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
+
+      const res = await fetch("/api/vendors", {
+        method: vendor ? "PATCH" : "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
       });
+
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Operation failed.");
-      dispatch({ kind: "TOAST", type: "SUCCESS", title: vendor ? "Vendor Updated" : "Vendor Registered", message: `Successfully ${vendor ? 'modified' : 'added'} ${data.name || 'the vendor'}.` });
+
+      dispatch({ kind: "TOAST", type: "SUCCESS", title: vendor ? "Vendor Updated" : "Vendor Registered", message: `Successfully ${vendor ? "modified" : "added"} ${data.name || "the vendor"}.` });
       onRefresh();
       onClose();
     } catch (err: any) {
@@ -550,9 +696,10 @@ function CreateEditVendorModal({ vendor, organizationId, onClose, onRefresh }: {
       <div className="bg-white dark:bg-slate-900 w-full max-w-lg rounded-2xl shadow-2xl flex flex-col animate-in fade-in zoom-in duration-200 border border-slate-200 dark:border-slate-800">
         <div className="px-6 py-4 border-b border-slate-100 dark:border-slate-800 flex justify-between items-center bg-slate-50/50 dark:bg-slate-800/50">
           <div>
-            <h2 className="text-[14px] font-bold text-slate-900 dark:text-white uppercase tracking-widest">{vendor ? 'Update Node Data' : 'Register Vendor Node'}</h2>
+            <h2 className="text-[14px] font-bold text-slate-900 dark:text-white uppercase tracking-widest">{vendor ? "Update Node Data" : "Register Vendor Node"}</h2>
             <p className="text-[10px] text-slate-500 dark:text-slate-400 uppercase font-bold tracking-tight">MASA Core Directory Persistence</p>
           </div>
+
           <button onClick={onClose} className="p-2 text-slate-400 hover:text-slate-700 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-slate-800 rounded-full transition-colors">
             <X className="w-5 h-5" />
           </button>
@@ -589,7 +736,7 @@ function CreateEditVendorModal({ vendor, organizationId, onClose, onRefresh }: {
 
           <button type="submit" form="vendor-form" disabled={isSubmitting} className="flex items-center gap-2 px-6 py-2 text-[10px] font-bold text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg transition-all uppercase tracking-widest disabled:opacity-70 shadow-md shadow-emerald-500/10">
             {isSubmitting ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />}
-            {vendor ? 'Update Registry' : 'Save Node'}
+            {vendor ? "Update Registry" : "Save Node"}
           </button>
         </div>
       </div>
