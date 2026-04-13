@@ -27,7 +27,13 @@ export type {
   CustomerTag
 } from "./domain";
 
-
+// -------------------- Vendors --------------------
+export type { 
+  VendorFull, 
+  BranchProductWithSales, 
+  VendorUpdateInput, 
+  VendorSummary 
+} from "./vendor";
 
 // -------------------- Personnel --------------------
 export type { AuthorizedPersonnel, BranchAssignment } from "./personnel";
