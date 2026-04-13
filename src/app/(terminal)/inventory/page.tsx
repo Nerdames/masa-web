@@ -12,6 +12,7 @@ import {
   AlertTriangle,
   ArrowUpRight,
   PackageCheck,
+  Users,
 } from "lucide-react";
 import { Role } from "@prisma/client";
 
@@ -36,6 +37,7 @@ const TILES: DashboardTile[] = [
   { id: "trn", title: "Transfers", descriptionSm: "Inter-branch movements.", icon: ArrowUpRight, href: "/inventory/transfers", color: "from-sky-600 to-indigo-500", roles: [Role.ADMIN, Role.MANAGER, Role.INVENTORY, Role.DEV] },
   { id: "rep", title: "Reports", descriptionSm: "Valuation & audit insights.", icon: BarChart3, href: "/inventory/reports", color: "from-rose-500 to-pink-500", roles: [Role.ADMIN, Role.MANAGER, Role.AUDITOR, Role.DEV] },
   { id: "ref", title: "Returns", descriptionSm: "Refunds & restocking.", icon: AlertTriangle, href: "/inventory/refunds", color: "from-red-600 to-rose-500", roles: [Role.ADMIN, Role.MANAGER, Role.DEV] },
+  { id: "ven", title: "Vendors", descriptionSm: "List of vendors.", icon: Users, href: "/inventory/vendors", color: "from-emerald-600 to-teal-500", roles: [Role.ADMIN, Role.MANAGER, Role.DEV] },
 ];
 
 export default function TerminalDashboard() {

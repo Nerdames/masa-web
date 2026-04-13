@@ -1,67 +1,113 @@
 "use server";
 
-import prisma from "@/core/lib/prisma"; // Adjust path to your prisma client
+import prisma from "@/core/lib/prisma";
 import { POStatus, Severity, ActorType, Role } from "@prisma/client";
 import { revalidatePath } from "next/cache";
+import { z } from "zod";
 
-/**
- * FETCH: Purchase Orders with full relations
- */
-export async function getPurchaseOrders(branchId: string) {
+// --- VALIDATION SCHEMAS ---
+const PurchaseOrderItemSchema = z.object({
+  productId: z.string().min(1, "Product is required"),
+  quantityOrdered: z.number().int().positive("Quantity must be at least 1"),
+  unitCost: z.number().positive("Unit cost must be greater than 0"),
+});
+
+export const CreatePurchaseOrderSchema = z.object({
+  organizationId: z.string(),
+  branchId: z.string(),
+  vendorId: z.string().min(1, "Vendor selection required"),
+  expectedDate: z.string().optional().nullable(),
+  notes: z.string().optional(),
+  items: z.array(PurchaseOrderItemSchema).min(1, "At least one item is required"),
+});
+
+// --- UTILITIES ---
+const generatePONumber = () => `PO-${Date.now().toString().slice(-6).toUpperCase()}`;
+const d2n = (val: any) => Number(val?.toString() || 0);
+
+// --- FETCH ACTIONS ---
+export async function getPurchaseOrdersData(branchId: string, organizationId: string) {
   try {
-    return await prisma.purchaseOrder.findMany({
-      where: { 
-        branchId, 
-        deletedAt: null 
-      },
-      include: {
-        vendor: { select: { id: true, name: true, email: true } },
-        createdBy: { select: { name: true } },
-        items: true,
-      },
-      orderBy: { createdAt: "desc" },
-    });
+    const [pos, logs, vendors, products] = await Promise.all([
+      // 1. Purchase Orders
+      prisma.purchaseOrder.findMany({
+        where: { branchId, deletedAt: null },
+        include: {
+          vendor: { select: { id: true, name: true, email: true } },
+          createdBy: { select: { id: true, name: true } },
+          items: {
+            include: { product: { select: { id: true, name: true, sku: true } } },
+          },
+        },
+        orderBy: { createdAt: "desc" },
+      }),
+      // 2. Forensic Ledger (PO Related)
+      prisma.activityLog.findMany({
+        where: { branchId, targetType: "PURCHASE_ORDER" },
+        orderBy: { createdAt: "desc" },
+        take: 30,
+      }),
+      // 3. Active Vendors for this Organization
+      prisma.vendor.findMany({
+        where: { organizationId, deletedAt: null },
+        select: { id: true, name: true },
+        orderBy: { name: "asc" }
+      }),
+      // 4. Branch Products for line item selection
+      prisma.branchProduct.findMany({
+        where: { branchId, deletedAt: null },
+        include: { product: { select: { id: true, name: true, sku: true } } },
+        orderBy: { product: { name: "asc" } }
+      })
+    ]);
+
+    // Serialize Decimals for Client
+    const serializedPOs = pos.map((po) => ({
+      ...po,
+      totalAmount: d2n(po.totalAmount),
+      items: po.items.map((item) => ({
+        ...item,
+        unitCost: d2n(item.unitCost),
+        totalCost: d2n(item.totalCost),
+      })),
+    }));
+
+    return { 
+      orders: serializedPOs, 
+      ledger: logs, 
+      vendors, 
+      products: products.map(bp => ({ id: bp.product.id, name: bp.product.name, sku: bp.product.sku, costPrice: d2n(bp.costPrice) })) 
+    };
   } catch (error) {
-    console.error("[GET_PO_ERROR]:", error);
-    throw new Error("Failed to retrieve purchase orders");
+    console.error("[GET_PO_DATA_ERROR]:", error);
+    throw new Error("Failed to retrieve workspace data");
   }
 }
 
-/**
- * TRANSACTIONAL CREATE: PO + Items + Forensic Audit
- */
-export async function createPurchaseOrder(
-  data: {
-    organizationId: string;
-    branchId: string;
-    vendorId: string;
-    expectedDate?: string;
-    notes?: string;
-    items: { productId: string; quantityOrdered: number; unitCost: number }[];
-  },
-  actorId: string,
-  role: Role
-) {
-  return await prisma.$transaction(async (tx) => {
-    // 1. Calculate Total Commitment
-    const totalAmount = data.items.reduce(
-      (acc, item) => acc + (item.quantityOrdered * item.unitCost), 0
-    );
+// --- MUTATION ACTIONS ---
+export async function createPurchaseOrder(formData: any, actorId: string, role: Role) {
+  const validated = CreatePurchaseOrderSchema.safeParse(formData);
+  if (!validated.success) throw new Error(`Validation Failed: ${validated.error.message}`);
 
-    // 2. Create the Purchase Order + Items
+  const { organizationId, branchId, vendorId, items, expectedDate, notes } = validated.data;
+
+  return await prisma.$transaction(async (tx) => {
+    const totalAmount = items.reduce((acc, item) => acc + (item.quantityOrdered * item.unitCost), 0);
+
     const po = await tx.purchaseOrder.create({
       data: {
-        organizationId: data.organizationId,
-        branchId: data.branchId,
-        vendorId: data.vendorId,
-        poNumber: `PO-${Date.now().toString().slice(-6)}`,
-        status: POStatus.ISSUED,
+        organizationId,
+        branchId,
+        vendorId,
+        poNumber: generatePONumber(),
+        status: POStatus.ISSUED, // Standard initial status
         totalAmount,
-        expectedDate: data.expectedDate ? new Date(data.expectedDate) : null,
-        notes: data.notes,
+        currency: "NGN",
+        expectedDate: expectedDate ? new Date(expectedDate) : null,
+        notes,
         createdById: actorId,
         items: {
-          create: data.items.map((item) => ({
+          create: items.map((item) => ({
             productId: item.productId,
             quantityOrdered: item.quantityOrdered,
             unitCost: item.unitCost,
@@ -72,38 +118,24 @@ export async function createPurchaseOrder(
       include: { vendor: true }
     });
 
-    // 3. Forensic Activity Log (Immutable Record)
+    // Forensic Logging [cite: 3169, 3178]
     await tx.activityLog.create({
       data: {
-        organizationId: po.organizationId,
-        branchId: po.branchId,
+        organizationId,
+        branchId,
         actorId,
         actorType: ActorType.USER,
         actorRole: role,
         action: "PURCHASE_ORDER_ISSUED",
-        description: `PO ${po.poNumber} issued to ${po.vendor.name} for ₦${totalAmount.toLocaleString()}`,
-        severity: Severity.MEDIUM,
+        description: `PO ${po.poNumber} issued to ${po.vendor.name}. Total Commitment: ₦${totalAmount.toLocaleString()}`,
+        severity: Severity.LOW,
         targetId: po.id,
         targetType: "PURCHASE_ORDER",
-        after: JSON.parse(JSON.stringify(po)), // Snapshot
+        after: JSON.parse(JSON.stringify(po)), 
       },
     });
 
     revalidatePath("/inventory/purchase-orders");
     return po;
-  });
-}
-
-/**
- * FETCH: Recent PO-related Audit Logs
- */
-export async function getPurchaseOrderLedger(branchId: string) {
-  return await prisma.activityLog.findMany({
-    where: { 
-      branchId, 
-      targetType: "PURCHASE_ORDER" 
-    },
-    orderBy: { createdAt: "desc" },
-    take: 20,
   });
 }

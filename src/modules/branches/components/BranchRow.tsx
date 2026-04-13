@@ -1,8 +1,11 @@
 // File: @/modules/branches/components/BranchRow.tsx
+"use client";
+
 import React from "react";
 import { motion } from "framer-motion";
-import { Branch } from "@/types";
-import { StatusGridBadge } from "@/modules/personnel/components/StatusGridBadge"; // Reusing the same badge component
+import { Branch } from "@/modules/branches/types";
+import { StatusGridBadge } from "@/modules/personnel/components/StatusGridBadge";
+import { TrendingUp, MapPin, Building2, Fingerprint, ChevronRight } from "lucide-react";
 
 interface BranchRowProps {
   branch: Branch;
@@ -12,110 +15,88 @@ interface BranchRowProps {
 
 /**
  * BranchRow
- * Redesigned to mirror PersonnelRow exactly.
- * High-fidelity, mobile-ready, and strictly non-wrapping.
+ * Cleaned up implementation removing redundant data displays and duplicated mobile fragments.
+ * Aligns strictly with the desktop table headers while maintaining responsive integrity.
  */
 export function BranchRow({ branch, isSelected, onClick }: BranchRowProps) {
-  // Map branch state to the shared StatusGridBadge types
+  // Logic for status mapping
   const status = branch.deletedAt ? "disabled" : branch.active ? "active" : "locked";
 
-  const revenue = new Intl.NumberFormat("en-US", {
+  // Formatted for the Nigerian market context (NGN)
+  const revenue = new Intl.NumberFormat("en-NG", {
     style: "currency",
-    currency: "USD",
+    currency: "NGN",
     notation: "compact",
+    maximumFractionDigits: 1,
   }).format(branch.salesTotal || 0);
 
   return (
-    <div className="flex flex-col w-full border-b border-black/[0.04] last:border-none group">
-      <motion.div
-        layoutId={`branch-${branch.id}`}
-        onClick={onClick}
-        role="button"
-        aria-pressed={isSelected}
-        className={`flex flex-col md:flex-row md:items-center px-4 md:px-8 py-3 md:py-3.5 transition-all cursor-pointer text-[13px] relative ${
-          isSelected ? "bg-blue-50/50" : "hover:bg-slate-50/80"
-        }`}
-      >
-        {/* --- DESKTOP VIEW (Identical Grid Alignment) --- */}
-        <div className="hidden md:flex items-center w-full whitespace-nowrap">
-          {/* Node ID (Matches Staff ID Column) */}
-          <div className="w-[120px] shrink-0 flex items-center gap-2">
-            <span className="font-mono text-slate-600 font-medium tracking-tight truncate uppercase">
-              {branch.id.slice(-8) || "PENDING"}
+    <motion.tr
+      layoutId={`branch-${branch.id}`}
+      onClick={onClick}
+      role="button"
+      aria-pressed={isSelected}
+      className={`group transition-all cursor-pointer border-b border-slate-100 dark:border-slate-800/50 last:border-none ${
+        isSelected ? "bg-blue-50/40 dark:bg-blue-900/10" : "hover:bg-slate-50 dark:hover:bg-slate-800/40"
+      }`}
+    >
+      {/* Column 1: Node Identification */}
+      <td className="px-5 py-4 whitespace-nowrap">
+        <div className="flex items-center gap-3">
+          <div className="p-1.5 bg-slate-100 dark:bg-slate-800 rounded-md">
+            <Fingerprint className="w-3.5 h-3.5 text-slate-400" />
+          </div>
+          <div className="flex flex-col min-w-0">
+            <span className="font-mono text-[10px] text-slate-500 font-medium uppercase tracking-tight">
+              {branch.id.slice(-8) || "PROVISIONING"}
             </span>
           </div>
+        </div>
+      </td>
 
-          {/* Branch Name (Matches Personnel Name Column) */}
-          <div className="flex-[1.5] min-w-[150px] text-slate-800 font-semibold truncate pr-4">
-            {branch.name}
-          </div>
+      {/* Column 2: Branch Identity */}
+      <td className="px-5 py-4 whitespace-nowrap">
+        <div className="flex items-center gap-2 text-slate-800 dark:text-slate-200 font-bold truncate max-w-[150px]">
+          <Building2 className="w-3.5 h-3.5 opacity-50 text-slate-400" />
+          <span className="text-[13px]">{branch.name}</span>
+        </div>
+      </td>
 
-          {/* Location (Matches Email Column) */}
-          <div className="flex-1 min-w-[150px] text-slate-500 truncate pr-4 font-normal" title={branch.location}>
+      {/* Column 3: Geographic Location */}
+      <td className="px-5 py-4 whitespace-nowrap">
+        <div className="flex items-center gap-2 text-slate-500 dark:text-slate-400" title={branch.location}>
+          <MapPin className="w-3.5 h-3.5 opacity-50" />
+          <span className="text-[12px] font-normal truncate max-w-[180px]">
             {branch.location || "Floating Node"}
-          </div>
-
-          {/* Category/Type (Matches Role Column) */}
-          <div className="w-[110px] shrink-0 pr-2">
-            <span className="text-[10px] font-bold text-slate-500 bg-slate-100 border border-black/[0.03] px-2 py-0.5 rounded uppercase tracking-wider truncate block w-fit">
-              {branch.type || "Retail"}
-            </span>
-          </div>
-
-          {/* Performance (Matches Primary Branch Column) */}
-          <div className="w-[160px] shrink-0 pr-4">
-            <div className="flex items-center gap-2 px-2 py-1 bg-white border border-black/[0.06] rounded-md shadow-sm w-fit max-w-full">
-              <i className="bx bx-trending-up text-blue-600 text-[14px]" />
-              <span className="text-[11px] font-bold text-blue-700 truncate">
-                {revenue} <span className="font-medium text-slate-400 ml-0.5">YTD</span>
-              </span>
-            </div>
-          </div>
-
-          {/* Status Badge */}
-          <div className="w-[90px] shrink-0 flex justify-end">
-            <StatusGridBadge status={status} />
-          </div>
+          </span>
         </div>
+      </td>
 
-        {/* --- MOBILE VIEW (Identical Property Stack) --- */}
-        <div className="flex md:hidden flex-col gap-1 w-full overflow-hidden">
-          <div className="flex justify-between items-start gap-2">
-            <div className="flex flex-col min-w-0">
-              <span className="font-bold text-slate-900 truncate">{branch.name}</span>
-              <span className="text-[11px] text-slate-500 truncate">{branch.location || "No Address Set"}</span>
-            </div>
-            <div className="shrink-0">
-              <StatusGridBadge status={status} />
-            </div>
-          </div>
-
-          <div className="flex items-center gap-3 mt-1">
-            {/* Mobile ID */}
-            <div className="flex items-center gap-1.5 text-[11px] shrink-0">
-              <span className="text-slate-400 font-bold uppercase tracking-widest text-[9px]">ID</span>
-              <span className="font-mono font-bold text-slate-600 bg-slate-100 px-1.5 py-0.5 rounded">
-                {branch.id.slice(-8).toUpperCase()}
-              </span>
-            </div>
-
-            {/* Mobile Type */}
-            <div className="flex items-center gap-1.5 text-[11px] min-w-0">
-              <span className="text-slate-400 font-bold uppercase tracking-widest text-[9px]">Type</span>
-              <span className="font-semibold text-slate-500 truncate uppercase">{branch.type || "Retail"}</span>
-            </div>
-          </div>
-
-          {/* Mobile Bottom Row (Matches Mobile Branch/Assignments row) */}
-          <div className="flex items-center justify-between mt-1.5 pt-1.5 border-t border-black/[0.03]">
-             <div className="flex items-center gap-2 overflow-hidden">
-                <i className="bx bx-dollar-circle text-slate-400" />
-                <span className="text-[11px] font-bold text-slate-700 truncate">Revenue: {revenue}</span>
-             </div>
-             <i className="bx bx-chevron-right text-slate-300" />
-          </div>
+      {/* Column 4: Infrastructure Type */}
+      <td className="px-5 py-4 whitespace-nowrap">
+        <div className="flex items-center gap-1.5">
+          <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500 bg-slate-100 dark:bg-slate-800/50 border border-black/[0.03] px-2 py-0.5 rounded truncate">
+            {branch.type || "Retail"}
+          </span>
         </div>
-      </motion.div>
-    </div>
+      </td>
+
+      {/* Column 5: Performance (YTD) */}
+      <td className="px-5 py-4 whitespace-nowrap">
+        <div className="flex items-center gap-2 px-2.5 py-1 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-md shadow-sm w-fit">
+          <TrendingUp className="w-3.5 h-3.5 text-blue-600" />
+          <span className="text-[11px] font-black text-slate-700 dark:text-slate-300">
+            {revenue} <span className="font-bold text-slate-400 dark:text-slate-500 ml-0.5">YTD</span>
+          </span>
+        </div>
+      </td>
+
+      {/* Column 6: Node Status */}
+      <td className="px-5 py-4 text-right whitespace-nowrap">
+        <div className="flex items-center justify-end gap-3">
+          <StatusGridBadge status={status} />
+        </div>
+      </td>
+    </motion.tr>
   );
 }

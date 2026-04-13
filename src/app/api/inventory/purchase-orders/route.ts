@@ -1,103 +1,76 @@
 import { NextResponse } from "next/server";
-import prisma from "@/core/lib/prisma";
-import { POStatus, Severity, ActorType } from "@prisma/client";
-
-// Utility for standardized numbering
-const generatePONumber = () => `PO-${Date.now().toString().slice(-6)}`;
+import { getServerSession } from "next-auth";
+import { authOptions } from "@/core/lib/auth";
+import { authorize, RESOURCES } from "@/core/lib/permission"; // Adjust path to your permission file
+import { PermissionAction } from "@prisma/client";
+import { getPurchaseOrdersData, createPurchaseOrder } from "@/modules/inventory/po-actions";
 
 export async function GET(req: Request) {
   try {
-    const { searchParams } = new URL(req.url);
-    const organizationId = searchParams.get("organizationId");
-    const branchId = searchParams.get("branchId");
-
-    if (!organizationId || !branchId) {
-      return NextResponse.json({ error: "Missing Context IDs" }, { status: 400 });
+    const session = await getServerSession(authOptions);
+    if (!session?.user || session.user.expired) {
+      return NextResponse.json({ error: "SESSION_EXPIRED" }, { status: 401 });
     }
 
-    const data = await prisma.purchaseOrder.findMany({
-      where: { organizationId, branchId, deletedAt: null },
-      include: {
-        vendor: { select: { name: true, email: true } },
-        createdBy: { select: { name: true } },
-        items: {
-          include: { product: { select: { name: true, sku: true } } }
-        }
-      },
-      orderBy: { createdAt: 'desc' }
+    const { searchParams } = new URL(req.url);
+    const branchId = searchParams.get("branchId") || session.user.branchId;
+    const organizationId = session.user.organizationId;
+
+    if (!branchId) return NextResponse.json({ error: "Branch Context Required" }, { status: 400 });
+
+    // Permissions check [cite: 4190, 3937]
+    const authCheck = authorize({
+      role: session.user.role,
+      isOrgOwner: session.user.isOrgOwner,
+      resource: RESOURCES.PROCUREMENT,
+      action: PermissionAction.READ
     });
 
+    if (!authCheck.allowed) {
+      return NextResponse.json({ error: "Forbidden: Read Access Denied" }, { status: 403 });
+    }
+
+    const data = await getPurchaseOrdersData(branchId, organizationId);
     return NextResponse.json(data);
-  } catch (error) {
-    return NextResponse.json({ error: "Trace: " + error }, { status: 500 });
+  } catch (error: any) {
+    console.error("[API_PO_GET_ERROR]:", error);
+    return NextResponse.json({ error: error.message }, { status: 500 });
   }
 }
 
 export async function POST(req: Request) {
   try {
-    const body = await req.json();
-    const { 
-      organizationId, 
-      branchId, 
-      vendorId, 
-      items, 
-      expectedDate, 
-      userId,
-      role 
-    } = body;
-
-    // Validation
-    if (!items?.length) {
-      return NextResponse.json({ error: "Registry requires items" }, { status: 400 });
+    const session = await getServerSession(authOptions);
+    if (!session?.user || session.user.expired) {
+      return NextResponse.json({ error: "SESSION_EXPIRED" }, { status: 401 });
     }
 
-    const totalAmount = items.reduce((sum: number, i: any) => sum + (i.quantityOrdered * i.unitCost), 0);
-
-    const result = await prisma.$transaction(async (tx) => {
-      // 1. Create PO record
-      const newPO = await tx.purchaseOrder.create({
-        data: {
-          organizationId,
-          branchId,
-          vendorId,
-          poNumber: generatePONumber(),
-          status: POStatus.ISSUED,
-          totalAmount,
-          expectedDate: expectedDate ? new Date(expectedDate) : null,
-          createdById: userId,
-          items: {
-            create: items.map((item: any) => ({
-              productId: item.productId,
-              quantityOrdered: Number(item.quantityOrdered),
-              unitCost: Number(item.unitCost),
-              totalCost: Number(item.quantityOrdered) * Number(item.unitCost),
-            }))
-          }
-        }
-      });
-
-      // 2. Audit Trail
-      await tx.activityLog.create({
-        data: {
-          organizationId,
-          branchId,
-          actorId: userId,
-          actorType: ActorType.USER,
-          actorRole: role,
-          action: "PO_CREATE",
-          description: `Manual Generation of ${newPO.poNumber}`,
-          severity: Severity.LOW,
-          targetId: newPO.id,
-          targetType: "PURCHASE_ORDER"
-        }
-      });
-
-      return newPO;
+    // Permissions check [cite: 4190, 3937]
+    const authCheck = authorize({
+      role: session.user.role,
+      isOrgOwner: session.user.isOrgOwner,
+      resource: RESOURCES.PROCUREMENT,
+      action: PermissionAction.CREATE
     });
 
-    return NextResponse.json(result, { status: 201 });
-  } catch (error) {
-    console.error(error);
-    return NextResponse.json({ error: "Internal Protocol Failure" }, { status: 500 });
+    if (!authCheck.allowed) {
+      return NextResponse.json({ error: "Forbidden: Create Access Denied" }, { status: 403 });
+    }
+
+    const body = await req.json();
+    
+    // Force organization and branch from secure session context
+    const orderPayload = {
+      ...body,
+      organizationId: session.user.organizationId,
+      branchId: session.user.branchId || body.branchId,
+    };
+
+    const result = await createPurchaseOrder(orderPayload, session.user.id, session.user.role);
+
+    return NextResponse.json({ success: true, po: result }, { status: 201 });
+  } catch (error: any) {
+    console.error("[API_PO_POST_FAILURE]:", error);
+    return NextResponse.json({ error: error.message || "Internal Protocol Failure" }, { status: 500 });
   }
 }

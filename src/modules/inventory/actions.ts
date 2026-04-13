@@ -2,39 +2,13 @@
 "use server";
 
 import prisma from "@/core/lib/prisma";
-import { Role, Severity } from "@prisma/client";
+import { Role, Severity, Prisma } from "@prisma/client";
 import { Decimal } from "@prisma/client/runtime/library";
 
 /* -------------------------
-   Cursor helpers (base64 JSON)
+   Types & Utilities
    ------------------------- */
-function encodeCursor(payload: Record<string, any>): string {
-  return Buffer.from(JSON.stringify(payload), "utf8").toString("base64");
-}
-function decodeCursor(cursor?: string): Record<string, any> | null {
-  if (!cursor) return null;
-  try {
-    return JSON.parse(Buffer.from(cursor, "base64").toString("utf8"));
-  } catch {
-    return null;
-  }
-}
 
-/* -------------------------
-   Decimal conversion helper
-   ------------------------- */
-function decimalToNumber(value: Decimal | null | undefined): number {
-  if (value === null || value === undefined) return 0;
-  try {
-    return Number(value.toString());
-  } catch {
-    return parseFloat(value.toString());
-  }
-}
-
-/* -------------------------
-   Paginated result type
-   ------------------------- */
 export type PaginatedResult<T> = {
   items: T[];
   nextCursor: string | null;
@@ -42,55 +16,89 @@ export type PaginatedResult<T> = {
   hasMore: boolean;
 };
 
+// Types aligned with MASA Forensic Schema 
+export interface FortressInventoryItem {
+  id: string;
+  branchId: string;
+  productId: string;
+  stock: number;
+  stockVersion: number;
+  reorderLevel: number;
+  safetyStock: number;
+  lastSoldAt: Date | null;
+  lastRestockedAt: Date | null;
+  vendorId: string | null;
+  sellingPrice: number;
+  costPrice: number;
+  uomId: string | null;
+  deletedAt: Date | null;
+  product: {
+    id: string;
+    name: string;
+    sku: string;
+    barcode: string | null;
+    category: { id: string; name: string } | null;
+    uom: { id: string; name: string; abbreviation: string } | null;
+  };
+}
+
+export interface FortressLedgerLog {
+  id: string;
+  action: string;
+  actorId: string;
+  actorRole: Role | null;
+  severity: Severity | null;
+  description: string;
+  metadata: any;
+  approvalRequestId: string | null;
+  stockMovementId: string | null;
+  createdAt: Date;
+  hash?: string; // Included for forensic verification
+}
+
+function encodeCursor(payload: Record<string, any>): string {
+  return Buffer.from(JSON.stringify(payload), "utf8").toString("base64");
+}
+
+function decodeCursor(cursor?: string): Record<string, any> | null {
+  if (!cursor) return null;
+  try {
+    return JSON.parse(Buffer.from(cursor, "base64").toString("utf8"));
+  } catch { return null; }
+}
+
+function decimalToNumber(value: Decimal | number | null | undefined): number {
+  if (value === null || value === undefined) return 0;
+  return Number(value.toString());
+}
+
 /* -------------------------
-   getFortressInventoryPaged
-   - Cursor: { id }
-   - Order: product.name asc, id asc
+   Inventory Paging Logic
    ------------------------- */
+
 export async function getFortressInventoryPaged(
   branchId: string,
-  opts?: {
-    limit?: number;
-    cursor?: string;
-    since?: Date;
-  }
-): Promise<PaginatedResult<any>> {
-  if (!branchId) throw new Error("branchId is required");
+  opts?: { limit?: number; cursor?: string; since?: Date; }
+): Promise<PaginatedResult<FortressInventoryItem>> {
+  if (!branchId) throw new Error("branchId required");
+
   const pageSize = Math.min(opts?.limit ?? 50, 500);
   const decoded = decodeCursor(opts?.cursor);
-  const decodedId = decoded?.id ?? null;
-
-  const where: any = { branchId, deletedAt: null, ...(opts?.since ? { updatedAt: { gte: opts.since } } : {}) };
+  
+  const where: Prisma.BranchProductWhereInput = {
+    branchId,
+    deletedAt: null,
+    ...(opts?.since ? { updatedAt: { gte: opts.since } } : {}),
+  };
 
   const items = await prisma.branchProduct.findMany({
     where,
-    orderBy: [
-      { product: { name: "asc" } },
-      { id: "asc" },
-    ],
+    orderBy: [{ product: { name: "asc" } }, { id: "asc" }],
     take: pageSize + 1,
-    ...(decodedId ? { cursor: { id: decodedId }, skip: 1 } : {}),
-    select: {
-      id: true,
-      branchId: true,
-      productId: true,
-      stock: true,
-      stockVersion: true,
-      reorderLevel: true,
-      safetyStock: true,
-      lastSoldAt: true,
-      lastRestockedAt: true,
-      vendorId: true,
-      sellingPrice: true,
-      costPrice: true,
-      uomId: true,
-      deletedAt: true,
+    ...(decoded?.id ? { cursor: { id: decoded.id }, skip: 1 } : {}),
+    include: {
       product: {
-        select: {
-          id: true,
-          name: true,
-          sku: true,
-          barcode: true,
+        include: {
           category: { select: { id: true, name: true } },
           uom: { select: { id: true, name: true, abbreviation: true } },
         },
@@ -101,10 +109,7 @@ export async function getFortressInventoryPaged(
   const hasMore = items.length > pageSize;
   const pageItems = hasMore ? items.slice(0, pageSize) : items;
 
-  const nextCursor = hasMore ? encodeCursor({ id: pageItems[pageItems.length - 1].id }) : null;
-  const prevCursor = pageItems.length ? encodeCursor({ id: pageItems[0].id }) : null;
-
-  const mapped = pageItems.map((it) => ({
+  const mapped: FortressInventoryItem[] = pageItems.map((it) => ({
     id: it.id,
     branchId: it.branchId,
     productId: it.productId,
@@ -115,107 +120,67 @@ export async function getFortressInventoryPaged(
     lastSoldAt: it.lastSoldAt,
     lastRestockedAt: it.lastRestockedAt,
     vendorId: it.vendorId,
-    sellingPrice: decimalToNumber(it.sellingPrice as any),
-    costPrice: decimalToNumber(it.costPrice as any),
+    sellingPrice: decimalToNumber(it.sellingPrice),
+    costPrice: decimalToNumber(it.costPrice),
     uomId: it.uomId,
     deletedAt: it.deletedAt,
-    product: {
-      id: it.product.id,
-      name: it.product.name,
-      sku: it.product.sku,
-      barcode: it.product.barcode,
-      category: it.product.category ? { id: it.product.category.id, name: it.product.category.name } : null,
-      uom: it.product.uom ? { id: it.product.uom.id, name: it.product.uom.name, abbreviation: it.product.uom.abbreviation } : null,
-    },
+    product: it.product,
   }));
 
-  return { items: mapped, nextCursor, prevCursor, hasMore };
+  return {
+    items: mapped,
+    nextCursor: hasMore ? encodeCursor({ id: mapped[mapped.length - 1].id }) : null,
+    prevCursor: mapped.length ? encodeCursor({ id: mapped[0].id }) : null,
+    hasMore,
+  };
 }
 
 /* -------------------------
-   getFortressLedgerPaged
-   - Cursor: { id, createdAt }
-   - Order: createdAt desc, id desc
+   Forensic Ledger Paging
    ------------------------- */
+
 export async function getFortressLedgerPaged(
   branchId: string,
-  opts?: {
-    limit?: number;
-    cursor?: string;
-    since?: Date;
-  }
-): Promise<PaginatedResult<any>> {
-  if (!branchId) throw new Error("branchId is required");
+  opts?: { limit?: number; cursor?: string; since?: Date; }
+): Promise<PaginatedResult<FortressLedgerLog>> {
+  if (!branchId) throw new Error("branchId required");
+
   const pageSize = Math.min(opts?.limit ?? 50, 1000);
   const decoded = decodeCursor(opts?.cursor);
-  const decodedId = decoded?.id ?? null;
 
-  const where: any = { branchId, deletedAt: null, ...(opts?.since ? { createdAt: { gte: opts.since } } : {}) };
+  const where: Prisma.ActivityLogWhereInput = {
+    branchId,
+    ...(opts?.since ? { createdAt: { gte: opts.since } } : {}),
+  };
 
   const logs = await prisma.activityLog.findMany({
     where,
-    orderBy: [
-      { createdAt: "desc" },
-      { id: "desc" },
-    ],
+    orderBy: [{ createdAt: "desc" }, { id: "desc" }],
     take: pageSize + 1,
-    ...(decodedId ? { cursor: { id: decodedId }, skip: 1 } : {}),
-    select: {
-      id: true,
-      action: true,
-      actorId: true,
-      actorRole: true,
-      severity: true,
-      description: true,
-      metadata: true,
-      createdAt: true,
-      approvalRequestId: true,
-      stockMovementId: true,
-    },
+    ...(decoded?.id ? { cursor: { id: decoded.id }, skip: 1 } : {}),
   });
 
   const hasMore = logs.length > pageSize;
   const pageLogs = hasMore ? logs.slice(0, pageSize) : logs;
 
-  const nextCursor = hasMore ? encodeCursor({ id: pageLogs[pageLogs.length - 1].id, createdAt: pageLogs[pageLogs.length - 1].createdAt }) : null;
-  const prevCursor = pageLogs.length ? encodeCursor({ id: pageLogs[0].id, createdAt: pageLogs[0].createdAt }) : null;
-
-  const mapped = pageLogs.map((l) => ({
+  const mapped: FortressLedgerLog[] = pageLogs.map((l) => ({
     id: l.id,
     action: l.action,
-    actorId: l.actorId,
-    actorRole: (l.actorRole as Role) ?? null,
-    severity: (l.severity as Severity) ?? null,
-    description: l.description,
-    metadata: l.metadata ?? null,
-    approvalRequestId: l.approvalRequestId ?? null,
-    stockMovementId: l.stockMovementId ?? null,
+    actorId: l.actorId ?? "SYSTEM",
+    actorRole: l.actorRole as Role,
+    severity: l.severity as Severity,
+    description: (l as any).description || `Action: ${l.action}`,
+    metadata: l.metadata,
+    approvalRequestId: (l as any).approvalRequestId || null,
+    stockMovementId: (l as any).stockMovementId || null,
     createdAt: l.createdAt,
+    hash: (l as any).hash,
   }));
 
-  return { items: mapped, nextCursor, prevCursor, hasMore };
-}
-
-/* -------------------------
-   Backwards-compatible wrappers
-   - Export the original names your UI expects.
-   - These call the paged versions with sensible defaults.
-   ------------------------- */
-
-/**
- * Backwards-compatible: returns the first page (limit default 1000) of inventory.
- * Kept for callers that expect getFortressInventory.
- */
-export async function getFortressInventory(branchId: string) {
-  const res = await getFortressInventoryPaged(branchId, { limit: 1000 });
-  return res.items;
-}
-
-/**
- * Backwards-compatible: returns the latest 50 ledger entries.
- * Kept for callers that expect getFortressLedger.
- */
-export async function getFortressLedger(branchId: string) {
-  const res = await getFortressLedgerPaged(branchId, { limit: 50 });
-  return res.items;
+  return {
+    items: mapped,
+    nextCursor: hasMore ? encodeCursor({ id: mapped[mapped.length - 1].id }) : null,
+    prevCursor: mapped.length ? encodeCursor({ id: mapped[0].id }) : null,
+    hasMore,
+  };
 }
