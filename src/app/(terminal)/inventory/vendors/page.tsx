@@ -174,27 +174,112 @@ export default function VendorsWorkspace({ organizationId }: { organizationId: s
      Archive / Delete Handler
      ------------------------- */
 
-  const handleArchive = async (id: string) => {
-    const ok = confirm(
-      "Are you sure you want to archive this vendor node? This action is immutable and will be recorded in the forensic audit log."
-    );
-    if (!ok) return;
+const handleArchive = async (id: string) => {
+  const ok = confirm(
+    "Are you sure you want to archive this vendor node? This action is immutable and will be recorded in the forensic audit log."
+  );
+  if (!ok) return;
 
-    startTransition(async () => {
-      try {
-        const res = await fetch(`/api/vendors?id=${id}`, { method: "DELETE" });
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.error || "Failed to archive vendor");
+  startTransition(async () => {
+    try {
+      // 1) Try normal archive first (safe default)
+      let res = await fetch(`/api/vendors?id=${encodeURIComponent(id)}`, {
+        method: "DELETE",
+        headers: { "Accept": "application/json" },
+      });
 
-        dispatch({ kind: "TOAST", type: "SUCCESS", title: "Vendor Archived", message: "Vendor node archived successfully." });
+      let data = await res.json().catch(() => ({}));
+
+      // Success path
+      if (res.ok) {
+        dispatch({
+          kind: "TOAST",
+          type: "SUCCESS",
+          title: "Vendor Archived",
+          message: "Vendor node archived successfully.",
+        });
         setSelectedVendor(null);
         refreshAll();
-      } catch (err: any) {
-        // If backend returns 400 because vendor has active products, surface that message
-        dispatch({ kind: "TOAST", type: "WARNING", title: "Archive Failed", message: err.message || "Archive failed" });
+        return;
       }
-    });
-  };
+
+      // If backend blocked because of active products, offer force option
+      const blockedMessage =
+        (data && data.error && String(data.error)) ||
+        (typeof data === "string" ? data : "") ||
+        "";
+
+      const isActiveProductsBlock =
+        res.status === 400 &&
+        /Cannot archive vendor with active products/i.test(blockedMessage);
+
+      if (isActiveProductsBlock) {
+        // Explain consequences and ask for explicit confirmation to force detach
+        const forceConfirm = confirm(
+          "This vendor has active product links. " +
+            "If you proceed with force, the system will detach the vendor from related products (vendorId will be set to null) and then archive the vendor. " +
+            "Inventory records will be preserved. Do you want to force archive?"
+        );
+
+        if (!forceConfirm) {
+          dispatch({
+            kind: "TOAST",
+            type: "WARNING",
+            title: "Archive Aborted",
+            message: "Vendor was not archived. Detach required to proceed.",
+          });
+          return;
+        }
+
+        // 2) Force archive: call API with force=true
+        res = await fetch(
+          `/api/vendors?id=${encodeURIComponent(id)}&force=true`,
+          {
+            method: "DELETE",
+            headers: { "Accept": "application/json" },
+          }
+        );
+
+        data = await res.json().catch(() => ({}));
+
+        if (res.ok) {
+          dispatch({
+            kind: "TOAST",
+            type: "SUCCESS",
+            title: "Vendor Archived (Forced)",
+            message:
+              (data && data.message) ||
+              "Vendor archived and product links detached successfully.",
+          });
+          setSelectedVendor(null);
+          refreshAll();
+          return;
+        }
+
+        // Force failed — surface backend message
+        throw new Error(
+          (data && data.error) || "Force archive failed. See server response."
+        );
+      }
+
+      // Other non-OK responses: surface backend message
+      throw new Error(blockedMessage || "Archive failed. See server response.");
+    } catch (err: any) {
+      // Generic error handling and user-friendly messages
+      const message =
+        err?.message ||
+        "Archive failed due to an unexpected error. Check server logs for details.";
+      dispatch({
+        kind: "TOAST",
+        type: "WARNING",
+        title: "Archive Failed",
+        message,
+      });
+      console.error("Archive error:", err);
+    }
+  });
+};
+
 
   /* -------------------------
      Side panel opener (Personnel-style)
@@ -505,25 +590,34 @@ function StatCard({ title, value, sub, icon: Icon, color }: any) {
     blue: "text-blue-600 dark:text-blue-400",
     amber: "text-amber-600 dark:text-amber-400",
   };
-  const iconBgMap: any = {
-    emerald: "bg-emerald-50 dark:bg-emerald-900/20",
-    blue: "bg-blue-50 dark:bg-blue-900/20",
-    amber: "bg-amber-50 dark:bg-amber-900/20",
+
+  const iconColorMap: any = {
+    emerald: "text-emerald-200 dark:text-emerald-900/50",
+    blue: "text-blue-200 dark:text-blue-900/50",
+    amber: "text-amber-200 dark:text-amber-900/50",
   };
 
   return (
     <div className="bg-white dark:bg-slate-900 p-5 rounded-xl border border-slate-200/60 dark:border-slate-800 shadow-sm flex flex-col justify-between transition-colors">
-      <div className="flex justify-between items-start">
-        <p className={`text-[10px] font-bold ${colorMap[color] || "text-slate-500"} uppercase tracking-widest`}>{title}</p>
-        <div className={`p-1.5 rounded-lg ${iconBgMap[color]}`}>
-          <Icon className={`w-3.5 h-3.5 ${colorMap[color]}`} />
-        </div>
+      {/* Title */}
+      <p className={`text-[10px] font-bold uppercase tracking-wider ${colorMap[color] || "text-slate-500 dark:text-slate-400"}`}>
+        {title}
+      </p>
+
+      {/* Value and Icon */}
+      <div className="flex items-end justify-between mt-2">
+        <h3 className="text-2xl font-bold text-slate-900 dark:text-white">
+          {value}
+        </h3>
+        <Icon className={`w-5 h-5 ${iconColorMap[color] || "text-slate-300 dark:text-slate-600"}`} />
       </div>
 
-      <div className="mt-3">
-        <h3 className="text-xl lg:text-2xl font-bold text-slate-900 dark:text-white">{value}</h3>
-        {sub && <span className="text-[9px] text-slate-400 font-bold uppercase tracking-tighter mt-0.5">{sub}</span>}
-      </div>
+      {/* Optional Subtext */}
+      {sub && (
+        <span className="text-[9px] text-slate-400 font-bold uppercase tracking-tighter mt-0.5">
+          {sub}
+        </span>
+      )}
     </div>
   );
 }

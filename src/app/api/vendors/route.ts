@@ -1,9 +1,6 @@
 // File: app/api/vendors/route.ts
 // Production-ready vendors API aligned to MASA schema and RBAC/forensic requirements.
-// - Supports READ, CREATE, UPDATE, ARCHIVE (soft-delete).
-// - Adds a safe "force" archive flow that detaches vendor from branchProducts when requested.
-// - All mutating operations produce cryptographically chained activity logs and optional management notifications.
-// - Strict session + RBAC validation via authorize() and next-auth session.
+// Fixed: activityLog.create usage (schema expects targetId/targetType, not resource/resourceId)
 
 import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "next-auth/next";
@@ -63,7 +60,7 @@ async function validateAccess(action: PermissionAction) {
 
 /**
  * Create cryptographic chained audit log inside provided transaction.
- * Stores requestId, previousHash, hash, actorType, resource and other metadata.
+ * NOTE: Prisma activityLog model uses targetId/targetType (not resource/resourceId).
  */
 async function createAuditLog(
   tx: Prisma.TransactionClient,
@@ -72,7 +69,7 @@ async function createAuditLog(
     branchId: string | null;
     actorId: string;
     action: string;
-    resourceId: string | null;
+    resourceId: string | null; // will map to targetId
     severity: Severity;
     description: string;
     metadata?: Prisma.JsonValue;
@@ -94,12 +91,13 @@ async function createAuditLog(
     requestId,
     actorId: data.actorId,
     action: data.action,
-    resourceId: data.resourceId ?? null,
+    targetId: data.resourceId ?? null,
     timestamp: Date.now(),
   });
 
   const hash = crypto.createHash("sha256").update(hashPayload).digest("hex");
 
+  // IMPORTANT: use targetId and targetType fields (schema-aligned)
   const created = await tx.activityLog.create({
     data: {
       organizationId: data.organizationId,
@@ -107,8 +105,9 @@ async function createAuditLog(
       actorId: data.actorId,
       actorType: ActorType.USER,
       action: data.action,
-      resource: RESOURCES.VENDOR,
-      resourceId: data.resourceId ?? undefined,
+      // map resource -> targetType, resourceId -> targetId
+      targetType: RESOURCES.VENDOR,
+      targetId: data.resourceId ?? undefined,
       severity: data.severity,
       description: data.description,
       metadata: data.metadata ?? Prisma.JsonNull,
@@ -433,9 +432,9 @@ export async function PATCH(req: NextRequest) {
  * Behavior:
  * - Default: Prevent archive if vendor has active branchProducts (safe guard).
  * - If query param force=true and user has DELETE permission, the API will:
- *    1) Detach vendorId from active branchProducts (set vendorId = null) inside same transaction,
- *    2) Soft-delete (deletedAt) the vendor,
- *    3) Create audit log and notify management.
+ * 1) Detach vendorId from active branchProducts (set vendorId = null) inside same transaction,
+ * 2) Soft-delete (deletedAt) the vendor,
+ * 3) Create audit log and notify management.
  *
  * Rationale:
  * - Schema links branchProducts -> vendor (nullable). Detaching is safer than cascading deletes.
