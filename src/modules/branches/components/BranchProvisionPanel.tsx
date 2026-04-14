@@ -1,6 +1,8 @@
 "use client";
 
 import React, { useState, useRef, useEffect } from "react";
+import { Server, X, Loader2 } from "lucide-react";
+
 import { ProvisionBranchPayload } from "../types";
 
 interface BranchProvisionPanelProps {
@@ -26,11 +28,11 @@ export function BranchProvisionPanel({ onClose, onRefresh, dispatch }: BranchPro
 
   const validate = () => {
     if (!form.name.trim()) {
-      dispatch({ 
-        kind: "TOAST", 
-        type: "ERROR", 
-        title: "Validation Error", 
-        message: "Branch name is required for provisioning." 
+      dispatch({
+        kind: "TOAST",
+        type: "ERROR",
+        title: "Validation Error",
+        message: "Branch name is required for provisioning.",
       });
       nameRef.current?.focus();
       return false;
@@ -56,22 +58,22 @@ export function BranchProvisionPanel({ onClose, onRefresh, dispatch }: BranchPro
       const data = await res.json();
       if (!res.ok) throw new Error(data?.error || "Failed to deploy branch.");
 
-      dispatch({ 
-        kind: "TOAST", 
-        type: "SUCCESS", 
-        title: "Node Deployed", 
-        message: `${form.name} has been successfully initialized.` 
+      dispatch({
+        kind: "TOAST",
+        type: "SUCCESS",
+        title: "Node Deployed",
+        message: `${form.name} has been successfully initialized.`,
       });
-      
+
       await onRefresh();
       onClose();
     } catch (err: any) {
       console.error("[BRANCH_PROVISION_ERROR]:", err);
-      dispatch({ 
-        kind: "TOAST", 
-        type: "ERROR", 
-        title: "Deployment Failed", 
-        message: err?.message || "Unknown infrastructure error" 
+      dispatch({
+        kind: "TOAST",
+        type: "ERROR",
+        title: "Deployment Failed",
+        message: err?.message || "Unknown infrastructure error",
       });
     } finally {
       setIsSaving(false);
@@ -84,7 +86,7 @@ export function BranchProvisionPanel({ onClose, onRefresh, dispatch }: BranchPro
       <div className="p-4 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between bg-white dark:bg-slate-900 sticky top-0 z-10">
         <div className="flex items-center gap-3">
           <div className="w-8 h-8 rounded-lg bg-blue-50 dark:bg-blue-500/10 flex items-center justify-center text-blue-600">
-            <i className="bx bx-server text-lg" aria-hidden="true" />
+            <Server className="w-5 h-5" aria-hidden="true" />
           </div>
           <h2 className="text-[11px] font-bold uppercase tracking-[0.15em] text-slate-800 dark:text-slate-200">
             Provision Node
@@ -94,8 +96,9 @@ export function BranchProvisionPanel({ onClose, onRefresh, dispatch }: BranchPro
         <button
           onClick={onClose}
           className="w-8 h-8 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 flex items-center justify-center text-slate-400 transition-all active:scale-90"
+          aria-label="Close panel"
         >
-          <i className="bx bx-x text-xl" />
+          <X className="w-5 h-5" />
         </button>
       </div>
 
@@ -157,6 +160,7 @@ export function BranchProvisionPanel({ onClose, onRefresh, dispatch }: BranchPro
                 checked={form.active}
                 onChange={(e) => setForm((p) => ({ ...p, active: e.target.checked }))}
                 className="sr-only peer"
+                aria-label="Immediate activation"
               />
               <div className="w-11 h-6 bg-slate-200 dark:bg-slate-700 rounded-full peer-checked:bg-blue-600 relative transition-colors">
                 <span
@@ -177,10 +181,11 @@ export function BranchProvisionPanel({ onClose, onRefresh, dispatch }: BranchPro
             onClick={handleCreate}
             disabled={isSaving}
             className="flex-1 py-3 bg-slate-900 dark:bg-blue-600 text-white rounded-xl text-[12px] font-bold tracking-widest uppercase hover:bg-slate-800 dark:hover:bg-blue-700 active:scale-[0.98] transition-all disabled:opacity-40 disabled:pointer-events-none flex justify-center items-center gap-2"
+            aria-label="Deploy branch"
           >
             {isSaving ? (
               <>
-                <i className="bx bx-loader-alt animate-spin text-lg" />
+                <Loader2 className="w-4 h-4 animate-spin" />
                 <span>Deploying...</span>
               </>
             ) : (

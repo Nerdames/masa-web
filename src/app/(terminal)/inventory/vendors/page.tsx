@@ -18,27 +18,20 @@ import {
   Loader2,
   Package,
   Save,
+  Filter,
+  Download,
 } from "lucide-react";
+import { saveAs } from "file-saver";
 import { useAlerts } from "@/core/components/feedback/AlertProvider";
 import { useSidePanel } from "@/core/components/layout/SidePanelContext";
 
 /**
  * VendorsWorkspace (Production-ready)
- *
- * - Consumes the new vendors payload shape:
- *   { summary, leaders, vendors, pagination }
- * - Calls /api/logs?resource=VENDOR&limit=20 to retrieve activity logs
- * - Uses side panel pattern (openPanel) like Personnel page
- * - Includes Create/Edit modal and Vendor detail panel inline for a single-file production component
- *
- * Notes:
- * - Keep styling and UX consistent with PurchaseOrdersWorkspace and Personnel pages
- * - All network calls use fetch and handle non-OK responses by reading JSON error
  */
 
 /* -------------------------
-   Types
-   ------------------------- */
+  Types
+------------------------- */
 
 type Severity = "LOW" | "MEDIUM" | "HIGH" | "CRITICAL";
 
@@ -51,7 +44,6 @@ interface IVendor {
   deletedAt?: string | null;
   createdAt: string;
   _count?: { purchaseOrders: number; grns: number };
-  // computed fields from server
   performanceScore?: number;
   totalRevenue?: number;
   salesVelocity?: number;
@@ -78,9 +70,12 @@ interface VendorsResponse {
   pagination: { total: number; page: number; limit: number; totalPages: number };
 }
 
+const DEFAULT_LIMIT = 25;
+const EXPORT_LIMIT = 10000;
+
 /* -------------------------
-   Main Component
-   ------------------------- */
+  Main Component
+------------------------- */
 
 export default function VendorsWorkspace({ organizationId }: { organizationId: string }) {
   const { dispatch } = useAlerts();
@@ -89,16 +84,23 @@ export default function VendorsWorkspace({ organizationId }: { organizationId: s
   const [vendors, setVendors] = useState<IVendor[]>([]);
   const [logs, setLogs] = useState<IActivityLog[]>([]);
   const [searchTerm, setSearchTerm] = useState("");
+  const [statusFilter, setStatusFilter] = useState<"all" | "active" | "archived">("all");
+  const [sort, setSort] = useState<"name_asc" | "name_desc" | "orders_desc" | "createdAt_desc">("name_asc");
+  const [fromDate, setFromDate] = useState<string | null>(null);
+  const [toDate, setToDate] = useState<string | null>(null);
+  
+  const [page, setPage] = useState(1);
+  const [limit, setLimit] = useState(DEFAULT_LIMIT);
+  const [pagination, setPagination] = useState<{ total: number; page: number; limit: number; totalPages: number } | null>(null);
+  const [total, setTotal] = useState(0);
+
   const [isPending, startTransition] = useTransition();
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingVendor, setEditingVendor] = useState<IVendor | null>(null);
   const [selectedVendor, setSelectedVendor] = useState<IVendor | null>(null);
+  const [showFilters, setShowFilters] = useState(false);
 
-  const [page, setPage] = useState(1);
-  const [limit] = useState(25);
-  const [pagination, setPagination] = useState<{ total: number; page: number; limit: number; totalPages: number } | null>(null);
-
-  // Time-aware theme (same approach as other pages)
+  // Time-aware theme
   useEffect(() => {
     const applyTheme = () => {
       const hour = new Date().getHours();
@@ -112,34 +114,53 @@ export default function VendorsWorkspace({ organizationId }: { organizationId: s
   }, []);
 
   /* -------------------------
-     Data Loaders
-     ------------------------- */
+    Data Loaders
+  ------------------------- */
+
+  const buildQuery = (opts?: {
+    page?: number;
+    limit?: number;
+    search?: string;
+    status?: string | "all";
+    sort?: string;
+    from?: string | null;
+    to?: string | null;
+    exportAll?: boolean;
+  }) => {
+    const q = new URLSearchParams();
+    q.set("page", String(opts?.page ?? page));
+    q.set("limit", String(opts?.limit ?? limit));
+    if (opts?.search ?? searchTerm) q.set("search", opts?.search ?? searchTerm);
+    if (opts?.status && opts.status !== "all") q.set("status", opts.status);
+    if (opts?.sort ?? sort) q.set("sort", opts?.sort ?? sort);
+    if (opts?.from ?? fromDate) q.set("from", opts?.from ?? (fromDate ?? ""));
+    if (opts?.to ?? toDate) q.set("to", opts?.to ?? (toDate ?? ""));
+    if (opts?.exportAll) q.set("export", "true");
+    return q.toString();
+  };
 
   const loadVendors = useCallback(
-    async (opts?: { page?: number; search?: string }) => {
+    async (opts?: { page?: number; limit?: number; search?: string }) => {
       startTransition(async () => {
         try {
-          const q = new URLSearchParams();
-          q.set("limit", String(limit));
-          q.set("page", String(opts?.page ?? page));
-          const search = opts?.search !== undefined ? opts.search : searchTerm;
-          if (search) q.set("search", search);
-
+          const q = buildQuery({ page: opts?.page, limit: opts?.limit, search: opts?.search });
           const res = await fetch(`/api/vendors?${q.toString()}`);
           const data: VendorsResponse | { error?: string } = await res.json();
           if (!res.ok) throw new Error((data as any).error || "Failed to load vendors");
 
           setVendors((data as VendorsResponse).vendors || []);
           setPagination((data as VendorsResponse).pagination || null);
+          setTotal((data as VendorsResponse).pagination?.total || 0);
           setPage((data as VendorsResponse).pagination?.page || opts?.page || page);
         } catch (err: any) {
           dispatch({ kind: "TOAST", type: "WARNING", title: "Sync Error", message: err.message || "Failed to load vendors" });
           setVendors([]);
           setPagination(null);
+          setTotal(0);
         }
       });
     },
-    [dispatch, limit, page, searchTerm]
+    [dispatch, limit, page, searchTerm, statusFilter, sort, fromDate, toDate]
   );
 
   const loadLogs = useCallback(async () => {
@@ -148,7 +169,6 @@ export default function VendorsWorkspace({ organizationId }: { organizationId: s
         const res = await fetch(`/api/logs?resource=VENDOR&limit=20`);
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || "Failed to load logs");
-        // Expecting { logs: IActivityLog[] }
         setLogs(data.logs || []);
       } catch (err: any) {
         console.error("Audit retrieval failed:", err);
@@ -158,132 +178,129 @@ export default function VendorsWorkspace({ organizationId }: { organizationId: s
   }, []);
 
   useEffect(() => {
-    // initial load
-    loadVendors({ page: 1, search: "" });
+    setPage(1);
+  }, [searchTerm, statusFilter, sort, fromDate, toDate, limit]);
+
+  useEffect(() => {
+    loadVendors({ page, limit });
+    // loadLogs() is handled primarily on first mount or refreshAll to save requests
+  }, [page, limit, searchTerm, statusFilter, sort, fromDate, toDate]);
+
+  useEffect(() => {
     loadLogs();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [loadLogs]);
 
   // refresh helper
   const refreshAll = useCallback(() => {
-    loadVendors({ page: 1, search: searchTerm });
+    loadVendors({ page, search: searchTerm });
     loadLogs();
-  }, [loadVendors, loadLogs, searchTerm]);
+  }, [loadVendors, loadLogs, page, searchTerm]);
 
   /* -------------------------
-     Archive / Delete Handler
-     ------------------------- */
+    Archive / Delete Handler
+  ------------------------- */
 
-const handleArchive = async (id: string) => {
-  const ok = confirm(
-    "Are you sure you want to archive this vendor node? This action is immutable and will be recorded in the forensic audit log."
-  );
-  if (!ok) return;
+  const handleArchive = async (id: string) => {
+    const ok = confirm(
+      "Are you sure you want to archive this vendor node? This action is immutable and will be recorded in the forensic audit log."
+    );
+    if (!ok) return;
 
-  startTransition(async () => {
-    try {
-      // 1) Try normal archive first (safe default)
-      let res = await fetch(`/api/vendors?id=${encodeURIComponent(id)}`, {
-        method: "DELETE",
-        headers: { "Accept": "application/json" },
-      });
-
-      let data = await res.json().catch(() => ({}));
-
-      // Success path
-      if (res.ok) {
-        dispatch({
-          kind: "TOAST",
-          type: "SUCCESS",
-          title: "Vendor Archived",
-          message: "Vendor node archived successfully.",
+    startTransition(async () => {
+      try {
+        let res = await fetch(`/api/vendors?id=${encodeURIComponent(id)}`, {
+          method: "DELETE",
+          headers: { "Accept": "application/json" },
         });
-        setSelectedVendor(null);
-        refreshAll();
-        return;
-      }
 
-      // If backend blocked because of active products, offer force option
-      const blockedMessage =
-        (data && data.error && String(data.error)) ||
-        (typeof data === "string" ? data : "") ||
-        "";
-
-      const isActiveProductsBlock =
-        res.status === 400 &&
-        /Cannot archive vendor with active products/i.test(blockedMessage);
-
-      if (isActiveProductsBlock) {
-        // Explain consequences and ask for explicit confirmation to force detach
-        const forceConfirm = confirm(
-          "This vendor has active product links. " +
-            "If you proceed with force, the system will detach the vendor from related products (vendorId will be set to null) and then archive the vendor. " +
-            "Inventory records will be preserved. Do you want to force archive?"
-        );
-
-        if (!forceConfirm) {
-          dispatch({
-            kind: "TOAST",
-            type: "WARNING",
-            title: "Archive Aborted",
-            message: "Vendor was not archived. Detach required to proceed.",
-          });
-          return;
-        }
-
-        // 2) Force archive: call API with force=true
-        res = await fetch(
-          `/api/vendors?id=${encodeURIComponent(id)}&force=true`,
-          {
-            method: "DELETE",
-            headers: { "Accept": "application/json" },
-          }
-        );
-
-        data = await res.json().catch(() => ({}));
+        let data = await res.json().catch(() => ({}));
 
         if (res.ok) {
           dispatch({
             kind: "TOAST",
             type: "SUCCESS",
-            title: "Vendor Archived (Forced)",
-            message:
-              (data && data.message) ||
-              "Vendor archived and product links detached successfully.",
+            title: "Vendor Archived",
+            message: "Vendor node archived successfully.",
           });
           setSelectedVendor(null);
           refreshAll();
           return;
         }
 
-        // Force failed — surface backend message
-        throw new Error(
-          (data && data.error) || "Force archive failed. See server response."
-        );
+        const blockedMessage =
+          (data && data.error && String(data.error)) ||
+          (typeof data === "string" ? data : "") ||
+          "";
+
+        const isActiveProductsBlock =
+          res.status === 400 &&
+          /Cannot archive vendor with active products/i.test(blockedMessage);
+
+        if (isActiveProductsBlock) {
+          const forceConfirm = confirm(
+            "This vendor has active product links. " +
+            "If you proceed with force, the system will detach the vendor from related products (vendorId will be set to null) and then archive the vendor. " +
+            "Inventory records will be preserved. Do you want to force archive?"
+          );
+
+          if (!forceConfirm) {
+            dispatch({
+              kind: "TOAST",
+              type: "WARNING",
+              title: "Archive Aborted",
+              message: "Vendor was not archived. Detach required to proceed.",
+            });
+            return;
+          }
+
+          res = await fetch(
+            `/api/vendors?id=${encodeURIComponent(id)}&force=true`,
+            {
+              method: "DELETE",
+              headers: { "Accept": "application/json" },
+            }
+          );
+
+          data = await res.json().catch(() => ({}));
+
+          if (res.ok) {
+            dispatch({
+              kind: "TOAST",
+              type: "SUCCESS",
+              title: "Vendor Archived (Forced)",
+              message:
+                (data && data.message) ||
+                "Vendor archived and product links detached successfully.",
+            });
+            setSelectedVendor(null);
+            refreshAll();
+            return;
+          }
+
+          throw new Error(
+            (data && data.error) || "Force archive failed. See server response."
+          );
+        }
+
+        throw new Error(blockedMessage || "Archive failed. See server response.");
+      } catch (err: any) {
+        const message =
+          err?.message ||
+          "Archive failed due to an unexpected error. Check server logs for details.";
+        dispatch({
+          kind: "TOAST",
+          type: "WARNING",
+          title: "Archive Failed",
+          message,
+        });
+        console.error("Archive error:", err);
       }
-
-      // Other non-OK responses: surface backend message
-      throw new Error(blockedMessage || "Archive failed. See server response.");
-    } catch (err: any) {
-      // Generic error handling and user-friendly messages
-      const message =
-        err?.message ||
-        "Archive failed due to an unexpected error. Check server logs for details.";
-      dispatch({
-        kind: "TOAST",
-        type: "WARNING",
-        title: "Archive Failed",
-        message,
-      });
-      console.error("Archive error:", err);
-    }
-  });
-};
-
+    });
+  };
 
   /* -------------------------
-     Side panel opener (Personnel-style)
-     ------------------------- */
+    Side panel opener 
+  ------------------------- */
 
   const openVendorPanel = (vendor: IVendor) => {
     setSelectedVendor(vendor);
@@ -304,8 +321,8 @@ const handleArchive = async (id: string) => {
   };
 
   /* -------------------------
-     Derived Stats & Filtering
-     ------------------------- */
+    Derived Stats & Filtering
+  ------------------------- */
 
   const stats = useMemo(() => {
     const active = vendors.filter((v) => !v.deletedAt).length;
@@ -316,15 +333,71 @@ const handleArchive = async (id: string) => {
 
   const filteredVendors = useMemo(() => {
     const term = searchTerm.trim().toLowerCase();
-    if (!term) return vendors;
-    return vendors.filter(
-      (v) => v.name.toLowerCase().includes(term) || (v.email || "").toLowerCase().includes(term) || (v.phone || "").toLowerCase().includes(term)
-    );
-  }, [vendors, searchTerm]);
+    return vendors.filter((v) => {
+      if (term) {
+        const inName = v.name.toLowerCase().includes(term);
+        const inEmail = (v.email || "").toLowerCase().includes(term);
+        const inPhone = (v.phone || "").toLowerCase().includes(term);
+        if (!inName && !inEmail && !inPhone) return false;
+      }
+      if (statusFilter !== "all") {
+        if (statusFilter === "active" && v.deletedAt) return false;
+        if (statusFilter === "archived" && !v.deletedAt) return false;
+      }
+      if (fromDate) {
+        if (new Date(v.createdAt) < new Date(fromDate)) return false;
+      }
+      if (toDate) {
+        const end = new Date(toDate);
+        end.setDate(end.getDate() + 1);
+        if (new Date(v.createdAt) >= end) return false;
+      }
+      return true;
+    }).sort((a, b) => {
+      if (sort === "name_asc") return a.name.localeCompare(b.name);
+      if (sort === "name_desc") return b.name.localeCompare(a.name);
+      if (sort === "orders_desc") return (b._count?.purchaseOrders || 0) - (a._count?.purchaseOrders || 0);
+      if (sort === "createdAt_desc") return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
+      return 0;
+    });
+  }, [vendors, searchTerm, statusFilter, sort, fromDate, toDate]);
 
   /* -------------------------
-     Render
-     ------------------------- */
+    Export Logic
+  ------------------------- */
+
+  const exportCSV = async (all = false) => {
+    try {
+      const q = buildQuery({ exportAll: all, limit: all ? EXPORT_LIMIT : limit, page: 1 });
+      const res = await fetch(`/api/vendors?${q}`);
+      if (!res.ok) throw new Error("Export failed");
+      const data = await res.json();
+      const items: IVendor[] = data.vendors || [];
+      const header = ["id", "name", "email", "phone", "address", "status", "purchaseOrders", "grns", "createdAt"];
+      const rows = items.map((it) => [
+        it.id,
+        it.name,
+        it.email || "",
+        it.phone || "",
+        it.address || "",
+        !it.deletedAt ? "ACTIVE" : "ARCHIVED",
+        String(it._count?.purchaseOrders || 0),
+        String(it._count?.grns || 0),
+        it.createdAt || "",
+      ]);
+      const csv = [header.join(","), ...rows.map((r) => r.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(","))].join("\n");
+      const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+      saveAs(blob, `vendors_directory_${new Date().toISOString()}.csv`);
+    } catch (e: any) {
+      dispatch({ kind: "TOAST", type: "WARNING", title: "Export Error", message: e.message || "Export error" });
+    }
+  };
+
+  const totalPages = Math.max(1, Math.ceil(total / limit));
+
+  /* -------------------------
+    Render
+  ------------------------- */
 
   return (
     <div className="h-screen flex flex-col bg-[#FAFAFA] dark:bg-slate-950 text-slate-900 dark:text-slate-100 font-sans relative overflow-hidden transition-colors duration-300">
@@ -356,14 +429,29 @@ const handleArchive = async (id: string) => {
             </div>
 
             <button
-              onClick={() => {
-                refreshAll();
-              }}
+              onClick={() => loadVendors({ page })}
               disabled={isPending}
               className="p-1.5 text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-slate-800 rounded-md transition-colors disabled:opacity-50"
             >
               <RefreshCw className={`w-4 h-4 ${isPending ? "animate-spin text-emerald-500" : ""}`} />
             </button>
+
+            <button
+              onClick={() => setShowFilters((s) => !s)}
+              className="p-1.5 text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-slate-800 rounded-md transition-colors flex items-center justify-center"
+            >
+              <Filter className="w-4 h-4" />
+            </button>
+
+            <div className="hidden md:flex gap-2 items-center">
+              <button
+                onClick={() => exportCSV(false)}
+                className="h-8 px-3 bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-200 text-[11px] font-bold rounded-md hover:bg-slate-200 dark:hover:bg-slate-700 transition-all flex items-center gap-2"
+              >
+                <Download className="w-3.5 h-3.5" />
+                <span>Export CSV</span>
+              </button>
+            </div>
 
             <button
               onClick={() => {
@@ -377,6 +465,43 @@ const handleArchive = async (id: string) => {
             </button>
           </div>
         </div>
+
+        {showFilters && (
+          <div className="w-full px-4 py-3 border-t border-slate-100 dark:border-slate-800 bg-white dark:bg-slate-900 flex flex-wrap gap-3 items-center">
+            <div className="flex items-center gap-2">
+              <label className="text-[11px] text-slate-500 dark:text-slate-400">Status</label>
+              <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value as any)} className="rounded-md bg-slate-50 dark:bg-slate-800 px-2 py-1 text-sm outline-none">
+                <option value="all">All Statuses</option>
+                <option value="active">Active</option>
+                <option value="archived">Archived</option>
+              </select>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <label className="text-[11px] text-slate-500 dark:text-slate-400">Sort</label>
+              <select value={sort} onChange={(e) => setSort(e.target.value as any)} className="rounded-md bg-slate-50 dark:bg-slate-800 px-2 py-1 text-sm outline-none">
+                <option value="name_asc">Name (A-Z)</option>
+                <option value="name_desc">Name (Z-A)</option>
+                <option value="orders_desc">Orders (High → Low)</option>
+                <option value="createdAt_desc">Newest First</option>
+              </select>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <label className="text-[11px] text-slate-500 dark:text-slate-400">From</label>
+              <input type="date" value={fromDate ?? ""} onChange={(e) => setFromDate(e.target.value || null)} className="rounded-md bg-slate-50 dark:bg-slate-800 px-2 py-1 text-sm outline-none" />
+            </div>
+
+            <div className="flex items-center gap-2">
+              <label className="text-[11px] text-slate-500 dark:text-slate-400">To</label>
+              <input type="date" value={toDate ?? ""} onChange={(e) => setToDate(e.target.value || null)} className="rounded-md bg-slate-50 dark:bg-slate-800 px-2 py-1 text-sm outline-none" />
+            </div>
+
+            <div className="ml-auto flex items-center gap-2">
+              <button onClick={() => exportCSV(true)} className="px-3 py-1 rounded-md bg-emerald-600 hover:bg-emerald-700 text-white text-[11px] font-bold uppercase transition-colors">Export All CSV</button>
+            </div>
+          </div>
+        )}
       </header>
 
       <div className="flex-1 overflow-y-auto custom-scrollbar flex flex-col xl:flex-row pb-12">
@@ -387,8 +512,8 @@ const handleArchive = async (id: string) => {
             <StatCard title="Prime Supplier" value={stats.topVendorName} icon={CheckCircle2} color="amber" />
           </section>
 
-          <div className="bg-white dark:bg-slate-900 rounded-xl border border-slate-200/60 dark:border-slate-800 overflow-hidden shadow-sm transition-colors min-h-[400px]">
-            <div className="overflow-x-auto custom-scrollbar">
+          <div className="border border-slate-200 dark:border-slate-700 rounded-lg overflow-hidden flex flex-col min-h-[500px] transition-colors">
+            <div className="overflow-x-auto custom-scrollbar flex-1">
               <table className="w-full text-left border-collapse whitespace-nowrap">
                 <thead>
                   <tr className="bg-slate-50 dark:bg-slate-800 border-b border-slate-200/80 dark:border-slate-700/80">
@@ -409,13 +534,19 @@ const handleArchive = async (id: string) => {
                     </tr>
                   ) : (
                     filteredVendors.map((vendor) => (
-                      <tr key={vendor.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors group">
+                      <tr
+                        key={vendor.id}
+                        onClick={() => openVendorPanel(vendor)}
+                        className="hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors group cursor-pointer"
+                      >
                         <td className="px-5 py-3">
                           <div className="flex flex-col">
-                            <span onClick={() => openVendorPanel(vendor)} className="text-[13px] font-bold text-slate-900 dark:text-white hover:text-emerald-600 dark:hover:text-emerald-400 transition-colors cursor-pointer">
+                            <span className="text-[13px] font-bold text-slate-900 dark:text-white group-hover:text-emerald-600 dark:group-hover:text-emerald-400 transition-colors">
                               {vendor.name}
                             </span>
-                            <span className="text-[9px] text-slate-400 font-mono mt-0.5 uppercase tracking-tighter">{vendor.id}</span>
+                            <span className="text-[9px] text-slate-400 font-mono mt-0.5 uppercase tracking-tighter">
+                              {vendor.id}
+                            </span>
                           </div>
                         </td>
 
@@ -433,11 +564,15 @@ const handleArchive = async (id: string) => {
                         <td className="px-5 py-3">
                           <div className="flex justify-center gap-4">
                             <div className="flex flex-col items-center">
-                              <span className="text-[11px] font-bold text-slate-900 dark:text-white">{vendor._count?.purchaseOrders}</span>
+                              <span className="text-[11px] font-bold text-slate-900 dark:text-white">
+                                {vendor._count?.purchaseOrders}
+                              </span>
                               <span className="text-[8px] font-bold text-slate-400 uppercase tracking-tighter">Orders</span>
                             </div>
                             <div className="flex flex-col items-center">
-                              <span className="text-[11px] font-bold text-slate-900 dark:text-white">{vendor._count?.grns}</span>
+                              <span className="text-[11px] font-bold text-slate-900 dark:text-white">
+                                {vendor._count?.grns}
+                              </span>
                               <span className="text-[8px] font-bold text-slate-400 uppercase tracking-tighter">GRNs</span>
                             </div>
                           </div>
@@ -457,17 +592,10 @@ const handleArchive = async (id: string) => {
 
                         <td className="px-5 py-3 text-right">
                           <div className="flex justify-end gap-1.5 opacity-100 lg:opacity-0 group-hover:opacity-100 transition-opacity">
-                            <button
-                              onClick={() => openVendorPanel(vendor)}
-                              className="p-1.5 bg-white dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 rounded text-slate-400 hover:text-emerald-600 dark:hover:text-emerald-400 border border-slate-200 dark:border-slate-700 transition-colors"
-                              title="Node Details"
-                            >
-                              <Eye className="w-3.5 h-3.5" />
-                            </button>
-
                             {!vendor.deletedAt && (
                               <button
-                                onClick={() => {
+                                onClick={(e) => {
+                                  e.stopPropagation();
                                   setEditingVendor(vendor);
                                   setIsModalOpen(true);
                                 }}
@@ -485,82 +613,27 @@ const handleArchive = async (id: string) => {
                 </tbody>
               </table>
             </div>
-          </div>
 
-          {/* Pagination controls (simple) */}
-          {pagination && pagination.totalPages > 1 && (
-            <div className="flex items-center justify-between px-4 lg:px-6 py-3">
-              <div className="text-sm text-slate-500">Page {pagination.page} of {pagination.totalPages}</div>
-              <div className="flex items-center gap-2">
-                <button
-                  onClick={() => loadVendors({ page: Math.max(1, (pagination.page || 1) - 1), search: searchTerm })}
-                  disabled={(pagination.page || 1) <= 1}
-                  className="px-3 py-1 rounded bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-slate-600"
-                >
-                  Prev
-                </button>
-                <button
-                  onClick={() => loadVendors({ page: Math.min(pagination.totalPages, (pagination.page || 1) + 1), search: searchTerm })}
-                  disabled={(pagination.page || 1) >= pagination.totalPages}
-                  className="px-3 py-1 rounded bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-slate-600"
-                >
-                  Next
-                </button>
+            <div className="px-4 py-3 border-t border-slate-100 dark:border-slate-800/60 flex items-center justify-between sticky bottom-0 bg-white dark:bg-slate-900">
+              <div className="text-[11px] text-slate-500 dark:text-slate-400 font-medium">
+                Showing <strong>{Math.min((page - 1) * limit + 1, total || 0)}</strong> - <strong>{Math.min(page * limit, total || 0)}</strong> of <strong>{total}</strong>
               </div>
-            </div>
-          )}
-        </main>
+              <div className="flex items-center gap-3">
+                <select value={limit} onChange={(e) => setLimit(Number(e.target.value))} className="rounded-md bg-slate-50 dark:bg-slate-800 px-2 py-1 text-xs outline-none">
+                  <option value={10}>10 per page</option>
+                  <option value={25}>25 per page</option>
+                  <option value={50}>50 per page</option>
+                </select>
 
-        <aside className="w-full xl:w-[320px] flex-shrink-0 mt-6 xl:mt-0 xl:border-l xl:border-slate-200/60 dark:border-slate-800 px-4 xl:px-0">
-          <div className="bg-white dark:bg-slate-900 p-5 xl:rounded-none rounded-xl border xl:border-none border-slate-200/60 dark:border-slate-800 lg:h-[calc(100vh-56px)] overflow-y-auto custom-scrollbar shadow-sm xl:shadow-none transition-colors">
-            <div className="flex items-center justify-between mb-5 sticky top-0 bg-white dark:bg-slate-900 pb-3 border-b border-slate-100 dark:border-slate-800 z-10 transition-colors">
-              <div className="flex items-center gap-2">
-                <ShieldCheck className="w-4 h-4 text-emerald-700 dark:text-emerald-500" />
-                <h4 className="text-[11px] font-bold text-slate-900 dark:text-white uppercase tracking-widest">Audit Ledger</h4>
-              </div>
-
-              <div className="flex relative h-2 w-2">
-                <span className="animate-ping absolute h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-                <span className="relative rounded-full h-2 w-2 bg-emerald-500"></span>
-              </div>
-            </div>
-
-            <div className="space-y-4">
-              {(!logs || logs.length === 0) ? (
-                <p className="text-[10px] font-bold text-slate-400 text-center py-10 uppercase tracking-widest">No recent events</p>
-              ) : logs.map((log) => (
-                <div key={log.id} className="relative pl-3">
-                  <div className="absolute left-0 top-1.5 bottom-[-16px] w-px bg-slate-100 dark:bg-slate-800 last:hidden"></div>
-
-                  <div className={`absolute left-[-3px] top-1.5 w-1.5 h-1.5 rounded-full ring-2 ring-white dark:ring-slate-950 ${
-                    log.severity === 'CRITICAL' ? 'bg-red-500' :
-                    log.severity === 'HIGH' ? 'bg-orange-500' :
-                    log.severity === 'MEDIUM' ? 'bg-blue-500' : 'bg-emerald-500'
-                  }`}></div>
-
-                  <div className="bg-slate-50/50 dark:bg-slate-800/30 rounded-md p-2.5 border border-slate-100/80 dark:border-slate-700/50 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors">
-                    <div className="flex justify-between items-start mb-1">
-                      <span className="text-[9px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-widest leading-none truncate pr-2">
-                        {log.action.replace(/_/g, " ")}
-                      </span>
-                      <span className="text-[8px] text-slate-400 font-mono shrink-0">
-                        {new Date(log.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                      </span>
-                    </div>
-
-                    <p className="text-[11px] text-slate-700 dark:text-slate-300 mt-1 leading-snug">{log.description}</p>
-
-                    <div className="mt-2 flex items-center gap-1.5">
-                      <span className="text-[8px] font-black text-emerald-600 dark:text-emerald-400 bg-emerald-100/50 dark:bg-emerald-900/30 px-1.5 py-0.5 rounded tracking-tighter uppercase">
-                        {log.actorRole || 'SYSTEM'}
-                      </span>
-                    </div>
-                  </div>
+                <div className="flex items-center gap-1">
+                  <button onClick={() => setPage((p) => Math.max(1, p - 1))} disabled={page <= 1} className="px-3 py-1 rounded-md bg-slate-100 dark:bg-slate-800 text-xs font-bold disabled:opacity-50">Prev</button>
+                  <div className="px-3 text-xs font-mono">{page} / {totalPages}</div>
+                  <button onClick={() => setPage((p) => Math.min(totalPages, p + 1))} disabled={page >= totalPages} className="px-3 py-1 rounded-md bg-slate-100 dark:bg-slate-800 text-xs font-bold disabled:opacity-50">Next</button>
                 </div>
-              ))}
+              </div>
             </div>
           </div>
-        </aside>
+        </main>
       </div>
 
       {isModalOpen && (
@@ -581,8 +654,8 @@ const handleArchive = async (id: string) => {
 }
 
 /* -------------------------
-   Subcomponents
-   ------------------------- */
+  Subcomponents
+------------------------- */
 
 function StatCard({ title, value, sub, icon: Icon, color }: any) {
   const colorMap: any = {
@@ -599,12 +672,10 @@ function StatCard({ title, value, sub, icon: Icon, color }: any) {
 
   return (
     <div className="bg-white dark:bg-slate-900 p-5 rounded-xl border border-slate-200/60 dark:border-slate-800 shadow-sm flex flex-col justify-between transition-colors">
-      {/* Title */}
       <p className={`text-[10px] font-bold uppercase tracking-wider ${colorMap[color] || "text-slate-500 dark:text-slate-400"}`}>
         {title}
       </p>
 
-      {/* Value and Icon */}
       <div className="flex items-end justify-between mt-2">
         <h3 className="text-2xl font-bold text-slate-900 dark:text-white">
           {value}
@@ -612,7 +683,6 @@ function StatCard({ title, value, sub, icon: Icon, color }: any) {
         <Icon className={`w-5 h-5 ${iconColorMap[color] || "text-slate-300 dark:text-slate-600"}`} />
       </div>
 
-      {/* Optional Subtext */}
       {sub && (
         <span className="text-[9px] text-slate-400 font-bold uppercase tracking-tighter mt-0.5">
           {sub}
@@ -621,11 +691,6 @@ function StatCard({ title, value, sub, icon: Icon, color }: any) {
     </div>
   );
 }
-
-/* -------------------------
-   Vendor Detail Panel
-   (matches PersonnelDetailsPanel width & animation)
-   ------------------------- */
 
 function VendorDetailPanel({ vendor, onClose, onEdit, onArchive }: { vendor: IVendor; onClose: () => void; onEdit: () => void; onArchive: () => void; }) {
   return (
@@ -708,10 +773,6 @@ function VendorDetailPanel({ vendor, onClose, onEdit, onArchive }: { vendor: IVe
   );
 }
 
-/* -------------------------
-   Small UI helpers
-   ------------------------- */
-
 function ContactRow({ icon: Icon, label, value }: { icon: any; label: string; value: string }) {
   return (
     <div className="flex items-start gap-3 group/row">
@@ -736,10 +797,6 @@ function ProfileField({ label, value, icon: Icon }: { label: string; value: stri
     </div>
   );
 }
-
-/* -------------------------
-   Create / Edit Modal
-   ------------------------- */
 
 function CreateEditVendorModal({ vendor, organizationId, onClose, onRefresh }: { vendor: IVendor | null; organizationId: string; onClose: () => void; onRefresh: () => void; }) {
   const { dispatch } = useAlerts();

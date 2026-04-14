@@ -27,6 +27,7 @@
     "crypto": "^1.0.1",
     "date-fns": "^4.1.0",
     "dayjs": "^1.11.19",
+    "file-saver": "^2.0.5",
     "framer-motion": "^12.27.4",
     "lucide-react": "^1.7.0",
     "next": "16.1.4",
@@ -49,6 +50,7 @@
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
+    "@types/file-saver": "^2.0.7",
     "@types/next-auth": "^3.13.0",
     "@types/node": "^20",
     "@types/pdfkit": "^0.17.4",

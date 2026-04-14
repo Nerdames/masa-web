@@ -1,8 +1,18 @@
 "use client";
 
 import React, { useState } from "react";
+import { 
+  UserPlus, 
+  X, 
+  CheckCircle2, 
+  Copy, 
+  ShieldCheck, 
+  RefreshCw, 
+  Loader2 
+} from "lucide-react";
 import { ProvisionPayload, Branch, Role, AlertAction } from "./types";
 import { generateSecurePassword, copyToClipboard } from "./utils";
+import { useAlerts } from "@/core/components/feedback/AlertProvider";
 
 interface ProvisionPanelProps {
   onClose: () => void;
@@ -11,7 +21,8 @@ interface ProvisionPanelProps {
   dispatch: (action: AlertAction) => void;
 }
 
-export function ProvisionPanel({ onClose, onCreate, branches, dispatch }: ProvisionPanelProps) {
+export function ProvisionPanel({ onClose, onCreate, branches }: ProvisionPanelProps) {
+  const { dispatch } = useAlerts();
   const [form, setForm] = useState<ProvisionPayload>({
     name: "",
     email: "",
@@ -22,7 +33,6 @@ export function ProvisionPanel({ onClose, onCreate, branches, dispatch }: Provis
   const [isSaving, setIsSaving] = useState(false);
   const [successCredentials, setSuccessCredentials] = useState<string | null>(null);
 
-  // Logic: Ensure identity is established before credentials can be generated
   const canGenerate = form.name.trim().length > 0 && form.email.trim().length > 0;
 
   const handleGeneratePassword = () => {
@@ -45,7 +55,6 @@ export function ProvisionPanel({ onClose, onCreate, branches, dispatch }: Provis
   };
 
   const handleSubmit = async () => {
-    // Validation Logic
     if (!form.branchId || !form.name.trim() || !form.email.trim() || !form.password?.trim()) {
       return dispatch({ 
         kind: "TOAST", 
@@ -54,9 +63,9 @@ export function ProvisionPanel({ onClose, onCreate, branches, dispatch }: Provis
         message: "All fields are required for system provisioning." 
       });
     }
-    
+
     setIsSaving(true);
-    
+
     const sanitizedPayload: ProvisionPayload = {
       ...form,
       name: form.name.trim(),
@@ -66,10 +75,7 @@ export function ProvisionPanel({ onClose, onCreate, branches, dispatch }: Provis
     };
 
     try {
-      // Execute creation (Backend handles secure hashing)
       await onCreate(sanitizedPayload);
-
-      // Transition to success state to display credentials
       setSuccessCredentials(sanitizedPayload.password);
       dispatch({ 
         kind: "TOAST", 
@@ -77,7 +83,6 @@ export function ProvisionPanel({ onClose, onCreate, branches, dispatch }: Provis
         title: "Provisioned", 
         message: "Staff profile initialized and live on the network." 
       });
-      
     } catch (err: unknown) {
       console.error("[PROVISION_ERROR]:", err);
       dispatch({ 
@@ -93,17 +98,18 @@ export function ProvisionPanel({ onClose, onCreate, branches, dispatch }: Provis
 
   return (
     <div className="h-full flex flex-col w-full bg-white/95 dark:bg-slate-900/95 backdrop-blur-xl relative overflow-hidden" role="dialog" aria-modal="true">
-      {/* Header - Cleaned borders */}
-      <div className="p-4 border-b border-slate-100 dark:border-slate-800 flex justify-between items-center bg-white/50 dark:bg-transparent shrink-0 z-10">
-        <div className="flex items-center gap-2 px-2 text-[11px] font-bold text-slate-800 dark:text-slate-200 uppercase tracking-[0.15em] whitespace-nowrap">
-          <i className="bx bx-user-plus text-blue-500 text-lg" /> 
+      
+      {/* Header - Styled with Branch Gradient */}
+      <div className="p-4 flex justify-between items-center bg-gradient-to-r from-cyan-600 to-blue-500 shrink-0 z-10 shadow-lg">
+        <div className="flex items-center gap-2 px-2 text-[11px] font-bold text-white uppercase tracking-[0.15em] whitespace-nowrap">
+          <UserPlus size={18} className="text-cyan-100" /> 
           Provision Staff
         </div>
         <button 
           onClick={onClose} 
-          className="w-8 h-8 rounded-full hover:bg-slate-100 dark:hover:bg-slate-800 flex items-center justify-center text-slate-400 hover:text-slate-600 transition-all active:scale-95"
+          className="w-8 h-8 rounded-full bg-white/10 hover:bg-white/20 flex items-center justify-center text-white transition-all active:scale-95"
         >
-          <i className="bx bx-x text-xl" />
+          <X size={18} />
         </button>
       </div>
 
@@ -113,14 +119,14 @@ export function ProvisionPanel({ onClose, onCreate, branches, dispatch }: Provis
           <div className="space-y-6 animate-in fade-in slide-in-from-bottom-2 duration-500">
             <div className="p-5 bg-emerald-50 dark:bg-emerald-500/10 border border-emerald-100 dark:border-emerald-500/20 rounded-2xl flex flex-col gap-2">
               <div className="flex items-center gap-2 text-emerald-800 dark:text-emerald-400 font-bold text-[13px]">
-                <i className="bx bxs-check-circle text-xl text-emerald-500" /> 
+                <CheckCircle2 size={20} className="text-emerald-500" /> 
                 Provisioning Complete
               </div>
               <p className="text-[12.5px] text-emerald-800/80 dark:text-emerald-400/80 leading-relaxed">
                 The profile for <strong>{form.name}</strong> is active. Share this temporary password for their initial terminal access.
               </p>
             </div>
-            
+
             <div className="space-y-2">
               <label className="text-[10px] font-bold text-slate-400 pl-1 uppercase tracking-widest block">
                 Access Token / Password
@@ -133,11 +139,11 @@ export function ProvisionPanel({ onClose, onCreate, branches, dispatch }: Provis
                   onClick={() => copyToClipboard(successCredentials, dispatch)} 
                   className="px-5 py-3 bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-200 rounded-xl text-[12px] font-bold hover:bg-slate-50 dark:hover:bg-slate-700 border border-slate-200/80 dark:border-slate-600 transition-all flex items-center gap-2 shadow-sm active:scale-95"
                 >
-                  <i className="bx bx-copy text-lg text-blue-500" /> Copy
+                  <Copy size={16} className="text-blue-500" /> Copy
                 </button>
               </div>
             </div>
-            
+
             <button 
               onClick={onClose} 
               className="w-full py-3.5 bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 rounded-2xl text-[13px] font-bold hover:bg-slate-200 dark:hover:bg-slate-700 transition-all"
@@ -149,7 +155,7 @@ export function ProvisionPanel({ onClose, onCreate, branches, dispatch }: Provis
           /* Entry View */
           <div className="space-y-6 animate-in fade-in duration-300">
             <div className="p-4 bg-blue-50/50 dark:bg-blue-500/5 border border-blue-100/50 dark:border-blue-500/10 rounded-2xl flex gap-3 text-blue-800 dark:text-blue-400">
-              <i className="bx bx-shield-quarter text-xl shrink-0 text-blue-500" />
+              <ShieldCheck size={20} className="shrink-0 text-blue-500" />
               <p className="text-[12px] font-medium leading-relaxed">
                 New users are required to update their credentials upon their first entry to <b>MASA</b>.
               </p>
@@ -188,7 +194,7 @@ export function ProvisionPanel({ onClose, onCreate, branches, dispatch }: Provis
                     {Object.values(Role).map(r => <option key={r} value={r}>{r}</option>)}
                   </select>
                 </div>
-                
+
                 <div className="space-y-1.5">
                   <label className="text-[10px] font-bold text-slate-500 dark:text-slate-400 pl-1 block uppercase tracking-wide">Primary Branch</label>
                   <select 
@@ -215,10 +221,10 @@ export function ProvisionPanel({ onClose, onCreate, branches, dispatch }: Provis
                   <button 
                     type="button" 
                     onClick={handleGeneratePassword} 
-                    className={`absolute right-2 p-1.5 rounded-lg transition-all flex items-center justify-center ${canGenerate ? 'text-blue-600 bg-blue-50 dark:bg-blue-500/10 hover:bg-blue-100 dark:hover:bg-blue-500/20 active:scale-95' : 'text-slate-300 dark:text-slate-700 bg-transparent'}`} 
+                    className={`absolute right-2 p-1.5 rounded-lg transition-all flex items-center justify-center ${canGenerate ? 'text-cyan-600 bg-cyan-50 dark:bg-cyan-500/10 hover:bg-cyan-100 dark:hover:bg-cyan-500/20 active:scale-95' : 'text-slate-300 dark:text-slate-700 bg-transparent'}`} 
                     title={canGenerate ? "Generate Secure Password" : "Name and Email required first"}
                   >
-                    <i className="bx bx-refresh text-xl" />
+                    <RefreshCw size={18} className={isSaving ? "animate-spin" : ""} />
                   </button>
                 </div>
               </div>
@@ -227,24 +233,24 @@ export function ProvisionPanel({ onClose, onCreate, branches, dispatch }: Provis
         )}
       </div>
 
-    {!successCredentials && (
-            <div className="p-4 border-t border-slate-100 dark:border-slate-800 bg-white/50 dark:bg-slate-900/50 backdrop-blur-md shrink-0 z-10">
-              <button 
-                onClick={handleSubmit} 
-                disabled={isSaving} 
-                className="w-full py-3 bg-slate-900 dark:bg-blue-600 text-white rounded-xl text-[12px] font-bold tracking-widest uppercase hover:bg-slate-800 dark:hover:bg-blue-700 active:scale-[0.98] transition-all disabled:opacity-40 disabled:pointer-events-none flex justify-center items-center"
-              >
-                {isSaving ? (
-                  <span className="flex items-center gap-2">
-                    <i className="bx bx-loader-alt animate-spin text-base" /> 
-                    Processing...
-                  </span>
-                ) : (
-                  "Initialize Account"
-                )}
-              </button>
-            </div>
-          )}
+      {!successCredentials && (
+        <div className="p-4 border-t border-slate-100 dark:border-slate-800 bg-white/50 dark:bg-slate-900/50 backdrop-blur-md shrink-0 z-10">
+          <button 
+            onClick={handleSubmit} 
+            disabled={isSaving} 
+            className="w-full py-4 bg-gradient-to-r from-cyan-600 to-blue-500 text-white rounded-xl text-[12px] font-bold tracking-widest uppercase hover:brightness-110 active:scale-[0.98] transition-all disabled:opacity-40 disabled:pointer-events-none flex justify-center items-center shadow-lg shadow-blue-500/20"
+          >
+            {isSaving ? (
+              <span className="flex items-center gap-2">
+                <Loader2 size={16} className="animate-spin" /> 
+                Processing...
+              </span>
+            ) : (
+              "Initialize Account"
+            )}
+          </button>
+        </div>
+      )}
     </div>
   );
 }

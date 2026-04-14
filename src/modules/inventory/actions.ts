@@ -1,4 +1,4 @@
-// src/modules/inventory/actions.ts
+// File: src/modules/inventory/actions.ts
 "use server";
 
 import prisma from "@/core/lib/prisma";
@@ -7,8 +7,7 @@ import { Decimal } from "@prisma/client/runtime/library";
 
 /* -------------------------
    Types & Utilities
-   ------------------------- */
-
+------------------------- */
 export type PaginatedResult<T> = {
   items: T[];
   nextCursor: string | null;
@@ -16,7 +15,6 @@ export type PaginatedResult<T> = {
   hasMore: boolean;
 };
 
-// Types aligned with MASA Forensic Schema 
 export interface FortressInventoryItem {
   id: string;
   branchId: string;
@@ -47,13 +45,13 @@ export interface FortressLedgerLog {
   action: string;
   actorId: string;
   actorRole: Role | null;
-  severity: Severity | null;
+  severity: Severity;
   description: string;
   metadata: any;
-  approvalRequestId: string | null;
-  stockMovementId: string | null;
+  targetId: string | null;
+  targetType: string | null;
   createdAt: Date;
-  hash?: string; // Included for forensic verification
+  hash: string | null; 
 }
 
 function encodeCursor(payload: Record<string, any>): string {
@@ -64,7 +62,9 @@ function decodeCursor(cursor?: string): Record<string, any> | null {
   if (!cursor) return null;
   try {
     return JSON.parse(Buffer.from(cursor, "base64").toString("utf8"));
-  } catch { return null; }
+  } catch {
+    return null;
+  }
 }
 
 function decimalToNumber(value: Decimal | number | null | undefined): number {
@@ -74,21 +74,31 @@ function decimalToNumber(value: Decimal | number | null | undefined): number {
 
 /* -------------------------
    Inventory Paging Logic
-   ------------------------- */
-
+------------------------- */
 export async function getFortressInventoryPaged(
   branchId: string,
-  opts?: { limit?: number; cursor?: string; since?: Date; }
+  opts?: { limit?: number; cursor?: string; search?: string }
 ): Promise<PaginatedResult<FortressInventoryItem>> {
-  if (!branchId) throw new Error("branchId required");
+  if (!branchId) throw new Error("Branch ID required");
 
   const pageSize = Math.min(opts?.limit ?? 50, 500);
   const decoded = decodeCursor(opts?.cursor);
   
+  const searchFilter: Prisma.BranchProductWhereInput = opts?.search
+    ? {
+        product: {
+          OR: [
+            { name: { contains: opts.search, mode: "insensitive" } },
+            { sku: { contains: opts.search, mode: "insensitive" } },
+          ],
+        },
+      }
+    : {};
+
   const where: Prisma.BranchProductWhereInput = {
     branchId,
     deletedAt: null,
-    ...(opts?.since ? { updatedAt: { gte: opts.since } } : {}),
+    ...searchFilter,
   };
 
   const items = await prisma.branchProduct.findMany({
@@ -121,8 +131,8 @@ export async function getFortressInventoryPaged(
     lastRestockedAt: it.lastRestockedAt,
     vendorId: it.vendorId,
     sellingPrice: decimalToNumber(it.sellingPrice),
-    costPrice: decimalToNumber(it.costPrice),
-    uomId: it.uomId,
+    costPrice: decimalToNumber(it.costPrice ?? it.product.costPrice),
+    uomId: it.uomId ?? it.product.uomId,
     deletedAt: it.deletedAt,
     product: it.product,
   }));
@@ -137,20 +147,20 @@ export async function getFortressInventoryPaged(
 
 /* -------------------------
    Forensic Ledger Paging
-   ------------------------- */
-
+------------------------- */
 export async function getFortressLedgerPaged(
   branchId: string,
-  opts?: { limit?: number; cursor?: string; since?: Date; }
+  opts?: { limit?: number; cursor?: string }
 ): Promise<PaginatedResult<FortressLedgerLog>> {
-  if (!branchId) throw new Error("branchId required");
+  if (!branchId) throw new Error("Branch ID required");
 
   const pageSize = Math.min(opts?.limit ?? 50, 1000);
   const decoded = decodeCursor(opts?.cursor);
 
+  // Filter logs relevant to the inventory/stock fortress
   const where: Prisma.ActivityLogWhereInput = {
     branchId,
-    ...(opts?.since ? { createdAt: { gte: opts.since } } : {}),
+    targetType: { in: ["STOCK", "PRODUCT", "STOCK_ADJUST", "STOCK_TRANSFER", "GRN"] }
   };
 
   const logs = await prisma.activityLog.findMany({
@@ -169,12 +179,12 @@ export async function getFortressLedgerPaged(
     actorId: l.actorId ?? "SYSTEM",
     actorRole: l.actorRole as Role,
     severity: l.severity as Severity,
-    description: (l as any).description || `Action: ${l.action}`,
+    description: l.description,
     metadata: l.metadata,
-    approvalRequestId: (l as any).approvalRequestId || null,
-    stockMovementId: (l as any).stockMovementId || null,
+    targetId: l.targetId,
+    targetType: l.targetType,
     createdAt: l.createdAt,
-    hash: (l as any).hash,
+    hash: l.hash,
   }));
 
   return {
