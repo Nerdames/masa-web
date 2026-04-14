@@ -133,7 +133,7 @@ export default function PurchaseOrdersWorkspace({ branchId }: { branchId: string
     if (userIsOrgOwner) return true;
     if (!userRole) return false;
     return ["ADMIN", "MANAGER", "AUDITOR", "DEV"].includes(userRole);
-  }, [session]);
+  }, [session?.user, userIsOrgOwner, userRole]);
 
   /* -------------------------
      Time-aware theme (kept)
@@ -239,7 +239,7 @@ export default function PurchaseOrdersWorkspace({ branchId }: { branchId: string
         setError(err?.message || "Failed to sync purchase orders.");
         dispatch({
           kind: "TOAST",
-          type: "SYSTEM",
+          type: "ERROR",
           title: "Sync error",
           message: err?.message || "Failed to sync purchase orders.",
         });
@@ -279,7 +279,7 @@ export default function PurchaseOrdersWorkspace({ branchId }: { branchId: string
         setError("You do not have permission to export all data.");
         dispatch({
           kind: "TOAST",
-          type: "SYSTEM",
+          type: "ERROR",
           title: "Export denied",
           message: "You do not have permission to export all data.",
         });
@@ -303,7 +303,7 @@ export default function PurchaseOrdersWorkspace({ branchId }: { branchId: string
         saveAs(blob, `${viewType === "ledger" ? "po_ledger" : "purchase_orders"}_${new Date().toISOString()}.csv`);
         dispatch({
           kind: "PUSH",
-          type: "INVENTORY",
+          type: "SUCCESS",
           title: "Export ready",
           message: `CSV export for ${viewType === "ledger" ? "ledger" : "purchase orders"} is ready.`,
         });
@@ -345,7 +345,7 @@ export default function PurchaseOrdersWorkspace({ branchId }: { branchId: string
       }
       dispatch({
         kind: "PUSH",
-        type: "INVENTORY",
+        type: "SUCCESS",
         title: "Export started",
         message: `Export for ${viewType === "ledger" ? "ledger" : "purchase orders"} completed.`,
       });
@@ -354,7 +354,7 @@ export default function PurchaseOrdersWorkspace({ branchId }: { branchId: string
       setError(e?.message || "Export error");
       dispatch({
         kind: "TOAST",
-        type: "SYSTEM",
+        type: "ERROR",
         title: "Export failed",
         message: e?.message || "Export failed",
       });
@@ -398,7 +398,7 @@ export default function PurchaseOrdersWorkspace({ branchId }: { branchId: string
       // success
       dispatch({
         kind: "PUSH",
-        type: "TRANSACTIONAL",
+        type: "SUCCESS",
         title: "Purchase Order Created",
         message: `PO ${data.poNumber || data.id || ""} created successfully.`,
       });
@@ -408,7 +408,7 @@ export default function PurchaseOrdersWorkspace({ branchId }: { branchId: string
     } catch (err: any) {
       dispatch({
         kind: "TOAST",
-        type: "SYSTEM",
+        type: "ERROR",
         title: "Create PO failed",
         message: err?.message || "Failed to create PO",
       });
@@ -799,7 +799,7 @@ function CreatePOModal({ vendors, products, onClose, onCreate }: any) {
       await onCreate(payload);
       dispatch({
         kind: "TOAST",
-        type: "TRANSACTIONAL",
+        type: "SUCCESS",
         title: "PO created",
         message: `Purchase order created successfully.`,
       });
