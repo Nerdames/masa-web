@@ -200,15 +200,17 @@ export async function GET(req: NextRequest) {
 
     // Meta endpoints (vendors, products)
     const meta = params.get("meta");
+    const orgIdParam = params.get("orgId") || undefined;
     const branchIdParam = params.get("branchId") || undefined;
 
     if (meta) {
       const user = await requireSession();
-      const orgId = user.organizationId;
+      // FIX: Use session orgId if orgIdParam is missing
+      const orgId = orgIdParam || user.organizationId;
       if (!orgId) return NextResponse.json({ error: "Missing organization context" }, { status: 400 });
 
       if (meta === "vendors") {
-        // Return vendors for organization (branch not required)
+        // Vendors belong to the Org, ignore branch context for fetching vendors
         const vendors = await prisma.vendor.findMany({
           where: { organizationId: orgId, deletedAt: null },
           select: { id: true, name: true },
@@ -218,8 +220,7 @@ export async function GET(req: NextRequest) {
       }
 
       if (meta === "products") {
-        // If branchId provided, prefer branch-specific pricing/cost (BranchProduct),
-        // otherwise return master product list.
+        // Products CAN belong to a branch, but if branchId isn't present, fall back to Org level products
         if (branchIdParam) {
           const branchProducts = await prisma.branchProduct.findMany({
             where: { organizationId: orgId, branchId: branchIdParam, deletedAt: null },
@@ -240,6 +241,7 @@ export async function GET(req: NextRequest) {
           return NextResponse.json({ items });
         }
 
+        // Fallback to org level products if no branch is specified (e.g. for Org Owners)
         const products = await prisma.product.findMany({
           where: { organizationId: orgId, deletedAt: null },
           select: { id: true, name: true, sku: true, costPrice: true },
@@ -252,7 +254,8 @@ export async function GET(req: NextRequest) {
     }
 
     const user = await requireSession();
-    const orgId = user.organizationId;
+    // FIX: Prioritize orgId from query, fallback to session orgId
+    const orgId = orgIdParam || user.organizationId;
     if (!orgId) return NextResponse.json({ error: "Missing organization context" }, { status: 400 });
 
     // Parse query params
@@ -286,7 +289,9 @@ export async function GET(req: NextRequest) {
       if (!auth.allowed) return NextResponse.json({ error: "ACCESS_DENIED: You are not authorized to view ledger." }, { status: 403 });
 
       const where: any = { organizationId: orgId };
+      // FIX: Only apply branch filter if it exists
       if (branchId) where.branchId = branchId;
+      
       if (search) {
         where.OR = [
           { action: { contains: search, mode: "insensitive" } },
@@ -305,7 +310,7 @@ export async function GET(req: NextRequest) {
           orderBy: { createdAt: "desc" },
           take,
           skip,
-          include: { actor: { select: { id: true, name: true, role: true } } as any },
+          include: { personnel: { select: { id: true, name: true, role: true } } as any },
         }),
         prisma.activityLog.count({ where }),
       ]);
@@ -318,7 +323,7 @@ export async function GET(req: NextRequest) {
           it.action,
           it.description || "",
           it.severity || "",
-          (it as any).actor?.role || "",
+          (it as any).personnel?.role || "",
           it.createdAt?.toISOString?.() || "",
           it.requestId || "",
         ]);
@@ -340,8 +345,8 @@ export async function GET(req: NextRequest) {
         severity: it.severity,
         createdAt: it.createdAt,
         requestId: it.requestId,
-        actorRole: (it as any).actor?.role ?? null,
-        actorName: (it as any).actor?.name ?? null,
+        actorRole: (it as any).personnel?.role ?? null,
+        actorName: (it as any).personnel?.name ?? null,
       }));
 
       return NextResponse.json({ items: mapped, total, page, limit: take });
@@ -357,7 +362,9 @@ export async function GET(req: NextRequest) {
     if (!authPO.allowed) return NextResponse.json({ error: "ACCESS_DENIED: You are not authorized to view purchase orders." }, { status: 403 });
 
     const where: any = { organizationId: orgId };
+    // FIX: Only apply branch filter if it exists
     if (branchId) where.branchId = branchId;
+
     if (search) {
       where.OR = [
         { poNumber: { contains: search, mode: "insensitive" } },
@@ -509,7 +516,7 @@ export async function POST(req: NextRequest) {
           expectedDate: expectedDate ? new Date(expectedDate) : null,
           notes: notes ?? null,
           createdById: user.id,
-          updatedById: user.id,
+          // Remove updatedById since it is not defined in the schema
           items: {
             create: itemsValidated.map((it) => ({
               productId: it.productId,

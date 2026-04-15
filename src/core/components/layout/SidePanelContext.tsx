@@ -40,7 +40,7 @@ export interface SidePanelContextType extends PanelConfig {
 
 const PREF_KEY = "right-panel-config";
 const SAVE_DEBOUNCE_MS = 800;
-const MIN_WIDTH = 320;
+const MIN_WIDTH = 340;
 const MAX_WIDTH = 340; // Cap width to 340
 
 const DEFAULT_CONFIG: PanelConfig = {

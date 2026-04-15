@@ -16,10 +16,6 @@ export default function DashboardRootLayout({ children }: DashboardRootLayoutPro
   const [isDark, setIsDark] = useState(false);
   usePusherNotifications();
 
-  /**
-   * Time-Aware Theme logic (Syncs with Operations Hub)
-   * Automatically engages eye-protection from 19:00 - 07:00
-   */
   useEffect(() => {
     const handleTheme = () => {
       const hour = new Date().getHours();
@@ -32,11 +28,9 @@ export default function DashboardRootLayout({ children }: DashboardRootLayoutPro
 
   return (
     <SidePanelProvider>
-      {/* 1. ROOT CONTAINER - Theme aware with full-width layout */}
       <div className={`h-screen w-full relative overflow-hidden flex flex-col transition-colors duration-1000 
         ${isDark ? "bg-[#020617] text-slate-200" : "bg-slate-50 text-slate-900"}`}>
         
-        {/* Background Decorative Elements */}
         <div className="absolute inset-0 pointer-events-none z-0">
           <svg className={`absolute -left-20 -top-20 ${isDark ? "opacity-[0.03]" : "opacity-10"}`} viewBox="0 0 600 600" style={{ width: "min(45vw, 450px)" }}>
             <defs>
@@ -49,7 +43,6 @@ export default function DashboardRootLayout({ children }: DashboardRootLayoutPro
           </svg>
         </div>
 
-        {/* 2. TOPBAR */}
         <header className={`flex-none relative z-[1000] border-b backdrop-blur-md transition-colors
           ${isDark ? "bg-slate-900/50 border-slate-800" : "bg-white/80 border-black/5"}`}>
           <TopBar />
@@ -60,19 +53,16 @@ export default function DashboardRootLayout({ children }: DashboardRootLayoutPro
           )}
         </header>
 
-        {/* 3. FULL-WIDTH VIEWPORT WRAPPER */}
         <div className="flex flex-1 min-h-0 overflow-hidden relative z-10">
           <div className="flex flex-1 min-w-0 min-h-0 overflow-hidden relative">
             <main className={`flex-1 flex flex-col min-w-0 min-h-0 transition-opacity duration-300 ${status === "loading" ? "opacity-0" : "opacity-100"}`}>
-               {children}
+                {children}
             </main>
 
-            {/* The Integrated Utility SidePanel - Now closes by default if no content is present */}
             <DynamicSidePanel isDark={isDark} />
           </div>
         </div>
 
-        {/* Global Styles */}
         <style jsx global>{`
           html, body { 
             height: 100%; 
@@ -94,7 +84,7 @@ export default function DashboardRootLayout({ children }: DashboardRootLayoutPro
 }
 
 function DynamicSidePanel({ isDark }: { isDark: boolean }) {
-  const { isOpen, content, width, isFullScreen } = useSidePanel();
+  const { isOpen, content, width, isFullScreen, closePanel } = useSidePanel();
   const [isOverlayMode, setIsOverlayMode] = useState(false);
 
   useEffect(() => {
@@ -104,35 +94,74 @@ function DynamicSidePanel({ isDark }: { isDark: boolean }) {
     return () => window.removeEventListener("resize", check);
   }, []);
 
-  // Updated logic: Should only show if context says isOpen AND there is actual content to display
   const shouldShow = isOpen && !!content;
 
-  const panelWidth = isOverlayMode
-    ? (isFullScreen ? "100%" : `${width}px`)
-    : `${Math.min(width, 340)}px`;
+  /**
+   * Layout Logic:
+   * 1. FullScreen + Overlay (Mobile): 100% width, absolute.
+   * 2. FullScreen + Desktop: 95% width (centered modal style), absolute.
+   * 3. Normal + Overlay: Fixed width (340px), absolute.
+   * 4. Normal + Desktop: Fixed width (340px), relative (pushes content).
+   */
+  const getPanelStyles = () => {
+    if (isFullScreen) {
+      return {
+        width: isOverlayMode ? "100%" : "95%",
+        maxWidth: isOverlayMode ? "none" : "1400px",
+        height: isOverlayMode ? "100%" : "95%",
+        top: isOverlayMode ? "0" : "2.5%",
+        right: isOverlayMode ? "0" : "2.5%",
+        borderRadius: isOverlayMode ? "0" : "16px",
+        position: "absolute" as const,
+        zIndex: 100,
+        boxShadow: "0 25px 50px -12px rgba(0, 0, 0, 0.5)",
+      };
+    }
+
+    return {
+      width: `${Math.min(width, 340)}px`,
+      position: isOverlayMode ? ("absolute" as const) : ("relative" as const),
+      right: 0,
+      top: 0,
+      height: "100%",
+    };
+  };
 
   return (
     <AnimatePresence>
       {shouldShow && (
-        <motion.aside
-          key="side-panel"
-          initial={{ x: "100%", opacity: 0 }}
-          animate={{ x: 0, opacity: 1 }}
-          exit={{ x: "100%", opacity: 0 }}
-          transition={{ type: "spring", damping: 25, stiffness: 200 }}
-          className={`
-            h-full min-h-0 max-w-full backdrop-blur-xl shrink-0 overflow-hidden flex flex-col z-[50]
-            ${isOverlayMode ? "absolute right-0 top-0 shadow-2xl" : "relative"}
-            ${isDark ? "bg-slate-900/90 border-l border-slate-800" : "bg-white/95 border-l border-black/5"}
-          `}
-          style={{ width: panelWidth }}
-        >
-          <div className="flex-1 min-h-0 overflow-y-auto scrollbar-hide">
-            <div className="animate-in fade-in slide-in-from-right-4 duration-300">
-              {content}
+        <>
+          {/* Optional Backdrop for FullScreen/Modal mode */}
+          {isFullScreen && (
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={closePanel}
+              className="absolute inset-0 bg-black/40 backdrop-blur-sm z-[45]"
+            />
+          )}
+
+          <motion.aside
+            key="side-panel"
+            initial={isFullScreen ? { opacity: 0, scale: 0.95, y: 20 } : { x: "100%", opacity: 0 }}
+            animate={isFullScreen ? { opacity: 1, scale: 1, y: 0 } : { x: 0, opacity: 1 }}
+            exit={isFullScreen ? { opacity: 0, scale: 0.95, y: 20 } : { x: "100%", opacity: 0 }}
+            transition={{ type: "spring", damping: 25, stiffness: 200 }}
+            className={`
+              min-h-0 max-w-full shrink-0 overflow-hidden flex flex-col z-[50] transition-all duration-300
+              ${isDark ? "bg-slate-900/95 border-l border-slate-800" : "bg-white/95 border-l border-black/5"}
+              ${!isFullScreen && "backdrop-blur-xl"}
+            `}
+            style={getPanelStyles()}
+          >
+            <div className="flex-1 min-h-0 overflow-y-auto scrollbar-hide">
+              <div className="h-full animate-in fade-in slide-in-from-right-4 duration-300">
+                {content}
+              </div>
             </div>
-          </div>
-        </motion.aside>
+          </motion.aside>
+        </>
       )}
     </AnimatePresence>
   );
