@@ -12,8 +12,8 @@ import { useSidePanel } from "@/core/components/layout/SidePanelContext"; // Add
 
 // Side Panels & Modals
 import { ProductDetailsPanel } from "@/modules/inventory/components/ProductDetailsPanel"; // Added
-import AddInventoryModal from "@/modules/inventory/components/AddInventoryModal";
-import EditInventoryModal from "@/modules/inventory/components/EditInventoryModal";
+import AddInventoryModal from "@/modules/inventory/components/PODetailView";
+import EditInventoryModal from "@/modules/inventory/components/CreatePOPanel";
 
 // Actions & Types
 import { getCategories } from "@/modules/actions/inventory";

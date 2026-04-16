@@ -225,14 +225,18 @@ export async function GET(req: NextRequest) {
           const branchProducts = await prisma.branchProduct.findMany({
             where: { organizationId: orgId, branchId: branchIdParam, deletedAt: null },
             select: {
+              id: true, // The branchProductId
               product: { select: { id: true, name: true, sku: true, costPrice: true } },
               costPrice: true,
             },
             orderBy: { product: { name: "asc" } as any },
           });
 
+          // Expose both the productId (as id) and branchProductId explicitly so the frontend never loses track
           const items = branchProducts.map((bp) => ({
             id: bp.product.id,
+            branchProductId: bp.id,
+            productId: bp.product.id,
             name: bp.product.name,
             sku: bp.product.sku,
             costPrice: bp.costPrice ?? bp.product.costPrice ?? null,
@@ -247,7 +251,13 @@ export async function GET(req: NextRequest) {
           select: { id: true, name: true, sku: true, costPrice: true },
           orderBy: { name: "asc" },
         });
-        return NextResponse.json({ items: products });
+        
+        const items = products.map((p) => ({
+          ...p,
+          productId: p.id,
+        }));
+        
+        return NextResponse.json({ items });
       }
 
       return NextResponse.json({ error: "Unknown meta type" }, { status: 400 });
@@ -479,16 +489,30 @@ export async function POST(req: NextRequest) {
     }[] = [];
 
     for (const [idx, it] of rawItems.entries()) {
-      const productId = it.productId;
+      let productId = it.productId;
+
+      // Fallback 1: If frontend sent branchProductId instead of productId, resolve it automatically
+      if (!productId && it.branchProductId) {
+        const bp = await prisma.branchProduct.findFirst({
+          where: { id: it.branchProductId, organizationId: orgId, deletedAt: null }
+        });
+        if (bp) productId = bp.productId;
+      }
+      
+      // Fallback 2: Sometimes frontends pass the identifier simply as 'id'
+      if (!productId && it.id) {
+        productId = it.id;
+      }
+
       const qty = Number(it.quantityOrdered ?? it.quantity ?? 0);
       const unitCost = Number(it.unitCost ?? it.unit_price ?? 0);
 
-      if (!productId) return NextResponse.json({ error: `productId is required for line ${idx + 1}` }, { status: 400 });
+      if (!productId) return NextResponse.json({ error: `productId (or valid branchProductId) is required for line ${idx + 1}` }, { status: 400 });
       if (!Number.isFinite(qty) || qty <= 0) return NextResponse.json({ error: `Invalid quantity for line ${idx + 1}` }, { status: 400 });
       if (!Number.isFinite(unitCost) || unitCost < 0) return NextResponse.json({ error: `Invalid unitCost for line ${idx + 1}` }, { status: 400 });
 
       const product = await prisma.product.findFirst({ where: { id: productId, organizationId: orgId, deletedAt: null } });
-      if (!product) return NextResponse.json({ error: `Product not found for line ${idx + 1}` }, { status: 404 });
+      if (!product) return NextResponse.json({ error: `Product not found for line ${idx + 1} (ID: ${productId})` }, { status: 404 });
 
       const totalCost = Number((qty * unitCost).toFixed(2));
       itemsValidated.push({ productId, quantityOrdered: qty, unitCost, totalCost });
@@ -519,7 +543,7 @@ export async function POST(req: NextRequest) {
           // Remove updatedById since it is not defined in the schema
           items: {
             create: itemsValidated.map((it) => ({
-              productId: it.productId,
+              productId: it.productId, // Enforced by PurchaseOrderItem Schema mapping
               quantityOrdered: it.quantityOrdered,
               unitCost: new Prisma.Decimal(it.unitCost),
               totalCost: new Prisma.Decimal(it.totalCost),

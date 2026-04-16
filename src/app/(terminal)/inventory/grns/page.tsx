@@ -104,14 +104,20 @@ export default function GoodsReceiptsWorkspace({ branchId }: { branchId: string 
   const [isCreateModalOpen, setCreateModalOpen] = useState(false);
   const [selectedGRN, setSelectedGRN] = useState<IGoodsReceipt | null>(null);
 
-  const userRole = (session?.user as any)?.role as Role | undefined;
-  const userIsOrgOwner = (session?.user as any)?.isOrgOwner as boolean | undefined;
+  const user = session?.user as any;
+  const userRole = user?.role as Role | undefined;
+  const userIsOrgOwner = !!user?.isOrgOwner;
+
   const userCanExport = useMemo(() => {
-    if (!session?.user) return false;
-    if (userIsOrgOwner) return true;
-    if (!userRole) return false;
-    return ["ADMIN", "MANAGER", "AUDITOR", "DEV"].includes(userRole);
-  }, [session?.user, userIsOrgOwner, userRole]);
+    if (!user) return false;
+    
+    // 1. Super-user override
+    if (userIsOrgOwner || userRole === "DEV") return true; 
+    
+    // 2. Role-based check
+    const allowedRoles: Role[] = ["ADMIN", "MANAGER", "AUDITOR"];
+    return userRole ? allowedRoles.includes(userRole) : false;
+  }, [user, userIsOrgOwner, userRole]);
 
   /* -------------------------
   Helpers

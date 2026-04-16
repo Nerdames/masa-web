@@ -1,3 +1,4 @@
+// /app/api/inventory/purchase-orders/[id]/route.ts
 import { NextRequest, NextResponse } from "next/server";
 import prisma from "@/core/lib/prisma";
 import { getServerSession } from "next-auth/next";
@@ -17,7 +18,10 @@ const patchPOSchema = z.object({
   status: z.literal(POStatus.CANCELLED),
 });
 
-function generateHash(data: any): string {
+/**
+ * Generates a SHA-256 hash for audit log chaining.
+ */
+function generateHash(data: Record<string, unknown>): string {
   return crypto.createHash("sha256").update(JSON.stringify(data)).digest("hex");
 }
 
@@ -27,35 +31,38 @@ function generateHash(data: any): string {
  */
 export async function PATCH(
   req: NextRequest, 
-  { params }: { params: Promise<{ id: string }> } // params is now a Promise in Next.js 15+
+  { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    // 1. Unwrap the dynamic route parameters
     const { id: poId } = await params;
 
     const ipAddress = req.headers.get("x-forwarded-for")?.split(",")[0] ?? "127.0.0.1";
     const deviceInfo = req.headers.get("user-agent") ?? "unknown";
     const requestId = crypto.randomUUID();
 
-    // 2. Rate Limiting
+    // 1. Rate Limiting
     const { success: limitOk } = await ratelimit.limit(`po_patch:${ipAddress}`);
     if (!limitOk) return NextResponse.json({ error: "Too many requests" }, { status: 429 });
 
-    // 3. Auth Check
+    // 2. Auth Check
     const session = await getServerSession(authOptions);
-    if (!session?.user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    if (!session?.user) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
 
     const orgId = session.user.organizationId;
     const actorId = session.user.id;
+    const actorRole = session.user.role as Role;
 
-    // 4. Payload Validation
+    // 3. Payload Validation
     const body = await req.json();
     const parsed = patchPOSchema.safeParse(body);
-    if (!parsed.success) return NextResponse.json({ error: "Invalid payload" }, { status: 400 });
+    if (!parsed.success) {
+      return NextResponse.json({ error: "Invalid payload" }, { status: 400 });
+    }
 
-    // 5. Transaction with Serializable Isolation for Ledger Integrity
+    // 4. Transaction with Serializable Isolation
     return await prisma.$transaction(async (tx) => {
-      // Fetch current PO state within transaction to prevent race conditions
       const existingPO = await tx.purchaseOrder.findUnique({
         where: { 
           id: poId, 
@@ -70,7 +77,10 @@ export async function PATCH(
       if (existingPO.status === POStatus.CANCELLED) {
         throw new Error("Purchase order is already cancelled.");
       }
-      if (existingPO.status === POStatus.FULFILLED || existingPO.status === POStatus.PARTIALLY_RECEIVED) {
+      
+      // Prevent voiding if goods have already started arriving
+      const protectedStatuses: string[] = [POStatus.FULFILLED, "PARTIALLY_RECEIVED"];
+      if (protectedStatuses.includes(existingPO.status)) {
         throw new Error("Cannot void a PO that has already been partially or fully received.");
       }
 
@@ -80,38 +90,47 @@ export async function PATCH(
         data: { status: POStatus.CANCELLED },
       });
 
-      // 6. Forensic Audit Log Entry (Fortress Logic)
+      // 5. Forensic Audit Log Entry
       const lastLog = await tx.activityLog.findFirst({
         where: { organizationId: orgId },
         orderBy: { createdAt: "desc" },
         select: { hash: true },
       });
-      const previousHash = lastLog?.hash ?? "GENESIS";
+      const previousHash = lastLog?.hash ?? "0".repeat(64);
 
-      const logData = {
+      const logPayload: Record<string, unknown> = {
         action: "VOID_PURCHASE_ORDER",
         organizationId: orgId,
         branchId: existingPO.branchId,
         actorId,
-        actorRole: session.user.role as Role,
+        actorRole,
         targetId: poId,
         targetType: "PURCHASE_ORDER",
         previousHash,
         requestId,
+        timestamp: Date.now(),
       };
 
       await tx.activityLog.create({
         data: {
-          ...logData,
-          description: `Voided Purchase Order ${existingPO.poNumber}`,
+          organizationId: orgId,
+          branchId: existingPO.branchId,
+          actorId,
           actorType: ActorType.USER,
-          critical: true,
+          action: "VOID_PURCHASE_ORDER",
+          targetId: poId,
+          targetType: "PURCHASE_ORDER",
           severity: Severity.HIGH,
-          ipAddress,
-          deviceInfo,
-          before: existingPO as unknown as Prisma.InputJsonValue,
-          after: updatedPO as unknown as Prisma.InputJsonValue,
-          hash: generateHash(logData),
+          description: `Voided Purchase Order ${existingPO.poNumber}`,
+          requestId,
+          previousHash,
+          hash: generateHash(logPayload),
+          metadata: {
+            ipAddress,
+            deviceInfo,
+            before: existingPO as unknown as Prisma.JsonValue,
+            after: updatedPO as unknown as Prisma.JsonValue,
+          } as Prisma.JsonObject,
         },
       });
 
@@ -125,9 +144,9 @@ export async function PATCH(
       timeout: 10000,
     });
 
-  } catch (err: any) {
+  } catch (err: unknown) {
     console.error("[PATCH_PO_FATAL]", err);
-    if (err.message) return NextResponse.json({ error: err.message }, { status: 400 });
-    return NextResponse.json({ error: "Internal server error" }, { status: 500 });
+    const message = err instanceof Error ? err.message : "Internal server error";
+    return NextResponse.json({ error: message }, { status: 400 });
   }
 }
