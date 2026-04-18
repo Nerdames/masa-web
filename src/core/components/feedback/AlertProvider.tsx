@@ -8,13 +8,28 @@ import React, {
   useMemo,
   useRef,
   useEffect,
+  useLayoutEffect,
 } from "react";
 import * as RadixToast from "@radix-ui/react-toast";
 import { motion, AnimatePresence } from "framer-motion";
 import { NotificationType } from "@prisma/client";
-import "boxicons/css/boxicons.min.css";
 import Pusher from "pusher-js";
-import { getSession } from "next-auth/react";
+import { useSession } from "next-auth/react";
+import { 
+  ShieldAlert, 
+  Settings, 
+  LockKeyholeOpen, 
+  GitCommitVertical, 
+  CheckCircle2, 
+  AlertTriangle, 
+  Info, 
+  Package, 
+  Receipt,
+  ChevronUp,
+  ChevronDown,
+  X,
+  LucideIcon
+} from "lucide-react";
 
 /* -------------------------------------------------- */
 /* CONFIG & TYPES */
@@ -42,32 +57,28 @@ interface AlertContextType {
   clearActivePushes: () => void;
 }
 
-const TYPE_CONFIG: Record<NotificationType, { icon: string; bg: string }> = {
-  SECURITY: { icon: "bx-shield-quarter", bg: "bg-red-500" },
-  SYSTEM: { icon: "bx-cog", bg: "bg-slate-600" },
-  APPROVAL: { icon: "bx-lock-open", bg: "bg-amber-500" },
-  APPROVAL_DECISION: { icon: "bx-git-commit", bg: "bg-indigo-500" },
-  SUCCESS: { icon: "bx-check-circle", bg: "bg-emerald-500" },
-  WARNING: { icon: "bx-error", bg: "bg-orange-500" },
-  INFO: { icon: "bx-info-circle", bg: "bg-blue-500" },
-  INVENTORY: { icon: "bx-package", bg: "bg-purple-500" },
-  TRANSACTIONAL: { icon: "bx-receipt", bg: "bg-emerald-600" },
+const TYPE_CONFIG: Record<NotificationType, { icon: LucideIcon; bg: string }> = {
+  SECURITY: { icon: ShieldAlert, bg: "bg-red-500" },
+  SYSTEM: { icon: Settings, bg: "bg-slate-600" },
+  APPROVAL: { icon: LockKeyholeOpen, bg: "bg-amber-500" },
+  APPROVAL_DECISION: { icon: GitCommitVertical, bg: "bg-indigo-500" },
+  SUCCESS: { icon: CheckCircle2, bg: "bg-emerald-500" },
+  WARNING: { icon: AlertTriangle, bg: "bg-orange-500" },
+  INFO: { icon: Info, bg: "bg-blue-500" },
+  INVENTORY: { icon: Package, bg: "bg-purple-500" },
+  TRANSACTIONAL: { icon: Receipt, bg: "bg-emerald-600" },
 };
 
 const MAX_VISIBLE_PUSHES = 4;
 const AUTO_HIDE_MS = 6000;
 
-function getRelativeTime(timestamp: number) {
+function getRelativeTime(timestamp: number): string {
   const diffInMins = Math.floor((Date.now() - timestamp) / 60000);
   if (diffInMins < 1) return "Now";
   if (diffInMins < 60) return `${diffInMins}m`;
   if (diffInMins < 1440) return `${Math.floor(diffInMins / 60)}h`;
   return `${Math.floor(diffInMins / 1440)}d`;
 }
-
-/* -------------------------------------------------- */
-/* CONTEXT */
-/* -------------------------------------------------- */
 
 const AlertContext = createContext<AlertContextType | undefined>(undefined);
 
@@ -82,12 +93,14 @@ export const useAlerts = () => {
 /* -------------------------------------------------- */
 
 export function AlertProvider({ children }: { children: React.ReactNode }) {
+  const { data: session, status } = useSession();
   const [alerts, setAlerts] = useState<MASAAlert[]>([]);
   const [isGroupExpanded, setIsGroupExpanded] = useState(false);
   const [latestAnnouncement, setLatestAnnouncement] = useState(""); 
   const pusherRef = useRef<Pusher | null>(null);
 
   const fetchNotifications = useCallback(async () => {
+    if (status !== "authenticated") return;
     try {
       const res = await fetch(`/api/notifications?limit=20`, { credentials: "include" });
       if (!res.ok) return;
@@ -113,7 +126,7 @@ export function AlertProvider({ children }: { children: React.ReactNode }) {
     } catch (err) {
       console.error("[FETCH_ERROR]", err);
     }
-  }, []);
+  }, [status]);
 
   const markRead = useCallback(async (notificationId: string, alertId: string) => {
     setAlerts((prev) => prev.filter((a) => a.id !== alertId));
@@ -157,18 +170,15 @@ export function AlertProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   useEffect(() => {
-    let mounted = true;
-    (async () => {
-      const sess = await getSession();
-      if (!mounted) return;
-      await fetchNotifications();
+    if (status === "authenticated" && session?.user?.id) {
+      fetchNotifications();
 
-      if (sess?.user?.id && !pusherRef.current) {
+      if (!pusherRef.current) {
         pusherRef.current = new Pusher(process.env.NEXT_PUBLIC_PUSHER_KEY!, {
           cluster: process.env.NEXT_PUBLIC_PUSHER_CLUSTER || "mt1",
           authEndpoint: "/api/pusher/auth",
         });
-        const ch = pusherRef.current.subscribe(`user-${sess.user.id}`);
+        const ch = pusherRef.current.subscribe(`user-${session.user.id}`);
         
         ch.bind("new-alert", (p: any) => {
           dispatch({
@@ -177,45 +187,54 @@ export function AlertProvider({ children }: { children: React.ReactNode }) {
             type: p.type,
             title: p.title,
             message: p.message,
-            context: { approvalId: p.approvalId, activityId: p.activityId }
+            context: { ...p.context, isWelcome: p.isWelcome }
           });
           setIsGroupExpanded(true);
         });
       }
-    })();
-    return () => { mounted = false; };
-  }, [dispatch, fetchNotifications]);
+    }
+    return () => {
+      if (pusherRef.current) {
+        pusherRef.current.disconnect();
+        pusherRef.current = null;
+      }
+    };
+  }, [status, session, dispatch, fetchNotifications]);
 
   const activePushes = useMemo(() => alerts.filter(a => a.kind === "PUSH"), [alerts]);
   const activeToasts = useMemo(() => alerts.filter(a => a.kind === "TOAST"), [alerts]);
 
+  // FIX: Always return the Provider so child hooks don't crash.
+  // We only conditionally render the notification UI overlays when authenticated.
   return (
     <AlertContext.Provider value={{ dispatch, remove, refresh: fetchNotifications, markRead, clearActivePushes }}>
       {children}
-
-      <div aria-live="polite" className="sr-only">{latestAnnouncement}</div>
       
-      {/* PUSH GROUP */}
-      <div className="fixed top-4 left-1/2 -translate-x-1/2 z-[10000] w-full max-w-[380px] px-4 pointer-events-none">
-        <AnimatePresence>
-          {activePushes.length > 0 && (
-            <PushGroup 
-              alerts={activePushes} 
-              isExpanded={isGroupExpanded} 
-              setIsExpanded={setIsGroupExpanded}
-              onClearAll={clearAllPushes}
-            />
-          )}
-        </AnimatePresence>
-      </div>
+      {status === "authenticated" && (
+        <>
+          <div aria-live="polite" className="sr-only">{latestAnnouncement}</div>
+          
+          <div className="fixed top-4 left-1/2 -translate-x-1/2 z-[10000] w-full max-w-[380px] px-4 pointer-events-none">
+            <AnimatePresence>
+              {activePushes.length > 0 && (
+                <PushGroup 
+                  alerts={activePushes} 
+                  isExpanded={isGroupExpanded} 
+                  setIsExpanded={setIsGroupExpanded}
+                  onClearAll={clearAllPushes}
+                />
+              )}
+            </AnimatePresence>
+          </div>
 
-      {/* TOASTS */}
-      <RadixToast.Provider swipeDirection="right">
-        <RadixToast.Viewport className="fixed bottom-6 right-6 z-[10000] w-[350px] flex flex-col gap-3 pointer-events-none" />
-        <AnimatePresence mode="popLayout">
-          {activeToasts.map((a) => <ToastItem key={a.id} alert={a} onRemove={remove} />)}
-        </AnimatePresence>
-      </RadixToast.Provider>
+          <RadixToast.Provider swipeDirection="right">
+            <RadixToast.Viewport className="fixed bottom-6 right-6 z-[10000] w-[350px] flex flex-col gap-3 pointer-events-none" />
+            <AnimatePresence mode="popLayout">
+              {activeToasts.map((a) => <ToastItem key={a.id} alert={a} onRemove={remove} />)}
+            </AnimatePresence>
+          </RadixToast.Provider>
+        </>
+      )}
     </AlertContext.Provider>
   );
 }
@@ -224,7 +243,14 @@ export function AlertProvider({ children }: { children: React.ReactNode }) {
 /* SUB-COMPONENTS */
 /* -------------------------------------------------- */
 
-function PushGroup({ alerts, isExpanded, setIsExpanded, onClearAll }: any) {
+interface PushGroupProps {
+  alerts: MASAAlert[];
+  isExpanded: boolean;
+  setIsExpanded: (val: boolean) => void;
+  onClearAll: () => void;
+}
+
+function PushGroup({ alerts, isExpanded, setIsExpanded, onClearAll }: PushGroupProps) {
   const { clearActivePushes } = useAlerts();
   const [isHovered, setIsHovered] = useState(false);
 
@@ -265,7 +291,7 @@ function PushGroup({ alerts, isExpanded, setIsExpanded, onClearAll }: any) {
                 </button>
               )}
               <button onClick={() => setIsExpanded(!isExpanded)} className="w-6 h-6 flex items-center justify-center rounded-md hover:bg-black/5 dark:hover:bg-white/5 transition-colors">
-                <i className={`bx bx-chevron-${isExpanded ? 'up' : 'down'} text-slate-400 text-lg`} />
+                {isExpanded ? <ChevronUp className="w-4 h-4 text-slate-400" /> : <ChevronDown className="w-4 h-4 text-slate-400" />}
               </button>
             </div>
           </motion.div>
@@ -274,7 +300,7 @@ function PushGroup({ alerts, isExpanded, setIsExpanded, onClearAll }: any) {
 
       <motion.div layout className="flex flex-col p-1.5 pb-2">
         <AnimatePresence initial={false} mode="popLayout">
-          {visible.map((a: MASAAlert) => (
+          {visible.map((a) => (
             <PushItem key={a.id} alert={a} />
           ))}
         </AnimatePresence>
@@ -296,41 +322,61 @@ function PushGroup({ alerts, isExpanded, setIsExpanded, onClearAll }: any) {
 function PushItem({ alert }: { alert: MASAAlert }) {
   const { remove, markRead } = useAlerts();
   const [isLocalExpanded, setIsLocalExpanded] = useState(false);
+  const [isTruncated, setIsTruncated] = useState(false);
+  const textRef = useRef<HTMLParagraphElement>(null);
+  
   const config = TYPE_CONFIG[alert.type] || TYPE_CONFIG.INFO;
+  const Icon = config.icon;
+  
+  const isWelcome = alert.context?.isWelcome || alert.title.toLowerCase().includes("welcome");
+
+  // Detect Truncation
+  useLayoutEffect(() => {
+    if (textRef.current) {
+      const isOverflowing = textRef.current.scrollHeight > textRef.current.clientHeight;
+      setIsTruncated(isOverflowing);
+    }
+  }, [alert.message]);
 
   return (
     <motion.div
       layout
-      drag="x"
+      drag={isWelcome ? false : "x"}
       dragConstraints={{ left: 0, right: 150 }}
-      dragElastic={0.2}
-      onDragEnd={(_, info) => info.offset.x > 80 && markRead(alert.notificationId, alert.id)}
-      initial={{ opacity: 0, scale: 0.95, y: -10 }}
-      animate={{ opacity: 1, scale: 1, y: 0 }}
-      exit={{ opacity: 0, scale: 0.95, transition: { duration: 0.2 } }}
+      onDragEnd={(_, info) => !isWelcome && info.offset.x > 80 && markRead(alert.notificationId, alert.id)}
       className="bg-white dark:bg-[#202023] p-3 rounded-lg border border-transparent hover:border-black/5 dark:hover:border-white/5 mb-1 last:mb-0 touch-none select-none"
     >
       <div className="flex gap-3">
         <div className={`w-8 h-8 rounded-lg flex-shrink-0 flex items-center justify-center ${config.bg} shadow-sm`}>
-          <i className={`bx ${config.icon} text-base text-white`} />
+          <Icon className="w-4 h-4 text-white" />
         </div>
         <div className="flex-1 min-w-0">
           <div className="flex justify-between items-start">
             <span className="text-xs font-semibold text-slate-900 dark:text-white truncate pr-2">{alert.title}</span>
             <span className="text-[10px] text-slate-400 whitespace-nowrap">{getRelativeTime(alert.createdAt)}</span>
           </div>
-          <p className={`text-[11px] text-slate-500 dark:text-slate-400 mt-0.5 leading-normal ${isLocalExpanded ? '' : 'line-clamp-1'}`}>
+          <p 
+            ref={textRef}
+            className={`text-[11px] text-slate-500 dark:text-slate-400 mt-0.5 leading-normal ${isLocalExpanded ? '' : 'line-clamp-1'}`}
+          >
             {alert.message}
           </p>
 
           <div className="flex items-center gap-3 mt-2">
-            <button onClick={() => markRead(alert.notificationId, alert.id)} className="text-[10px] font-bold text-blue-600 hover:underline">
-              Mark Read
-            </button>
-            <button onClick={() => setIsLocalExpanded(!isLocalExpanded)} className="text-[10px] font-bold text-slate-400">
-              {isLocalExpanded ? 'Show Less' : 'Details'}
-            </button>
-            <button onClick={() => remove(alert.id)} className="ml-auto text-[10px] font-bold text-slate-300 hover:text-red-500">
+            {!isWelcome && (
+              <>
+                <button onClick={() => markRead(alert.notificationId, alert.id)} className="text-[10px] font-bold text-blue-600 hover:underline">
+                  Mark Read
+                </button>
+                {/* Only show Detail toggle if truncated OR extra actions/context exist */}
+                {(isTruncated || alert.context) && (
+                  <button onClick={() => setIsLocalExpanded(!isLocalExpanded)} className="text-[10px] font-bold text-slate-400">
+                    {isLocalExpanded ? 'Show Less' : 'Details'}
+                  </button>
+                )}
+              </>
+            )}
+            <button onClick={() => remove(alert.id)} className={`${!isWelcome ? 'ml-auto' : ''} text-[10px] font-bold text-slate-300 hover:text-red-500`}>
               Dismiss
             </button>
           </div>
@@ -340,19 +386,14 @@ function PushItem({ alert }: { alert: MASAAlert }) {
   );
 }
 
-function ToastItem({ alert, onRemove }: any) {
+function ToastItem({ alert, onRemove }: ToastItemProps) {
   const config = TYPE_CONFIG[alert.type] || TYPE_CONFIG.INFO;
+  const Icon = config.icon;
   return (
     <RadixToast.Root duration={5000} onOpenChange={(open) => !open && onRemove(alert.id)} asChild>
-      <motion.div 
-        layout 
-        initial={{ opacity: 0, x: 20 }} 
-        animate={{ opacity: 1, x: 0 }} 
-        exit={{ opacity: 0, scale: 0.9 }} 
-        className="bg-white dark:bg-[#1c1c1c] border border-black/10 dark:border-white/10 shadow-lg rounded-xl p-4 flex gap-3 pointer-events-auto"
-      >
+      <motion.div layout className="bg-white dark:bg-[#1c1c1c] border border-black/10 dark:border-white/10 shadow-lg rounded-xl p-4 flex gap-3 pointer-events-auto">
         <div className={`w-9 h-9 rounded-lg ${config.bg} flex items-center justify-center flex-shrink-0`}>
-          <i className={`bx ${config.icon} text-lg text-white`} />
+          <Icon className="w-5 h-5 text-white" />
         </div>
         <div className="flex-1 min-w-0">
           <RadixToast.Title className="text-xs font-bold text-slate-900 dark:text-white">{alert.title}</RadixToast.Title>
@@ -361,7 +402,7 @@ function ToastItem({ alert, onRemove }: any) {
           </RadixToast.Description>
         </div>
         <RadixToast.Close className="text-slate-300 hover:text-slate-500 transition-colors">
-          <i className="bx bx-x text-xl" />
+          <X className="w-5 h-5" />
         </RadixToast.Close>
       </motion.div>
     </RadixToast.Root>

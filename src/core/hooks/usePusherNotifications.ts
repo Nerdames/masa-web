@@ -12,14 +12,16 @@ export const usePusherNotifications = () => {
   const { data: session } = useSession();
   const { dispatch } = useAlerts();
   const { mutate } = useSWRConfig();
-  
-  // Use a Set to track active subscriptions
   const activeChannels = useRef<Set<string>>(new Set());
 
   const playNotificationSound = useCallback(() => {
+    // Check if we are in the browser and user has interacted
     const audio = new Audio("/sounds/notification-chime.mp3");
     audio.volume = 0.4;
-    audio.play().catch(() => {});
+    audio.play().catch(() => {
+      // Browsers often block auto-play until user interaction
+      console.log("Audio playback delayed until interaction.");
+    });
   }, []);
 
   const handleIncoming = useCallback((data: {
@@ -33,18 +35,23 @@ export const usePusherNotifications = () => {
     playNotificationSound();
     
     dispatch({
+      // High-priority types stay on screen (PUSH), others disappear (TOAST)
       kind: (data.type === "SECURITY" || data.type === "APPROVAL") ? "PUSH" : "TOAST",
+      notificationId: data.id,
       type: data.type,
       title: data.title,
       message: data.message,
-      approvalId: data.approvalId,
-      activityId: data.activityId,
+      context: { 
+        approvalId: data.approvalId, 
+        activityId: data.activityId,
+        // Tagging welcome notifications for special UI treatment
+        isWelcome: data.title.toLowerCase().includes("welcome") 
+      },
     });
 
     mutate("/api/notifications");
   }, [dispatch, mutate, playNotificationSound]);
 
-  // Extract variables to avoid optional chaining in the dependency array
   const userId = session?.user?.id;
   const orgId = session?.user?.organizationId;
 
@@ -74,5 +81,5 @@ export const usePusherNotifications = () => {
         currentSubs.delete(name);
       });
     };
-  }, [userId, orgId, handleIncoming, mutate]); // Clean dependency array
+  }, [userId, orgId, handleIncoming, mutate]);
 };

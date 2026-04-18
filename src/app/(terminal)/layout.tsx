@@ -3,7 +3,6 @@
 import { ReactNode, useEffect, useState } from "react";
 import { useSession } from "next-auth/react";
 import TopBar from "@/core/components/layout/TopBar";
-import { usePusherNotifications } from "@/core/hooks/usePusherNotifications";
 import { SidePanelProvider, useSidePanel } from "@/core/components/layout/SidePanelContext";
 import { motion, AnimatePresence } from "framer-motion";
 
@@ -14,8 +13,8 @@ interface DashboardRootLayoutProps {
 export default function DashboardRootLayout({ children }: DashboardRootLayoutProps) {
   const { status } = useSession({ required: true });
   const [isDark, setIsDark] = useState(false);
-  usePusherNotifications();
 
+  // Auto-Theme Logic (Fortress standard: 7pm - 7am is Dark Mode)
   useEffect(() => {
     const handleTheme = () => {
       const hour = new Date().getHours();
@@ -31,6 +30,7 @@ export default function DashboardRootLayout({ children }: DashboardRootLayoutPro
       <div className={`h-screen w-full relative overflow-hidden flex flex-col transition-colors duration-1000 
         ${isDark ? "bg-[#020617] text-slate-200" : "bg-slate-50 text-slate-900"}`}>
         
+        {/* Background Decorative Element */}
         <div className="absolute inset-0 pointer-events-none z-0">
           <svg className={`absolute -left-20 -top-20 ${isDark ? "opacity-[0.03]" : "opacity-10"}`} viewBox="0 0 600 600" style={{ width: "min(45vw, 450px)" }}>
             <defs>
@@ -43,6 +43,7 @@ export default function DashboardRootLayout({ children }: DashboardRootLayoutPro
           </svg>
         </div>
 
+        {/* Global Header */}
         <header className={`flex-none relative z-[1000] border-b backdrop-blur-md transition-colors
           ${isDark ? "bg-slate-900/50 border-slate-800" : "bg-white/80 border-black/5"}`}>
           <TopBar />
@@ -53,6 +54,7 @@ export default function DashboardRootLayout({ children }: DashboardRootLayoutPro
           )}
         </header>
 
+        {/* Workspace Canvas */}
         <div className="flex flex-1 min-h-0 overflow-hidden relative z-10">
           <div className="flex flex-1 min-w-0 min-h-0 overflow-hidden relative">
             <main className={`flex-1 flex flex-col min-w-0 min-h-0 transition-opacity duration-300 ${status === "loading" ? "opacity-0" : "opacity-100"}`}>
@@ -86,23 +88,20 @@ export default function DashboardRootLayout({ children }: DashboardRootLayoutPro
 function DynamicSidePanel({ isDark }: { isDark: boolean }) {
   const { isOpen, content, width, isFullScreen, closePanel } = useSidePanel();
   const [isOverlayMode, setIsOverlayMode] = useState(false);
+  const [mounted, setMounted] = useState(false);
 
   useEffect(() => {
+    setMounted(true);
     const check = () => setIsOverlayMode(window.innerWidth < 1024);
     check();
     window.addEventListener("resize", check);
     return () => window.removeEventListener("resize", check);
   }, []);
 
+  if (!mounted) return null;
+
   const shouldShow = isOpen && !!content;
 
-  /**
-   * Layout Logic:
-   * 1. FullScreen + Overlay (Mobile): 100% width, absolute.
-   * 2. FullScreen + Desktop: 95% width (centered modal style), absolute.
-   * 3. Normal + Overlay: Fixed width (340px), absolute.
-   * 4. Normal + Desktop: Fixed width (340px), relative (pushes content).
-   */
   const getPanelStyles = () => {
     if (isFullScreen) {
       return {
@@ -131,7 +130,6 @@ function DynamicSidePanel({ isDark }: { isDark: boolean }) {
     <AnimatePresence>
       {shouldShow && (
         <>
-          {/* Optional Backdrop for FullScreen/Modal mode */}
           {isFullScreen && (
             <motion.div
               initial={{ opacity: 0 }}
