@@ -19,9 +19,12 @@ import { saveAs } from "file-saver";
 import { useAlerts } from "@/core/components/feedback/AlertProvider";
 import { useSession } from "next-auth/react";
 import { useSidePanel } from "@/core/components/layout/SidePanelContext";
-import PODetailView from "@/modules/inventory/components/PODetailView"
-import CreatePOPanel from "@/modules/inventory/components/CreatePOPanel"
+import PODetailView from "@/modules/inventory/components/PODetailView";
+import CreatePOPanel from "@/modules/inventory/components/CreatePOPanel";
 
+/* -------------------------
+Types & Interfaces [cite: 7]
+------------------------- */
 
 type Role = "ADMIN" | "MANAGER" | "SALES" | "INVENTORY" | "CASHIER" | "DEV" | "AUDITOR";
 
@@ -37,6 +40,7 @@ interface IPOItem {
   id?: string;
   productId: string;
   quantityOrdered: number;
+  quantityReceived?: number; // From Schema [cite: 7]
   unitCost: number;
 }
 
@@ -50,6 +54,13 @@ interface IPurchaseOrder {
   vendor: { id: string; name: string; email?: string | null };
   items: (IPOItem & { product?: { name?: string; sku?: string } })[];
   createdBy?: { name?: string } | null;
+}
+
+interface WorkspaceStats {
+  totalValue: number;
+  pending: number;
+  fulfilled: number;
+  overdue: number;
 }
 
 /* -------------------------
@@ -199,7 +210,6 @@ export default function PurchaseOrdersWorkspace({ branchId }: { branchId: string
           ...order,
           items: (order.items || []).map((it: any) => ({
             ...it,
-            // Fallback to nested product.id if productId is missing or undefined at the root
             productId: it.productId || it.product?.id || "",
           }))
         }));
@@ -229,13 +239,18 @@ export default function PurchaseOrdersWorkspace({ branchId }: { branchId: string
   }, [orgId, branchId, page, limit, searchTerm, statusFilter, fromDate, toDate]);
 
   /* -------------------------
-  Stats (PO view)
+  Stats calculation
   ------------------------- */
-  const stats = useMemo(() => {
+  const stats = useMemo<WorkspaceStats>(() => {
     const totalValue = orders.reduce((acc, curr) => acc + Number(curr.totalAmount || 0), 0);
     const pending = orders.filter((o) => o.status === POStatus.ISSUED).length;
     const fulfilled = orders.filter((o) => o.status === POStatus.FULFILLED).length;
-    const overdue = orders.filter((o) => o.status !== POStatus.FULFILLED && o.expectedDate && new Date(o.expectedDate) < new Date()).length;
+    const overdue = orders.filter((o) => {
+      return o.status !== POStatus.FULFILLED && 
+             o.status !== POStatus.CANCELLED &&
+             o.expectedDate && 
+             new Date(o.expectedDate) < new Date();
+    }).length;
 
     return { totalValue, pending, fulfilled, overdue };
   }, [orders]);
@@ -279,8 +294,8 @@ export default function PurchaseOrdersWorkspace({ branchId }: { branchId: string
         });
         return;
       }
+      
       const data = await res.json();
-
       const items: IPurchaseOrder[] = data.items || [];
       const header = ["id", "poNumber", "vendor", "status", "totalAmount", "expectedDate", "createdAt", "createdBy", "itemsCount"];
       const rows = items.map((it) => [
@@ -351,7 +366,7 @@ export default function PurchaseOrdersWorkspace({ branchId }: { branchId: string
       if (!res.ok) {
         throw new Error(data.error || "Failed to create PO");
       }
-      // success
+      
       dispatch({
         kind: "PUSH",
         type: "SUCCESS",
@@ -490,10 +505,10 @@ export default function PurchaseOrdersWorkspace({ branchId }: { branchId: string
 
           {/* Stat Section */}
           <section className="grid grid-cols-1 md:grid-cols-4 gap-4 pt-4">
-            <StatCard title="Asset Pipeline" value={`₦${(stats as any).totalValue?.toLocaleString?.() ?? "0"}`} icon={ShoppingCart} color="emerald" />
-            <StatCard title="Active Requests" value={(stats as any).pending ?? 0} icon={Clock} color="blue" />
-            <StatCard title="Overdue Receipts" value={(stats as any).overdue ?? 0} icon={AlertCircle} color="red" />
-            <StatCard title="Cycle Completed" value={(stats as any).fulfilled ?? 0} icon={CheckCircle2} color="emerald" />
+            <StatCard title="Asset Pipeline" value={`₦${stats.totalValue?.toLocaleString() ?? "0"}`} icon={ShoppingCart} color="emerald" />
+            <StatCard title="Active Requests" value={stats.pending ?? 0} icon={Clock} color="blue" />
+            <StatCard title="Overdue Receipts" value={stats.overdue ?? 0} icon={AlertCircle} color="red" />
+            <StatCard title="Cycle Completed" value={stats.fulfilled ?? 0} icon={CheckCircle2} color="emerald" />
           </section>
 
           {/* Main Table Container */}
@@ -502,27 +517,16 @@ export default function PurchaseOrdersWorkspace({ branchId }: { branchId: string
               <table className="w-full text-left border-collapse whitespace-nowrap">
                 <thead>
                   <tr className="bg-slate-50 dark:bg-slate-800 border-b border-slate-200/80 dark:border-slate-700/80">
-                    <th className="px-5 py-3 text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">
-                      Order Registry
-                    </th>
-                    <th className="px-5 py-3 text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">
-                      Vendor Node
-                    </th>
-                    <th className="px-5 py-3 text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider text-right">
-                      Commitment (₦)
-                    </th>
-                    <th className="px-5 py-3 text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider text-center">
-                      Protocol Status
-                    </th>
+                    <th className="px-5 py-3 text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Order Registry</th>
+                    <th className="px-5 py-3 text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Vendor Node</th>
+                    <th className="px-5 py-3 text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider text-right">Commitment (₦)</th>
+                    <th className="px-5 py-3 text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider text-center">Protocol Status</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
                   {orders.length === 0 ? (
                     <tr>
-                      {/* colSpan is now 4 to match the 4 remaining header columns */}
-                      <td colSpan={4} className="px-5 py-20 text-center text-slate-400 text-[11px] font-bold uppercase">
-                        No purchase orders found.
-                      </td>
+                      <td colSpan={4} className="px-5 py-20 text-center text-slate-400 text-[11px] font-bold uppercase">No purchase orders found.</td>
                     </tr>
                   ) : (
                     orders.map((order) => {
@@ -536,37 +540,23 @@ export default function PurchaseOrdersWorkspace({ branchId }: { branchId: string
                           className="hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors group cursor-pointer select-none"
                         >
                           <td className="px-5 py-3">
-                            <div className="text-[13px] font-bold text-slate-900 dark:text-white">
-                              {order.poNumber}
-                            </div>
-                            <div className="text-[9px] text-slate-400 font-bold uppercase mt-0.5">
-                              By {order.createdBy?.name || "System"}
-                            </div>
+                            <div className="text-[13px] font-bold text-slate-900 dark:text-white">{order.poNumber}</div>
+                            <div className="text-[9px] text-slate-400 font-bold uppercase mt-0.5">By {order.createdBy?.name || "System"}</div>
                           </td>
 
                           <td className="px-5 py-3">
-                            <div className="text-[11px] font-bold text-slate-700 dark:text-slate-200">
-                              {order.vendor?.name}
-                            </div>
-                            <div className="text-[10px] text-slate-400 truncate w-32">
-                              {order.vendor?.email}
-                            </div>
+                            <div className="text-[11px] font-bold text-slate-700 dark:text-slate-200">{order.vendor?.name}</div>
+                            <div className="text-[10px] text-slate-400 truncate w-32">{order.vendor?.email}</div>
                           </td>
 
                           <td className="px-5 py-3 text-right">
-                            <div className="text-[13px] font-bold text-slate-900 dark:text-white">
-                              {Number(order.totalAmount).toLocaleString()}
-                            </div>
-                            <div className="text-[9px] text-slate-400 font-bold uppercase">
-                              {order.items.length} SKUs
-                            </div>
+                            <div className="text-[13px] font-bold text-slate-900 dark:text-white">{Number(order.totalAmount).toLocaleString()}</div>
+                            <div className="text-[9px] text-slate-400 font-bold uppercase">{order.items.length} SKUs</div>
                           </td>
 
                           <td className="px-5 py-3 text-center">
                             <div className="flex justify-center">
-                              <span
-                                className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full border text-[9px] font-bold uppercase tracking-wider ${status.classes}`}
-                              >
+                              <span className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full border text-[9px] font-bold uppercase tracking-wider ${status.classes}`}>
                                 <StatusIcon className="w-3 h-3" />
                                 {status.label}
                               </span>
@@ -588,21 +578,13 @@ export default function PurchaseOrdersWorkspace({ branchId }: { branchId: string
                     <option key={l} value={l}>{l} Rows</option>
                   ))}
                 </select>
-                <span className="text-[10px] text-slate-500 font-bold uppercase tracking-widest">
-                  Total Records: {total}
-                </span>
+                <span className="text-[10px] text-slate-500 font-bold uppercase tracking-widest">Total Records: {total}</span>
               </div>
 
               <div className="flex items-center gap-2">
-                <button onClick={() => setPage((p) => Math.max(1, p - 1))} disabled={page <= 1} className="px-3 py-1 rounded-md bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs font-bold disabled:opacity-50 transition-colors hover:bg-slate-50 dark:hover:bg-slate-800">
-                  Prev
-                </button>
-                <div className="px-3 text-xs font-mono font-bold text-slate-700 dark:text-slate-300">
-                  {page} / {totalPages}
-                </div>
-                <button onClick={() => setPage((p) => Math.min(totalPages, p + 1))} disabled={page >= totalPages} className="px-3 py-1 rounded-md bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs font-bold disabled:opacity-50 transition-colors hover:bg-slate-50 dark:hover:bg-slate-800">
-                  Next
-                </button>
+                <button onClick={() => setPage((p) => Math.max(1, p - 1))} disabled={page <= 1} className="px-3 py-1 rounded-md bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs font-bold disabled:opacity-50 transition-colors hover:bg-slate-50 dark:hover:bg-slate-800">Prev</button>
+                <div className="px-3 text-xs font-mono font-bold text-slate-700 dark:text-slate-300">{page} / {totalPages}</div>
+                <button onClick={() => setPage((p) => Math.min(totalPages, p + 1))} disabled={page >= totalPages} className="px-3 py-1 rounded-md bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs font-bold disabled:opacity-50 transition-colors hover:bg-slate-50 dark:hover:bg-slate-800">Next</button>
               </div>
             </div>
           </div>
@@ -613,16 +595,23 @@ export default function PurchaseOrdersWorkspace({ branchId }: { branchId: string
 }
 
 /* -------------------------
-Inline components for SidePanel
+Helpers & Subcomponents
 ------------------------- */
 
-function StatCard({ title, value, icon: Icon, color }: any) {
-  const colorMap: any = {
+interface StatCardProps {
+  title: string;
+  value: string | number;
+  icon: React.ElementType;
+  color: "emerald" | "blue" | "red";
+}
+
+function StatCard({ title, value, icon: Icon, color }: StatCardProps) {
+  const colorMap = {
     emerald: "text-emerald-600 dark:text-emerald-400",
     blue: "text-blue-600 dark:text-blue-400",
     red: "text-red-600 dark:text-red-400"
   };
-  const iconColorMap: any = {
+  const iconColorMap = {
     emerald: "text-emerald-200 dark:text-emerald-900/40",
     blue: "text-blue-200 dark:text-blue-900/40",
     red: "text-red-200 dark:text-red-900/40"

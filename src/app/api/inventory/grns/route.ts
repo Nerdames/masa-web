@@ -10,6 +10,8 @@ import {
   GRNStatus,
   POStatus,
   Role,
+  StockMovementType,
+  NotificationType
 } from "@prisma/client";
 import { Decimal } from "@prisma/client/runtime/library";
 import crypto from "crypto";
@@ -29,12 +31,6 @@ const parseIntSafe = (v: string | null, fallback: number) => {
   return Number.isFinite(n) && n > 0 ? n : fallback;
 };
 
-const parseDateSafe = (v: string | null) => {
-  if (!v) return null;
-  const d = new Date(v);
-  return isNaN(d.getTime()) ? null : d;
-};
-
 function csvEscape(value: any) {
   if (value === null || value === undefined) return '""';
   const s = String(value);
@@ -42,8 +38,7 @@ function csvEscape(value: any) {
 }
 
 /**
- * Audit Log with Cryptographic Chaining
- * Aligned with your verified working logic
+ * Forensic Audit Log with Cryptographic Chaining
  */
 async function createAuditLog(
   tx: Prisma.TransactionClient,
@@ -65,12 +60,13 @@ async function createAuditLog(
     select: { hash: true },
   });
 
-  const previousHash = lastLog?.hash ?? "GENESIS";
+  const previousHash = lastLog?.hash ?? "0".repeat(64);
   const logPayload = JSON.stringify({
     action: data.action,
     actorId: data.actorId,
     requestId: data.requestId,
     previousHash,
+    timestamp: Date.now()
   });
   const hash = crypto.createHash("sha256").update(logPayload).digest("hex");
 
@@ -84,8 +80,8 @@ async function createAuditLog(
       actorType: ActorType.USER,
       actorRole: data.actorRole,
       targetId: data.resourceId,
-      targetType: RESOURCES.PROCUREMENT,
-      severity: Severity.MEDIUM,
+      targetType: "GRN",
+      severity: Severity.HIGH,
       metadata: data.metadata ?? Prisma.JsonNull,
       requestId: data.requestId,
       previousHash,
@@ -119,7 +115,7 @@ async function notifyManagement(
     data: {
       organizationId,
       branchId,
-      type: "INVENTORY",
+      type: NotificationType.INVENTORY,
       title,
       message,
       activityLogId,
@@ -145,7 +141,7 @@ const createGRNSchema = z.object({
     productId: z.string().cuid(),
     quantityAccepted: z.number().positive(),
     quantityRejected: z.number().min(0).default(0),
-    unitCost: z.number().optional(),
+    unitCost: z.number().optional().default(0),
   })).min(1),
 });
 
@@ -157,11 +153,11 @@ export async function GET(req: NextRequest) {
   try {
     const session = await getServerSession(authOptions);
     if (!session?.user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    const user = session.user;
+    const user = session.user as any;
 
     const { searchParams } = new URL(req.url);
 
-    // Meta Handlers for UI Dropdowns (required for Workspace page)
+    // Meta Handlers for UI Dropdowns
     const meta = searchParams.get("meta");
     if (meta === "vendors") {
       const vendors = await prisma.vendor.findMany({
@@ -180,10 +176,16 @@ export async function GET(req: NextRequest) {
 
     const where: Prisma.GoodsReceiptNoteWhereInput = { organizationId: user.organizationId };
     
+    // Branch Isolation
+    if (!user.isOrgOwner && !["ADMIN", "MANAGER", "AUDITOR"].includes(user.role)) {
+      where.branchId = user.branchId;
+    }
+
     if (search) {
       where.OR = [
         { grnNumber: { contains: search, mode: "insensitive" } },
         { vendor: { name: { contains: search, mode: "insensitive" } } },
+        { purchaseOrder: { poNumber: { contains: search, mode: "insensitive" } } }
       ];
     }
     if (status && status !== "all") where.status = status;
@@ -194,7 +196,7 @@ export async function GET(req: NextRequest) {
         include: { 
           vendor: { select: { name: true } }, 
           purchaseOrder: { select: { poNumber: true } }, 
-          items: true,
+          items: { include: { product: { select: { name: true, sku: true } } } },
           receivedBy: { select: { name: true } }
         },
         orderBy: { createdAt: "desc" },
@@ -220,6 +222,7 @@ export async function GET(req: NextRequest) {
 
     return NextResponse.json({ items, total, page, limit });
   } catch (error) {
+    console.error("[GRN_GET_ERROR]", error);
     return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
   }
 }
@@ -233,7 +236,7 @@ export async function POST(req: NextRequest) {
     const session = await getServerSession(authOptions);
     if (!session?.user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
-    const user = session.user;
+    const user = session.user as any;
     const requestId = crypto.randomUUID();
 
     const auth = authorize({
@@ -251,30 +254,24 @@ export async function POST(req: NextRequest) {
 
     const { items, ...data } = parsed.data;
 
+    // Serializable transaction to prevent concurrency race conditions during stock increment
     const result = await prisma.$transaction(async (tx) => {
       let branchId = data.branchId;
       let vendorId = data.vendorId;
 
-      // 1. Resolve Branch & Vendor from PO context
+      // 1. Resolve Context from PO
       if (data.purchaseOrderId) {
         const po = await tx.purchaseOrder.findUnique({ where: { id: data.purchaseOrderId } });
         if (!po) throw new Error("Purchase Order not found");
+        if (po.status === POStatus.CANCELLED) throw new Error("Cannot receive items for a cancelled PO.");
         branchId = po.branchId;
         vendorId = po.vendorId; 
       }
 
       if (!vendorId) throw new Error("Vendor is required.");
 
-      // 2. Map products to branch catalog
-      const productIds = items.map(i => i.productId);
-      const branchProducts = await tx.branchProduct.findMany({
-        where: { branchId, productId: { in: productIds } },
-        select: { id: true, productId: true }
-      });
-      const bpMap = new Map(branchProducts.map(bp => [bp.productId, bp.id]));
-
-      // 3. Create GRN
-      const grnNumber = `GRN-${Date.now().toString().slice(-8)}`;
+      // 2. Create GRN Header
+      const grnNumber = `GRN-${crypto.randomBytes(3).toString('hex').toUpperCase()}-${Date.now().toString().slice(-4)}`;
       const grn = await tx.goodsReceiptNote.create({
         data: {
           organizationId: user.organizationId,
@@ -286,55 +283,96 @@ export async function POST(req: NextRequest) {
           receivedAt: data.receivedAt ? new Date(data.receivedAt) : new Date(),
           receivedById: user.id,
           notes: data.notes,
-          items: {
-            create: items.map(i => {
-              const bpId = bpMap.get(i.productId);
-              if (!bpId) throw new Error(`Product ${i.productId} is not registered in this branch.`);
-              return {
-                productId: i.productId,
-                branchProductId: bpId,
-                quantityAccepted: i.quantityAccepted,
-                quantityRejected: i.quantityRejected,
-                unitCost: new Decimal(i.unitCost || 0),
-              };
-            })
-          }
-        }
+        },
+        include: { vendor: { select: { name: true } } }
       });
 
-      // 4. Update Stock and PO Progression
+      // 3. Process Items: Self-Healing Upsert & Ledger Generation
       for (const item of items) {
+        const itemCost = new Decimal(item.unitCost);
+
+        // A. THE BRIDGE: Find or Create the BranchProduct entry automatically
+        const branchProduct = await tx.branchProduct.upsert({
+          where: {
+            branchId_productId: {
+              branchId: branchId,
+              productId: item.productId,
+            },
+          },
+          update: {
+            stock: { increment: item.quantityAccepted },
+            costPrice: itemCost, // Update moving average/latest cost
+            vendorId: vendorId   // Update primary supplier
+          },
+          create: {
+            organizationId: user.organizationId,
+            branchId: branchId,
+            productId: item.productId,
+            vendorId: vendorId,
+            stock: item.quantityAccepted,
+            costPrice: itemCost,
+            reorderLevel: 0,
+            safetyStock: 0,
+          },
+        });
+
+        // B. Link the physical receipt item to the GRN
+        await tx.goodsReceiptItem.create({
+          data: {
+             grnId: grn.id,
+             poItemId: item.poItemId || null,
+             productId: item.productId,
+             branchProductId: branchProduct.id,
+             quantityAccepted: item.quantityAccepted,
+             quantityRejected: item.quantityRejected,
+             unitCost: itemCost
+          }
+        });
+
+        // C. Double-Entry Stock Ledger (Strict Audit Trail)
+        await tx.stockMovement.create({
+          data: {
+            organizationId: user.organizationId,
+            branchId: branchId,
+            branchProductId: branchProduct.id,
+            productId: item.productId,
+            type: StockMovementType.IN,
+            quantity: item.quantityAccepted,
+            unitCost: itemCost,
+            totalCost: itemCost.mul(item.quantityAccepted),
+            reason: `Restock via ${grn.grnNumber}`,
+            runningBalance: branchProduct.stock, // Current snapshot after upsert
+            handledById: user.id,
+            grnId: grn.id,
+          }
+        });
+
+        // D. Update PO Item Fulfillment
         if (item.poItemId) {
           await tx.purchaseOrderItem.update({
             where: { id: item.poItemId },
             data: { quantityReceived: { increment: item.quantityAccepted } }
           });
         }
-
-        await tx.branchProduct.updateMany({
-          where: { branchId, productId: item.productId },
-          data: { stock: { increment: item.quantityAccepted } }
-        });
       }
 
-      // 5. Automated PO Status Sync
+      // 4. Automated PO State Machine Sync
       if (data.purchaseOrderId) {
         const allPoItems = await tx.purchaseOrderItem.findMany({
           where: { purchaseOrderId: data.purchaseOrderId }
         });
-        
-        // FIX: Using Number() to avoid "gte is not a function" error
+
         const isFulfilled = allPoItems.every(i => 
-          Number(i.quantityReceived) >= Number(i.quantityOrdered)
+          new Decimal(i.quantityReceived).gte(new Decimal(i.quantityOrdered))
         );
-        
+
         await tx.purchaseOrder.update({
           where: { id: data.purchaseOrderId },
           data: { status: isFulfilled ? POStatus.FULFILLED : POStatus.PARTIALLY_RECEIVED }
         });
       }
 
-      // 6. Audit Logging
+      // 5. Forensic Audit Logging
       const log = await createAuditLog(tx, {
         organizationId: user.organizationId,
         branchId,
@@ -342,21 +380,25 @@ export async function POST(req: NextRequest) {
         actorRole: user.role as Role,
         action: "CREATE_GRN",
         resourceId: grn.id,
-        description: `Created GRN ${grn.grnNumber}`,
+        description: `Physical Receipt logged: ${grn.grnNumber} from ${grn.vendor?.name}`,
         requestId,
+        metadata: { itemsCount: items.length, poId: data.purchaseOrderId }
       });
 
-      // 7. Push Notifications
+      // 6. System-Wide Notification
       await notifyManagement(
         tx,
         user.organizationId,
         branchId,
-        "Inventory Received",
-        `GRN ${grnNumber} generated. Stock levels for ${items.length} items updated.`,
+        "Goods Received",
+        `GRN ${grnNumber} generated. Stock levels for ${items.length} products have been updated.`,
         log.id
       );
 
       return grn;
+    }, {
+      isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+      timeout: 15000
     });
 
     return NextResponse.json({ success: true, id: result.id, grnNumber: result.grnNumber }, { status: 201 });

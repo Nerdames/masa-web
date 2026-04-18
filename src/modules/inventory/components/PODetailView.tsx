@@ -3,7 +3,7 @@
 import React, { useState, useEffect, useMemo } from "react";
 import {
   X, Maximize2, Minimize2, Package, Calendar,
-  User, Loader2, CheckCircle2, AlertOctagon, Archive
+  User, Loader2, CheckCircle2, AlertOctagon, Archive, ShieldAlert
 } from "lucide-react";
 import { useSidePanel } from "@/core/components/layout/SidePanelContext";
 import { useAlerts } from "@/core/components/feedback/AlertProvider";
@@ -11,7 +11,7 @@ import { useAlerts } from "@/core/components/feedback/AlertProvider";
 /* -------------------------
 Types
 ------------------------- */
-
+                                                                                 
 interface POItem {
   id: string;
   productId: string;
@@ -29,7 +29,7 @@ interface PO {
   poNumber: string;
   organizationId: string;
   branchId: string;
-  status: string; // FULFILLED, CANCELLED, PARTIALLY_RECEIVED, SUBMITTED
+  status: string; // FULFILLED, CANCELLED, PARTIALLY_RECEIVED, DRAFT, SUBMITTED
   totalAmount: number | string;
   expectedDate?: string | null;
   createdAt: string;
@@ -66,9 +66,13 @@ export default function PODetailView({ po, onClose }: PODetailViewProps) {
   const [receiveOpen, setReceiveOpen] = useState(false);
   const [isReceiving, setIsReceiving] = useState(false);
 
-  // Status flags
+  // Status flags & Audit Logic
   const isCancelled = po.status === "CANCELLED";
   const isFulfilled = po.status === "FULFILLED";
+  const isPartiallyReceived = po.status === "PARTIALLY_RECEIVED";
+  
+  // Audit-proof logic: Prevent voiding if items have already been received to protect GRN/StockMove      integrity
+  const canVoid = !isCancelled && !isFulfilled && !isPartiallyReceived;
 
   // Initialize receiving state
   const [receiveItems, setReceiveItems] = useState<ReceiveItemInput[]>(
@@ -92,8 +96,14 @@ export default function PODetailView({ po, onClose }: PODetailViewProps) {
   const totalCommitment = useMemo(() => Number(po.totalAmount || 0), [po]);
 
   async function handleVoid() {
-    const confirm = window.confirm(`Void PO ${po.poNumber}? This cannot be undone.`);
+    if (!canVoid) {
+      dispatch?.({ kind: "TOAST", type: "ERROR", title: "Action Denied", message: "Cannot void a PO that has been partially received." });
+      return;
+    }
+
+    const confirm = window.confirm(`Void PO ${po.poNumber}? This will permanently cancel the order.`);
     if (!confirm) return;
+    
     setIsVoiding(true);
     try {
       const res = await fetch(`/api/inventory/purchase-orders/${po.id}`, {
@@ -102,14 +112,14 @@ export default function PODetailView({ po, onClose }: PODetailViewProps) {
         body: JSON.stringify({ status: "CANCELLED" }),
       });
       if (!res.ok) throw new Error("Failed to void purchase order");
-      
+
       dispatch?.({
         kind: "PUSH",
         type: "SUCCESS",
         title: "PO Voided",
-        message: `Cancelled ${po.poNumber}`
+        message: `Successfully cancelled ${po.poNumber}`
       });
-      
+
       window.dispatchEvent(new CustomEvent("po:updated", {
         detail: { id: po.id, action: "VOID" }
       }));
@@ -137,12 +147,7 @@ export default function PODetailView({ po, onClose }: PODetailViewProps) {
     const activeItems = receiveItems.filter((it) => it.quantityAccepted > 0);
     
     if (activeItems.length === 0) {
-      dispatch?.({
-        kind: "TOAST",
-        type: "ERROR",
-        title: "Receive failed",
-        message: "Enter at least one quantity."
-      });
+      dispatch?.({ kind: "TOAST", type: "ERROR", title: "Receive failed", message: "Enter at least one quantity." });
       return;
     }
 
@@ -173,17 +178,9 @@ export default function PODetailView({ po, onClose }: PODetailViewProps) {
       });
 
       const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(body?.error || "Failed to create GRN");
 
-      if (!res.ok) {
-        throw new Error(body?.error || "Failed to create GRN");
-      }
-
-      dispatch?.({
-        kind: "PUSH",
-        type: "SUCCESS",
-        title: "Received",
-        message: `GRN created successfully.`
-      });
+      dispatch?.({ kind: "PUSH", type: "SUCCESS", title: "Received", message: `GRN created successfully.` });
 
       window.dispatchEvent(new CustomEvent("po:updated", {
         detail: { id: po.id, action: "RECEIVE", grnId: body?.id }
@@ -204,7 +201,14 @@ export default function PODetailView({ po, onClose }: PODetailViewProps) {
       {/* Header */}
       <div className="px-6 py-4 border-b border-slate-200/60 dark:border-slate-800 flex justify-between items-center sticky top-0 bg-white/80 dark:bg-slate-900/80 backdrop-blur-md z-20">
         <div>
-          <h2 className="text-lg font-bold text-slate-800 dark:text-slate-100">{po.poNumber}</h2>
+          <div className="flex items-center gap-2">
+            <h2 className="text-lg font-bold text-slate-800 dark:text-slate-100">{po.poNumber}</h2>
+            {isPartiallyReceived && (
+              <span className="px-2 py-0.5 rounded text-[10px] font-bold tracking-wider bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400">
+                PARTIAL
+              </span>
+            )}
+          </div>
           <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">
             Created {new Date(po.createdAt).toLocaleDateString()}
           </p>
@@ -258,7 +262,8 @@ export default function PODetailView({ po, onClose }: PODetailViewProps) {
               <thead className="bg-slate-50/50 dark:bg-slate-800/50">
                 <tr className="border-b border-slate-200 dark:border-slate-800">
                   <th className="px-4 py-3 text-[10px] font-bold text-slate-500 uppercase">Product</th>
-                  <th className="px-4 py-3 text-[10px] font-bold text-slate-500 uppercase text-center">Qty</th>
+                  <th className="px-4 py-3 text-[10px] font-bold text-slate-500 uppercase text-center">Ordered</th>
+                  <th className="px-4 py-3 text-[10px] font-bold text-slate-500 uppercase text-center">Received</th>
                   <th className="px-4 py-3 text-[10px] font-bold text-slate-500 uppercase text-right">Cost</th>
                 </tr>
               </thead>
@@ -272,6 +277,11 @@ export default function PODetailView({ po, onClose }: PODetailViewProps) {
                     <td className="px-4 py-3 text-center font-medium text-slate-700 dark:text-slate-300">
                       {item.quantityOrdered}
                     </td>
+                    <td className="px-4 py-3 text-center font-medium text-slate-700 dark:text-slate-300">
+                      <span className={item.quantityReceived >= item.quantityOrdered ? "text-emerald-600 dark:text-emerald-400 font-bold" : ""}>
+                        {item.quantityReceived || 0}
+                      </span>
+                    </td>
                     <td className="px-4 py-3 text-right font-semibold text-slate-900 dark:text-white">
                       ₦{(item.quantityOrdered * item.unitCost).toLocaleString()}
                     </td>
@@ -280,7 +290,7 @@ export default function PODetailView({ po, onClose }: PODetailViewProps) {
               </tbody>
               <tfoot className="bg-slate-50/80 dark:bg-slate-800/80 border-t border-slate-200 dark:border-slate-700">
                 <tr>
-                  <td colSpan={2} className="px-4 py-4 text-[10px] font-bold text-slate-500 uppercase text-right">Total Commitment</td>
+                  <td colSpan={3} className="px-4 py-4 text-[10px] font-bold text-slate-500 uppercase text-right">Total Commitment</td>
                   <td className="px-4 py-4 text-right text-base font-bold text-slate-900 dark:text-white">
                     ₦{totalCommitment.toLocaleString()}
                   </td>
@@ -291,43 +301,49 @@ export default function PODetailView({ po, onClose }: PODetailViewProps) {
         </section>
       </div>
 
-      {/* Footer Actions - Dynamic based on PO Status */}
+      {/* Footer Actions */}
       <div className="p-4 border-t border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 flex justify-between gap-3">
         {isCancelled ? (
-          <button
-            disabled
-            className="w-full py-2.5 bg-slate-100 dark:bg-slate-800 text-slate-400 text-[11px] font-bold uppercase tracking-widest rounded-lg flex items-center justify-center gap-2 border border-slate-200 dark:border-slate-700 cursor-not-allowed"
-          >
+          <button disabled className="w-full py-2.5 bg-slate-100 dark:bg-slate-800 text-slate-400 text-[11px] font-bold uppercase tracking-widest rounded-lg flex items-center justify-center gap-2 border border-slate-200 dark:border-slate-700 cursor-not-allowed">
             <AlertOctagon className="w-4 h-4" /> Order Voided
           </button>
         ) : isFulfilled ? (
-          <button
-            disabled
-            className="w-full py-2.5 bg-slate-100 dark:bg-slate-800 text-emerald-600/60 dark:text-emerald-500/60 text-[11px] font-bold uppercase tracking-widest rounded-lg flex items-center justify-center gap-2 border border-slate-200 dark:border-slate-700 cursor-not-allowed"
-          >
+          <button disabled className="w-full py-2.5 bg-slate-100 dark:bg-slate-800 text-emerald-600/60 dark:text-emerald-500/60 text-[11px] font-bold uppercase tracking-widest rounded-lg flex items-center justify-center gap-2 border border-slate-200 dark:border-slate-700 cursor-not-allowed">
             <Archive className="w-4 h-4" /> Order Fulfilled
           </button>
         ) : (
           <>
-            <button
-              onClick={handleVoid}
-              disabled={isVoiding}
-              className="flex-1 py-2.5 text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20 text-[11px] font-bold uppercase tracking-wider rounded-lg transition-all border border-transparent hover:border-red-200"
-            >
-              {isVoiding ? <Loader2 className="w-4 h-4 animate-spin mx-auto" /> : "Void Order"}
-            </button>
+            <div className="flex-1">
+              {canVoid ? (
+                <button
+                  onClick={handleVoid}
+                  disabled={isVoiding}
+                  className="w-full h-full py-2.5 text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20 text-[11px] font-bold uppercase tracking-wider rounded-lg transition-all border border-transparent hover:border-red-200"
+                >
+                  {isVoiding ? <Loader2 className="w-4 h-4 animate-spin mx-auto" /> : "Void Order"}
+                </button>
+              ) : (
+                <button
+                  disabled
+                  title="Cannot void: Items have already been received."
+                  className="w-full h-full py-2.5 text-slate-400 bg-slate-50 dark:bg-slate-800/50 text-[11px] font-bold uppercase tracking-wider rounded-lg border border-slate-200 dark:border-slate-700 cursor-not-allowed flex justify-center items-center gap-1.5"
+                >
+                  <ShieldAlert className="w-3.5 h-3.5" /> Locked
+                </button>
+              )}
+            </div>
 
             <button
               onClick={() => setReceiveOpen(true)}
               className="flex-[2] py-2.5 bg-slate-900 dark:bg-emerald-600 text-white hover:bg-slate-800 dark:hover:bg-emerald-500 text-[11px] font-bold uppercase tracking-wider rounded-lg shadow-md transition-all active:scale-[0.98]"
             >
-              Receive Items
+              {isPartiallyReceived ? "Continue Receiving" : "Receive Items"}
             </button>
           </>
         )}
       </div>
 
-      {/* Receive Items Modal */}
+      {/* Inline Receive Items Modal */}
       {receiveOpen && (
         <div className="fixed inset-0 z-[400] flex items-center justify-center bg-slate-900/40 backdrop-blur-sm p-4">
           <div className="w-full max-w-lg bg-white dark:bg-slate-900 rounded-2xl shadow-2xl overflow-hidden flex flex-col max-h-[85vh] border border-slate-200 dark:border-slate-800">

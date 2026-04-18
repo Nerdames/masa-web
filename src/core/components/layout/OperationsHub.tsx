@@ -4,7 +4,7 @@ import React, { useMemo, useEffect, useState } from "react";
 import Link from "next/link";
 import { 
   Box, ShoppingCart, History, ArrowUpRight, 
-  LayoutDashboard, Users, MapPin, ShieldCheck
+  LayoutDashboard, Users, MapPin, ShieldCheck, Building2
 } from "lucide-react";
 import { Role } from "@prisma/client";
 import { Session } from "next-auth";
@@ -24,6 +24,16 @@ interface DashboardTile {
 
 const TILES: DashboardTile[] = [
   { id: "ovw", title: "Admin Overview", descriptionSm: "System-wide analytics & KPIs.", icon: LayoutDashboard, href: "/admin/overview", color: "from-blue-600 to-indigo-600", roles: [Role.ADMIN, Role.DEV, Role.MANAGER] },
+  // Added Organization Tile: Restricted to Admin/Dev for master system config
+  { 
+    id: "org", 
+    title: "Organization", 
+    descriptionSm: "Master defaults, UoM & global preferences.", 
+    icon: Building2, 
+    href: "/admin/organization", 
+    color: "from-indigo-700 to-violet-800", 
+    roles: [Role.ADMIN, Role.DEV] 
+  },
   { id: "brn", title: "Branches", descriptionSm: "Manage Lagos & Regional HQ nodes.", icon: MapPin, href: "/admin/branches", color: "from-cyan-600 to-blue-500", roles: [Role.ADMIN, Role.DEV] },
   { id: "inv", title: "Inventory", descriptionSm: "Stock levels, Procurement & Vendors.", icon: Box, href: "/inventory", color: "from-emerald-600 to-teal-500", roles: [Role.ADMIN, Role.MANAGER, Role.DEV, Role.INVENTORY] },
   { id: "pos", title: "Point of Sale", descriptionSm: "Terminal interface for active trade.", icon: ShoppingCart, href: "/pos", color: "from-orange-500 to-amber-500", roles: [Role.ADMIN, Role.MANAGER, Role.DEV, Role.SALES, Role.CASHIER] },

@@ -5,7 +5,6 @@ import {
   Search,
   Plus,
   Eye,
-  FileText,
   PackageCheck,
   Clock,
   CheckCircle2,
@@ -14,58 +13,43 @@ import {
   Filter,
   Download,
   Loader2,
-  EyeOff,
   Check,
   X,
+  Truck,
+  FileText,
+  Trash2,
 } from "lucide-react";
 import { saveAs } from "file-saver";
 import { useSession } from "next-auth/react";
 import { useAlerts } from "@/core/components/feedback/AlertProvider";
-import type { Role } from "@prisma/client";
-
-/**
- * GoodsReceiptsWorkspace
- *
- * Production-ready, audit-proof, and aligned with the provided Prisma schema.
- * - Mirrors the PurchaseOrdersWorkspace UX and behavior.
- * - Supports GRN list, server-side pagination, CSV export, create, approve, receive.
- * - Integrates with /api/inventory/grns endpoints:
- * GET /api/inventory/grns
- * POST /api/inventory/grns
- * POST /api/inventory/grns/:id/approve
- * POST /api/inventory/grns/:id/receive
- *
- * Assumptions:
- * - getServerSession / next-auth session is available via useSession.
- * - useAlerts dispatches PUSH/TOAST notifications.
- * - Endpoints return consistent shapes: { items, total, page, limit } for lists.
- */
+import { Role, GRNStatus } from "@prisma/client";
 
 /* -------------------------
-Types
+Types & Interfaces (Strictly Aligned to Backend GET)
 ------------------------- */
 
-type GRNStatus = "PENDING" | "RECEIVED" | "REJECTED";
-
 interface IGoodsReceiptItem {
-  id?: string;
+  id: string;
   poItemId?: string | null;
   productId: string;
-  branchProductId: string;
   quantityAccepted: number;
-  quantityRejected?: number;
-  unitCost?: number;
+  quantityRejected: number;
+  unitCost: string | number; // Prisma Decimals serialize as strings or numbers
+  product?: {
+    name: string;
+    sku: string;
+  };
 }
 
 interface IGoodsReceipt {
   id: string;
-  grnNumber?: string;
+  grnNumber: string;
   status: GRNStatus;
-  vendor?: { id: string; name?: string; email?: string | null } | null;
-  purchaseOrderId?: string | null;
-  receivedAt?: string | null;
+  receivedAt: string;
   createdAt: string;
-  createdBy?: { name?: string } | null;
+  vendor?: { name: string } | null;
+  purchaseOrder?: { poNumber: string } | null;
+  receivedBy?: { name: string } | null;
   items: IGoodsReceiptItem[];
   notes?: string | null;
 }
@@ -75,359 +59,159 @@ Constants
 ------------------------- */
 
 const DEFAULT_LIMIT = 25;
-const EXPORT_LIMIT = 10000;
 
 /* -------------------------
-Component
+Main Component
 ------------------------- */
 
 export default function GoodsReceiptsWorkspace({ branchId }: { branchId: string }) {
   const { data: session } = useSession();
   const { dispatch } = useAlerts();
+  
+  // Data State
   const [grns, setGrns] = useState<IGoodsReceipt[]>([]);
   const [vendors, setVendors] = useState<{ id: string; name: string }[]>([]);
-  const [purchaseOrders, setPurchaseOrders] = useState<{ id: string; poNumber?: string }[]>([]);
+  const [purchaseOrders, setPurchaseOrders] = useState<{ id: string; poNumber: string }[]>([]);
+  const [products, setProducts] = useState<{ id: string; name: string }[]>([]);
 
+  // Filter & Pagination State
   const [searchTerm, setSearchTerm] = useState("");
   const [statusFilter, setStatusFilter] = useState<string | "all">("all");
-  const [fromDate, setFromDate] = useState<string | null>(null);
-  const [toDate, setToDate] = useState<string | null>(null);
-
   const [page, setPage] = useState(1);
   const [limit, setLimit] = useState(DEFAULT_LIMIT);
   const [total, setTotal] = useState(0);
 
+  // UI State
   const [isPending, startTransition] = useTransition();
-  const [error, setError] = useState<string | null>(null);
   const [showFilters, setShowFilters] = useState(false);
-
   const [isCreateModalOpen, setCreateModalOpen] = useState(false);
   const [selectedGRN, setSelectedGRN] = useState<IGoodsReceipt | null>(null);
 
+  // Authorization Logic
   const user = session?.user as any;
   const userRole = user?.role as Role | undefined;
   const userIsOrgOwner = !!user?.isOrgOwner;
 
   const userCanExport = useMemo(() => {
-    if (!user) return false;
-    
-    // 1. Super-user override
-    if (userIsOrgOwner || userRole === "DEV") return true; 
-    
-    // 2. Role-based check
-    const allowedRoles: Role[] = ["ADMIN", "MANAGER", "AUDITOR"];
-    return userRole ? allowedRoles.includes(userRole) : false;
-  }, [user, userIsOrgOwner, userRole]);
+    if (userIsOrgOwner || userRole === "DEV" || userRole === "ADMIN") return true; 
+    return userRole ? ["MANAGER", "AUDITOR"].includes(userRole) : false;
+  }, [userIsOrgOwner, userRole]);
 
   /* -------------------------
-  Helpers
+  Data Actions
   ------------------------- */
 
-  const buildQuery = (opts?: {
-    page?: number;
-    limit?: number;
-    search?: string;
-    status?: string;
-    from?: string | null;
-    to?: string | null;
-    exportAll?: boolean;
-  }) => {
-    const q = new URLSearchParams();
-    if (branchId) q.set("branchId", branchId);
-    q.set("page", String(opts?.page ?? page));
-    q.set("limit", String(opts?.limit ?? limit));
-    const searchVal = opts?.search ?? searchTerm;
-    if (searchVal) q.set("search", searchVal);
-    const statusVal = opts?.status ?? statusFilter;
-    if (statusVal && statusVal !== "all") q.set("status", statusVal);
-    if (opts?.from ?? fromDate) q.set("from", opts?.from ?? (fromDate ?? ""));
-    if (opts?.to ?? toDate) q.set("to", opts?.to ?? (toDate ?? ""));
-    if (opts?.exportAll) q.set("export", "true");
-    return q.toString();
-  };
-
-  /* -------------------------
-  Meta loaders
-  ------------------------- */
-
-  useEffect(() => {
-    if (!branchId) return;
-    let mounted = true;
-    (async () => {
-      try {
-        const [vRes, pRes] = await Promise.all([
-          fetch(`/api/inventory/grns?meta=vendors&branchId=${branchId}`),
-          fetch(`/api/inventory/grns?meta=pos&branchId=${branchId}`),
-        ]);
-        if (!mounted) return;
-        if (vRes.ok) {
-          const vJson = await vRes.json().catch(() => ({}));
-          setVendors(vJson.items || []);
-        }
-        if (pRes.ok) {
-          const pJson = await pRes.json().catch(() => ({}));
-          setPurchaseOrders(pJson.items || []);
-        }
-      } catch (e) {
-        console.warn("GRN meta load failed", e);
-      }
-    })();
-    return () => {
-      mounted = false;
-    };
-  }, [branchId]);
-
-  /* -------------------------
-  Load workspace data
-  ------------------------- */
-
-  const loadWorkspaceData = (opts?: { page?: number; limit?: number }) => {
+  const loadWorkspaceData = () => {
     if (!branchId) return;
     startTransition(async () => {
-      setError(null);
       try {
-        const q = buildQuery({ page: opts?.page, limit: opts?.limit });
-        const res = await fetch(`/api/inventory/grns?${q}`);
-        if (res.status === 403) {
-          const body = await res.json().catch(() => ({}));
-          throw new Error(body?.error || "ACCESS DENIED: You are not authorized for this branch.");
-        }
-        if (!res.ok) {
-          const body = await res.json().catch(() => ({}));
-          throw new Error(body?.error || "Failed to fetch goods receipts.");
-        }
+        const params = new URLSearchParams({
+          page: String(page),
+          limit: String(limit),
+          ...(searchTerm && { search: searchTerm }),
+          ...(statusFilter !== "all" && { status: statusFilter }),
+        });
+
+        const res = await fetch(`/api/inventory/grns?${params.toString()}`);
+        if (!res.ok) throw new Error("Failed to fetch goods receipts.");
         const data = await res.json();
+        
         setGrns(data.items || []);
         setTotal(data.total ?? 0);
       } catch (err: any) {
-        console.error("GRN Workspace Error: ", err);
-        setError(err?.message || "Failed to sync goods receipts.");
-        dispatch({
-          kind: "TOAST",
-          type: "ERROR",
-          title: "Sync error",
-          message: err?.message || "Failed to sync goods receipts.",
-        });
+        dispatch({ kind: "TOAST", type: "ERROR", title: "Sync error", message: err?.message });
       }
     });
   };
 
   useEffect(() => {
-    setPage(1);
-  }, [searchTerm, statusFilter, fromDate, toDate, limit]);
+    if (!branchId) return;
+    (async () => {
+      // Fetch metadata for creation modal
+      const [vRes, poRes, prodRes] = await Promise.all([
+        fetch(`/api/inventory/purchase-orders?meta=vendors&orgId=${branchId}`),
+        fetch(`/api/inventory/purchase-orders?status=ISSUED&limit=100`),
+        fetch(`/api/inventory/products?limit=500`) // Assuming this endpoint exists for manual product entry
+      ]);
+      if (vRes.ok) { const v = await vRes.json(); setVendors(v.items || []); }
+      if (poRes.ok) { const po = await poRes.json(); setPurchaseOrders(po.items || []); }
+      if (prodRes.ok) { const prod = await prodRes.json(); setProducts(prod.items || []); }
+    })();
+  }, [branchId]);
 
+  // Debounced load on filter change
   useEffect(() => {
-    loadWorkspaceData({ page });
+    const timer = setTimeout(() => {
+      loadWorkspaceData();
+    }, 300);
+    return () => clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [branchId, page, limit, searchTerm, statusFilter, fromDate, toDate]);
+  }, [branchId, page, limit, searchTerm, statusFilter]);
+
+  const exportCSV = async () => {
+    if (!userCanExport) return;
+    const q = new URLSearchParams({ export: "true", ...(searchTerm && { search: searchTerm }), ...(statusFilter !== "all" && { status: statusFilter }) });
+    const res = await fetch(`/api/inventory/grns?${q.toString()}`);
+    const blob = await res.blob();
+    saveAs(blob, `GRN_Export_${new Date().toISOString().split("T")[0]}.csv`);
+  };
 
   /* -------------------------
-  Stats
+  Calculated Stats
   ------------------------- */
 
   const stats = useMemo(() => {
-    const totalValue = grns.reduce((acc, curr) => acc + Number(curr.items?.reduce((s, it) => s + (Number(it.unitCost || 0) * Number(it.quantityAccepted || 0)), 0) || 0), 0);
-    const pending = grns.filter((g) => g.status === "PENDING").length;
-    const received = grns.filter((g) => g.status === "RECEIVED").length;
-    const overdue = grns.filter((g) => g.status === "PENDING" && g.receivedAt && new Date(g.receivedAt) < new Date()).length;
-    return { totalValue, pending, received, overdue };
+    const totalValue = grns.reduce((acc, curr) => 
+        acc + (curr.items?.reduce((s, it) => s + (Number(it.unitCost || 0) * Number(it.quantityAccepted || 0)), 0) || 0), 0);
+    return {
+      totalValue,
+      pending: grns.filter(g => g.status === "PENDING").length,
+      received: grns.filter(g => g.status === "RECEIVED").length,
+      rejected: grns.filter(g => g.status === "REJECTED").length
+    };
   }, [grns]);
-
-  /* -------------------------
-  Export CSV
-  ------------------------- */
-
-  const exportCSV = async (all = false) => {
-    try {
-      if (all && !userCanExport) {
-        setError("You do not have permission to export all data.");
-        dispatch({
-          kind: "TOAST",
-          type: "ERROR",
-          title: "Export denied",
-          message: "You do not have permission to export all data.",
-        });
-        return;
-      }
-      const q = buildQuery({
-        exportAll: all,
-        limit: all ? EXPORT_LIMIT : limit,
-        page: 1,
-      });
-      const res = await fetch(`/api/inventory/grns?${q}`);
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error(body?.error || "Export failed");
-      }
-      const contentType = res.headers.get("content-type") || "";
-      if (contentType.includes("text/csv")) {
-        const blob = await res.blob();
-        saveAs(blob, `goods_receipts_${new Date().toISOString()}.csv`);
-        dispatch({ kind: "PUSH", type: "SUCCESS", title: "Export ready", message: `CSV export for goods receipts is ready.` });
-        return;
-      }
-      const data = await res.json();
-      const items: IGoodsReceipt[] = data.items || [];
-      const header = ["id", "grnNumber", "poId", "vendor", "status", "receivedAt", "createdAt", "createdBy", "itemsCount"];
-      const rows = items.map((it) => [it.id, it.grnNumber || "", it.purchaseOrderId || "", it.vendor?.name || "", it.status, it.receivedAt || "", it.createdAt || "", it.createdBy?.name || "", String((it.items || []).length)]);
-      const csv = [header.join(","), ...rows.map((r) => r.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(","))].join("\n");
-      const blob = new Blob([csv], { type: "text/csv; charset=utf-8;" });
-      saveAs(blob, `goods_receipts_${new Date().toISOString()}.csv`);
-      dispatch({ kind: "PUSH", type: "SUCCESS", title: "Export started", message: `Export for goods receipts completed.` });
-    } catch (e: any) {
-      console.error("Export error", e);
-      setError(e?.message || "Export error");
-      dispatch({ kind: "TOAST", type: "ERROR", title: "Export failed", message: e?.message || "Export failed" });
-    }
-  };
-
-  /* -------------------------
-  Status helper
-  ------------------------- */
-
-  const getStatusConfig = (status: GRNStatus) => {
-    switch (status) {
-      case "RECEIVED":
-        return { label: "RECEIVED", classes: "bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-900/30 dark:text-emerald-400 dark:border-emerald-800", icon: CheckCircle2 };
-      case "REJECTED":
-        return { label: "REJECTED", classes: "bg-red-50 text-red-700 border-red-200 dark:bg-red-900/30 dark:text-red-400 dark:border-red-800", icon: EyeOff };
-      default:
-        return { label: "PENDING", classes: "bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-900/30 dark:text-amber-400 dark:border-amber-800", icon: Clock };
-    }
-  };
-
-  /* -------------------------
-  Create GRN
-  ------------------------- */
-
-  async function createGRN(payload: {
-    branchId: string;
-    purchaseOrderId?: string | null;
-    vendorId?: string | null;
-    receivedAt?: string | null;
-    notes?: string | null;
-    items: IGoodsReceiptItem[];
-  }) {
-    try {
-      const res = await fetch("/api/inventory/grns", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        throw new Error(data?.error || "Failed to create GRN");
-      }
-      dispatch({ kind: "PUSH", type: "SUCCESS", title: "GRN Created", message: `GRN ${data.grnNumber || data.id || ""} created successfully.` });
-      loadWorkspaceData({ page: 1 });
-      return data;
-    } catch (err: any) {
-      dispatch({ kind: "TOAST", type: "ERROR", title: "Create GRN failed", message: err?.message || "Failed to create GRN" });
-      throw err;
-    }
-  }
-
-  /* -------------------------
-  Approve GRN
-  ------------------------- */
-
-  async function approveGRN(id: string) {
-    try {
-      const res = await fetch(`/api/inventory/grns/${id}/approve`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        throw new Error(data?.error || "Failed to approve GRN");
-      }
-      dispatch({ kind: "PUSH", type: "SUCCESS", title: "GRN Approved", message: `GRN approved.` });
-      loadWorkspaceData({ page });
-      return data;
-    } catch (err: any) {
-      dispatch({ kind: "TOAST", type: "ERROR", title: "Approve failed", message: err?.message || "Failed to approve GRN" });
-      throw err;
-    }
-  }
-
-  /* -------------------------
-  Receive GRN (create stock movements)
-  ------------------------- */
-
-  async function receiveGRN(id: string, items: { branchProductId: string; quantityAccepted: number; unitCost?: number }[]) {
-    try {
-      const res = await fetch(`/api/inventory/grns/${id}/receive`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ items }),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        throw new Error(data?.error || "Failed to mark GRN as received");
-      }
-      dispatch({ kind: "PUSH", type: "SUCCESS", title: "GRN Received", message: `Stock updated and GRN marked as received.` });
-      loadWorkspaceData({ page });
-      return data;
-    } catch (err: any) {
-      dispatch({ kind: "TOAST", type: "ERROR", title: "Receive failed", message: err?.message || "Failed to receive GRN" });
-      throw err;
-    }
-  }
-
-  /* -------------------------
-  UI Render
-  ------------------------- */
 
   const totalPages = Math.max(1, Math.ceil(total / limit));
 
   return (
-    <div className="h-screen flex flex-col bg-[#FAFAFA] dark:bg-slate-950 text-slate-900 dark:text-slate-100 font-sans relative overflow-hidden transition-colors duration-300">
+    <div className="h-screen flex flex-col bg-[#FAFAFA] dark:bg-slate-950 text-slate-900 dark:text-slate-100 font-sans relative overflow-hidden">
       {isPending && (
         <div className="absolute inset-0 flex justify-center items-center bg-white/40 dark:bg-slate-950/40 backdrop-blur-sm z-[200]">
-          <Loader2 className="w-12 h-12 text-emerald-600 dark:text-emerald-500 animate-spin" />
+          <Loader2 className="w-12 h-12 text-amber-500 animate-spin" />
         </div>
       )}
 
+      {/* Header */}
       <header className="w-full flex flex-col bg-white dark:bg-slate-900 border-b border-black/[0.04] dark:border-slate-800 shrink-0 sticky top-0 z-[40]">
-        <div className="w-full flex items-center justify-between px-4 py-2 min-w-0 h-14">
-          <div className="min-w-0 flex-1 md:flex-none flex items-center gap-3">
+        <div className="w-full flex items-center justify-between px-4 py-2 h-14">
+          <div className="flex items-center gap-3">
             <div className="p-1.5 bg-gradient-to-br from-amber-500 to-orange-500 rounded-lg shadow-sm">
               <PackageCheck className="w-4 h-4 text-white" />
             </div>
             <div>
-              <h1 className="truncate text-[16px] font-bold tracking-tight text-slate-900 dark:text-white leading-tight">Goods Receipts</h1>
-              <p className="text-[10px] text-slate-500 dark:text-slate-400 font-medium tracking-wide">Reconcile POs & update stock.</p>
+              <h1 className="text-[16px] font-bold text-slate-900 dark:text-white leading-tight">Goods Receipts</h1>
+              <p className="text-[10px] text-slate-500 font-medium">Audit-proof inventory reconciliation.</p>
             </div>
           </div>
 
-          <div className="flex items-center gap-3 shrink-0">
-            <div className="hidden sm:relative sm:block">
+          <div className="flex items-center gap-3">
+            <div className="relative hidden sm:block">
               <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400 w-3.5 h-3.5" />
               <input
                 type="text"
                 value={searchTerm}
-                onChange={(e) => setSearchTerm(e.target.value)}
-                placeholder="Search GRN, PO or Vendor..."
-                className="bg-slate-100/80 dark:bg-slate-800/80 border-none py-1.5 pl-8 pr-4 text-[11px] font-medium w-48 md:w-64 rounded-md focus:ring-1 focus:ring-amber-500 transition-all outline-none dark:text-white"
+                onChange={(e) => { setSearchTerm(e.target.value); setPage(1); }}
+                placeholder="Search GRN or Vendor..."
+                className="bg-slate-100 dark:bg-slate-800 py-1.5 pl-8 pr-4 text-[11px] w-64 rounded-md focus:ring-1 focus:ring-amber-500 outline-none"
               />
             </div>
-
-            <button onClick={() => loadWorkspaceData({ page })} disabled={isPending} className="p-1.5 text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-slate-800 rounded-md transition-colors disabled:opacity-50">
-              <RefreshCw className={`w-4 h-4 ${isPending ? "animate-spin text-amber-500" : ""}`} />
+            <button onClick={() => loadWorkspaceData()} className="p-1.5 text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-md">
+              <RefreshCw className="w-4 h-4" />
             </button>
-
-            <button onClick={() => setShowFilters((s) => !s)} className="p-1.5 text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-slate-800 rounded-md transition-colors">
+            <button onClick={() => setShowFilters(!showFilters)} className="p-1.5 text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-md">
               <Filter className="w-4 h-4" />
             </button>
-
-            <div className="hidden md:flex gap-2 items-center">
-              <button onClick={() => exportCSV(false)} className="h-8 px-3 bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-200 text-[11px] font-bold rounded-md hover:bg-slate-200 dark:hover:bg-slate-700 transition-all flex items-center gap-2">
-                <Download className="w-3.5 h-3.5" />
-                <span>Export CSV</span>
-              </button>
-            </div>
-
-            <button onClick={() => setCreateModalOpen(true)} className="hidden md:flex h-8 px-3 bg-amber-500 text-white text-[11px] font-bold uppercase tracking-wider rounded-md hover:bg-amber-600 transition-all items-center gap-1.5 shadow-sm">
+            <button onClick={() => setCreateModalOpen(true)} className="h-8 px-4 bg-amber-500 text-white text-[11px] font-bold uppercase rounded-md hover:bg-amber-600 transition-all flex items-center gap-2 shadow-sm">
               <Plus className="w-3.5 h-3.5" />
               <span>New GRN</span>
             </button>
@@ -435,340 +219,443 @@ export default function GoodsReceiptsWorkspace({ branchId }: { branchId: string 
         </div>
 
         {showFilters && (
-          <div className="w-full px-4 py-3 border-t border-slate-100 dark:border-slate-800 bg-white dark:bg-slate-900 flex flex-wrap gap-3 items-center">
-            <div className="flex items-center gap-2">
-              <label className="text-[11px] text-slate-500 dark:text-slate-400">Status</label>
-              <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} className="rounded-md bg-slate-50 dark:bg-slate-800 px-2 py-1 text-sm outline-none">
-                <option value="all">All</option>
-                <option value="PENDING">PENDING</option>
-                <option value="RECEIVED">RECEIVED</option>
-                <option value="REJECTED">REJECTED</option>
-              </select>
-            </div>
-
-            <div className="flex items-center gap-2">
-              <label className="text-[11px] text-slate-500 dark:text-slate-400">From</label>
-              <input type="date" value={fromDate ?? ""} onChange={(e) => setFromDate(e.target.value || null)} className="rounded-md bg-slate-50 dark:bg-slate-800 px-2 py-1 text-sm outline-none" />
-            </div>
-
-            <div className="flex items-center gap-2">
-              <label className="text-[11px] text-slate-500 dark:text-slate-400">To</label>
-              <input type="date" value={toDate ?? ""} onChange={(e) => setToDate(e.target.value || null)} className="rounded-md bg-slate-50 dark:bg-slate-800 px-2 py-1 text-sm outline-none" />
-            </div>
-
-            <div className="ml-auto flex items-center gap-2">
-              <button onClick={() => exportCSV(true)} disabled={!userCanExport} className={`px-3 py-1 rounded-md ${userCanExport ?
-                "bg-amber-500 hover:bg-amber-600 text-white" : "bg-slate-100 dark:bg-slate-800 text-slate-400 cursor-not-allowed"} text-[11px] font-bold uppercase transition-colors`}>
-                Export All CSV
+          <div className="px-4 py-3 border-t border-slate-100 dark:border-slate-800 bg-white dark:bg-slate-900 flex gap-4 items-center animate-in slide-in-from-top-2">
+            <select value={statusFilter} onChange={(e) => { setStatusFilter(e.target.value); setPage(1); }} className="bg-slate-50 dark:bg-slate-800 rounded px-2 py-1.5 text-xs outline-none border border-slate-200 dark:border-slate-700">
+              <option value="all">All Statuses</option>
+              {Object.values(GRNStatus).map(s => <option key={s} value={s}>{s}</option>)}
+            </select>
+            {userCanExport && (
+              <button onClick={exportCSV} className="ml-auto text-[10px] font-bold text-amber-600 hover:text-amber-700 flex items-center gap-1 bg-amber-50 dark:bg-amber-900/20 px-3 py-1.5 rounded-md">
+                <Download className="w-3 h-3" /> EXPORT AUDIT
               </button>
-            </div>
+            )}
           </div>
         )}
       </header>
 
-      <div className="flex-1 overflow-y-auto custom-scrollbar flex flex-col xl:flex-row pb-12">
-        <main className="flex-1 px-4 lg:px-6 flex flex-col gap-6">
-          {error && (
-            <div className="mt-4 p-3 bg-red-50 dark:bg-red-900/20 border border-red-100 dark:border-red-900/40 rounded-lg flex items-center gap-3 text-red-600 dark:text-red-400">
-              <X className="w-4 h-4" />
-              <span className="text-[11px] font-bold uppercase tracking-wider">{error}</span>
-            </div>
-          )}
+      {/* Stats & Table */}
+      <div className="flex-1 overflow-y-auto p-4 lg:p-6 flex flex-col gap-6">
+        <section className="grid grid-cols-1 md:grid-cols-4 gap-4">
+          <StatCard title="Total Value (Page)" value={`₦${stats.totalValue.toLocaleString()}`} icon={PackageCheck} color="amber" />
+          <StatCard title="Pending Review" value={stats.pending} icon={Clock} color="amber" />
+          <StatCard title="Rejected" value={stats.rejected} icon={AlertCircle} color="red" />
+          <StatCard title="Received" value={stats.received} icon={CheckCircle2} color="emerald" />
+        </section>
 
-          <section className="grid grid-cols-1 md:grid-cols-4 gap-4 pt-4">
-            <StatCard title="Value Received" value={`₦${(stats as any).totalValue?.toLocaleString?.() ?? "0"}`} icon={PackageCheck} color="amber" />
-            <StatCard title="Pending" value={(stats as any).pending ?? 0} icon={Clock} color="amber" />
-            <StatCard title="Overdue" value={(stats as any).overdue ?? 0} icon={AlertCircle} color="red" />
-            <StatCard title="Completed" value={(stats as any).received ?? 0} icon={CheckCircle2} color="emerald" />
-          </section>
-
-          <div className="border border-slate-200 dark:border-slate-700 rounded-lg overflow-hidden flex flex-col min-h-[500px] transition-colors bg-white dark:bg-slate-900">
-            <div className="overflow-x-auto custom-scrollbar flex-1">
-              <table className="w-full text-left border-collapse whitespace-nowrap">
-                <thead>
-                  <tr className="bg-slate-50 dark:bg-slate-800 border-b border-slate-200/80 dark:border-slate-700/80">
-                    <th className="px-5 py-3 text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">GRN</th>
-                    <th className="px-5 py-3 text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Vendor</th>
-                    <th className="px-5 py-3 text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider text-right">Value (₦)</th>
-                    <th className="px-5 py-3 text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider text-center">Status</th>
-                    <th className="px-5 py-3 text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider text-right">Actions</th>
+        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl overflow-hidden shadow-sm flex flex-col flex-1">
+          <div className="overflow-x-auto flex-1">
+            <table className="w-full text-left whitespace-nowrap">
+              <thead>
+                <tr className="bg-slate-50 dark:bg-slate-800/50 text-[10px] font-bold text-slate-500 uppercase tracking-widest border-b border-slate-100 dark:border-slate-800">
+                  <th className="px-6 py-4">Receipt Info</th>
+                  <th className="px-6 py-4">Vendor</th>
+                  <th className="px-6 py-4 text-right">Value (₦)</th>
+                  <th className="px-6 py-4 text-center">Status</th>
+                  <th className="px-6 py-4 text-right">Actions</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+                {grns.length === 0 && !isPending && (
+                  <tr>
+                    <td colSpan={5} className="px-6 py-12 text-center text-sm text-slate-500">No goods receipts found.</td>
                   </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-                  {grns.length === 0 ? (
-                    <tr>
-                      <td colSpan={5} className="px-5 py-20 text-center text-slate-400 text-[11px] font-bold uppercase">No goods receipts found.</td>
-                    </tr>
-                  ) : (
-                    grns.map((g) => {
-                      const status = getStatusConfig(g.status);
-                      const StatusIcon = status.icon;
-                      const value = g.items?.reduce((s, it) => s + (Number(it.unitCost || 0) * Number(it.quantityAccepted || 0)), 0) || 0;
-                      return (
-                        <tr key={g.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors group">
-                          <td className="px-5 py-3">
-                            <div className="text-[13px] font-bold text-slate-900 dark:text-white">{g.grnNumber || g.id}</div>
-                            <div className="text-[9px] text-slate-400 font-bold uppercase mt-0.5">By {g.createdBy?.name || "System"}</div>
-                          </td>
-                          <td className="px-5 py-3">
-                            <div className="text-[11px] font-bold text-slate-700 dark:text-slate-200">{g.vendor?.name}</div>
-                            <div className="text-[10px] text-slate-400 truncate w-32">{g.vendor?.email}</div>
-                          </td>
-                          <td className="px-5 py-3 text-right">
-                            <div className="text-[13px] font-bold text-slate-900 dark:text-white">{Number(value).toLocaleString()}</div>
-                            <div className="text-[9px] text-slate-400 font-bold uppercase">{g.items?.length ?? 0} SKUs</div>
-                          </td>
-                          <td className="px-5 py-3 text-center">
-                            <div className="flex justify-center">
-                              <span className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-[9px] font-bold tracking-widest border ${status.classes}`}>
-                                <StatusIcon className="w-3 h-3" />
-                                {status.label}
-                              </span>
-                            </div>
-                          </td>
-                          <td className="px-5 py-3 text-right">
-                            <div className="flex justify-end gap-1.5 opacity-100 lg:opacity-0 group-hover:opacity-100 transition-opacity">
-                              <button onClick={() => setSelectedGRN(g)} className="p-1.5 bg-white dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 rounded text-slate-400 hover:text-amber-600 dark:hover:text-amber-400 border border-slate-200 dark:border-slate-700 transition-colors">
-                                <Eye className="w-3.5 h-3.5" />
-                              </button>
+                )}
+                {grns.map((g) => (
+                  <tr key={g.id} className="hover:bg-slate-50/50 dark:hover:bg-slate-800/30 transition-colors">
+                    <td className="px-6 py-4">
+                      <div className="text-[13px] font-bold text-slate-900 dark:text-white">{g.grnNumber}</div>
+                      <div className="text-[9px] text-slate-400 font-medium">Ref: {g.purchaseOrder?.poNumber || "Manual Entry"}</div>
+                    </td>
+                    <td className="px-6 py-4">
+                      <div className="text-[11px] font-bold">{g.vendor?.name || "Unknown"}</div>
+                      <div className="text-[10px] text-slate-500 italic">{new Date(g.receivedAt).toLocaleDateString()}</div>
+                    </td>
+                    <td className="px-6 py-4 text-right">
+                      <div className="text-[13px] font-mono font-bold">
+                        {g.items?.reduce((s, it) => s + (Number(it.unitCost || 0) * (it.quantityAccepted || 0)), 0).toLocaleString()}
+                      </div>
+                    </td>
+                    <td className="px-6 py-4 text-center">
+                      <StatusBadge status={g.status} />
+                    </td>
+                    <td className="px-6 py-4 text-right">
+                      <div className="flex justify-end gap-2">
+                        <button onClick={() => setSelectedGRN(g)} className="p-1.5 hover:bg-slate-100 dark:hover:bg-slate-800 rounded transition-colors text-slate-400 hover:text-slate-700 dark:hover:text-slate-200">
+                          <Eye className="w-4 h-4" />
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
 
-                              <button onClick={async () => {
-                                if (g.status === "PENDING") {
-                                  try {
-                                    await approveGRN(g.id);
-                                  } catch { }
-                                } else {
-                                  dispatch({ kind: "TOAST", type: "INFO", title: "Approve", message: "GRN is not pending." });
-                                }
-                              }} className="p-1.5 bg-white dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 rounded text-slate-400 hover:text-emerald-600 dark:hover:text-emerald-400 border border-slate-200 dark:border-slate-700 transition-colors">
-                                <Check className="w-3.5 h-3.5" />
-                              </button>
-
-                              <button onClick={async () => {
-                                if (g.status === "PENDING") {
-                                  try {
-                                    const items = g.items.map(it => ({ branchProductId: it.branchProductId, quantityAccepted: it.quantityAccepted, unitCost: it.unitCost }));
-                                    await receiveGRN(g.id, items);
-                                  } catch { }
-                                } else {
-                                  dispatch({ kind: "TOAST", type: "INFO", title: "Receive", message: "GRN already processed." });
-                                }
-                              }} className="p-1.5 bg-white dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 rounded text-slate-400 hover:text-blue-600 dark:hover:text-blue-400 border border-slate-200 dark:border-slate-700 transition-colors">
-                                <PackageCheck className="w-3.5 h-3.5" />
-                              </button>
-                            </div>
-                          </td>
-                        </tr>
-                      );
-                    })
-                  )}
-                </tbody>
-              </table>
-            </div>
-
-            <div className="px-4 py-3 border-t border-slate-100 dark:border-slate-800/60 flex items-center justify-between sticky bottom-0 bg-white dark:bg-slate-900">
-              <div className="text-[11px] text-slate-500 dark:text-slate-400 font-medium">
-                Showing <strong>{Math.min((page - 1) * limit + 1, total || 0)}</strong> - <strong>{Math.min(page * limit, total || 0)}</strong> of <strong>{total}</strong>
-              </div>
-
-              <div className="flex items-center gap-3">
-                <select value={limit} onChange={(e) => setLimit(Number(e.target.value))} className="rounded-md bg-slate-50 dark:bg-slate-800 px-2 py-1 text-xs outline-none border-none font-bold text-slate-600 dark:text-slate-300">
-                  <option value={10}>10 per page</option>
-                  <option value={25}>25 per page</option>
-                  <option value={50}>50 per page</option>
-                </select>
-
-                <div className="flex items-center gap-1">
-                  <button onClick={() => setPage((p) => Math.max(1, p - 1))} disabled={page <= 1} className="px-3 py-1 rounded-md bg-slate-100 dark:bg-slate-800 text-xs font-bold disabled:opacity-50 transition-colors hover:bg-slate-200 dark:hover:bg-slate-700">Prev</button>
-                  <div className="px-3 text-xs font-mono font-bold text-slate-700 dark:text-slate-300">{page} / {totalPages}</div>
-                  <button onClick={() => setPage((p) => Math.min(totalPages, p + 1))} disabled={page >= totalPages} className="px-3 py-1 rounded-md bg-slate-100 dark:bg-slate-800 text-xs font-bold disabled:opacity-50 transition-colors hover:bg-slate-200 dark:hover:bg-slate-700">Next</button>
-                </div>
-              </div>
+          <div className="px-6 py-4 bg-slate-50 dark:bg-slate-900/50 border-t border-slate-100 dark:border-slate-800 flex items-center justify-between">
+            <span className="text-[11px] text-slate-500 font-medium">Page {page} of {totalPages || 1} (Total: {total})</span>
+            <div className="flex gap-1">
+              <button disabled={page === 1} onClick={() => setPage(p => p - 1)} className="px-3 py-1 text-[11px] font-bold bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-md disabled:opacity-50 hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors">Prev</button>
+              <button disabled={page >= totalPages} onClick={() => setPage(p => p + 1)} className="px-3 py-1 text-[11px] font-bold bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-md disabled:opacity-50 hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors">Next</button>
             </div>
           </div>
-        </main>
+        </div>
       </div>
 
-      {/* Create GRN modal (inline simplified) */}
+      {/* Modals & Panels */}
       {isCreateModalOpen && (
         <CreateGRNModal
+          branchId={branchId}
           vendors={vendors}
           purchaseOrders={purchaseOrders}
+          products={products}
           onClose={() => setCreateModalOpen(false)}
-          onCreate={async (payload: any) => {
-            try {
-              await createGRN(payload);
-              setCreateModalOpen(false);
-            } catch { }
-          }}
+          onSuccess={() => { setCreateModalOpen(false); loadWorkspaceData(); }}
         />
       )}
 
-      {/* GRN detail panel */}
-      {selectedGRN && <GRNDetailPanel grn={selectedGRN} onClose={() => setSelectedGRN(null)} onApprove={approveGRN} onReceive={receiveGRN} />}
+      {selectedGRN && (
+        <GRNDetailPanel
+          grn={selectedGRN}
+          onClose={() => setSelectedGRN(null)}
+        />
+      )}
     </div>
   );
 }
 
 /* -------------------------
-Inline components
+Sub-Components
 ------------------------- */
 
 function StatCard({ title, value, icon: Icon, color }: any) {
-  const colorMap: any = { amber: "text-amber-600 dark:text-amber-400", emerald: "text-emerald-600 dark:text-emerald-400", red: "text-red-600 dark:text-red-400" };
-  const iconColorMap: any = { amber: "text-amber-200 dark:text-amber-900/40", emerald: "text-emerald-200 dark:text-emerald-900/40", red: "text-red-200 dark:text-red-900/40" };
+  const colors: any = {
+    amber: "text-amber-600 bg-amber-50 dark:bg-amber-900/10 border-amber-100 dark:border-amber-900/20",
+    emerald: "text-emerald-600 bg-emerald-50 dark:bg-emerald-900/10 border-emerald-100 dark:border-emerald-900/20",
+    red: "text-red-600 bg-red-50 dark:bg-red-900/10 border-red-100 dark:border-red-900/20",
+  };
   return (
-    <div className="bg-white dark:bg-slate-900 p-4 lg:p-5 rounded-xl border border-slate-200/60 dark:border-slate-800 shadow-sm flex flex-col justify-between transition-colors">
-      <p className={`text-[10px] font-bold ${colorMap[color] || "text-slate-500"} uppercase tracking-wider`}>{title}</p>
-      <div className="flex items-end justify-between mt-2">
-        <h3 className={`text-xl lg:text-2xl font-bold ${color === "emerald" ? "text-slate-900 dark:text-white" : colorMap[color] || "text-slate-900"}`}>{value}</h3>
-        <Icon className={`w-5 h-5 ${iconColorMap[color] || "text-slate-200"}`} />
+    <div className={`p-5 rounded-xl border flex flex-col gap-2 ${colors[color]}`}>
+      <div className="flex items-center justify-between">
+        <span className="text-[10px] font-bold uppercase tracking-widest opacity-80">{title}</span>
+        <div className="p-1.5 bg-white/50 dark:bg-black/20 rounded-lg shadow-sm">
+          <Icon className="w-4 h-4" />
+        </div>
       </div>
+      <span className="text-2xl font-bold">{value}</span>
     </div>
   );
 }
 
+function StatusBadge({ status }: { status: GRNStatus }) {
+  const config = {
+    PENDING: "bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-900/30 dark:text-amber-400 dark:border-amber-800",
+    RECEIVED: "bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-900/30 dark:text-emerald-400 dark:border-emerald-800",
+    REJECTED: "bg-red-50 text-red-700 border-red-200 dark:bg-red-900/30 dark:text-red-400 dark:border-red-800",
+  };
+  return (
+    <span className={`px-2.5 py-1 rounded-full text-[9px] font-black uppercase tracking-widest border shadow-sm ${config[status]}`}>
+      {status}
+    </span>
+  );
+}
+
 /* -------------------------
-CreateGRNModal (simplified production)
+Side Panels & Modals
 ------------------------- */
 
-function CreateGRNModal({ vendors, purchaseOrders, onClose, onCreate }: any) {
-  const [vendorId, setVendorId] = useState<string>("");
-  const [purchaseOrderId, setPurchaseOrderId] = useState<string>("");
-  const [receivedAt, setReceivedAt] = useState<string>("");
-  const [notes, setNotes] = useState<string>("");
-  const [items, setItems] = useState<IGoodsReceiptItem[]>([]);
-  const [adding, setAdding] = useState(false);
-
-  function addEmptyItem() {
-    setItems((s) => [...s, { productId: "", branchProductId: "", quantityAccepted: 0, unitCost: 0 }]);
-  }
-
-  async function handleCreate() {
-    setAdding(true);
-    try {
-      await onCreate({
-        branchId: purchaseOrders?.[0]?.branchId || "", // fallback; backend validates
-        purchaseOrderId: purchaseOrderId || null,
-        vendorId: vendorId || null,
-        receivedAt: receivedAt || null,
-        notes: notes || null,
-        items,
-      });
-    } finally {
-      setAdding(false);
-    }
-  }
-
+function GRNDetailPanel({ grn, onClose }: { grn: IGoodsReceipt, onClose: () => void }) {
   return (
-    <div className="fixed inset-0 z-[300] flex items-center justify-center bg-black/40 p-4">
-      <div className="w-full max-w-2xl bg-white dark:bg-slate-900 rounded-lg shadow-lg overflow-hidden">
-        <div className="px-4 py-3 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between">
-          <h3 className="font-bold">Initiate Goods Receipt</h3>
-          <button onClick={onClose} className="text-slate-500 hover:text-slate-900 dark:hover:text-white"><X className="w-4 h-4" /></button>
-        </div>
-        <div className="p-4 space-y-3">
-          <div className="grid grid-cols-2 gap-3">
-            <select value={vendorId} onChange={(e) => setVendorId(e.target.value)} className="rounded-md bg-slate-50 dark:bg-slate-800 px-2 py-2">
-              <option value="">Select vendor (optional)</option>
-              {vendors.map((v: any) => <option key={v.id} value={v.id}>{v.name}</option>)}
-            </select>
-            <select value={purchaseOrderId} onChange={(e) => setPurchaseOrderId(e.target.value)} className="rounded-md bg-slate-50 dark:bg-slate-800 px-2 py-2">
-              <option value="">Link Purchase Order (optional)</option>
-              {purchaseOrders.map((p: any) => <option key={p.id} value={p.id}>{p.poNumber || p.id}</option>)}
-            </select>
-          </div>
-
-          <div className="grid grid-cols-2 gap-3">
-            <input type="date" value={receivedAt} onChange={(e) => setReceivedAt(e.target.value)} className="rounded-md bg-slate-50 dark:bg-slate-800 px-2 py-2" />
-            <input type="text" placeholder="Notes (optional)" value={notes} onChange={(e) => setNotes(e.target.value)} className="rounded-md bg-slate-50 dark:bg-slate-800 px-2 py-2" />
-          </div>
-
+    <div className="fixed inset-0 z-[100] flex justify-end">
+      <div className="absolute inset-0 bg-slate-900/40 backdrop-blur-sm" onClick={onClose} />
+      <div className="relative w-full max-w-xl bg-white dark:bg-slate-950 h-full shadow-2xl flex flex-col animate-in slide-in-from-right-10 duration-300">
+        <div className="p-6 border-b border-slate-100 dark:border-slate-800 flex justify-between items-center bg-white dark:bg-slate-900">
           <div>
-            <div className="flex items-center justify-between mb-2">
-              <h4 className="font-bold text-sm">Items</h4>
-              <button onClick={addEmptyItem} className="text-amber-600 hover:underline text-sm">Add item</button>
+            <h2 className="text-lg font-bold text-slate-900 dark:text-white">GRN Details</h2>
+            <p className="text-[10px] text-slate-500 uppercase font-bold tracking-wider mt-1">{grn.grnNumber}</p>
+          </div>
+          <button onClick={onClose} className="p-2 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-full transition-colors text-slate-500"><X className="w-5 h-5" /></button>
+        </div>
+        
+        <div className="flex-1 overflow-y-auto p-6 space-y-6">
+          <div className="grid grid-cols-2 gap-4">
+            <div className="p-4 bg-slate-50 dark:bg-slate-900/50 rounded-xl border border-slate-100 dark:border-slate-800">
+              <label className="text-[9px] uppercase font-bold text-slate-400 block mb-1">Vendor</label>
+              <p className="text-sm font-bold text-slate-800 dark:text-slate-200">{grn.vendor?.name || "N/A"}</p>
             </div>
-            <div className="space-y-2">
-              {items.map((it, idx) => (
-                <div key={idx} className="grid grid-cols-4 gap-2 items-center">
-                  <input placeholder="BranchProductId" value={it.branchProductId} onChange={(e) => setItems(s => s.map((x, i) => i === idx ? { ...x, branchProductId: e.target.value } : x))} className="rounded-md bg-slate-50 dark:bg-slate-800 px-2 py-2" />
-                  <input placeholder="Qty" type="number" value={String(it.quantityAccepted)} onChange={(e) => setItems(s => s.map((x, i) => i === idx ? { ...x, quantityAccepted: Number(e.target.value) } : x))} className="rounded-md bg-slate-50 dark:bg-slate-800 px-2 py-2" />
-                  <input placeholder="Unit cost" type="number" value={String(it.unitCost || 0)} onChange={(e) => setItems(s => s.map((x, i) => i === idx ? { ...x, unitCost: Number(e.target.value) } : x))} className="rounded-md bg-slate-50 dark:bg-slate-800 px-2 py-2" />
-                  <button onClick={() => setItems(s => s.filter((_, i) => i !== idx))} className="text-red-500">Remove</button>
-                </div>
-              ))}
+            <div className="p-4 bg-slate-50 dark:bg-slate-900/50 rounded-xl border border-slate-100 dark:border-slate-800">
+              <label className="text-[9px] uppercase font-bold text-slate-400 block mb-2">Status</label>
+              <div><StatusBadge status={grn.status} /></div>
             </div>
           </div>
 
-          <div className="flex items-center justify-end gap-2">
-            <button onClick={onClose} className="px-3 py-1 rounded-md bg-slate-100 dark:bg-slate-800">Cancel</button>
-            <button onClick={handleCreate} disabled={adding} className="px-3 py-1 rounded-md bg-amber-500 text-white">{adding ? "Creating..." : "Create GRN"}</button>
+          <div className="space-y-3">
+            <h3 className="text-[10px] font-bold uppercase tracking-widest text-slate-400 flex items-center gap-2">
+              <FileText className="w-3.5 h-3.5" /> Items Breakdown
+            </h3>
+            <div className="border border-slate-100 dark:border-slate-800 rounded-xl overflow-hidden shadow-sm">
+              <table className="w-full text-xs">
+                <thead className="bg-slate-50 dark:bg-slate-900 border-b border-slate-100 dark:border-slate-800">
+                  <tr className="text-slate-500 font-bold uppercase text-[9px] tracking-wider">
+                    <th className="px-4 py-3 text-left">Product</th>
+                    <th className="px-4 py-3 text-center">Accepted</th>
+                    <th className="px-4 py-3 text-center">Rejected</th>
+                    <th className="px-4 py-3 text-right">Unit Cost (₦)</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-50 dark:divide-slate-800">
+                  {grn.items.map((it: IGoodsReceiptItem) => (
+                    <tr key={it.id} className="dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800/30">
+                      <td className="px-4 py-3">
+                        <div className="font-bold">{it.product?.name || "Unknown"}</div>
+                        <div className="text-[9px] text-slate-400 font-mono mt-0.5">{it.product?.sku}</div>
+                      </td>
+                      <td className="px-4 py-3 text-center font-bold text-emerald-600">{it.quantityAccepted}</td>
+                      <td className="px-4 py-3 text-center font-bold text-red-500">{it.quantityRejected || 0}</td>
+                      <td className="px-4 py-3 text-right font-mono font-bold">{(Number(it.unitCost)).toLocaleString()}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           </div>
+
+          {grn.notes && (
+            <div className="p-4 bg-amber-50 dark:bg-amber-900/10 rounded-xl border border-amber-100 dark:border-amber-900/30">
+              <label className="text-[9px] uppercase font-bold text-amber-600 dark:text-amber-500 block mb-1">Notes</label>
+              <p className="text-sm text-slate-700 dark:text-slate-300">{grn.notes}</p>
+            </div>
+          )}
         </div>
       </div>
     </div>
   );
 }
 
-/* -------------------------
-GRNDetailPanel
-------------------------- */
+function CreateGRNModal({ branchId, vendors, purchaseOrders, products, onClose, onSuccess }: any) {
+  const { dispatch } = useAlerts();
+  const [selectedVendor, setSelectedVendor] = useState("");
+  const [selectedPO, setSelectedPO] = useState("");
+  const [notes, setNotes] = useState("");
+  const [items, setItems] = useState<any[]>([]);
+  const [loading, setLoading] = useState(false);
 
-function GRNDetailPanel({ grn, onClose, onApprove, onReceive }: any) {
-  const [isReceiving, setIsReceiving] = useState(false);
-  const [localItems, setLocalItems] = useState(grn.items || []);
-
-  async function handleReceive() {
-    setIsReceiving(true);
-    try {
-      const items = localItems.map((it: any) => ({ branchProductId: it.branchProductId, quantityAccepted: it.quantityAccepted, unitCost: it.unitCost }));
-      await onReceive(grn.id, items);
-      onClose();
-    } finally {
-      setIsReceiving(false);
+  // Auto-fill items if PO is selected
+  useEffect(() => {
+    if (selectedPO) {
+        (async () => {
+            const res = await fetch(`/api/inventory/purchase-orders/${selectedPO}`);
+            if (res.ok) {
+                const po = await res.json();
+                setItems(po.items.map((i: any) => ({
+                    productId: i.productId,
+                    productName: i.product?.name,
+                    quantityAccepted: i.quantityOrdered - i.quantityReceived,
+                    quantityRejected: 0,
+                    unitCost: Number(i.unitCost),
+                    poItemId: i.id
+                })));
+                if(po.vendorId) setSelectedVendor(po.vendorId);
+            }
+        })();
+    } else {
+        setItems([]);
     }
-  }
+  }, [selectedPO]);
+
+  const handleSubmit = async () => {
+    if (!selectedVendor || items.length === 0) return;
+    
+    // Validate Zod constraint: items must have productId, quantityAccepted > 0, unitCost >= 0
+    const invalidItem = items.find(i => !i.productId || i.quantityAccepted <= 0);
+    if (invalidItem) {
+      dispatch({ kind: "TOAST", type: "ERROR", title: "Validation Error", message: "All items must have a product and accepted quantity > 0." });
+      return;
+    }
+
+    setLoading(true);
+    try {
+      const payload = {
+        branchId,
+        vendorId: selectedVendor || null,
+        purchaseOrderId: selectedPO || null,
+        notes: notes || null,
+        items: items.map(i => ({
+          poItemId: i.poItemId || null,
+          productId: i.productId,
+          quantityAccepted: Number(i.quantityAccepted),
+          quantityRejected: Number(i.quantityRejected || 0),
+          unitCost: Number(i.unitCost)
+        }))
+      };
+
+      const res = await fetch("/api/inventory/grns", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+      });
+      
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to submit GRN");
+      
+      dispatch({ kind: "PUSH", type: "SUCCESS", title: "GRN Created", message: `Generated ${data.grnNumber}` });
+      onSuccess();
+    } catch (e: any) { 
+      dispatch({ kind: "TOAST", type: "ERROR", title: "Submission Failed", message: e.message });
+    } finally {
+      setLoading(false);
+    }
+  };
 
   return (
-    <div className="fixed right-4 top-16 z-[250] w-[420px] max-h-[80vh] overflow-y-auto bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg shadow-lg">
-      <div className="p-4 border-b border-slate-100 dark:border-slate-800 flex items-start justify-between">
-        <div>
-          <h4 className="font-bold">GRN {grn.grnNumber || grn.id}</h4>
-          <p className="text-sm text-slate-500">{grn.vendor?.name}</p>
+    <div className="fixed inset-0 z-[150] flex items-center justify-center p-4">
+      <div className="absolute inset-0 bg-slate-900/60 backdrop-blur-md" onClick={onClose} />
+      <div className="relative w-full max-w-4xl bg-white dark:bg-slate-900 rounded-2xl shadow-2xl flex flex-col overflow-hidden animate-in zoom-in-95 duration-200 h-[85vh]">
+        <div className="p-6 border-b border-slate-100 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-800/50 flex justify-between items-center shrink-0">
+          <div className="flex items-center gap-3">
+            <div className="p-2 bg-amber-100 dark:bg-amber-900/30 rounded-lg text-amber-600 dark:text-amber-500">
+                <Truck className="w-5 h-5" />
+            </div>
+            <div>
+              <h2 className="text-lg font-bold text-slate-900 dark:text-white">Generate Goods Receipt</h2>
+              <p className="text-xs text-slate-500 font-medium mt-0.5">Receive inventory and sync to ledger.</p>
+            </div>
+          </div>
+          <button onClick={onClose} className="p-1.5 hover:bg-slate-200 dark:hover:bg-slate-800 rounded-full transition-colors"><X className="w-5 h-5 text-slate-400" /></button>
         </div>
-        <div className="flex flex-col items-end gap-2">
-          <div className="text-xs text-slate-400">{new Date(grn.createdAt).toLocaleString()}</div>
-          <div className="text-xs text-slate-400">{grn.status}</div>
-        </div>
-      </div>
 
-      <div className="p-4 space-y-3">
-        <div>
-          <h5 className="font-bold text-sm">Items</h5>
-          <div className="mt-2 space-y-2">
-            {localItems.map((it: any, idx: number) => (
-              <div key={idx} className="flex items-center justify-between gap-2">
-                <div className="flex-1">
-                  <div className="text-sm font-bold">{it.branchProductId}</div>
-                  <div className="text-xs text-slate-400">Product: {it.productId}</div>
-                </div>
-                <div className="w-28">
-                  <input type="number" value={String(it.quantityAccepted)} onChange={(e) => setLocalItems(s => s.map((x: any, i: number) => i === idx ? { ...x, quantityAccepted: Number(e.target.value) } : x))} className="w-full rounded-md bg-slate-50 dark:bg-slate-800 px-2 py-1" />
-                </div>
-              </div>
-            ))}
+        <div className="p-6 space-y-6 flex-1 overflow-y-auto custom-scrollbar">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6 bg-slate-50 dark:bg-slate-800/30 p-4 rounded-xl border border-slate-100 dark:border-slate-800/60">
+            <div className="space-y-1.5">
+              <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Select Vendor <span className="text-red-500">*</span></label>
+              <select 
+                value={selectedVendor} 
+                onChange={(e) => setSelectedVendor(e.target.value)}
+                disabled={!!selectedPO} // Lock if PO is selected
+                className="w-full bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg p-2.5 text-sm focus:ring-2 ring-amber-500/20 outline-none transition-shadow disabled:opacity-50 text-slate-800 dark:text-slate-200"
+              >
+                <option value="">Choose a vendor...</option>
+                {vendors.map((v: any) => <option key={v.id} value={v.id}>{v.name}</option>)}
+              </select>
+            </div>
+            <div className="space-y-1.5">
+              <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Linked PO (Optional)</label>
+              <select 
+                value={selectedPO} 
+                onChange={(e) => setSelectedPO(e.target.value)}
+                className="w-full bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg p-2.5 text-sm focus:ring-2 ring-amber-500/20 outline-none transition-shadow text-slate-800 dark:text-slate-200"
+              >
+                <option value="">Direct Entry (No Purchase Order)</option>
+                {purchaseOrders.map((p: any) => <option key={p.id} value={p.id}>{p.poNumber}</option>)}
+              </select>
+            </div>
+            <div className="md:col-span-2 space-y-1.5">
+              <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Notes (Optional)</label>
+              <textarea 
+                value={notes}
+                onChange={e => setNotes(e.target.value)}
+                rows={2}
+                className="w-full bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg p-2.5 text-sm focus:ring-2 ring-amber-500/20 outline-none transition-shadow text-slate-800 dark:text-slate-200"
+                placeholder="Condition of goods, delivery notes..."
+              />
+            </div>
+          </div>
+
+          <div className="space-y-3">
+             <div className="flex justify-between items-center">
+                <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Line Items</p>
+                <button 
+                    onClick={() => setItems([...items, { productId: "", quantityAccepted: 1, quantityRejected: 0, unitCost: 0 }])}
+                    className="text-[10px] font-bold text-amber-600 hover:text-amber-700 flex items-center gap-1.5 bg-amber-50 dark:bg-amber-900/20 px-3 py-1.5 rounded-md transition-colors"
+                >
+                    <Plus className="w-3 h-3" /> ADD MANUAL ITEM
+                </button>
+             </div>
+             
+             <div className="space-y-2">
+                {items.map((it, idx) => (
+                    <div key={idx} className="flex flex-wrap md:flex-nowrap gap-3 items-end bg-white dark:bg-slate-900 p-4 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm">
+                        <div className="flex-1 min-w-[200px] space-y-1.5">
+                            <label className="text-[9px] font-bold text-slate-400 uppercase">Product <span className="text-red-500">*</span></label>
+                            <select
+                                className="w-full bg-slate-50 dark:bg-slate-800 border-none rounded-lg p-2 text-xs text-slate-800 dark:text-slate-200 outline-none focus:ring-2 ring-amber-500/20"
+                                value={it.productId}
+                                onChange={(e) => {
+                                    const newItems = [...items];
+                                    newItems[idx].productId = e.target.value;
+                                    setItems(newItems);
+                                }}
+                            >
+                              <option value="">Select a product...</option>
+                              {products.map((p: any) => <option key={p.id} value={p.id}>{p.name}</option>)}
+                            </select>
+                        </div>
+                        <div className="w-24 space-y-1.5">
+                            <label className="text-[9px] font-bold text-emerald-500 uppercase">Accepted <span className="text-red-500">*</span></label>
+                            <input 
+                                type="number" min="1"
+                                className="w-full bg-slate-50 dark:bg-slate-800 border-none rounded-lg p-2 text-xs font-bold text-slate-800 dark:text-slate-200 outline-none focus:ring-2 ring-amber-500/20 text-center" 
+                                value={it.quantityAccepted}
+                                onChange={(e) => {
+                                    const newItems = [...items];
+                                    newItems[idx].quantityAccepted = Number(e.target.value);
+                                    setItems(newItems);
+                                }}
+                            />
+                        </div>
+                        <div className="w-24 space-y-1.5">
+                            <label className="text-[9px] font-bold text-red-400 uppercase">Rejected</label>
+                            <input 
+                                type="number" min="0"
+                                className="w-full bg-slate-50 dark:bg-slate-800 border-none rounded-lg p-2 text-xs font-bold text-slate-800 dark:text-slate-200 outline-none focus:ring-2 ring-amber-500/20 text-center" 
+                                value={it.quantityRejected}
+                                onChange={(e) => {
+                                    const newItems = [...items];
+                                    newItems[idx].quantityRejected = Number(e.target.value);
+                                    setItems(newItems);
+                                }}
+                            />
+                        </div>
+                        <div className="w-32 space-y-1.5">
+                            <label className="text-[9px] font-bold text-slate-400 uppercase">Unit Cost (₦) <span className="text-red-500">*</span></label>
+                            <input 
+                                type="number" min="0" step="0.01"
+                                className="w-full bg-slate-50 dark:bg-slate-800 border-none rounded-lg p-2 text-xs font-mono font-bold text-slate-800 dark:text-slate-200 outline-none focus:ring-2 ring-amber-500/20 text-right" 
+                                value={it.unitCost}
+                                onChange={(e) => {
+                                    const newItems = [...items];
+                                    newItems[idx].unitCost = Number(e.target.value);
+                                    setItems(newItems);
+                                }}
+                            />
+                        </div>
+                        <button 
+                            onClick={() => setItems(items.filter((_, i) => i !== idx))}
+                            className="p-2 mb-0.5 text-slate-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-lg transition-colors"
+                        >
+                            <Trash2 className="w-4 h-4" />
+                        </button>
+                    </div>
+                ))}
+                {items.length === 0 && (
+                    <div className="py-12 border-2 border-dashed border-slate-200 dark:border-slate-800 rounded-2xl flex flex-col items-center justify-center text-slate-400 bg-slate-50/50 dark:bg-slate-900/50">
+                        <PackageCheck className="w-10 h-10 mb-3 text-slate-300 dark:text-slate-700" />
+                        <p className="text-xs font-medium text-slate-500">No items added yet. Select a PO or add manually.</p>
+                    </div>
+                )}
+             </div>
           </div>
         </div>
 
-        <div className="flex items-center justify-end gap-2">
-          <button onClick={onClose} className="px-3 py-1 rounded-md bg-slate-100 dark:bg-slate-800">Close</button>
-          {grn.status === "PENDING" && (
-            <>
-              <button onClick={() => onApprove(grn.id)} className="px-3 py-1 rounded-md bg-emerald-600 text-white">Approve</button>
-              <button onClick={handleReceive} disabled={isReceiving} className="px-3 py-1 rounded-md bg-amber-500 text-white">{isReceiving ? "Receiving..." : "Receive"}</button>
-            </>
-          )}
+        <div className="p-6 bg-slate-50 dark:bg-slate-800/50 border-t border-slate-100 dark:border-slate-800 flex justify-end gap-3 shrink-0">
+          <button onClick={onClose} disabled={loading} className="px-6 py-2.5 text-[11px] font-bold text-slate-600 dark:text-slate-400 hover:bg-slate-200 dark:hover:bg-slate-800 rounded-lg transition-colors uppercase tracking-widest">Cancel</button>
+          <button 
+            onClick={handleSubmit} 
+            disabled={loading || !selectedVendor || items.length === 0}
+            className="flex items-center gap-2 px-8 py-2.5 bg-slate-900 dark:bg-amber-500 text-white text-[11px] font-bold rounded-lg hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed transition-all uppercase tracking-widest shadow-md"
+          >
+            {loading && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+            {loading ? "COMMITTING..." : "Commit Receipt"}
+          </button>
         </div>
       </div>
     </div>

@@ -20,21 +20,6 @@ import { saveAs } from "file-saver";
 import { useRouter } from "next/navigation";
 import { useSession } from "next-auth/react";
 
-/**
- * FortressInventoryWorkspace
- *
- * Updated frontend page aligned with:
- * - Prisma schema (BranchProduct / Product shapes)
- * - Backend route: app/api/inventory/fortress/route.ts
- *
- * Features:
- * - Inventory and Ledger views (type=inventory | ledger)
- * - Meta loads for vendors & categories
- * - Server-side pagination + client-side precise status filtering
- * - Export CSV (single page or full export) guarded by role-based check
- * - Defensive error handling for backend error shape { error: string }
- * - Keeps all original UI/UX and logic, fixes mismatches and aligns query params
- */
 
 /* -------------------------
    Types
@@ -492,25 +477,6 @@ export default function FortressInventoryWorkspace({ branchId }: { branchId: str
               />
             </div>
 
-            <div className="flex items-center gap-2">
-              <button
-                onClick={() => {
-                  setViewType("inventory");
-                }}
-                className={`px-2 py-1 rounded-md text-[11px] font-bold ${viewType === "inventory" ? "bg-blue-600 text-white" : "bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-200"}`}
-              >
-                Inventory
-              </button>
-              <button
-                onClick={() => {
-                  setViewType("ledger");
-                }}
-                className={`px-2 py-1 rounded-md text-[11px] font-bold ${viewType === "ledger" ? "bg-blue-600 text-white" : "bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-200"}`}
-              >
-                Ledger
-              </button>
-            </div>
-
             <button
               onClick={() => loadWorkspaceData({ page })}
               disabled={isPending}
@@ -537,7 +503,7 @@ export default function FortressInventoryWorkspace({ branchId }: { branchId: str
             </div>
 
             <button
-              onClick={() => router.push("/inventory/purchase-orders")}
+              onClick={() => router.push("/inventory/products")}
               className="hidden md:flex h-8 px-3 bg-blue-600 text-white text-[11px] font-bold uppercase tracking-wider rounded-md hover:bg-blue-700 transition-all items-center gap-1.5 shadow-sm"
             >
               <Plus className="w-3.5 h-3.5" />
@@ -659,42 +625,6 @@ export default function FortressInventoryWorkspace({ branchId }: { branchId: str
         <main className="px-4 lg:px-6 flex flex-col xl:flex-row gap-6 relative">
           <div className="border border-slate-200 dark:border-slate-700 rounded-lg overflow-hidden flex flex-col min-h-[500px] transition-colors">
             <div className="overflow-x-auto custom-scrollbar flex-1">
-              {viewType === "ledger" ? (
-                /* Ledger table */
-                <table className="w-full text-left border-collapse">
-                  <thead>
-                    <tr className="bg-slate-50 dark:bg-slate-800/50">
-                      <th className="px-5 py-3 text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Action</th>
-                      <th className="px-5 py-3 text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Description</th>
-                      <th className="px-5 py-3 text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Severity</th>
-                      <th className="px-5 py-3 text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Actor</th>
-                      <th className="px-5 py-3 text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider text-right">Date</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-100 dark:divide-slate-800/40">
-                    {ledger.map((log) => (
-                      <tr key={log.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/30 transition-colors group">
-                        <td className="px-5 py-3">
-                          <div className="text-[13px] font-bold text-slate-900 dark:text-white">{log.action}</div>
-                        </td>
-                        <td className="px-5 py-3">
-                          <div className="text-[11px] text-slate-500 dark:text-slate-400">{log.description}</div>
-                        </td>
-                        <td className="px-5 py-3">
-                          <div className="text-[11px] text-slate-500 dark:text-slate-400">{log.severity || "INFO"}</div>
-                        </td>
-                        <td className="px-5 py-3">
-                          <div className="text-[11px] text-slate-500 dark:text-slate-400">{log.personnelName || "System"} {log.personnelRole ? `(${log.personnelRole})` : ""}</div>
-                        </td>
-                        <td className="px-5 py-3 text-right">
-                          <div className="text-[11px] text-slate-500 dark:text-slate-400">{new Date(log.createdAt).toLocaleString()}</div>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              ) : (
-                /* Inventory table (original, aligned) */
                 <table className="w-full text-left border-collapse">
                   <thead>
                     <tr className="bg-slate-50 dark:bg-slate-800/50">
@@ -770,7 +700,6 @@ export default function FortressInventoryWorkspace({ branchId }: { branchId: str
                     })}
                   </tbody>
                 </table>
-              )}
             </div>
 
             <div className="px-4 py-3 border-t border-slate-100 dark:border-slate-800/60 flex items-center justify-between sticky bottom-0 bg-white dark:bg-slate-900">
