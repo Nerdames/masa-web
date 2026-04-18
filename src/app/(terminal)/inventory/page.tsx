@@ -32,8 +32,7 @@ interface DashboardTile {
 const TILES: DashboardTile[] = [
   { id: "inv", title: "Inventory", descriptionSm: "Stock levels & safety stock.", icon: Box, href: "/inventory/fortress", color: "from-blue-600 to-cyan-500", roles: [Role.ADMIN, Role.MANAGER, Role.INVENTORY, Role.AUDITOR, Role.DEV] },
   { id: "reg", title: "Product Registry", descriptionSm: "Manage global product catalog.", icon: Database, href: "/inventory/products", color: "from-indigo-600 to-blue-500", roles: [Role.ADMIN, Role.MANAGER, Role.INVENTORY, Role.DEV] },
-  { id: "po", title: "Purchase Orders", descriptionSm: "Create POs & track receipts.", icon: ShoppingCart, href: "/inventory/purchase-orders", color: "from-orange-500 to-amber-400", roles: [Role.ADMIN, Role.MANAGER, Role.INVENTORY, Role.DEV] },
-  { id: "grn", title: "Goods Receipts", descriptionSm: "Reconcile POs & update stock.", icon: PackageCheck, href: "/inventory/grns", color: "from-emerald-600 to-teal-500", roles: [Role.ADMIN, Role.MANAGER, Role.INVENTORY, Role.DEV] },
+  { id: "proc", title: "Procurement", descriptionSm: "Create POs & track receipts.", icon: ShoppingCart, href: "/inventory/procurement", color: "from-orange-500 to-amber-400", roles: [Role.ADMIN, Role.MANAGER, Role.INVENTORY, Role.DEV] },
   { id: "app", title: "Approvals", descriptionSm: "Price updates & adjustments.", icon: ClipboardCheck, href: "/inventory/approvals", color: "from-purple-600 to-indigo-500", roles: [Role.ADMIN, Role.MANAGER, Role.DEV] },
   { id: "stk", title: "Stock Take", descriptionSm: "Physical counts & logs.", icon: RefreshCw, href: "/inventory/stock-takes", color: "from-fuchsia-600 to-pink-500", roles: [Role.ADMIN, Role.MANAGER, Role.INVENTORY, Role.DEV] },
   { id: "trn", title: "Transfers", descriptionSm: "Inter-branch movements.", icon: ArrowUpRight, href: "/inventory/transfers", color: "from-sky-500 to-blue-600", roles: [Role.ADMIN, Role.MANAGER, Role.INVENTORY, Role.DEV] },

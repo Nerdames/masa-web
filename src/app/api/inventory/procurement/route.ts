@@ -171,7 +171,7 @@ async function canExport(user: any): Promise<boolean> {
 }
 
 /* -------------------------
-  GET /api/inventory/purchase-orders
+  GET /api/inventory/procurement
 ------------------------- */
 
 export async function GET(req: NextRequest) {
@@ -356,7 +356,7 @@ export async function GET(req: NextRequest) {
 }
 
 /* -------------------------
-  POST /api/inventory/purchase-orders
+  POST /api/inventory/procurement
 ------------------------- */
 
 export async function POST(req: NextRequest) {

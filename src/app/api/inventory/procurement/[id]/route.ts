@@ -1,4 +1,4 @@
-// /app/api/inventory/purchase-orders/[id]/route.ts
+// /app/api/inventory/procurement/[id]/route.ts
 import { NextRequest, NextResponse } from "next/server";
 import prisma from "@/core/lib/prisma";
 import { getServerSession } from "next-auth/next";
@@ -26,7 +26,7 @@ function generateHash(data: Record<string, unknown>): string {
 }
 
 /**
- * PATCH /api/inventory/purchase-orders/[id]
+ * PATCH /api/inventory/procurement/[id]
  * Specifically handles the VOID/CANCEL action for a Purchase Order.
  */
 export async function PATCH(

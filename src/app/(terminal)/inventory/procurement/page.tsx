@@ -74,7 +74,7 @@ const EXPORT_LIMIT = 10000;
 Component
 ------------------------- */
 
-export default function PurchaseOrdersWorkspace({ branchId }: { branchId: string }) {
+export default function ProcurementWorkspace({ branchId }: { branchId: string }) {
   const { data: session } = useSession();
   const { dispatch } = useAlerts();
   const { openPanel, closePanel } = useSidePanel();
@@ -162,8 +162,8 @@ export default function PurchaseOrdersWorkspace({ branchId }: { branchId: string
     (async () => {
       try {
         const [vRes, pRes] = await Promise.all([
-          fetch(`/api/inventory/purchase-orders?meta=vendors&orgId=${orgId}`),
-          fetch(`/api/inventory/purchase-orders?meta=products&orgId=${orgId}${branchId ? `&branchId=${branchId}` : ''}`),
+          fetch(`/api/inventory/procurement?meta=vendors&orgId=${orgId}`),
+          fetch(`/api/inventory/procurement?meta=products&orgId=${orgId}${branchId ? `&branchId=${branchId}` : ''}`),
         ]);
         if (!mounted) return;
 
@@ -194,7 +194,7 @@ export default function PurchaseOrdersWorkspace({ branchId }: { branchId: string
       setError(null);
       try {
         const q = buildQuery({ page: opts?.page, limit: opts?.limit });
-        const res = await fetch(`/api/inventory/purchase-orders?${q}`);
+        const res = await fetch(`/api/inventory/procurement?${q}`);
         if (res.status === 403) {
           const body = await res.json().catch(() => ({}));
           throw new Error(body?.error || "ACCESS_DENIED: You are not authorized for this branch.");
@@ -276,7 +276,7 @@ export default function PurchaseOrdersWorkspace({ branchId }: { branchId: string
         page: 1,
       });
 
-      const res = await fetch(`/api/inventory/purchase-orders?${q}`);
+      const res = await fetch(`/api/inventory/procurement?${q}`);
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
         throw new Error(body?.error || "Export failed");
@@ -356,7 +356,7 @@ export default function PurchaseOrdersWorkspace({ branchId }: { branchId: string
   ------------------------- */
   async function handleCreatePO(payload: any) {
     try {
-      const res = await fetch("/api/inventory/purchase-orders", {
+      const res = await fetch("/api/inventory/procurement", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
