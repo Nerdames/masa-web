@@ -461,7 +461,6 @@ export default function FortressInventoryWorkspace({ branchId }: { branchId: str
               <h1 className="truncate text-[16px] font-bold tracking-tight text-slate-900 dark:text-white leading-tight">
                 Inventory Fortress
               </h1>
-              <p className="text-[10px] text-slate-500 dark:text-slate-400 font-medium tracking-wide">End-to-End Forensic Traceability</p>
             </div>
           </div>
 
