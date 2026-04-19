@@ -299,7 +299,7 @@ export async function GET(req: NextRequest) {
           vendor: { select: { name: true } },
           purchaseOrder: { select: { poNumber: true } },
           receivedBy: { select: { name: true } },
-          items: { include: { product: { select: { name: true, sku: true } } } }
+          items: { include: { product: { select: { name: true, sku: true, uom: true } } } }
         },
         orderBy: { createdAt: "desc" },
         take,
@@ -391,6 +391,14 @@ export async function POST(req: NextRequest) {
       if (!branchId) throw new Error("Target branch is required.");
       if (!vendorId) throw new Error("Vendor is required.");
 
+      // PRE-FETCH: Get all base products to inherit UoM
+      const productIds = rawItems.map((it: any) => it.productId);
+      const baseProducts = await tx.product.findMany({
+        where: { id: { in: productIds } },
+        select: { id: true, uomId: true }
+      });
+      const productMap = new Map(baseProducts.map(p => [p.id, p]));
+
       // 2. Create Header
       const grnNumber = generateGRNNumber(branchId);
       const grn = await tx.goodsReceiptNote.create({
@@ -412,8 +420,11 @@ export async function POST(req: NextRequest) {
       for (const it of rawItems) {
         const itemCost = new Decimal(it.unitCost || 0);
         const qtyAccepted = Number(it.quantityAccepted || 0);
+        const baseProduct = productMap.get(it.productId);
 
-        // Bridge to Local Inventory (BranchProduct)
+        if (!baseProduct) throw new Error(`Product ${it.productId} not found in registry.`);
+
+        // Bridge to Local Inventory (BranchProduct) - Now mapping inherited UoM
         const branchProduct = await tx.branchProduct.upsert({
           where: { branchId_productId: { branchId, productId: it.productId } },
           update: { 
@@ -429,7 +440,8 @@ export async function POST(req: NextRequest) {
             stock: qtyAccepted,
             costPrice: itemCost,
             reorderLevel: 0,
-            safetyStock: 0
+            safetyStock: 0,
+            uomId: baseProduct.uomId // <-- ALIGNED: Branch product inherits UoM from base product
           }
         });
 

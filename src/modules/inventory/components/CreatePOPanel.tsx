@@ -24,6 +24,7 @@ interface IProduct {
 }
 
 interface IPOItem {
+  _uiId?: string; // 👈 Added for stable React keys
   productId: string;
   quantityOrdered: number;
   unitCost: number;
@@ -32,12 +33,13 @@ interface IPOItem {
 interface CreatePOPanelProps {
   vendors: IVendor[];
   products: IProduct[];
+  currencySymbol?: string; // 👈 Added dynamic currency
   onClose: () => void;
   onCreate: (payload: {
     vendorId: string;
     expectedDate: string | null;
     notes: string;
-    items: IPOItem[];
+    items: Omit<IPOItem, "_uiId">[]; // Stripped of UI-only ID
   }) => Promise<void>;
 }
 
@@ -48,6 +50,7 @@ interface CreatePOPanelProps {
 export default function CreatePOPanel({ 
   vendors: initialVendors, 
   products, 
+  currencySymbol = "₦", 
   onClose, 
   onCreate 
 }: CreatePOPanelProps) {
@@ -59,7 +62,7 @@ export default function CreatePOPanel({
   const [expectedDate, setExpectedDate] = useState("");
   const [notes, setNotes] = useState("");
   const [items, setItems] = useState<IPOItem[]>([
-    { productId: "", quantityOrdered: 1, unitCost: 0 }
+    { _uiId: crypto.randomUUID(), productId: "", quantityOrdered: 1, unitCost: 0 }
   ]);
   
   // Local Vendor Management
@@ -116,12 +119,12 @@ export default function CreatePOPanel({
   };
 
   const addItem = () => {
-    setItems([...items, { productId: "", quantityOrdered: 1, unitCost: 0 }]);
+    setItems([...items, { _uiId: crypto.randomUUID(), productId: "", quantityOrdered: 1, unitCost: 0 }]);
   };
 
-  const removeItem = (index: number) => {
+  const removeItem = (idToRemove?: string) => {
     if (items.length <= 1) return;
-    setItems(items.filter((_, i) => i !== index));
+    setItems(items.filter((item) => item._uiId !== idToRemove));
   };
 
   const updateItem = <K extends keyof IPOItem>(
@@ -134,8 +137,9 @@ export default function CreatePOPanel({
     setItems(newItems);
   };
 
+  // 👈 Added || 0 to prevent NaN if inputs are temporarily blank
   const totalAmount = items.reduce(
-    (sum, item) => sum + (item.quantityOrdered * item.unitCost), 
+    (sum, item) => sum + ((item.quantityOrdered || 0) * (item.unitCost || 0)), 
     0
   );
 
@@ -168,13 +172,18 @@ export default function CreatePOPanel({
     }
 
     try {
+      // 👈 Strip the React UI ID before sending to the backend
+      const cleanItems = items.map(({ _uiId, ...rest }) => rest);
+      
       const payload = { 
         vendorId, 
         expectedDate: expectedDate || null, 
         notes, 
-        items 
+        items: cleanItems 
       };
+      
       await onCreate(payload);
+      
       dispatch({
         kind: "TOAST",
         type: "SUCCESS",
@@ -185,7 +194,7 @@ export default function CreatePOPanel({
       const msg = err instanceof Error ? err.message : "Failed to initiate purchase order";
       dispatch({
         kind: "TOAST",
-        type: "SECURITY",
+        type: "ERROR",
         title: "System Rejection",
         message: msg
       });
@@ -251,7 +260,8 @@ export default function CreatePOPanel({
                   value={vendorId} 
                   onChange={(e) => setVendorId(e.target.value)} 
                   required 
-                  className="w-full border border-slate-300 dark:border-slate-700 rounded-lg text-sm p-2.5 focus:ring-2 focus:ring-emerald-500 outline-none bg-white dark:bg-slate-950 text-slate-900 dark:text-white transition-colors truncate"
+                  disabled={isSubmitting}
+                  className="w-full border border-slate-300 dark:border-slate-700 rounded-lg text-sm p-2.5 focus:ring-2 focus:ring-emerald-500 outline-none bg-white dark:bg-slate-950 text-slate-900 dark:text-white transition-colors truncate disabled:opacity-50"
                 >
                   <option value="">Select Vendor...</option>
                   {localVendors.map((v) => (
@@ -265,7 +275,15 @@ export default function CreatePOPanel({
                     placeholder="New vendor name..."
                     value={newVendorName}
                     onChange={(e) => setNewVendorName(e.target.value)}
-                    className="flex-1 border border-indigo-300 dark:border-indigo-900/50 rounded-lg text-sm p-2.5 outline-none bg-indigo-50/30 dark:bg-slate-950 text-slate-900 dark:text-white truncate"
+                    // 👈 Added to allow hitting "Enter" to save vendor without submitting PO
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault();
+                        handleQuickAddVendor();
+                      }
+                    }}
+                    disabled={isVendorSubmitting}
+                    className="flex-1 border border-indigo-300 dark:border-indigo-900/50 rounded-lg text-sm p-2.5 outline-none bg-indigo-50/30 dark:bg-slate-950 text-slate-900 dark:text-white truncate disabled:opacity-50"
                   />
                   <button
                     type="button"
@@ -287,7 +305,8 @@ export default function CreatePOPanel({
                 type="date" 
                 value={expectedDate} 
                 onChange={(e) => setExpectedDate(e.target.value)} 
-                className="w-full border border-slate-300 dark:border-slate-700 rounded-lg text-sm p-2.5 focus:ring-2 focus:ring-emerald-500 outline-none bg-white dark:bg-slate-950 text-slate-900 dark:text-white transition-colors" 
+                disabled={isSubmitting}
+                className="w-full border border-slate-300 dark:border-slate-700 rounded-lg text-sm p-2.5 focus:ring-2 focus:ring-emerald-500 outline-none bg-white dark:bg-slate-950 text-slate-900 dark:text-white transition-colors disabled:opacity-50" 
               />
             </div>
           </div>
@@ -301,16 +320,18 @@ export default function CreatePOPanel({
               <button 
                 type="button" 
                 onClick={addItem} 
-                className="text-[10px] font-bold text-emerald-800 dark:text-emerald-500 flex items-center gap-1 hover:underline transition-all whitespace-nowrap"
+                disabled={isSubmitting}
+                className="text-[10px] font-bold text-emerald-800 dark:text-emerald-500 flex items-center gap-1 hover:underline transition-all whitespace-nowrap disabled:opacity-50"
               >
                 <Plus className="w-3 h-3" /> Add Product
               </button>
             </div>
 
             <div className="space-y-3">
+              {/* 👈 Now using _uiId as key instead of index */}
               {items.map((item, idx) => (
                 <div
-                  key={idx}
+                  key={item._uiId} 
                   className={`w-full rounded-lg border p-3 border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/40 transition-all ${
                     isFullScreen ? "flex flex-row items-end gap-3" : "flex flex-col gap-3"
                   }`}
@@ -321,7 +342,8 @@ export default function CreatePOPanel({
                       value={item.productId}
                       onChange={(e) => updateItem(idx, "productId", e.target.value)}
                       required
-                      className="w-full border border-slate-300 dark:border-slate-700 rounded-md text-sm p-2 outline-none focus:border-emerald-500 dark:bg-slate-950 text-slate-900 dark:text-white transition-colors truncate"
+                      disabled={isSubmitting}
+                      className="w-full border border-slate-300 dark:border-slate-700 rounded-md text-sm p-2 outline-none focus:border-emerald-500 dark:bg-slate-950 text-slate-900 dark:text-white transition-colors truncate disabled:opacity-50"
                     >
                       <option value="">Select Product...</option>
                       {products.map((p) => (
@@ -341,24 +363,27 @@ export default function CreatePOPanel({
                         value={item.quantityOrdered}
                         onChange={(e) => updateItem(idx, "quantityOrdered", Number(e.target.value))}
                         required
-                        className="w-full border border-slate-300 dark:border-slate-700 rounded-md text-sm p-2 outline-none focus:border-emerald-500 dark:bg-slate-950 text-slate-900 dark:text-white transition-colors"
+                        disabled={isSubmitting}
+                        className="w-full border border-slate-300 dark:border-slate-700 rounded-md text-sm p-2 outline-none focus:border-emerald-500 dark:bg-slate-950 text-slate-900 dark:text-white transition-colors disabled:opacity-50"
                       />
                     </div>
                     <div className={isFullScreen ? "w-32" : "flex-1"}>
-                      <label className="block text-[10px] text-slate-900 dark:text-slate-200 uppercase mb-1 font-bold truncate">Cost (₦)</label>
+                      <label className="block text-[10px] text-slate-900 dark:text-slate-200 uppercase mb-1 font-bold truncate">Cost ({currencySymbol})</label>
                       <input
                         type="number"
                         min="0"
+                        step="0.01" // 👈 Added standard decimal support for currencies
                         value={item.unitCost}
                         onChange={(e) => updateItem(idx, "unitCost", Number(e.target.value))}
                         required
-                        className="w-full border border-slate-300 dark:border-slate-700 rounded-md text-sm p-2 outline-none focus:border-emerald-500 dark:bg-slate-950 text-slate-900 dark:text-white transition-colors"
+                        disabled={isSubmitting}
+                        className="w-full border border-slate-300 dark:border-slate-700 rounded-md text-sm p-2 outline-none focus:border-emerald-500 dark:bg-slate-950 text-slate-900 dark:text-white transition-colors disabled:opacity-50"
                       />
                     </div>
                     <button 
                       type="button" 
-                      onClick={() => removeItem(idx)} 
-                      disabled={items.length === 1} 
+                      onClick={() => removeItem(item._uiId)} 
+                      disabled={items.length === 1 || isSubmitting} 
                       className="p-2.5 text-slate-600 hover:text-red-700 dark:text-slate-400 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/30 rounded-md transition-colors disabled:opacity-30 shrink-0"
                     >
                       <Trash2 className="w-4 h-4" />
@@ -370,7 +395,10 @@ export default function CreatePOPanel({
 
             <div className="bg-slate-100 dark:bg-slate-800/80 px-4 py-3 border border-slate-200 dark:border-slate-700 rounded-lg flex justify-between items-center">
               <span className="text-[11px] font-bold text-slate-800 dark:text-slate-200 uppercase tracking-wider truncate">Total Commitment</span>
-              <span className="text-lg font-bold text-slate-950 dark:text-white whitespace-nowrap">₦{totalAmount.toLocaleString()}</span>
+              <span className="text-lg font-bold text-slate-950 dark:text-white whitespace-nowrap">
+                {/* 👈 Dynamic currency symbol here */}
+                {currencySymbol}{totalAmount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+              </span>
             </div>
           </div>
 
@@ -380,8 +408,9 @@ export default function CreatePOPanel({
               value={notes} 
               onChange={(e) => setNotes(e.target.value)} 
               rows={3} 
+              disabled={isSubmitting}
               placeholder="Add special delivery or handling instructions..." 
-              className="w-full border border-slate-300 dark:border-slate-700 rounded-lg text-sm p-2.5 focus:ring-2 focus:ring-emerald-500 outline-none bg-white dark:bg-slate-950 text-slate-900 dark:text-white resize-none transition-colors placeholder:text-slate-500"
+              className="w-full border border-slate-300 dark:border-slate-700 rounded-lg text-sm p-2.5 focus:ring-2 focus:ring-emerald-500 outline-none bg-white dark:bg-slate-950 text-slate-900 dark:text-white resize-none transition-colors placeholder:text-slate-500 disabled:opacity-50"
             />
           </div>
         </form>
@@ -391,8 +420,9 @@ export default function CreatePOPanel({
       <div className="px-6 py-4 border-t border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/50 flex justify-end items-center gap-3 shrink-0">
         <button 
           type="button" 
-          onClick={onClose} 
-          className="px-4 py-2 text-[11px] font-bold text-slate-800 dark:text-slate-300 uppercase tracking-wider hover:text-slate-950 dark:hover:text-white transition-colors whitespace-nowrap"
+          onClick={onClose}
+          disabled={isSubmitting} 
+          className="px-4 py-2 text-[11px] font-bold text-slate-800 dark:text-slate-300 uppercase tracking-wider hover:text-slate-950 dark:hover:text-white transition-colors whitespace-nowrap disabled:opacity-50"
         >
           Discard
         </button>

@@ -9,7 +9,7 @@ import {
   Prisma,
   POStatus,
   Role,
-  NotificationType
+  NotificationType,
 } from "@prisma/client";
 import { Decimal } from "@prisma/client/runtime/library";
 import crypto from "crypto";
@@ -164,9 +164,7 @@ async function canExport(user: any): Promise<boolean> {
       },
     });
     if (perm) return true;
-  } catch (e) {
-    // Fallback to role evaluation
-  }
+  } catch (e) {}
   return [Role.ADMIN, Role.MANAGER, Role.AUDITOR, Role.DEV].includes(user.role);
 }
 
@@ -184,7 +182,6 @@ export async function GET(req: NextRequest) {
     const meta = searchParams.get("meta");
     const orgId = user.organizationId;
     
-    // Strict Branch Isolation Context
     const isGlobalViewer = [Role.ADMIN, Role.MANAGER, Role.AUDITOR, Role.DEV].includes(user.role) || user.isOrgOwner;
     const branchIdParam = searchParams.get("branchId");
     const branchId = isGlobalViewer ? branchIdParam : (user.branchId || branchIdParam);
@@ -194,25 +191,33 @@ export async function GET(req: NextRequest) {
       if (meta === "vendors") {
         const vendors = await prisma.vendor.findMany({
           where: { organizationId: orgId, deletedAt: null },
-          select: { id: true, name: true },
+          select: { id: true, name: true, email: true, phone: true }, // Added email/phone 
           orderBy: { name: "asc" },
         });
         return NextResponse.json({ items: vendors });
       }
 
       if (meta === "products") {
-        // ALIGNED: Fetch from GLOBAL Catalog for Purchase Orders to allow cross-branch purchasing
         const products = await prisma.product.findMany({
           where: { organizationId: orgId, deletedAt: null },
-          select: { id: true, name: true, sku: true, baseCostPrice: true },
+          select: { 
+            id: true, 
+            name: true, 
+            sku: true, 
+            barcode: true, // Added barcode [cite: 31]
+            baseCostPrice: true,
+            uom: { select: { id: true, name: true, abbreviation: true } } // Included UOM [cite: 33, 35]
+          },
           orderBy: { name: "asc" },
         });
 
         return NextResponse.json({ 
           items: products.map(p => ({
             ...p,
-            productId: p.id, // Map for UI consistency
-            costPrice: p.baseCostPrice 
+            productId: p.id,
+            costPrice: p.baseCostPrice,
+            uomName: p.uom?.name,
+            uomAbbreviation: p.uom?.abbreviation
           })) 
         });
       }
@@ -290,7 +295,10 @@ export async function GET(req: NextRequest) {
     });
     if (!authPO.allowed) return NextResponse.json({ error: "Unauthorized" }, { status: 403 });
 
-    const where: Prisma.PurchaseOrderWhereInput = { organizationId: orgId };
+    const where: Prisma.PurchaseOrderWhereInput = { 
+      organizationId: orgId,
+      deletedAt: null // Added Soft Delete filter [cite: 43]
+    };
     if (branchId) where.branchId = branchId;
     if (search) {
       where.OR = [
@@ -313,7 +321,14 @@ export async function GET(req: NextRequest) {
           items: {
             select: {
               id: true,
-              product: { select: { id: true, name: true, sku: true } },
+              product: { 
+                select: { 
+                  id: true, 
+                  name: true, 
+                  sku: true,
+                  uom: { select: { abbreviation: true } } // Added UOM to item view [cite: 33, 35]
+                } 
+              },
               quantityOrdered: true,
               quantityReceived: true,
               unitCost: true,
@@ -330,14 +345,16 @@ export async function GET(req: NextRequest) {
     ]);
 
     if (exportAll) {
-      const header = ["id", "poNumber", "vendor", "status", "totalAmount", "expectedDate", "createdAt", "createdBy", "itemsCount"];
+      const header = ["id", "poNumber", "vendor", "status", "totalAmount", "currency", "expectedDate", "createdAt", "createdBy", "itemsCount", "notes"]; // Added currency/notes 
       const rows = items.map((it) => [
         it.id, it.poNumber, it.vendor?.name || "", it.status,
         String(it.totalAmount),
+        it.currency,
         it.expectedDate ? it.expectedDate.toISOString() : "",
         it.createdAt.toISOString(),
         it.createdBy?.name || "",
         String(it.items.length),
+        it.notes || ""
       ]);
       const csv = [header, ...rows].map((r) => r.map(csvEscape).join(",")).join("\n");
       return new NextResponse(csv, {
@@ -388,14 +405,12 @@ export async function POST(req: NextRequest) {
       notes,
       items: rawItems,
       poNumber: providedPoNumber,
-      currency = "NGN",
+      currency = "NGN", // Aligned with schema default [cite: 42]
     } = body;
 
-    // Strict parameter checking
     if (!vendorId) return NextResponse.json({ error: "Vendor context is required." }, { status: 400 });
     if (!Array.isArray(rawItems) || rawItems.length === 0) return NextResponse.json({ error: "Purchase Order must contain line items." }, { status: 400 });
 
-    // Validate Branch Context
     const isGlobalCreator = [Role.ADMIN, Role.MANAGER, Role.DEV].includes(user.role) || user.isOrgOwner;
     const branchId = isGlobalCreator ? (bodyBranchId ?? user.branchId) : user.branchId;
     if (!branchId) return NextResponse.json({ error: "Target branch resolution failed." }, { status: 400 });
@@ -410,7 +425,6 @@ export async function POST(req: NextRequest) {
       totalCost: Decimal;
     }[] = [];
 
-    // Payload Sanitization and Global Catalog Validation
     for (const [idx, it] of rawItems.entries()) {
       const productId = it.productId || it.id;
       const qty = Number(it.quantityOrdered ?? it.quantity ?? 0);
@@ -420,14 +434,12 @@ export async function POST(req: NextRequest) {
       if (!Number.isFinite(qty) || qty <= 0) return NextResponse.json({ error: `Invalid quantity on line ${idx + 1}` }, { status: 400 });
       if (!Number.isFinite(unitCostRaw) || unitCostRaw < 0) return NextResponse.json({ error: `Invalid unit cost on line ${idx + 1}` }, { status: 400 });
 
-      // Ensure product exists globally
       const product = await prisma.product.findFirst({ 
         where: { id: productId, organizationId: orgId, deletedAt: null } 
       });
       
       if (!product) return NextResponse.json({ error: `Product not found in Global Catalog (Line ${idx + 1})` }, { status: 404 });
 
-      // Use Decimal for exact financial math
       const unitCost = new Decimal(unitCostRaw);
       const totalCost = unitCost.mul(qty);
       
@@ -437,7 +449,6 @@ export async function POST(req: NextRequest) {
     const totalAmount = itemsValidated.reduce((sum, it) => sum.add(it.totalCost), new Decimal(0));
     const poNumber = providedPoNumber?.trim() || generatePONumber(branchId);
 
-    // Atomic Execution with Serializable Isolation
     const created = await prisma.$transaction(async (tx) => {
       const po = await tx.purchaseOrder.create({
         data: {
@@ -445,7 +456,7 @@ export async function POST(req: NextRequest) {
           branchId,
           vendorId,
           poNumber,
-          status: POStatus.ISSUED, // ALIGNED with strict Schema Enum
+          status: POStatus.ISSUED, 
           totalAmount,
           currency,
           expectedDate: expectedDate ? new Date(expectedDate) : null,
@@ -462,7 +473,11 @@ export async function POST(req: NextRequest) {
         },
         include: {
           vendor: { select: { id: true, name: true } },
-          items: true,
+          items: {
+            include: {
+              product: { select: { name: true, sku: true, uom: { select: { abbreviation: true } } } } // Include UOM in creation response [cite: 33, 35]
+            }
+          },
         },
       });
 
@@ -486,7 +501,7 @@ export async function POST(req: NextRequest) {
         orgId,
         branchId,
         "Procurement Issued",
-        `Purchase Order ${po.poNumber} has been successfully generated for vendor ${po.vendor?.name}.`,
+        `Purchase Order ${po.poNumber} generated for ${po.vendor?.name}. Total: ${currency} ${totalAmount.toFixed(2)}`,
         log.id
       );
 
