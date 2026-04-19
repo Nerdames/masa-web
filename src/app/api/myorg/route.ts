@@ -5,6 +5,13 @@ import prisma from "@/core/lib/prisma";
 import { PermissionAction, ActorType, Severity, Prisma, Role, PreferenceScope, PreferenceCategory } from "@prisma/client";
 import crypto from "crypto";
 
+// 1. IMPORT YOUR RESOURCE KEYS (Ensure these match your constants file)
+const VALID_RESOURCES = [
+  "INVOICE", "STOCK", "PRODUCT", "CUSTOMER", "EXPENSE", 
+  "PROCUREMENT", "VENDOR", "REPORT", "AUDIT", 
+  "SETTINGS", "BRANCH", "PERSONNEL", "FINANCE"
+];
+
 /* -------------------------------------------------------------------------- */
 /* FORENSIC AUDIT ENGINE                                                      */
 /* -------------------------------------------------------------------------- */
@@ -69,7 +76,7 @@ async function createAuditLog(
 }
 
 /* -------------------------------------------------------------------------- */
-/* GET HANDLER (Fetch Org Configuration)                                      */
+/* GET HANDLER (Fetch Org Configuration - Branches Removed)                   */
 /* -------------------------------------------------------------------------- */
 
 export async function GET(req: NextRequest) {
@@ -79,12 +86,11 @@ export async function GET(req: NextRequest) {
     
     const user = session.user as any;
 
-    // Must be ADMIN or Org Owner
     if (user.role !== Role.ADMIN && !user.isOrgOwner) {
       return NextResponse.json({ error: "Forbidden: Admin access required" }, { status: 403 });
     }
 
-    const [org, uoms, preferences] = await Promise.all([
+    const [org, uoms, taxRates, permissions, preferences] = await Promise.all([
       prisma.organization.findUnique({
         where: { id: user.organizationId },
         select: { id: true, name: true, active: true, createdAt: true },
@@ -93,6 +99,14 @@ export async function GET(req: NextRequest) {
         where: { organizationId: user.organizationId },
         orderBy: { name: "asc" },
       }),
+      prisma.taxRate.findMany({
+        where: { organizationId: user.organizationId },
+        orderBy: { name: "asc" },
+      }),
+      prisma.permission.findMany({
+        where: { organizationId: user.organizationId },
+        orderBy: { role: "asc" },
+      }),
       prisma.preference.findMany({
         where: { organizationId: user.organizationId, scope: PreferenceScope.ORGANIZATION },
       }),
@@ -100,7 +114,7 @@ export async function GET(req: NextRequest) {
 
     if (!org) return NextResponse.json({ error: "Organization not found" }, { status: 404 });
 
-    return NextResponse.json({ org, uoms, preferences });
+    return NextResponse.json({ org, uoms, taxRates, permissions, preferences });
   } catch (error: any) {
     console.error("[ORG_GET_ERROR]", error);
     return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
@@ -108,7 +122,7 @@ export async function GET(req: NextRequest) {
 }
 
 /* -------------------------------------------------------------------------- */
-/* PATCH HANDLER (Multiplexer for Settings)                                   */
+/* PATCH HANDLER (Multiplexer - Branches Removed - Enhanced Permissions)       */
 /* -------------------------------------------------------------------------- */
 
 export async function PATCH(req: NextRequest) {
@@ -128,6 +142,7 @@ export async function PATCH(req: NextRequest) {
     const { action, payload } = body;
 
     const result = await prisma.$transaction(async (tx) => {
+      
       // 1. UPDATE ORGANIZATION PROFILE
       if (action === "UPDATE_PROFILE") {
         const existing = await tx.organization.findUnique({ where: { id: user.organizationId } });
@@ -138,38 +153,20 @@ export async function PATCH(req: NextRequest) {
 
         await createAuditLog(tx, {
           organizationId: user.organizationId,
-          actorId: user.id,
-          actorRole: user.role as Role,
-          action: "UPDATE_ORG_PROFILE",
-          targetType: "ORGANIZATION",
-          targetId: updated.id,
+          actorId: user.id, actorRole: user.role as Role,
+          action: "UPDATE_ORG_PROFILE", targetType: "ORGANIZATION", targetId: updated.id,
           severity: Severity.MEDIUM,
-          description: `Updated organization profile name to ${updated.name}`,
-          requestId, ipAddress, deviceInfo,
-          before: existing, after: updated,
+          description: `Updated organization name to ${updated.name}`,
+          requestId, ipAddress, deviceInfo, before: existing, after: updated,
         });
-        return { success: true, type: "PROFILE", data: updated };
+        return { success: true, data: updated };
       }
 
       // 2. UPSERT UNIT OF MEASURE
       if (action === "UPSERT_UOM") {
-        let uom, existing = null;
-        if (payload.id) {
-          existing = await tx.unitOfMeasure.findUnique({ where: { id: payload.id } });
-          uom = await tx.unitOfMeasure.update({
-            where: { id: payload.id },
-            data: { name: payload.name, abbreviation: payload.abbreviation, active: payload.active },
-          });
-        } else {
-          uom = await tx.unitOfMeasure.create({
-            data: {
-              organizationId: user.organizationId,
-              name: payload.name,
-              abbreviation: payload.abbreviation,
-              active: payload.active ?? true,
-            },
-          });
-        }
+        const uom = payload.id 
+          ? await tx.unitOfMeasure.update({ where: { id: payload.id }, data: { name: payload.name, abbreviation: payload.abbreviation, active: payload.active } })
+          : await tx.unitOfMeasure.create({ data: { organizationId: user.organizationId, name: payload.name, abbreviation: payload.abbreviation, active: payload.active ?? true } });
 
         await createAuditLog(tx, {
           organizationId: user.organizationId,
@@ -177,55 +174,98 @@ export async function PATCH(req: NextRequest) {
           action: payload.id ? "UPDATE_UOM" : "CREATE_UOM",
           targetType: "UNIT_OF_MEASURE", targetId: uom.id,
           severity: Severity.LOW,
-          description: `${payload.id ? "Updated" : "Created"} Unit of Measure: ${uom.abbreviation}`,
-          requestId, ipAddress, deviceInfo,
-          before: existing, after: uom,
+          description: `${payload.id ? "Updated" : "Created"} UoM: ${uom.abbreviation}`,
+          requestId, ipAddress, deviceInfo, after: uom,
         });
-        return { success: true, type: "UOM", data: uom };
+        return { success: true, data: uom };
       }
 
-      // 3. UPSERT GLOBAL PREFERENCE
-      if (action === "UPSERT_PREFERENCE") {
-        let pref, existing = null;
-        
-        // Find if preference already exists
-        const existingPref = await tx.preference.findFirst({
-          where: {
-            organizationId: user.organizationId,
-            scope: PreferenceScope.ORGANIZATION,
-            key: payload.key,
-          }
-        });
-
-        if (existingPref) {
-          existing = existingPref;
-          pref = await tx.preference.update({
-            where: { id: existingPref.id },
-            data: { value: payload.value, category: payload.category as PreferenceCategory },
-          });
-        } else {
-          pref = await tx.preference.create({
-            data: {
-              organizationId: user.organizationId,
-              scope: PreferenceScope.ORGANIZATION,
-              category: payload.category as PreferenceCategory,
-              key: payload.key,
-              value: payload.value,
-            },
-          });
-        }
+      // 3. UPSERT TAX RATE
+      if (action === "UPSERT_TAX_RATE") {
+        const taxRate = payload.id
+          ? await tx.taxRate.update({ where: { id: payload.id }, data: { name: payload.name, rate: payload.rate, active: payload.active } })
+          : await tx.taxRate.create({ data: { organizationId: user.organizationId, name: payload.name, rate: payload.rate, active: payload.active ?? true } });
 
         await createAuditLog(tx, {
           organizationId: user.organizationId,
           actorId: user.id, actorRole: user.role as Role,
-          action: "UPDATE_GLOBAL_PREFERENCE",
-          targetType: "PREFERENCE", targetId: pref.id,
-          severity: Severity.MEDIUM,
-          description: `Updated global preference for key: ${pref.key}`,
-          requestId, ipAddress, deviceInfo,
-          before: existing, after: pref,
+          action: payload.id ? "UPDATE_TAX_RATE" : "CREATE_TAX_RATE",
+          targetType: "TAX_RATE", targetId: taxRate.id,
+          severity: Severity.LOW,
+          description: `Configured tax rate: ${taxRate.name} (${taxRate.rate}%)`,
+          requestId, ipAddress, deviceInfo, after: taxRate,
         });
-        return { success: true, type: "PREFERENCE", data: pref };
+        return { success: true, data: taxRate };
+      }
+
+      // 4. SYNC PERMISSIONS (Robust logic for multiple actions)
+      if (action === "SYNC_PERMISSIONS") {
+        const { targetRole, resource, actions } = payload as { targetRole: Role, resource: string, actions: PermissionAction[] };
+
+        // Typo Protection: Validate Resource Key against code constants
+        if (!VALID_RESOURCES.includes(resource)) {
+          throw new Error(`Invalid Resource Key: ${resource}. Please use a registered system key.`);
+        }
+
+        // Get existing to log changes
+        const existing = await tx.permission.findMany({
+          where: { organizationId: user.organizationId, role: targetRole, resource }
+        });
+
+        // Atomic Sync: Remove existing and recreate with the new set
+        await tx.permission.deleteMany({
+          where: { organizationId: user.organizationId, role: targetRole, resource }
+        });
+
+        const created = await tx.permission.createMany({
+          data: actions.map(act => ({
+            organizationId: user.organizationId,
+            role: targetRole,
+            resource,
+            action: act
+          }))
+        });
+
+        await createAuditLog(tx, {
+          organizationId: user.organizationId,
+          actorId: user.id, actorRole: user.role as Role,
+          action: "SYNC_PERMISSIONS", targetType: "RBAC", targetId: targetRole,
+          severity: Severity.HIGH,
+          description: `Synchronized ${actions.length} permissions for ${targetRole} on ${resource}`,
+          requestId, ipAddress, deviceInfo, before: existing, after: { role: targetRole, resource, actions },
+        });
+        return { success: true, count: created.count };
+      }
+
+      // 5. UPSERT GLOBAL PREFERENCE
+      if (action === "UPSERT_PREFERENCE") {
+        const pref = await tx.preference.upsert({
+          where: { 
+            organizationId_scope_key: { 
+              organizationId: user.organizationId, 
+              scope: PreferenceScope.ORGANIZATION, 
+              key: payload.key 
+            } 
+          },
+          update: { value: payload.value, category: payload.category as PreferenceCategory },
+          create: {
+            organizationId: user.organizationId,
+            scope: PreferenceScope.ORGANIZATION,
+            category: payload.category as PreferenceCategory,
+            key: payload.key,
+            value: payload.value,
+          },
+        });
+
+        await createAuditLog(tx, {
+          organizationId: user.organizationId,
+          actorId: user.id, actorRole: user.role as Role,
+          action: "UPDATE_PREFERENCE", targetType: "PREFERENCE", targetId: pref.id,
+          severity: Severity.MEDIUM,
+          description: `Updated global setting: ${pref.key}`,
+          requestId, ipAddress, deviceInfo, after: pref,
+        });
+        return { success: true, data: pref };
       }
 
       throw new Error("Invalid configuration action specified.");
