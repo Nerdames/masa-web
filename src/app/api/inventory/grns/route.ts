@@ -10,7 +10,6 @@ import {
   GRNStatus,
   POStatus,
   Role,
-  StockMovementType,
   NotificationType
 } from "@prisma/client";
 import { Decimal } from "@prisma/client/runtime/library";
@@ -20,7 +19,6 @@ import { authorize, RESOURCES } from "@/core/lib/permission";
 /* -------------------------
   Helpers & Config
 ------------------------- */
-
 const DEFAULT_LIMIT = 25;
 const MAX_LIMIT = 100;
 const EXPORT_LIMIT = 10000;
@@ -49,109 +47,6 @@ function generateGRNNumber(branchId?: string | null): string {
   return `GRN-${branchPart}-${suffix}`;
 }
 
-/* -------------------------
-  Forensic Audit & Notification Engines
-------------------------- */
-
-async function createAuditLog(
-  tx: Prisma.TransactionClient,
-  data: {
-    organizationId: string;
-    branchId?: string | null;
-    actorId: string;
-    actorRole: Role;
-    action: string;
-    resourceId: string;
-    description: string;
-    severity?: Severity;
-    requestId: string;
-    ipAddress: string;
-    deviceInfo: string;
-    metadata?: Prisma.JsonValue;
-    before?: Prisma.JsonValue;
-    after?: Prisma.JsonValue;
-  }
-) {
-  const lastLog = await tx.activityLog.findFirst({
-    where: { organizationId: data.organizationId },
-    orderBy: { createdAt: "desc" },
-    select: { hash: true },
-  });
-
-  const previousHash = lastLog?.hash ?? "0".repeat(64);
-  const timestamp = Date.now();
-
-  const hashPayload = JSON.stringify({
-    previousHash,
-    requestId: data.requestId,
-    actorId: data.actorId,
-    action: data.action,
-    targetId: data.resourceId,
-    timestamp,
-  });
-
-  const hash = crypto.createHash("sha256").update(hashPayload).digest("hex");
-
-  return await tx.activityLog.create({
-    data: {
-      organizationId: data.organizationId,
-      branchId: data.branchId ?? undefined,
-      actorId: data.actorId,
-      actorType: ActorType.USER,
-      actorRole: data.actorRole,
-      action: data.action,
-      targetType: "GRN",
-      targetId: data.resourceId,
-      severity: data.severity ?? Severity.HIGH,
-      description: data.description,
-      metadata: data.metadata ?? Prisma.JsonNull,
-      before: data.before ?? Prisma.JsonNull,
-      after: data.after ?? Prisma.JsonNull,
-      requestId: data.requestId,
-      ipAddress: data.ipAddress,
-      deviceInfo: data.deviceInfo,
-      previousHash,
-      hash,
-      critical: true,
-    },
-  });
-}
-
-async function notifyManagement(
-  tx: Prisma.TransactionClient,
-  organizationId: string,
-  branchId: string | null | undefined,
-  title: string,
-  message: string,
-  activityLogId: string
-) {
-  const targets = await tx.authorizedPersonnel.findMany({
-    where: {
-      organizationId,
-      deletedAt: null,
-      disabled: false,
-      OR: [{ role: Role.ADMIN }, { role: Role.MANAGER }, { role: Role.AUDITOR }, { isOrgOwner: true }],
-    },
-    select: { id: true },
-  });
-
-  if (targets.length === 0) return;
-
-  await tx.notification.create({
-    data: {
-      organizationId,
-      branchId: branchId ?? undefined,
-      type: NotificationType.INVENTORY,
-      title,
-      message,
-      activityLogId,
-      recipients: {
-        create: targets.map((t) => ({ personnelId: t.id })),
-      },
-    },
-  });
-}
-
 async function canExport(user: any): Promise<boolean> {
   if (user.isOrgOwner) return true;
   try {
@@ -173,7 +68,6 @@ async function canExport(user: any): Promise<boolean> {
 /* -------------------------
   GET /api/inventory/grns
 ------------------------- */
-
 export async function GET(req: NextRequest) {
   try {
     const session = await getServerSession(authOptions);
@@ -193,7 +87,7 @@ export async function GET(req: NextRequest) {
       if (meta === "vendors") {
         const items = await prisma.vendor.findMany({
           where: { organizationId: orgId, deletedAt: null },
-          select: { id: true, name: true },
+          select: { id: true, name: true, email: true, phone: true },
           orderBy: { name: "asc" },
         });
         return NextResponse.json({ items });
@@ -205,7 +99,7 @@ export async function GET(req: NextRequest) {
             organizationId: orgId, 
             status: { in: [POStatus.ISSUED, POStatus.PARTIALLY_RECEIVED] } 
           },
-          select: { id: true, poNumber: true, vendorId: true, branchId: true },
+          select: { id: true, poNumber: true, vendorId: true, branchId: true, currency: true },
           orderBy: { createdAt: "desc" },
         });
         return NextResponse.json({ items });
@@ -214,13 +108,13 @@ export async function GET(req: NextRequest) {
     }
 
     // --- MAIN QUERY ---
-    const type = searchParams.get("type") || "grn";
     const page = parseIntSafe(searchParams.get("page"), 1);
     const limit = Math.min(parseIntSafe(searchParams.get("limit"), DEFAULT_LIMIT), MAX_LIMIT);
     const search = searchParams.get("search")?.trim() || null;
     const status = searchParams.get("status") || null;
     const from = parseDateSafe(searchParams.get("from"));
     const to = parseDateSafe(searchParams.get("to"));
+    const poId = searchParams.get("purchaseOrderId") || null;
     
     const exportAll = searchParams.get("export") === "true";
     if (exportAll && !(await canExport(user))) {
@@ -230,54 +124,9 @@ export async function GET(req: NextRequest) {
     const take = exportAll ? EXPORT_LIMIT : limit;
     const skip = exportAll ? 0 : (page - 1) * take;
 
-    /* --- LEDGER VIEW --- */
-    if (type === "ledger") {
-      const auth = authorize({
-        role: user.role,
-        isOrgOwner: user.isOrgOwner,
-        action: PermissionAction.READ,
-        resource: RESOURCES.AUDIT,
-      });
-      if (!auth.allowed) return NextResponse.json({ error: "Unauthorized for Ledger" }, { status: 403 });
-
-      const where: Prisma.ActivityLogWhereInput = { organizationId: orgId, targetType: "GRN" };
-      if (branchId) where.branchId = branchId;
-      if (search) {
-        where.OR = [
-          { action: { contains: search, mode: "insensitive" } },
-          { description: { contains: search, mode: "insensitive" } },
-        ];
-      }
-      if (from || to) {
-        where.createdAt = {};
-        if (from) where.createdAt.gte = from;
-        if (to) where.createdAt.lte = to;
-      }
-
-      const [items, total] = await Promise.all([
-        prisma.activityLog.findMany({
-          where,
-          orderBy: { createdAt: "desc" },
-          take,
-          skip,
-          include: { personnel: { select: { name: true, role: true } } },
-        }),
-        prisma.activityLog.count({ where }),
-      ]);
-
-      return NextResponse.json({
-        items: items.map(it => ({
-          ...it,
-          actorRole: it.personnel?.role ?? it.actorRole,
-          actorName: it.personnel?.name ?? "System",
-        })),
-        total, page, limit: take 
-      });
-    }
-
-    /* --- GRN LIST VIEW --- */
     const where: Prisma.GoodsReceiptNoteWhereInput = { organizationId: orgId };
     if (branchId) where.branchId = branchId;
+    if (poId) where.purchaseOrderId = poId;
     if (search) {
       where.OR = [
         { grnNumber: { contains: search, mode: "insensitive" } },
@@ -296,10 +145,46 @@ export async function GET(req: NextRequest) {
       prisma.goodsReceiptNote.findMany({
         where,
         include: {
-          vendor: { select: { name: true } },
-          purchaseOrder: { select: { poNumber: true } },
-          receivedBy: { select: { name: true } },
-          items: { include: { product: { select: { name: true, sku: true, uom: true } } } }
+          vendor: { 
+            select: { 
+              id: true, 
+              name: true, 
+              email: true, 
+              phone: true 
+            } 
+          },
+          purchaseOrder: { 
+            select: { 
+              poNumber: true, 
+              currency: true 
+            } 
+          },
+          receivedBy: { 
+            select: { 
+              name: true 
+            } 
+          },
+          approvedBy: { 
+            select: { 
+              name: true 
+            } 
+          },
+          items: { 
+            include: { 
+              product: { 
+                select: { 
+                  name: true, 
+                  sku: true, 
+                  uom: {
+                    select: {
+                      name: true,
+                      abbreviation: true
+                    }
+                  }
+                } 
+              } 
+            } 
+          }
         },
         orderBy: { createdAt: "desc" },
         take,
@@ -338,7 +223,6 @@ export async function GET(req: NextRequest) {
 /* -------------------------
   POST /api/inventory/grns
 ------------------------- */
-
 export async function POST(req: NextRequest) {
   try {
     const session = await getServerSession(authOptions);
@@ -374,12 +258,10 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "GRN must contain at least one item." }, { status: 400 });
     }
 
-    // Serializable isolation ensures stock counts remain accurate under concurrency
     const result = await prisma.$transaction(async (tx) => {
       let branchId = bodyBranchId || user.branchId;
       let vendorId = bodyVendorId;
 
-      // 1. Context Resolution from PO
       if (purchaseOrderId) {
         const po = await tx.purchaseOrder.findUnique({ where: { id: purchaseOrderId } });
         if (!po) throw new Error("Linked Purchase Order not found.");
@@ -391,7 +273,6 @@ export async function POST(req: NextRequest) {
       if (!branchId) throw new Error("Target branch is required.");
       if (!vendorId) throw new Error("Vendor is required.");
 
-      // PRE-FETCH: Get all base products to inherit UoM
       const productIds = rawItems.map((it: any) => it.productId);
       const baseProducts = await tx.product.findMany({
         where: { id: { in: productIds } },
@@ -399,8 +280,8 @@ export async function POST(req: NextRequest) {
       });
       const productMap = new Map(baseProducts.map(p => [p.id, p]));
 
-      // 2. Create Header
       const grnNumber = generateGRNNumber(branchId);
+      
       const grn = await tx.goodsReceiptNote.create({
         data: {
           organizationId: orgId,
@@ -408,7 +289,7 @@ export async function POST(req: NextRequest) {
           vendorId,
           purchaseOrderId: purchaseOrderId || null,
           grnNumber,
-          status: GRNStatus.RECEIVED,
+          status: GRNStatus.PENDING,
           receivedAt: receivedAt ? new Date(receivedAt) : new Date(),
           receivedById: user.id,
           notes: notes || null,
@@ -416,36 +297,30 @@ export async function POST(req: NextRequest) {
         include: { vendor: { select: { name: true } } }
       });
 
-      // 3. Process Items & Inventory
       for (const it of rawItems) {
         const itemCost = new Decimal(it.unitCost || 0);
         const qtyAccepted = Number(it.quantityAccepted || 0);
+        const qtyRejected = Number(it.quantityRejected || 0);
         const baseProduct = productMap.get(it.productId);
 
-        if (!baseProduct) throw new Error(`Product ${it.productId} not found in registry.`);
+        if (!baseProduct) throw new Error(`Product ${it.productId} not found.`);
 
-        // Bridge to Local Inventory (BranchProduct) - Now mapping inherited UoM
         const branchProduct = await tx.branchProduct.upsert({
           where: { branchId_productId: { branchId, productId: it.productId } },
-          update: { 
-            stock: { increment: qtyAccepted },
-            costPrice: itemCost,
-            vendorId: vendorId
-          },
+          update: {}, 
           create: {
             organizationId: orgId,
             branchId,
             productId: it.productId,
             vendorId,
-            stock: qtyAccepted,
+            stock: 0, 
             costPrice: itemCost,
             reorderLevel: 0,
             safetyStock: 0,
-            uomId: baseProduct.uomId // <-- ALIGNED: Branch product inherits UoM from base product
+            uomId: baseProduct.uomId 
           }
         });
 
-        // Link Physical Receipt
         await tx.goodsReceiptItem.create({
           data: {
             grnId: grn.id,
@@ -453,74 +328,56 @@ export async function POST(req: NextRequest) {
             branchProductId: branchProduct.id,
             poItemId: it.poItemId || null,
             quantityAccepted: qtyAccepted,
-            quantityRejected: Number(it.quantityRejected || 0),
+            quantityRejected: qtyRejected,
             unitCost: itemCost
           }
         });
+      }
 
-        // Double-Entry Ledger
-        await tx.stockMovement.create({
+      const lastLog = await tx.activityLog.findFirst({
+        where: { organizationId: orgId },
+        orderBy: { createdAt: "desc" },
+        select: { hash: true },
+      });
+      const previousHash = lastLog?.hash ?? "0".repeat(64);
+      const timestamp = Date.now();
+      const hashPayload = JSON.stringify({ previousHash, requestId, actorId: user.id, action: "CREATE_GRN_PENDING", targetId: grn.id, timestamp });
+      const hash = crypto.createHash("sha256").update(hashPayload).digest("hex");
+
+      const log = await tx.activityLog.create({
+        data: {
+          organizationId: orgId,
+          branchId,
+          actorId: user.id,
+          actorType: ActorType.USER,
+          actorRole: user.role as Role,
+          action: "CREATE_GRN_PENDING",
+          targetType: "GRN",
+          targetId: grn.id,
+          severity: Severity.MEDIUM,
+          description: `Pending Receipt Created: ${grn.grnNumber}. Awaiting manager approval.`,
+          requestId, ipAddress, deviceInfo, previousHash, hash, critical: false,
+        },
+      });
+
+      const targets = await tx.authorizedPersonnel.findMany({
+        where: { organizationId: orgId, deletedAt: null, disabled: false, OR: [{ role: Role.ADMIN }, { role: Role.MANAGER }, { role: Role.AUDITOR }, { isOrgOwner: true }] },
+        select: { id: true },
+      });
+
+      if (targets.length > 0) {
+        await tx.notification.create({
           data: {
             organizationId: orgId,
             branchId,
-            branchProductId: branchProduct.id,
-            productId: it.productId,
-            type: StockMovementType.IN,
-            quantity: qtyAccepted,
-            unitCost: itemCost,
-            totalCost: itemCost.mul(qtyAccepted),
-            reason: `Physical Restock: ${grn.grnNumber}`,
-            runningBalance: branchProduct.stock,
-            handledById: user.id,
-            grnId: grn.id
-          }
-        });
-
-        // PO Fulfillment Sync
-        if (it.poItemId) {
-          await tx.purchaseOrderItem.update({
-            where: { id: it.poItemId },
-            data: { quantityReceived: { increment: qtyAccepted } }
-          });
-        }
-      }
-
-      // 4. Update PO State Machine
-      if (purchaseOrderId) {
-        const allItems = await tx.purchaseOrderItem.findMany({ where: { purchaseOrderId } });
-        const isFulfilled = allItems.every(i => 
-          new Decimal(i.quantityReceived).gte(new Decimal(i.quantityOrdered))
-        );
-        await tx.purchaseOrder.update({
-          where: { id: purchaseOrderId },
-          data: { status: isFulfilled ? POStatus.FULFILLED : POStatus.PARTIALLY_RECEIVED }
+            type: NotificationType.APPROVAL,
+            title: "GRN Approval Required",
+            message: `Receipt ${grnNumber} from ${grn.vendor?.name || 'Vendor'} requires your approval to restock inventory.`,
+            activityLogId: log.id,
+            recipients: { create: targets.map((t) => ({ personnelId: t.id })) },
+          },
         });
       }
-
-      // 5. Forensic Logging
-      const log = await createAuditLog(tx, {
-        organizationId: orgId,
-        branchId,
-        actorId: user.id,
-        actorRole: user.role as Role,
-        action: "CREATE_GRN",
-        resourceId: grn.id,
-        description: `Goods Receipt Logged: ${grn.grnNumber} (Vendor: ${grn.vendor?.name})`,
-        requestId,
-        ipAddress,
-        deviceInfo,
-        after: grn as any
-      });
-
-      // 6. Notification
-      await notifyManagement(
-        tx,
-        orgId,
-        branchId,
-        "Stock Received",
-        `GRN ${grnNumber} generated. Stock levels updated for ${rawItems.length} items.`,
-        log.id
-      );
 
       return grn;
     }, {

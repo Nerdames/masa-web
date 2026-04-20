@@ -18,10 +18,20 @@ import { authorize, RESOURCES } from "@/core/lib/permission";
 /* -------------------------
   Helpers & Config
 ------------------------- */
-
 const DEFAULT_LIMIT = 25;
 const MAX_LIMIT = 100;
 const EXPORT_LIMIT = 10000;
+
+/**
+ * Standardizes user object from session for internal use
+ */
+interface AuthenticatedUser {
+  id: string;
+  organizationId: string;
+  branchId: string | null;
+  role: Role;
+  isOrgOwner: boolean;
+}
 
 function parseIntSafe(v: string | null, fallback: number): number {
   if (!v) return fallback;
@@ -65,9 +75,9 @@ async function createAuditLog(
     requestId: string;
     ipAddress: string;
     deviceInfo: string;
-    metadata?: Prisma.JsonValue;
-    before?: Prisma.JsonValue;
-    after?: Prisma.JsonValue;
+    metadata?: any;
+    before?: any;
+    after?: any;
   }
 ) {
   const lastLog = await tx.activityLog.findFirst({
@@ -102,9 +112,9 @@ async function createAuditLog(
       targetId: data.resourceId,
       severity: data.severity ?? Severity.MEDIUM,
       description: data.description,
-      metadata: data.metadata ?? Prisma.JsonNull,
-      before: data.before ?? Prisma.JsonNull,
-      after: data.after ?? Prisma.JsonNull,
+      metadata: data.metadata ? (data.metadata as Prisma.InputJsonValue) : Prisma.JsonNull,
+      before: data.before ? (data.before as Prisma.InputJsonValue) : Prisma.JsonNull,
+      after: data.after ? (data.after as Prisma.InputJsonValue) : Prisma.JsonNull,
       requestId: data.requestId,
       ipAddress: data.ipAddress,
       deviceInfo: data.deviceInfo,
@@ -150,7 +160,7 @@ async function notifyManagement(
   });
 }
 
-async function canExport(user: any): Promise<boolean> {
+async function canExport(user: AuthenticatedUser): Promise<boolean> {
   if (user.isOrgOwner) return true;
   try {
     const perm = await prisma.permission.findUnique({
@@ -176,7 +186,7 @@ export async function GET(req: NextRequest) {
   try {
     const session = await getServerSession(authOptions);
     if (!session?.user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    const user = session.user as any;
+    const user = session.user as AuthenticatedUser;
 
     const { searchParams } = new URL(req.url);
     const meta = searchParams.get("meta");
@@ -186,29 +196,39 @@ export async function GET(req: NextRequest) {
     const branchIdParam = searchParams.get("branchId");
     const branchId = isGlobalViewer ? branchIdParam : (user.branchId || branchIdParam);
 
-    // --- META DROPDOWNS ---
+    // --- META DROPDOWNS (Optimized for performance) ---
     if (meta) {
       if (meta === "vendors") {
         const vendors = await prisma.vendor.findMany({
           where: { organizationId: orgId, deletedAt: null },
-          select: { id: true, name: true, email: true, phone: true }, // Added email/phone 
+          select: { id: true, name: true, email: true, phone: true },
           orderBy: { name: "asc" },
         });
         return NextResponse.json({ items: vendors });
       }
 
       if (meta === "products") {
+        const q = searchParams.get("q") || "";
         const products = await prisma.product.findMany({
-          where: { organizationId: orgId, deletedAt: null },
+          where: { 
+            organizationId: orgId, 
+            deletedAt: null,
+            OR: [
+              { name: { contains: q, mode: "insensitive" } },
+              { sku: { contains: q, mode: "insensitive" } },
+              { barcode: { contains: q, mode: "insensitive" } }
+            ]
+          },
           select: { 
             id: true, 
             name: true, 
             sku: true, 
-            barcode: true, // Added barcode [cite: 31]
+            barcode: true,
             baseCostPrice: true,
-            uom: { select: { id: true, name: true, abbreviation: true } } // Included UOM [cite: 33, 35]
+            uom: { select: { id: true, name: true, abbreviation: true } }
           },
           orderBy: { name: "asc" },
+          take: 100, // Safety limit for dropdowns
         });
 
         return NextResponse.json({ 
@@ -235,13 +255,13 @@ export async function GET(req: NextRequest) {
     
     const exportAll = searchParams.get("export") === "true";
     if (exportAll && !(await canExport(user))) {
-      return NextResponse.json({ error: "ACCESS_DENIED: Export authorization failed." }, { status: 403 });
+      return NextResponse.json({ error: "ACCESS_DENIED" }, { status: 403 });
     }
 
     const take = exportAll ? EXPORT_LIMIT : limit;
-    const skip = exportAll ? 0 : (page - 1) * take;
+    const skip = (page - 1) * take;
 
-    /* --- LEDGER / AUDIT VIEW --- */
+    /* --- LEDGER VIEW --- */
     if (type === "ledger") {
       const auth = authorize({
         role: user.role,
@@ -249,9 +269,12 @@ export async function GET(req: NextRequest) {
         action: PermissionAction.READ,
         resource: RESOURCES.AUDIT,
       });
-      if (!auth.allowed) return NextResponse.json({ error: "Unauthorized for Ledger" }, { status: 403 });
+      if (!auth.allowed) return NextResponse.json({ error: "Unauthorized" }, { status: 403 });
 
-      const where: Prisma.ActivityLogWhereInput = { organizationId: orgId, targetType: "PURCHASE_ORDER" };
+      const where: Prisma.ActivityLogWhereInput = { 
+        organizationId: orgId, 
+        targetType: "PURCHASE_ORDER" 
+      };
       if (branchId) where.branchId = branchId;
       if (search) {
         where.OR = [
@@ -297,7 +320,7 @@ export async function GET(req: NextRequest) {
 
     const where: Prisma.PurchaseOrderWhereInput = { 
       organizationId: orgId,
-      deletedAt: null // Added Soft Delete filter [cite: 43]
+      deletedAt: null 
     };
     if (branchId) where.branchId = branchId;
     if (search) {
@@ -317,25 +340,19 @@ export async function GET(req: NextRequest) {
       prisma.purchaseOrder.findMany({
         where,
         include: {
-          vendor: { select: { id: true, name: true, email: true } },
+          vendor: { select: { id: true, name: true, email: true, phone: true } },
           items: {
-            select: {
-              id: true,
+            include: {
               product: { 
                 select: { 
-                  id: true, 
                   name: true, 
                   sku: true,
-                  uom: { select: { abbreviation: true } } // Added UOM to item view [cite: 33, 35]
+                  uom: { select: { abbreviation: true } }
                 } 
               },
-              quantityOrdered: true,
-              quantityReceived: true,
-              unitCost: true,
-              totalCost: true,
             },
           },
-          createdBy: { select: { id: true, name: true } },
+          createdBy: { select: { name: true } },
         },
         orderBy: { createdAt: "desc" },
         take,
@@ -345,22 +362,21 @@ export async function GET(req: NextRequest) {
     ]);
 
     if (exportAll) {
-      const header = ["id", "poNumber", "vendor", "status", "totalAmount", "currency", "expectedDate", "createdAt", "createdBy", "itemsCount", "notes"]; // Added currency/notes 
+      const header = ["PO Number", "Date", "Vendor", "Status", "Total", "Currency", "Created By"];
       const rows = items.map((it) => [
-        it.id, it.poNumber, it.vendor?.name || "", it.status,
-        String(it.totalAmount),
-        it.currency,
-        it.expectedDate ? it.expectedDate.toISOString() : "",
+        it.poNumber,
         it.createdAt.toISOString(),
-        it.createdBy?.name || "",
-        String(it.items.length),
-        it.notes || ""
+        it.vendor?.name || "",
+        it.status,
+        it.totalAmount.toString(),
+        it.currency,
+        it.createdBy?.name || "System"
       ]);
       const csv = [header, ...rows].map((r) => r.map(csvEscape).join(",")).join("\n");
       return new NextResponse(csv, {
         headers: {
           "Content-Type": "text/csv; charset=utf-8",
-          "Content-Disposition": `attachment; filename="purchase_orders_${Date.now()}.csv"`,
+          "Content-Disposition": `attachment; filename="procurement_${Date.now()}.csv"`,
         },
       });
     }
@@ -380,7 +396,7 @@ export async function POST(req: NextRequest) {
   try {
     const session = await getServerSession(authOptions);
     if (!session?.user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    const user = session.user as any;
+    const user = session.user as AuthenticatedUser;
     const orgId = user.organizationId;
     
     const requestId = crypto.randomUUID();
@@ -393,7 +409,7 @@ export async function POST(req: NextRequest) {
       action: PermissionAction.CREATE,
       resource: RESOURCES.PROCUREMENT,
     });
-    if (!auth.allowed) return NextResponse.json({ error: "ACCESS_DENIED: Insufficient permissions." }, { status: 403 });
+    if (!auth.allowed) return NextResponse.json({ error: "ACCESS_DENIED" }, { status: 403 });
 
     const body = await req.json().catch(() => null);
     if (!body) return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
@@ -405,57 +421,75 @@ export async function POST(req: NextRequest) {
       notes,
       items: rawItems,
       poNumber: providedPoNumber,
-      currency = "NGN", // Aligned with schema default [cite: 42]
+      currency = "NGN",
     } = body;
 
-    if (!vendorId) return NextResponse.json({ error: "Vendor context is required." }, { status: 400 });
-    if (!Array.isArray(rawItems) || rawItems.length === 0) return NextResponse.json({ error: "Purchase Order must contain line items." }, { status: 400 });
+    if (!vendorId) return NextResponse.json({ error: "Vendor is required." }, { status: 400 });
+    if (!Array.isArray(rawItems) || rawItems.length === 0) return NextResponse.json({ error: "Line items required." }, { status: 400 });
 
     const isGlobalCreator = [Role.ADMIN, Role.MANAGER, Role.DEV].includes(user.role) || user.isOrgOwner;
     const branchId = isGlobalCreator ? (bodyBranchId ?? user.branchId) : user.branchId;
-    if (!branchId) return NextResponse.json({ error: "Target branch resolution failed." }, { status: 400 });
+    if (!branchId) return NextResponse.json({ error: "Branch resolution failed." }, { status: 400 });
 
     const vendor = await prisma.vendor.findFirst({ where: { id: vendorId, organizationId: orgId, deletedAt: null } });
-    if (!vendor) return NextResponse.json({ error: "Vendor not found or suspended." }, { status: 404 });
+    if (!vendor) return NextResponse.json({ error: "Vendor not active." }, { status: 404 });
 
-    const itemsValidated: {
-      productId: string;
-      quantityOrdered: number;
-      unitCost: Decimal;
-      totalCost: Decimal;
-    }[] = [];
+    // Bulk fetch products for performance and fallback evaluation
+    const productIds = rawItems.map((it: any) => it.productId || it.id).filter(Boolean);
+    const products = await prisma.product.findMany({
+      where: { id: { in: productIds }, organizationId: orgId, deletedAt: null },
+      select: { id: true, name: true, baseCostPrice: true }
+    });
+    const productMap = new Map(products.map(p => [p.id, p]));
 
+    const itemsValidated = [];
     for (const [idx, it] of rawItems.entries()) {
       const productId = it.productId || it.id;
-      const qty = Number(it.quantityOrdered ?? it.quantity ?? 0);
-      const unitCostRaw = Number(it.unitCost ?? it.unit_price ?? 0);
+      const qty = Number(it.quantityOrdered ?? 0);
 
-      if (!productId) return NextResponse.json({ error: `Product reference missing on line ${idx + 1}` }, { status: 400 });
-      if (!Number.isFinite(qty) || qty <= 0) return NextResponse.json({ error: `Invalid quantity on line ${idx + 1}` }, { status: 400 });
-      if (!Number.isFinite(unitCostRaw) || unitCostRaw < 0) return NextResponse.json({ error: `Invalid unit cost on line ${idx + 1}` }, { status: 400 });
+      if (!productId || qty <= 0) {
+        return NextResponse.json({ error: `Invalid item data on line ${idx + 1}` }, { status: 400 });
+      }
 
-      const product = await prisma.product.findFirst({ 
-        where: { id: productId, organizationId: orgId, deletedAt: null } 
-      });
-      
-      if (!product) return NextResponse.json({ error: `Product not found in Global Catalog (Line ${idx + 1})` }, { status: 404 });
+      const product = productMap.get(productId);
+      if (!product) return NextResponse.json({ error: `Product not found: ${productId}` }, { status: 404 });
+
+      // Cost Fallback Logic: If missing, empty, or 0, fallback to baseCostPrice
+      let unitCostRaw = Number(it.unitCost);
+      if (!it.unitCost || isNaN(unitCostRaw) || unitCostRaw <= 0) {
+        unitCostRaw = Number(product.baseCostPrice ?? 0);
+      }
+
+      // Security measure: Prevent 0 cost POs from entering sales/reports if no base cost exists
+      if (unitCostRaw <= 0) {
+        return NextResponse.json({ 
+          error: `Cost cannot be zero for '${product.name}' (line ${idx + 1}). Please provide a valid unit cost as no base cost was found.` 
+        }, { status: 400 });
+      }
 
       const unitCost = new Decimal(unitCostRaw);
-      const totalCost = unitCost.mul(qty);
-      
-      itemsValidated.push({ productId, quantityOrdered: qty, unitCost, totalCost });
+      itemsValidated.push({ 
+        productId, 
+        quantityOrdered: qty, 
+        unitCost, 
+        totalCost: unitCost.mul(qty) 
+      });
     }
 
     const totalAmount = itemsValidated.reduce((sum, it) => sum.add(it.totalCost), new Decimal(0));
-    const poNumber = providedPoNumber?.trim() || generatePONumber(branchId);
 
     const created = await prisma.$transaction(async (tx) => {
+      // Uniqueness check for PO Number
+      const poNumber = providedPoNumber?.trim() || generatePONumber(branchId);
+      const existing = await tx.purchaseOrder.findFirst({ where: { organizationId: orgId, poNumber } });
+      const finalPoNumber = existing ? `${poNumber}-DUP` : poNumber;
+
       const po = await tx.purchaseOrder.create({
         data: {
           organizationId: orgId,
           branchId,
           vendorId,
-          poNumber,
+          poNumber: finalPoNumber,
           status: POStatus.ISSUED, 
           totalAmount,
           currency,
@@ -472,12 +506,8 @@ export async function POST(req: NextRequest) {
           },
         },
         include: {
-          vendor: { select: { id: true, name: true } },
-          items: {
-            include: {
-              product: { select: { name: true, sku: true, uom: { select: { abbreviation: true } } } } // Include UOM in creation response [cite: 33, 35]
-            }
-          },
+          vendor: { select: { name: true } },
+          items: { include: { product: { select: { name: true, sku: true } } } },
         },
       });
 
@@ -485,15 +515,15 @@ export async function POST(req: NextRequest) {
         organizationId: orgId,
         branchId,
         actorId: user.id,
-        actorRole: user.role as Role,
+        actorRole: user.role,
         action: "CREATE_PURCHASE_ORDER",
         resourceId: po.id,
         severity: Severity.MEDIUM,
-        description: `Authorized Purchase Order ${po.poNumber} (Vendor: ${po.vendor?.name})`,
+        description: `Issued PO ${po.poNumber} to ${po.vendor?.name}`,
         requestId,
         ipAddress,
         deviceInfo,
-        after: po as unknown as Prisma.JsonValue,
+        after: { poId: po.id, total: totalAmount.toString(), vendor: po.vendor?.name },
       });
 
       await notifyManagement(
@@ -501,20 +531,117 @@ export async function POST(req: NextRequest) {
         orgId,
         branchId,
         "Procurement Issued",
-        `Purchase Order ${po.poNumber} generated for ${po.vendor?.name}. Total: ${currency} ${totalAmount.toFixed(2)}`,
+        `PO ${po.poNumber} created for ${po.vendor?.name}. Total: ${currency} ${totalAmount.toFixed(2)}`,
         log.id
       );
 
       return po;
     }, {
       isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
-      maxWait: 5000, 
-      timeout: 10000 
+      timeout: 15000 
     });
 
     return NextResponse.json(created, { status: 201 });
   } catch (err: any) {
     console.error("[PO_POST_ERROR]", err);
-    return NextResponse.json({ error: err?.message || "Failed to commit purchase order securely." }, { status: 500 });
+    return NextResponse.json({ error: err?.message || "Internal server error" }, { status: 500 });
+  }
+}
+
+/* -------------------------
+  PATCH /api/inventory/procurement
+  (Security Logic for Rejecting/Approving POs)
+------------------------- */
+
+export async function PATCH(req: NextRequest) {
+  try {
+    const session = await getServerSession(authOptions);
+    if (!session?.user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    const user = session.user as AuthenticatedUser;
+    const orgId = user.organizationId;
+
+    const requestId = crypto.randomUUID();
+    const ipAddress = req.headers.get("x-forwarded-for")?.split(",")[0] ?? "127.0.0.1";
+    const deviceInfo = req.headers.get("user-agent")?.substring(0, 255) ?? "unknown";
+
+    const auth = authorize({
+      role: user.role,
+      isOrgOwner: user.isOrgOwner,
+      action: PermissionAction.UPDATE,
+      resource: RESOURCES.PROCUREMENT,
+    });
+    if (!auth.allowed) return NextResponse.json({ error: "ACCESS_DENIED" }, { status: 403 });
+
+    const body = await req.json().catch(() => null);
+    if (!body) return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
+
+    const { poId, status, notes } = body;
+    if (!poId || !status) return NextResponse.json({ error: "PO ID and Status are required." }, { status: 400 });
+
+    const validStatuses = Object.values(POStatus);
+    if (!validStatuses.includes(status)) {
+      return NextResponse.json({ error: "Invalid status provided." }, { status: 400 });
+    }
+
+    const existingPo = await prisma.purchaseOrder.findFirst({
+      where: { id: poId, organizationId: orgId, deletedAt: null },
+      include: { vendor: { select: { name: true } } }
+    });
+
+    if (!existingPo) return NextResponse.json({ error: "Purchase order not found." }, { status: 404 });
+
+    // Prevent altering terminal states without elevated privileges
+    if ((existingPo.status === POStatus.REJECTED || existingPo.status === POStatus.FULFILLED) && 
+        ![Role.ADMIN, Role.MANAGER].includes(user.role) && !user.isOrgOwner) {
+      return NextResponse.json({ error: "Insufficient permissions to modify a closed purchase order." }, { status: 403 });
+    }
+
+    const updatedPo = await prisma.$transaction(async (tx) => {
+      const po = await tx.purchaseOrder.update({
+        where: { id: poId },
+        data: {
+          status: status as POStatus,
+          notes: notes ? `${existingPo.notes || ''}\n[Status Update]: ${notes}`.trim() : existingPo.notes,
+        },
+      });
+
+      // Security logic for REJECTED status
+      const isRejected = status === POStatus.REJECTED;
+      const severityLevel = isRejected ? Severity.HIGH : Severity.MEDIUM;
+
+      const log = await createAuditLog(tx, {
+        organizationId: orgId,
+        branchId: po.branchId,
+        actorId: user.id,
+        actorRole: user.role,
+        action: `UPDATE_PO_${status}`,
+        resourceId: po.id,
+        severity: severityLevel,
+        description: `Marked PO ${po.poNumber} as ${status}${notes ? ` - Reason: ${notes}` : ''}`,
+        requestId,
+        ipAddress,
+        deviceInfo,
+        before: { status: existingPo.status },
+        after: { status: po.status },
+      });
+
+      if (isRejected || status === POStatus.APPROVED) {
+        await notifyManagement(
+          tx,
+          orgId,
+          po.branchId,
+          `Procurement ${isRejected ? 'Rejected 🚨' : 'Updated'}`,
+          `PO ${po.poNumber} for ${existingPo.vendor?.name} was marked as ${status} by ${user.role}.`,
+          log.id
+        );
+      }
+
+      return po;
+    });
+
+    return NextResponse.json(updatedPo, { status: 200 });
+  } catch (err: any) {
+    console.error("[PO_PATCH_ERROR]", err);
+    return NextResponse.json({ error: "Internal server error" }, { status: 500 });
   }
 }
