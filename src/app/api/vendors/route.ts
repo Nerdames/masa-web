@@ -1,6 +1,5 @@
 // File: app/api/vendors/route.ts
 // Production-ready vendors API aligned to MASA schema and RBAC/forensic requirements.
-// Fixed: activityLog.create usage (schema expects targetId/targetType, not resource/resourceId)
 
 import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "next-auth/next";
@@ -60,7 +59,6 @@ async function validateAccess(action: PermissionAction) {
 
 /**
  * Create cryptographic chained audit log inside provided transaction.
- * NOTE: Prisma activityLog model uses targetId/targetType (not resource/resourceId).
  */
 async function createAuditLog(
   tx: Prisma.TransactionClient,
@@ -105,7 +103,6 @@ async function createAuditLog(
       actorId: data.actorId,
       actorType: ActorType.USER,
       action: data.action,
-      // map resource -> targetType, resourceId -> targetId
       targetType: RESOURCES.VENDOR,
       targetId: data.resourceId ?? undefined,
       severity: data.severity,
@@ -175,7 +172,7 @@ async function detachVendorFromBranchProducts(tx: Prisma.TransactionClient, vend
 /**
  * GET /api/vendors
  * - Supports pagination, search, sort, date filters (for sales metrics)
- * - Returns vendors with computed metrics and _count fields
+ * - Returns vendors with computed metrics, _count fields, and recent PO history
  */
 export async function GET(req: NextRequest) {
   try {
@@ -211,13 +208,24 @@ export async function GET(req: NextRequest) {
         where: vendorWhere,
         include: {
           _count: { select: { purchaseOrders: true, grns: true } },
+          // NEW: Fetch recent purchase orders for the VendorDetailPanel table
+          purchaseOrders: {
+            orderBy: { createdAt: "desc" },
+            take: 10,
+            select: {
+              id: true,
+              poNumber: true,
+              status: true,
+              totalAmount: true,
+              createdAt: true,
+            }
+          },
           branchProducts: {
             where: {
               deletedAt: null,
               ...(isOrgOwner ? {} : { branchId: branchId ?? undefined }),
             },
             include: {
-              // Sales relation on BranchProduct (BranchProduct.sales)
               sales: {
                 where: {
                   status: SaleStatus.COMPLETED,
@@ -435,10 +443,6 @@ export async function PATCH(req: NextRequest) {
  * 1) Detach vendorId from active branchProducts (set vendorId = null) inside same transaction,
  * 2) Soft-delete (deletedAt) the vendor,
  * 3) Create audit log and notify management.
- *
- * Rationale:
- * - Schema links branchProducts -> vendor (nullable). Detaching is safer than cascading deletes.
- * - This preserves inventory records while allowing archival of vendor nodes when required.
  */
 export async function DELETE(req: NextRequest) {
   try {

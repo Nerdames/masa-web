@@ -2,17 +2,17 @@
 
 import React, { useState, useEffect, useMemo } from "react";
 import {
-  X, Maximize2, Minimize2, Package, Calendar,
-  User, Loader2, CheckCircle2, AlertOctagon, Archive, ShieldAlert,
-  Hash, Phone, Mail
+  X, Maximize2, Minimize2, Package,
+  Loader2, CheckCircle2, AlertOctagon, Archive, ShieldAlert,
+  Phone, Mail, History
 } from "lucide-react";
 import { useSidePanel } from "@/core/components/layout/SidePanelContext";
 import { useAlerts } from "@/core/components/feedback/AlertProvider";
+import GRNDetailView from "@/modules/inventory/components/GRNDetailView";
 
 /* -------------------------
-Types
+Types - Aligned with Prisma
 ------------------------- */
-                                                                                 
 interface POItem {
   id: string;
   productId: string;
@@ -35,7 +35,7 @@ interface PO {
   poNumber: string;
   organizationId: string;
   branchId: string;
-  status: string; 
+  status: "DRAFT" | "ISSUED" | "PARTIALLY_RECEIVED" | "FULFILLED" | "CANCELLED"; 
   totalAmount: number | string;
   currency: string;
   expectedDate?: string | null;
@@ -44,11 +44,11 @@ interface PO {
   vendor?: {
     id: string;
     name: string;
-    email: string;
-    phone?: string;
+    email: string | null;
+    phone?: string | null;
   };
   createdBy?: {
-    name: string;
+    name: string | null;
   };
   items: POItem[];
 }
@@ -67,13 +67,13 @@ interface PODetailViewProps {
 /* -------------------------
 Component
 ------------------------- */
-
 export default function PODetailView({ po, onClose }: PODetailViewProps) {
-  const { isFullScreen, toggleFullScreen } = useSidePanel();
+  const { isFullScreen, toggleFullScreen, openPanel } = useSidePanel();
   const { dispatch } = useAlerts();
   const [isVoiding, setIsVoiding] = useState(false);
   const [receiveOpen, setReceiveOpen] = useState(false);
   const [isReceiving, setIsReceiving] = useState(false);
+  const [isFetchingHistory, setIsFetchingHistory] = useState(false);
 
   const isCancelled = po.status === "CANCELLED";
   const isFulfilled = po.status === "FULFILLED";
@@ -183,6 +183,37 @@ export default function PODetailView({ po, onClose }: PODetailViewProps) {
     }
   }
 
+  async function handleViewHistory() {
+    setIsFetchingHistory(true);
+    try {
+      const res = await fetch(`/api/inventory/grns?purchaseOrderId=${po.id}`);
+      if (!res.ok) throw new Error("Failed to fetch receipt history.");
+      
+      const data = await res.json();
+      const grns = data.items || data.grns || [];
+
+      if (grns.length === 0) {
+        dispatch?.({ kind: "TOAST", type: "INFO", title: "No History", message: "No receipts found for this Purchase Order yet." });
+        return;
+      }
+
+      // Default to showing the most recent GRN. 
+      const latestGrn = grns[0];
+      
+      if (grns.length > 1) {
+        dispatch?.({ kind: "TOAST", type: "INFO", title: "Multiple Receipts", message: `Opening latest receipt (1 of ${grns.length})` });
+      }
+
+      // Swap the panel content to the GRN Detail View
+      openPanel(<GRNDetailView grn={latestGrn} onClose={onClose} />, `Receipt: ${latestGrn.grnNumber}`);
+
+    } catch (err: any) {
+      dispatch?.({ kind: "TOAST", type: "ERROR", title: "Fetch failed", message: err.message });
+    } finally {
+      setIsFetchingHistory(false);
+    }
+  }
+
   return (
     <div className="flex flex-col h-full w-full bg-white dark:bg-slate-900 shadow-xl relative">
       {/* Header */}
@@ -224,7 +255,7 @@ export default function PODetailView({ po, onClose }: PODetailViewProps) {
             <p className="text-xs md:text-sm font-bold text-slate-800 dark:text-slate-200 truncate">{po.vendor?.name}</p>
             <div className="mt-3 space-y-1.5">
               <div className="flex items-center gap-2 text-[10px] md:text-xs text-slate-500 truncate">
-                <Mail className="w-3 h-3 flex-shrink-0" /> <span className="truncate">{po.vendor?.email}</span>
+                <Mail className="w-3 h-3 flex-shrink-0" /> <span className="truncate">{po.vendor?.email || "N/A"}</span>
               </div>
               {po.vendor?.phone && (
                 <div className="flex items-center gap-2 text-[10px] md:text-xs text-slate-500 whitespace-nowrap">
@@ -253,9 +284,21 @@ export default function PODetailView({ po, onClose }: PODetailViewProps) {
           </div>
         </section>
 
-        {/* Itemized Commitment Table - Reduced text sizes and clamped details */}
+        {/* Itemized Commitment Table */}
         <section className="order-3">
-          <h4 className="text-[9px] md:text-[10px] font-semibold text-slate-500 uppercase tracking-widest mb-3">Itemized Commitment</h4>
+          <div className="flex justify-between items-center mb-3">
+            <h4 className="text-[9px] md:text-[10px] font-semibold text-slate-500 uppercase tracking-widest">
+              Itemized Commitment
+            </h4>
+            <button 
+              onClick={handleViewHistory}
+              disabled={isFetchingHistory}
+              className="flex items-center gap-1.5 text-[9px] md:text-[10px] font-bold text-slate-400 hover:text-slate-800 dark:hover:text-slate-200 transition-colors uppercase disabled:opacity-50"
+            >
+              {isFetchingHistory ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <History className="w-3.5 h-3.5" />}
+              {isFetchingHistory ? "Fetching..." : "History"}
+            </button>
+          </div>
           <div className="border border-slate-200 dark:border-slate-800 rounded-xl overflow-x-auto shadow-sm">
             <table className="w-full text-left text-sm min-w-[450px] md:min-w-0">
               <thead className="bg-slate-50/50 dark:bg-slate-800/50">
@@ -299,13 +342,7 @@ export default function PODetailView({ po, onClose }: PODetailViewProps) {
               </tbody>
                 <tfoot className="bg-slate-50/80 dark:bg-slate-800/80 border-t border-slate-200 dark:border-slate-700">
                   <tr>
-                    {/* Removed text-left to let the flex container handle positioning */}
                     <td colSpan={5} className="px-3 md:px-4 py-4">
-                      {/* - Changed inline-flex to flex + w-full 
-                        - md:flex-row: horizontal on large screens
-                        - md:justify-between: pushes them to the edges
-                        - md:items-baseline: aligns the bottom of the text nicely
-                      */}
                       <div className="flex flex-col md:flex-row md:justify-between md:items-baseline w-full">
                         <span className="text-[8px] md:text-[10px] font-bold text-slate-500 uppercase tracking-tighter md:tracking-normal whitespace-nowrap">
                           Total Commitment

@@ -11,7 +11,6 @@ import {
   BarChart3,
   AlertTriangle,
   ArrowUpRight,
-  PackageCheck,
   Database,
   Users,
 } from "lucide-react";

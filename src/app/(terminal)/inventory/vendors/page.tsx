@@ -1,31 +1,25 @@
 "use client";
 
-import React, { useCallback, useEffect, useMemo, useState, useTransition } from "react";
+import { useCallback, useEffect, useMemo, useState, useTransition } from "react";
 import {
   Search,
   Plus,
-  Eye,
   Users,
   Phone,
   Mail,
-  MapPin,
   CheckCircle2,
   RefreshCw,
-  ShieldCheck,
-  X,
-  Archive,
   Edit3,
   Loader2,
   Package,
-  Save,
   Filter,
   Download,
 } from "lucide-react";
 import { saveAs } from "file-saver";
 import { useAlerts } from "@/core/components/feedback/AlertProvider";
 import { useSidePanel } from "@/core/components/layout/SidePanelContext";
-import { VendorDetailPanel } from "@/modules/inventory/components/VendorDetailPanel"
-import { CreateEditVendorModal } from "@/modules/inventory/components/CreateEditVendorModal"
+import { VendorDetailPanel } from "@/modules/inventory/components/VendorDetailPanel";
+import { CreateEditVendorModal } from "@/modules/inventory/components/CreateEditVendorModal";
 
 /**
  * VendorsWorkspace (Production-ready)
@@ -36,6 +30,20 @@ import { CreateEditVendorModal } from "@/modules/inventory/components/CreateEdit
 ------------------------- */
 
 type Severity = "LOW" | "MEDIUM" | "HIGH" | "CRITICAL";
+
+interface IVendorPO {
+  id: string;
+  poNumber: string;
+  status: string;
+  totalAmount: number;
+  createdAt: string;
+}
+
+interface IVendorGRN {
+  id: string;
+  grnNumber: string;
+  createdAt: string;
+}
 
 interface IVendor {
   id: string;
@@ -51,6 +59,9 @@ interface IVendor {
   salesVelocity?: number;
   productsSupplied?: number;
   totalStockValue?: number;
+  // Included provisions for the updated VendorDetailPanel
+  purchaseOrders?: IVendorPO[];
+  grns?: IVendorGRN[];
 }
 
 interface IActivityLog {
@@ -185,14 +196,12 @@ export default function VendorsWorkspace({ organizationId }: { organizationId: s
 
   useEffect(() => {
     loadVendors({ page, limit });
-    // loadLogs() is handled primarily on first mount or refreshAll to save requests
   }, [page, limit, searchTerm, statusFilter, sort, fromDate, toDate]);
 
   useEffect(() => {
     loadLogs();
   }, [loadLogs]);
 
-  // refresh helper
   const refreshAll = useCallback(() => {
     loadVendors({ page, search: searchTerm });
     loadLogs();
@@ -202,102 +211,42 @@ export default function VendorsWorkspace({ organizationId }: { organizationId: s
     Archive / Delete Handler
   ------------------------- */
 
-  const handleArchive = async (id: string) => {
-    const ok = confirm(
-      "Are you sure you want to archive this vendor node? This action is immutable and will be recorded in the forensic audit log."
-    );
-    if (!ok) return;
-
-    startTransition(async () => {
-      try {
-        let res = await fetch(`/api/vendors?id=${encodeURIComponent(id)}`, {
-          method: "DELETE",
-          headers: { "Accept": "application/json" },
-        });
-
-        let data = await res.json().catch(() => ({}));
-
-        if (res.ok) {
-          dispatch({
-            kind: "TOAST",
-            type: "SUCCESS",
-            title: "Vendor Archived",
-            message: "Vendor node archived successfully.",
-          });
-          setSelectedVendor(null);
-          refreshAll();
-          return;
-        }
-
-        const blockedMessage =
-          (data && data.error && String(data.error)) ||
-          (typeof data === "string" ? data : "") ||
-          "";
-
-        const isActiveProductsBlock =
-          res.status === 400 &&
-          /Cannot archive vendor with active products/i.test(blockedMessage);
-
-        if (isActiveProductsBlock) {
-          const forceConfirm = confirm(
-            "This vendor has active product links. " +
-            "If you proceed with force, the system will detach the vendor from related products (vendorId will be set to null) and then archive the vendor. " +
-            "Inventory records will be preserved. Do you want to force archive?"
-          );
-
-          if (!forceConfirm) {
-            dispatch({
-              kind: "TOAST",
-              type: "WARNING",
-              title: "Archive Aborted",
-              message: "Vendor was not archived. Detach required to proceed.",
-            });
-            return;
-          }
-
-          res = await fetch(
-            `/api/vendors?id=${encodeURIComponent(id)}&force=true`,
-            {
-              method: "DELETE",
-              headers: { "Accept": "application/json" },
-            }
-          );
-
-          data = await res.json().catch(() => ({}));
-
-          if (res.ok) {
-            dispatch({
-              kind: "TOAST",
-              type: "SUCCESS",
-              title: "Vendor Archived (Forced)",
-              message:
-                (data && data.message) ||
-                "Vendor archived and product links detached successfully.",
-            });
-            setSelectedVendor(null);
-            refreshAll();
-            return;
-          }
-
-          throw new Error(
-            (data && data.error) || "Force archive failed. See server response."
-          );
-        }
-
-        throw new Error(blockedMessage || "Archive failed. See server response.");
-      } catch (err: any) {
-        const message =
-          err?.message ||
-          "Archive failed due to an unexpected error. Check server logs for details.";
-        dispatch({
-          kind: "TOAST",
-          type: "WARNING",
-          title: "Archive Failed",
-          message,
-        });
-        console.error("Archive error:", err);
-      }
+  // Refactored to return a Promise so the VendorDetailPanel can await the resolution
+  // and handle its own local loading/toast states properly.
+  const handleArchive = async (id: string, force = false): Promise<void> => {
+    const res = await fetch(`/api/vendors?id=${encodeURIComponent(id)}${force ? '&force=true' : ''}`, {
+      method: "DELETE",
+      headers: { "Accept": "application/json" },
     });
+
+    const data = await res.json().catch(() => ({}));
+
+    if (res.ok) {
+      setSelectedVendor(null);
+      refreshAll();
+      closePanel(); // Auto-close the panel on successful archive
+      return;
+    }
+
+    const blockedMessage = data?.error || "Archive failed. See server response.";
+    const isActiveProductsBlock = res.status === 400 && /Cannot archive vendor with active products/i.test(blockedMessage);
+
+    if (isActiveProductsBlock) {
+      const forceConfirm = confirm(
+        "This vendor has active product links. " +
+        "If you proceed with force, the system will detach the vendor from related products (vendorId will be set to null) and then archive the vendor. " +
+        "Inventory records will be preserved. Do you want to force archive?"
+      );
+
+      if (!forceConfirm) {
+        throw new Error("Archive aborted by user. Detach required to proceed.");
+      }
+
+      // Recursively attempt with force flag
+      return handleArchive(id, true);
+    }
+
+    throw new Error(blockedMessage);
   };
 
   /* -------------------------

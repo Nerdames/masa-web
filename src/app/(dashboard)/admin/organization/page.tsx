@@ -28,14 +28,15 @@ import type {
 
 import { useAlerts } from "@/core/components/feedback/AlertProvider";
 import { useSidePanel } from "@/core/components/layout/SidePanelContext";
+import { RESOURCES } from "@/core/utils"
 
 /* -------------------------
     Main Component
 ------------------------- */
 
-export default function OrganizationWorkspace({ organizationId }: { organizationId: string }) {
+export default function OrganizationWorkspace() {
   const { dispatch } = useAlerts();
-  const { openPanel } = useSidePanel();
+  useSidePanel();
 
   // Updated Tabs: Removed "branches"
   const [activeTab, setActiveTab] = useState<"profile" | "uoms" | "taxes" | "permissions" | "preferences">("profile");
@@ -122,6 +123,27 @@ export default function OrganizationWorkspace({ organizationId }: { organization
       }
     });
   };
+
+    /* -------------------------
+        Helper
+    ------------------------- */
+
+    const groupedPermissions = permissions.reduce((acc, curr) => {
+    const key = `${curr.role}-${curr.resource}`;
+    if (!acc[key]) {
+      acc[key] = {
+        role: curr.role,
+        resource: curr.resource,
+        actions: [],
+        // We keep a reference to the original object if needed for the modal
+        original: curr 
+      };
+    }
+    acc[key].actions.push(curr.action);
+    return acc;
+  }, {} as Record<string, { role: string; resource: string; actions: string[]; original: any }>);
+
+  const permissionsList = Object.values(groupedPermissions);
 
   return (
     <div className="h-screen flex flex-col bg-[#FAFAFA] dark:bg-slate-950 text-slate-900 dark:text-slate-100 font-sans relative overflow-hidden transition-colors duration-300">
@@ -291,32 +313,71 @@ export default function OrganizationWorkspace({ organizationId }: { organization
             {activeTab === "permissions" && (
               <div className="flex flex-col h-full animate-in fade-in duration-200">
                 <div className="px-5 py-4 border-b border-slate-100 dark:border-slate-800 flex justify-between items-center bg-slate-50/50 dark:bg-slate-800/50">
-                  <h2 className="text-[14px] font-bold text-slate-900 dark:text-white uppercase tracking-widest">Access Control Rules</h2>
-                  <button onClick={() => { setEditingPerm(null); setIsPermModalOpen(true); }} className="flex h-8 px-3 bg-indigo-600 text-white text-[11px] font-bold uppercase tracking-wider rounded-md hover:bg-indigo-700 transition-all items-center gap-1.5">
-                    <Plus className="w-3.5 h-3.5" /> Add Permission
+                  <div>
+                    <h2 className="text-[14px] font-bold text-slate-900 dark:text-white uppercase tracking-widest">Access Registry</h2>
+                    <p className="text-[10px] text-slate-500 uppercase font-bold tracking-tight">Grouped by Role & Resource</p>
+                  </div>
+                  <button 
+                    onClick={() => { setEditingPerm(null); setIsPermModalOpen(true); }} 
+                    className="flex h-8 px-3 bg-indigo-600 text-white text-[11px] font-bold uppercase tracking-wider rounded-md hover:bg-indigo-700 transition-all items-center gap-1.5"
+                  >
+                    <Plus className="w-3.5 h-3.5" /> Add Rule
                   </button>
                 </div>
+                
                 <div className="overflow-x-auto">
                   <table className="w-full text-left border-collapse whitespace-nowrap">
                     <thead>
                       <tr className="bg-slate-50 dark:bg-slate-800 border-b border-slate-200/80 dark:border-slate-700/80">
                         <th className="px-5 py-3 text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Role</th>
-                        <th className="px-5 py-3 text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Action</th>
                         <th className="px-5 py-3 text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Resource</th>
+                        <th className="px-5 py-3 text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Allowed Actions</th>
                         <th className="px-5 py-3 text-right"></th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-                      {permissions.map(p => (
-                        <tr key={p.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors">
-                          <td className="px-5 py-3"><span className="text-[11px] font-bold bg-indigo-50 text-indigo-700 dark:bg-indigo-900/30 dark:text-indigo-400 px-2 py-0.5 rounded uppercase">{p.role}</span></td>
-                          <td className="px-5 py-3"><span className="text-[11px] font-bold text-slate-600 dark:text-slate-300">{p.action}</span></td>
-                          <td className="px-5 py-3"><span className="text-[12px] font-mono font-medium text-slate-800 dark:text-slate-200">{p.resource}</span></td>
-                          <td className="px-5 py-3 text-right">
-                             <button onClick={() => { setEditingPerm(p); setIsPermModalOpen(true); }} className="p-1.5 text-slate-400 hover:text-indigo-600"><Edit3 className="w-3.5 h-3.5" /></button>
+                      {permissionsList.map((group, idx) => (
+                        <tr key={`${group.role}-${group.resource}-${idx}`} className="hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors">
+                          <td className="px-5 py-4">
+                            <span className="text-[10px] font-black bg-indigo-100 text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-300 px-2 py-1 rounded-md uppercase tracking-tighter">
+                              {group.role}
+                            </span>
+                          </td>
+                          <td className="px-5 py-4">
+                            <span className="text-[12px] font-mono font-bold text-slate-700 dark:text-slate-200 bg-slate-100 dark:bg-slate-800 px-2 py-1 rounded border border-slate-200 dark:border-slate-700">
+                              {group.resource}
+                            </span>
+                          </td>
+                          <td className="px-5 py-4">
+                            <div className="flex flex-wrap gap-1.5 max-w-[400px]">
+                              {group.actions.sort().map(action => (
+                                <span key={action} className="text-[9px] font-bold text-slate-500 dark:text-slate-400 border border-slate-200 dark:border-slate-700 px-1.5 py-0.5 rounded uppercase">
+                                  {action}
+                                </span>
+                              ))}
+                            </div>
+                          </td>
+                          <td className="px-5 py-4 text-right">
+                            <button 
+                              onClick={() => { 
+                                // Pass the first permission object but override actions for the modal logic
+                                setEditingPerm({ ...group.original, actions: group.actions }); 
+                                setIsPermModalOpen(true); 
+                              }} 
+                              className="p-2 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 dark:hover:bg-indigo-900/20 rounded-lg transition-all"
+                            >
+                              <Edit3 className="w-4 h-4" />
+                            </button>
                           </td>
                         </tr>
                       ))}
+                      {permissionsList.length === 0 && (
+                        <tr>
+                          <td colSpan={4} className="px-5 py-10 text-center text-[11px] font-bold text-slate-400 uppercase tracking-widest">
+                            No access rules defined
+                          </td>
+                        </tr>
+                      )}
                     </tbody>
                   </table>
                 </div>
@@ -583,12 +644,10 @@ function PermissionModal({ permission, onClose, onRefresh }: { permission: any |
   const { dispatch } = useAlerts();
   const [isSubmitting, setIsSubmitting] = useState(false);
   
-  // Since the backend syncs by Role + Resource, we initialize 
-  // actions as an array. If editing an existing permission, 
-  // we start with that action in the list.
   const [formData, setFormData] = useState({
     role: permission?.role || "CASHIER",
-    resource: permission?.resource || "",
+    // Default to the first resource if creating new, or the existing one
+    resource: permission?.resource || RESOURCES[0], 
     actions: permission ? [permission.action] : [] as string[],
   });
 
@@ -620,7 +679,7 @@ function PermissionModal({ permission, onClose, onRefresh }: { permission: any |
           action: "SYNC_PERMISSIONS", 
           payload: {
             targetRole: formData.role,
-            resource: formData.resource.toUpperCase().trim(),
+            resource: formData.resource, // Already uppercase from constant
             actions: formData.actions
           } 
         }),
@@ -660,7 +719,7 @@ function PermissionModal({ permission, onClose, onRefresh }: { permission: any |
                 <label className="block text-[10px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-widest mb-1.5">Target Role</label>
                 <select 
                   required 
-                  disabled={!!permission} // Lock role if editing
+                  disabled={!!permission}
                   value={formData.role} 
                   onChange={(e) => setFormData({ ...formData, role: e.target.value })} 
                   className="w-full border border-slate-200 dark:border-slate-700 rounded-lg text-[13px] font-medium p-2.5 outline-none bg-white dark:bg-slate-950 dark:text-white disabled:opacity-60"
@@ -670,15 +729,19 @@ function PermissionModal({ permission, onClose, onRefresh }: { permission: any |
               </div>
               <div>
                 <label className="block text-[10px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-widest mb-1.5">Resource Key</label>
-                <input 
-                  type="text" 
+                <select 
                   required 
-                  disabled={!!permission} // Lock resource if editing
+                  disabled={!!permission}
                   value={formData.resource} 
                   onChange={(e) => setFormData({ ...formData, resource: e.target.value })} 
-                  className="w-full border border-slate-200 dark:border-slate-700 rounded-lg text-[13px] font-medium p-2.5 outline-none bg-white dark:bg-slate-950 dark:text-white uppercase font-mono disabled:opacity-60" 
-                  placeholder="e.g. INVOICE" 
-                />
+                  className="w-full border border-slate-200 dark:border-slate-700 rounded-lg text-[13px] font-medium p-2.5 outline-none bg-white dark:bg-slate-950 dark:text-white disabled:opacity-60"
+                >
+                  {RESOURCES.map(res => (
+                    <option key={res} value={res}>
+                      {res.replace(/_/g, ' ')}
+                    </option>
+                  ))}
+                </select>
               </div>
             </div>
 
@@ -693,7 +756,7 @@ function PermissionModal({ permission, onClose, onRefresh }: { permission: any |
                     className={`flex items-center justify-between px-3 py-2 rounded-lg border text-[11px] font-bold transition-all ${
                       formData.actions.includes(action)
                         ? "border-indigo-600 bg-indigo-50 text-indigo-700 dark:bg-indigo-900/20 dark:text-indigo-400"
-                        : "border-slate-200 dark:border-slate-800 text-slate-500"
+                        : "border-slate-200 dark:border-slate-800 text-slate-500 hover:border-slate-300"
                     }`}
                   >
                     {action}

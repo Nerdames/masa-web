@@ -408,16 +408,16 @@ export default function ProductRegistryWorkspace({ organizationId }: { organizat
 
       <div className="flex-1 overflow-y-auto custom-scrollbar flex flex-col xl:flex-row p-4">
         <main className="flex-1 px-4 lg:px-4 flex flex-col gap-6">
-
-          <div className="border border-slate-200 dark:border-slate-700 rounded-lg overflow-hidden flex flex-col min-h-[500px] transition-colors">
+          {/* Main Table Container */}
+          <div className="border border-slate-200 dark:border-slate-700 rounded-lg overflow-hidden flex flex-col min-h-[500px] transition-colors bg-white dark:bg-slate-900">
             <div className="overflow-x-auto custom-scrollbar flex-1">
               <table className="w-full text-left border-collapse whitespace-nowrap">
                 <thead>
                   <tr className="bg-slate-50 dark:bg-slate-800 border-b border-slate-200/80 dark:border-slate-700/80">
-                    <th className="px-5 py-3 text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Product ID / SKU</th>
-                    <th className="px-5 py-3 text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Categorization</th>
-                    <th className="px-5 py-3 text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider text-center">Financials</th>
-                    <th className="px-5 py-3 text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Status</th>
+                    <th className="px-5 py-3 text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Catalog Registry</th>
+                    <th className="px-5 py-3 text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Classification</th>
+                    <th className="px-5 py-3 text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider text-right">Financials</th>
+                    <th className="px-5 py-3 text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider text-center">Protocol Status</th>
                     <th className="px-5 py-3 text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider text-right">Actions</th>
                   </tr>
                 </thead>
@@ -434,53 +434,53 @@ export default function ProductRegistryWorkspace({ organizationId }: { organizat
                       <tr
                         key={product.id}
                         onClick={() => openProductPanel(product)}
-                        className="hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors group cursor-pointer"
+                        className="hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors group cursor-pointer select-none"
                       >
                         <td className="px-5 py-3">
-                          <div className="flex flex-col">
-                            <span className="text-[13px] font-bold text-slate-900 dark:text-white group-hover:text-indigo-600 dark:group-hover:text-indigo-400 transition-colors">
-                              {product.name}
+                          <div className="text-[13px] font-bold text-slate-900 dark:text-white group-hover:text-blue-600 dark:group-hover:text-blue-400 transition-colors">
+                            {product.name}
+                          </div>
+                          <div className="text-[9px] text-slate-400 font-bold uppercase mt-0.5 flex gap-2">
+                            <span>SKU: {product.sku}</span>
+                            {product.barcode && (
+                              <>
+                                <span className="text-slate-200 dark:text-slate-700">•</span>
+                                <span>BC: {product.barcode}</span>
+                              </>
+                            )}
+                          </div>
+                        </td>
+
+                        <td className="px-5 py-3">
+                          <div className="text-[11px] font-bold text-slate-700 dark:text-slate-200 uppercase tracking-tight">
+                            {product.category?.name || "Uncategorized"}
+                          </div>
+                          <div className="text-[9px] text-slate-400 font-bold uppercase mt-0.5">
+                            UoM: {product.uom?.name || "No Unit"}
+                          </div>
+                        </td>
+
+                        <td className="px-5 py-3 text-right">
+                          <div className="text-[13px] font-bold text-slate-900 dark:text-white">
+                            {Number(product.baseCostPrice).toLocaleString()}
+                          </div>
+                          <div className="text-[9px] text-slate-400 font-bold uppercase">
+                            Base Cost ({product.currency})
+                          </div>
+                        </td>
+
+                        <td className="px-5 py-3 text-center">
+                          <div className="flex justify-center">
+                            <span
+                              className={`inline-flex items-center px-2 py-0.5 rounded-full border text-[9px] font-bold uppercase tracking-wider ${
+                                !product.deletedAt
+                                  ? "bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-900/30 dark:text-emerald-400 dark:border-emerald-800"
+                                  : "bg-red-50 text-red-700 border-red-200 dark:bg-red-900/30 dark:text-red-400 dark:border-red-800"
+                              }`}
+                            >
+                              {!product.deletedAt ? "ACTIVE" : "ARCHIVED"}
                             </span>
-                            <span className="text-[9px] text-slate-400 font-mono mt-0.5 uppercase tracking-tighter flex gap-2">
-                              <span>SKU: {product.sku}</span>
-                              {product.barcode && <span className="text-slate-300 dark:text-slate-600">|</span>}
-                              {product.barcode && <span>BC: {product.barcode}</span>}
-                            </span>
                           </div>
-                        </td>
-
-                        <td className="px-5 py-3">
-                          <div className="space-y-1">
-                            <div className="flex items-center gap-1.5 text-[11px] text-slate-600 dark:text-slate-400 font-medium">
-                              <Tag className="w-3 h-3 text-slate-400" /> {product.category?.name || "Uncategorized"}
-                            </div>
-                            <div className="flex items-center gap-1.5 text-[11px] text-slate-600 dark:text-slate-400 font-medium">
-                              <Box className="w-3 h-3 text-slate-400" /> {product.uom?.name || "No UoM"}
-                            </div>
-                          </div>
-                        </td>
-
-                        <td className="px-5 py-3">
-                          <div className="flex justify-center gap-4">
-                            <div className="flex flex-col items-center">
-                              <span className="text-[11px] font-bold text-slate-900 dark:text-white">
-                                {Number(product.baseCostPrice).toLocaleString()}
-                              </span>
-                              <span className="text-[8px] font-bold text-slate-400 uppercase tracking-tighter">Base Cost ({product.currency})</span>
-                            </div>
-                          </div>
-                        </td>
-
-                        <td className="px-5 py-3">
-                          <span
-                            className={`inline-flex items-center px-2 py-0.5 rounded text-[9px] font-bold tracking-widest border ${
-                              !product.deletedAt
-                                ? "bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-900/30 dark:text-emerald-400 dark:border-emerald-800"
-                                : "bg-red-50 text-red-700 border-red-200 dark:bg-red-900/30 dark:text-red-400 dark:border-red-800"
-                            }`}
-                          >
-                            {!product.deletedAt ? "ACTIVE" : "ARCHIVED"}
-                          </span>
                         </td>
 
                         <td className="px-5 py-3 text-right">
@@ -492,7 +492,7 @@ export default function ProductRegistryWorkspace({ organizationId }: { organizat
                                   setEditingProduct(product);
                                   setIsModalOpen(true);
                                 }}
-                                className="p-1.5 bg-white dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 rounded text-slate-400 hover:text-blue-600 dark:hover:text-blue-400 border border-slate-200 dark:border-slate-700 transition-colors"
+                                className="p-1.5 bg-white dark:bg-slate-900 hover:bg-slate-50 dark:hover:bg-slate-800 rounded border border-slate-200 dark:border-slate-700 text-slate-400 hover:text-blue-600 dark:hover:text-blue-400 transition-colors"
                                 title="Update Catalog Entry"
                               >
                                 <Edit3 className="w-3.5 h-3.5" />
@@ -507,23 +507,41 @@ export default function ProductRegistryWorkspace({ organizationId }: { organizat
               </table>
             </div>
 
-            <div className="px-4 py-3 border-t border-slate-100 dark:border-slate-800/60 flex items-center justify-between sticky bottom-0 bg-white dark:bg-slate-900">
-              <div className="text-[11px] text-slate-500 dark:text-slate-400 font-medium">
-                Showing <strong>{Math.min((page - 1) * limit + 1, total || 0)}</strong> - <strong>{Math.min(page * limit, total || 0)}</strong> of <strong>{total}</strong>
-              </div>
-              <div className="flex items-center gap-3">
-                <select value={limit} onChange={(e) => setLimit(Number(e.target.value))} className="rounded-md bg-slate-50 dark:bg-slate-800 px-2 py-1 text-xs outline-none">
-                  <option value={10}>10 per page</option>
-                  <option value={25}>25 per page</option>
-                  <option value={50}>50 per page</option>
-                  <option value={100}>100 per page</option>
+            {/* Pagination Footer */}
+            <div className="px-4 py-3 bg-slate-50 dark:bg-slate-800/50 border-t border-slate-200 dark:border-slate-700 flex items-center justify-between">
+              <div className="flex items-center gap-4">
+                <select
+                  value={limit}
+                  onChange={(e) => setLimit(Number(e.target.value))}
+                  className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded text-[10px] font-bold py-1 px-1.5 outline-none dark:text-white cursor-pointer"
+                >
+                  {[10, 25, 50, 100].map((l) => (
+                    <option key={l} value={l}>{l} Rows</option>
+                  ))}
                 </select>
+                <span className="text-[10px] text-slate-500 font-bold uppercase tracking-widest">
+                  Total Records: {total}
+                </span>
+              </div>
 
-                <div className="flex items-center gap-1">
-                  <button onClick={() => setPage((p) => Math.max(1, p - 1))} disabled={page <= 1} className="px-3 py-1 rounded-md bg-slate-100 dark:bg-slate-800 text-xs font-bold disabled:opacity-50">Prev</button>
-                  <div className="px-3 text-xs font-mono">{page} / {totalPages}</div>
-                  <button onClick={() => setPage((p) => Math.min(totalPages, p + 1))} disabled={page >= totalPages} className="px-3 py-1 rounded-md bg-slate-100 dark:bg-slate-800 text-xs font-bold disabled:opacity-50">Next</button>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => setPage((p) => Math.max(1, p - 1))}
+                  disabled={page <= 1}
+                  className="px-3 py-1 rounded-md bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs font-bold disabled:opacity-50 transition-colors hover:bg-slate-50 dark:hover:bg-slate-800 cursor-pointer"
+                >
+                  Prev
+                </button>
+                <div className="px-3 text-xs font-mono font-bold text-slate-700 dark:text-slate-300">
+                  {page} / {totalPages}
                 </div>
+                <button
+                  onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+                  disabled={page >= totalPages}
+                  className="px-3 py-1 rounded-md bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs font-bold disabled:opacity-50 transition-colors hover:bg-slate-50 dark:hover:bg-slate-800 cursor-pointer"
+                >
+                  Next
+                </button>
               </div>
             </div>
           </div>

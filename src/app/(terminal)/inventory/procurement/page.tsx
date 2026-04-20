@@ -20,10 +20,11 @@ import { useAlerts } from "@/core/components/feedback/AlertProvider";
 import { useSession } from "next-auth/react";
 import { useSidePanel } from "@/core/components/layout/SidePanelContext";
 import PODetailView from "@/modules/inventory/components/PODetailView";
+import GRNDetailView from "@/modules/inventory/components/GRNDetailView";
 import CreatePOPanel from "@/modules/inventory/components/CreatePOPanel";
 
 /* -------------------------
-Types & Interfaces [cite: 7]
+Types & Interfaces
 ------------------------- */
 
 type Role = "ADMIN" | "MANAGER" | "SALES" | "INVENTORY" | "CASHIER" | "DEV" | "AUDITOR";
@@ -40,7 +41,7 @@ interface IPOItem {
   id?: string;
   productId: string;
   quantityOrdered: number;
-  quantityReceived?: number; // From Schema [cite: 7]
+  quantityReceived?: number; // From Schema
   unitCost: number;
 }
 
@@ -205,7 +206,6 @@ export default function ProcurementWorkspace({ branchId }: { branchId: string })
         }
         const data = await res.json();
         
-        // FIX: Normalize items so productId is guaranteed to be attached directly to the item object
         const normalizedOrders = (data.items || []).map((order: any) => ({
           ...order,
           items: (order.items || []).map((it: any) => ({
@@ -396,13 +396,18 @@ export default function ProcurementWorkspace({ branchId }: { branchId: string })
           await handleCreatePO(payload);
           closePanel();
         }}
-      />,
+       />,
       "Initiate PO"
     );
   };
 
   const handleOpenDetailPanel = (order: IPurchaseOrder) => {
     openPanel(<PODetailView po={order} onClose={closePanel} />, "Purchase Order Details");
+  };
+
+  // New handler for GRN Integration
+  const handleOpenGRNPanel = (order: IPurchaseOrder) => {
+    openPanel(<GRNDetailView po={order} onClose={closePanel} />, `GRN: ${order.poNumber}`);
   };
 
   /* -------------------------
@@ -503,7 +508,6 @@ export default function ProcurementWorkspace({ branchId }: { branchId: string })
             </div>
           )}
 
-          {/* Stat Section */}
           <section className="grid grid-cols-1 md:grid-cols-4 gap-4 pt-4">
             <StatCard title="Asset Pipeline" value={`₦${stats.totalValue?.toLocaleString() ?? "0"}`} icon={ShoppingCart} color="emerald" />
             <StatCard title="Active Requests" value={stats.pending ?? 0} icon={Clock} color="blue" />
@@ -511,7 +515,6 @@ export default function ProcurementWorkspace({ branchId }: { branchId: string })
             <StatCard title="Cycle Completed" value={stats.fulfilled ?? 0} icon={CheckCircle2} color="emerald" />
           </section>
 
-          {/* Main Table Container */}
           <div className="border border-slate-200 dark:border-slate-700 rounded-lg overflow-hidden flex flex-col min-h-[500px] transition-colors bg-white dark:bg-slate-900">
             <div className="overflow-x-auto custom-scrollbar flex-1">
               <table className="w-full text-left border-collapse whitespace-nowrap">
@@ -540,7 +543,22 @@ export default function ProcurementWorkspace({ branchId }: { branchId: string })
                           className="hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors group cursor-pointer select-none"
                         >
                           <td className="px-5 py-3">
-                            <div className="text-[13px] font-bold text-slate-900 dark:text-white">{order.poNumber}</div>
+                            <div className="flex items-center gap-2">
+                              <div className="text-[13px] font-bold text-slate-900 dark:text-white">{order.poNumber}</div>
+                              {/* GRN Quick Link Trigger */}
+                              {order.status !== POStatus.DRAFT && order.status !== POStatus.CANCELLED && (
+                                <button
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    handleOpenGRNPanel(order);
+                                  }}
+                                  className="opacity-0 group-hover:opacity-100 p-1 bg-emerald-50 dark:bg-emerald-900/30 text-emerald-600 dark:text-emerald-400 rounded hover:bg-emerald-100 dark:hover:bg-emerald-800/50 transition-all"
+                                  title="Manage Goods Received Note"
+                                >
+                                  <FileText className="w-3 h-3" />
+                                </button>
+                              )}
+                            </div>
                             <div className="text-[9px] text-slate-400 font-bold uppercase mt-0.5">By {order.createdBy?.name || "System"}</div>
                           </td>
 
