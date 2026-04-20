@@ -41,7 +41,7 @@ interface IPOItem {
   id?: string;
   productId: string;
   quantityOrdered: number;
-  quantityReceived?: number; // From Schema
+  quantityReceived?: number; 
   unitCost: number;
 }
 
@@ -55,6 +55,7 @@ interface IPurchaseOrder {
   vendor: { id: string; name: string; email?: string | null };
   items: (IPOItem & { product?: { name?: string; sku?: string } })[];
   createdBy?: { name?: string } | null;
+  grn?: { status: "PENDING" | "RECEIVED" | "REJECTED" }; // Added to prevent crash
 }
 
 interface WorkspaceStats {
@@ -373,6 +374,8 @@ export default function ProcurementWorkspace({ branchId }: { branchId: string })
         title: "Purchase Order Created",
         message: `PO ${data.poNumber || data.id || ""} created successfully.`,
       });
+      
+      // Snappy internal refresh
       loadWorkspaceData({ page: 1 });
       return data;
     } catch (err: any) {
@@ -405,9 +408,14 @@ export default function ProcurementWorkspace({ branchId }: { branchId: string })
     openPanel(<PODetailView po={order} onClose={closePanel} />, "Purchase Order Details");
   };
 
-  // New handler for GRN Integration
+  // Fixed handler to prevent "Cannot read status of undefined"
   const handleOpenGRNPanel = (order: IPurchaseOrder) => {
-    openPanel(<GRNDetailView po={order} onClose={closePanel} />, `GRN: ${order.poNumber}`);
+    // Inject a default GRN state if missing to satisfy GRNDetailView internal useState
+    const safeOrder = {
+      ...order,
+      grn: (order as any).grn || { status: "PENDING" }
+    };
+    openPanel(<GRNDetailView po={safeOrder} onClose={closePanel} />, `GRN: ${order.poNumber}`);
   };
 
   /* -------------------------
@@ -544,22 +552,13 @@ export default function ProcurementWorkspace({ branchId }: { branchId: string })
                         >
                           <td className="px-5 py-3">
                             <div className="flex items-center gap-2">
-                              <div className="text-[13px] font-bold text-slate-900 dark:text-white">{order.poNumber}</div>
-                              {/* GRN Quick Link Trigger */}
-                              {order.status !== POStatus.DRAFT && order.status !== POStatus.CANCELLED && (
-                                <button
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    handleOpenGRNPanel(order);
-                                  }}
-                                  className="opacity-0 group-hover:opacity-100 p-1 bg-emerald-50 dark:bg-emerald-900/30 text-emerald-600 dark:text-emerald-400 rounded hover:bg-emerald-100 dark:hover:bg-emerald-800/50 transition-all"
-                                  title="Manage Goods Received Note"
-                                >
-                                  <FileText className="w-3 h-3" />
-                                </button>
-                              )}
+                              <div className="text-[13px] font-bold text-slate-900 dark:text-white">
+                                {order.poNumber}
+                              </div>
                             </div>
-                            <div className="text-[9px] text-slate-400 font-bold uppercase mt-0.5">By {order.createdBy?.name || "System"}</div>
+                            <div className="text-[9px] text-slate-400 font-bold uppercase mt-0.5">
+                              By {order.createdBy?.name || "System"}
+                            </div>
                           </td>
 
                           <td className="px-5 py-3">

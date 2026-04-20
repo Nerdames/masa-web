@@ -8,6 +8,7 @@ import {
 } from "lucide-react";
 import { useSidePanel } from "@/core/components/layout/SidePanelContext";
 import { useAlerts } from "@/core/components/feedback/AlertProvider";
+import { useSession } from "next-auth/react";
 
 /* -------------------------
 Types - Precisely Aligned with Backend Prisma Include
@@ -61,9 +62,13 @@ interface GRNDetailViewProps {
 }
 
 export default function GRNDetailView({ grn, onClose }: GRNDetailViewProps) {
+  const { data: session } = useSession();
   const { isFullScreen, toggleFullScreen } = useSidePanel();
   const { dispatch } = useAlerts();
   
+  // Role Check
+  const canPerformActions = session?.user?.role === "ADMIN" || session?.user?.role === "MANAGER";
+
   // Production Sync: Local status state ensures UI snappiness after updates
   const [currentStatus, setCurrentStatus] = useState<"PENDING" | "RECEIVED" | "REJECTED">(grn.status);
   const [isProcessing, setIsProcessing] = useState<"APPROVE" | "REJECT" | null>(null);
@@ -299,24 +304,26 @@ export default function GRNDetailView({ grn, onClose }: GRNDetailViewProps) {
             <ShieldCheck className="w-4 h-4" /> Transaction Finalized & Stock Updated
           </div>
         ) : (
-          <>
-            <button 
-              onClick={() => handleAction("REJECT")} 
-              disabled={isProcessing !== null} 
-              className="flex-1 py-2.5 text-red-600 hover:bg-red-50 dark:hover:bg-red-900/10 text-[11px] font-bold uppercase tracking-wider rounded-lg transition-all flex justify-center items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              {isProcessing === "REJECT" ? <Loader2 className="w-4 h-4 animate-spin" /> : <XCircle className="w-4 h-4" />}
-              Reject
-            </button>
-            <button 
-              onClick={() => handleAction("APPROVE")} 
-              disabled={isProcessing !== null} 
-              className="flex-[2] py-2.5 bg-slate-900 dark:bg-emerald-600 text-white hover:bg-slate-800 dark:hover:bg-emerald-500 text-[11px] font-bold uppercase tracking-wider rounded-lg shadow-sm transition-all flex justify-center items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              {isProcessing === "APPROVE" ? <Loader2 className="w-4 h-4 animate-spin" /> : <CheckCircle2 className="w-4 h-4" />}
-              Approve & Restock
-            </button>
-          </>
+          canPerformActions && (
+            <>
+              <button 
+                onClick={() => handleAction("REJECT")} 
+                disabled={isProcessing !== null} 
+                className="flex-1 py-2.5 text-red-600 hover:bg-red-50 dark:hover:bg-red-900/10 text-[11px] font-bold uppercase tracking-wider rounded-lg transition-all flex justify-center items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {isProcessing === "REJECT" ? <Loader2 className="w-4 h-4 animate-spin" /> : <XCircle className="w-4 h-4" />}
+                Reject
+              </button>
+              <button 
+                onClick={() => handleAction("APPROVE")} 
+                disabled={isProcessing !== null} 
+                className="flex-[2] py-2.5 bg-slate-900 dark:bg-emerald-600 text-white hover:bg-slate-800 dark:hover:bg-emerald-500 text-[11px] font-bold uppercase tracking-wider rounded-lg shadow-sm transition-all flex justify-center items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {isProcessing === "APPROVE" ? <Loader2 className="w-4 h-4 animate-spin" /> : <CheckCircle2 className="w-4 h-4" />}
+                Approve & Restock
+              </button>
+            </>
+          )
         )}
       </div>
     </div>
