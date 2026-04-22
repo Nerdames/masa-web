@@ -60,7 +60,6 @@ export function CreateTransferPanel({
 
   // Form State
   const [toBranchId, setToBranchId] = useState("");
-  const [notes, setNotes] = useState("");
   const [items, setItems] = useState<ITransferItem[]>([
     { 
       _uiId: typeof crypto !== 'undefined' ? crypto.randomUUID() : Math.random().toString(36), 
@@ -160,13 +159,11 @@ export function CreateTransferPanel({
     setIsSubmitting(true);
 
     try {
-      // Endpoint updated to match the production route provided
       const response = await fetch("/api/transfers", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           toBranchId,
-          notes: notes.trim() || undefined,
           items: items.map(({ branchProductId, productId, quantity }) => ({
             branchProductId,
             productId,
@@ -178,7 +175,6 @@ export function CreateTransferPanel({
       const result = await response.json();
 
       if (!response.ok) {
-        // Handle flattened Zod errors if they exist, otherwise use the message
         const errorMessage = result.error?.fieldErrors 
           ? "Validation failed. Please check item quantities."
           : (result.error || "The transfer protocol could not be initialized.");
@@ -387,18 +383,6 @@ export function CreateTransferPanel({
                 {totalUnits.toLocaleString()}
               </span>
             </div>
-          </div>
-
-          <div className="space-y-1.5">
-            <label className="block text-[11px] font-bold uppercase tracking-wider text-slate-500">Transfer Notes / Instruction</label>
-            <textarea 
-              value={notes} 
-              onChange={(e) => setNotes(e.target.value)} 
-              rows={3} 
-              disabled={isSubmitting} 
-              placeholder="Enter handling requirements or audit context..." 
-              className="w-full border border-slate-300 dark:border-slate-700 rounded-xl text-sm p-3.5 bg-white dark:bg-slate-950 resize-none outline-none focus:border-indigo-500 transition-all placeholder:text-slate-500" 
-            />
           </div>
         </form>
       </div>

@@ -256,7 +256,7 @@ export async function GET(req: NextRequest) {
           fromBranch: { select: { name: true } },
           toBranch: { select: { name: true } },
           createdBy: { select: { name: true } },
-          items: { include: { product: { select: { name: true, sku: true } } } },
+          items: { include: { product: { select: { name: true, sku: true, uom: { select: { abbreviation: true } } } } } },
         },
         orderBy: { createdAt: "desc" },
         take: exportAll ? EXPORT_LIMIT : limit,
