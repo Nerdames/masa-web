@@ -548,8 +548,11 @@ export async function PATCH(req: NextRequest) {
         where: { id: transferId },
         data: { 
           status: newStatus, 
-          approvedById: action === "APPROVE" ? user.id : undefined,
-          notes: actionNotes ? `${transfer.notes || ""}\n[${action}]: ${actionNotes}` : transfer.notes 
+          // FIX: Use connect syntax for relation fields not exposed as scalars
+          ...(action === "APPROVE" ? { 
+            approvedBy: { connect: { id: user.id } } 
+          } : {}),
+          // notes field removed entirely to resolve the Prisma unknown argument error
         },
       });
 
@@ -559,7 +562,8 @@ export async function PATCH(req: NextRequest) {
         actorRole: user.role,
         action: logAction,
         resourceId: updated.id,
-        description: `TRF ${updated.transferNumber} transitioned to ${newStatus}`,
+        // Moved the actionNotes logging here so it persists securely
+        description: `TRF ${updated.transferNumber} transitioned to ${newStatus}.${actionNotes ? ` [${action}] Notes: ${actionNotes}` : ""}`,
         requestId, ipAddress, deviceInfo,
         severity: Severity.HIGH,
         before: { status: transfer.status },

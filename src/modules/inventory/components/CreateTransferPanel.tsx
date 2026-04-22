@@ -207,87 +207,87 @@ export function CreateTransferPanel({
 
   return (
     <div className="flex flex-col h-full w-full bg-white dark:bg-slate-900 shadow-2xl relative overflow-hidden text-slate-900 dark:text-slate-100 font-sans">
-{/* 1. STICKY HEADER */}
-      <header className="sticky top-0 z-30 shrink-0 px-5 py-3 bg-white/80 dark:bg-slate-900/80 backdrop-blur-md border-b border-slate-200 dark:border-slate-800 flex justify-between items-center">
-        <div className="flex items-center gap-3">
-          <div className="p-2 bg-indigo-600 rounded-lg text-white shadow-lg shadow-indigo-500/20">
-            <ArrowRightLeft className="w-4 h-4" />
-          </div>
-          <div className="min-w-0">
-            <h2 className="text-sm font-black text-slate-900 dark:text-white uppercase tracking-tight truncate">
-              Transfer Protocol
-            </h2>
-            <p className="text-[10px] text-indigo-500 font-bold uppercase tracking-widest flex items-center gap-1">
-              <span className="w-1.5 h-1.5 rounded-full bg-indigo-500 animate-pulse" />
-              Origin: {branches.find(b => b.id === originBranchId)?.name || "Current Node"}
-            </p>
-          </div>
-        </div>
-        <div className="flex items-center gap-1">
-          <button onClick={toggleFullScreen} className="p-2 text-slate-400 hover:text-indigo-500 rounded-lg transition-colors">
-            {isFullScreen ? <Minimize2 className="w-4 h-4" /> : <Maximize2 className="w-4 h-4" />}
-          </button>
-          <button onClick={onClose} className="p-2 text-slate-400 hover:text-red-500 rounded-lg transition-colors">
-            <X className="w-5 h-5" />
-          </button>
-        </div>
-      </header>
+    {/* 1. STICKY HEADER */}
+          <header className="sticky top-0 z-30 shrink-0 px-5 py-3 bg-white/80 dark:bg-slate-900/80 backdrop-blur-md border-b border-slate-200 dark:border-slate-800 flex justify-between items-center">
+            <div className="flex items-center gap-3">
+              <div className="p-2 bg-indigo-600 rounded-lg text-white shadow-lg shadow-indigo-500/20">
+                <ArrowRightLeft className="w-4 h-4" />
+              </div>
+              <div className="min-w-0">
+                <h2 className="text-sm font-black text-slate-900 dark:text-white uppercase tracking-tight truncate">
+                  Transfer Protocol
+                </h2>
+                <p className="text-[10px] text-indigo-500 font-bold uppercase tracking-widest flex items-center gap-1">
+                  <span className="w-1.5 h-1.5 rounded-full bg-indigo-500 animate-pulse" />
+                  Origin: {branches.find(b => b.id === originBranchId)?.name || "Current Node"}
+                </p>
+              </div>
+            </div>
+            <div className="flex items-center gap-1">
+              <button onClick={toggleFullScreen} className="p-2 text-slate-400 hover:text-indigo-500 rounded-lg transition-colors">
+                {isFullScreen ? <Minimize2 className="w-4 h-4" /> : <Maximize2 className="w-4 h-4" />}
+              </button>
+              <button onClick={onClose} className="p-2 text-slate-400 hover:text-red-500 rounded-lg transition-colors">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+          </header>
       {/* Body */}
       <div className="flex-1 overflow-y-auto p-6 custom-scrollbar">
         <form id="transfer-form" onSubmit={handleSubmit} className="space-y-6">
-<div className={`
-  grid gap-4 mb-6 p-4 rounded-2xl 
-  bg-slate-50/50 dark:bg-slate-800/30 
-  border border-slate-200 dark:border-slate-800
-  ${isFullScreen ? "grid-cols-2" : "grid-cols-1"}
-`}>
-  {/* Destination Node */}
-  <div className="space-y-2">
-    <div className="flex items-center gap-2 ml-1">
-      <div className="w-1 h-3 bg-indigo-500 rounded-full" />
-      <label className="text-[10px] font-black uppercase tracking-widest text-slate-500 dark:text-slate-400">
-        Destination Node
-      </label>
-    </div>
-    <div className="relative group">
-      <select 
-        value={toBranchId} 
-        onChange={(e) => setToBranchId(e.target.value)} 
-        required 
-        disabled={isSubmitting}
-        className="w-full pl-4 pr-10 py-3 bg-white dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl text-sm shadow-sm transition-all focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 outline-none appearance-none cursor-pointer disabled:cursor-not-allowed"
-      >
-        <option value="">Select target branch...</option>
-        {destinationBranches.map((b) => (
-          <option key={b.id} value={b.id}>{b.name}</option>
-        ))}
-      </select>
-      {/* Custom Chevron for better UI */}
-      <div className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-slate-400">
-        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 9l-7 7-7-7" />
-        </svg>
-      </div>
-    </div>
-  </div>
+          <div className={`
+            grid gap-4 mb-6 p-4 rounded-2xl 
+            bg-slate-50/50 dark:bg-slate-800/30 
+            border border-slate-200 dark:border-slate-800
+            ${isFullScreen ? "grid-cols-2" : "grid-cols-1"}
+          `}>
+            {/* Destination Node */}
+            <div className="space-y-2">
+              <div className="flex items-center gap-2 ml-1">
+                <div className="w-1 h-3 bg-indigo-500 rounded-full" />
+                <label className="text-[10px] font-black uppercase tracking-widest text-slate-500 dark:text-slate-400">
+                  Destination Node
+                </label>
+              </div>
+              <div className="relative group">
+                <select 
+                  value={toBranchId} 
+                  onChange={(e) => setToBranchId(e.target.value)} 
+                  required 
+                  disabled={isSubmitting}
+                  className="w-full pl-4 pr-10 py-3 bg-white dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl text-sm shadow-sm transition-all focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 outline-none appearance-none cursor-pointer disabled:cursor-not-allowed"
+                >
+                  <option value="">Select target branch...</option>
+                  {destinationBranches.map((b) => (
+                    <option key={b.id} value={b.id}>{b.name}</option>
+                  ))}
+                </select>
+                {/* Custom Chevron for better UI */}
+                <div className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-slate-400">
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 9l-7 7-7-7" />
+                  </svg>
+                </div>
+              </div>
+            </div>
 
-  {/* Logistics Reference */}
-  <div className="space-y-2">
-    <label className="block text-[10px] font-black uppercase tracking-widest text-slate-400 ml-1">
-      Logistics Reference
-    </label>
-    <div className="relative overflow-hidden group">
-      <div className="w-full px-4 py-3 bg-slate-100/50 dark:bg-slate-900/50 border border-dashed border-slate-300 dark:border-slate-700 rounded-xl flex items-center gap-3">
-        <div className="flex-shrink-0 w-2 h-2 rounded-full bg-slate-300 dark:bg-slate-600 animate-pulse" />
-        <span className="text-[11px] font-bold text-slate-400 uppercase tracking-tighter italic">
-          Pending System Authorization
-        </span>
-      </div>
-      {/* Subtle background glow for the active input next to it */}
-      <div className="absolute inset-0 bg-gradient-to-r from-transparent via-slate-200/5 to-transparent translate-x-[-100%] group-hover:translate-x-[100%] transition-transform duration-1000" />
-    </div>
-  </div>
-</div>
+            {/* Logistics Reference */}
+            <div className="space-y-2">
+              <label className="block text-[10px] font-black uppercase tracking-widest text-slate-400 ml-1">
+                Logistics Reference
+              </label>
+              <div className="relative overflow-hidden group">
+                <div className="w-full px-4 py-3 bg-slate-100/50 dark:bg-slate-900/50 border border-dashed border-slate-300 dark:border-slate-700 rounded-xl flex items-center gap-3">
+                  <div className="flex-shrink-0 w-2 h-2 rounded-full bg-slate-300 dark:bg-slate-600 animate-pulse" />
+                  <span className="text-[11px] font-bold text-slate-400 uppercase tracking-tighter italic">
+                    Pending System Authorization
+                  </span>
+                </div>
+                {/* Subtle background glow for the active input next to it */}
+                <div className="absolute inset-0 bg-gradient-to-r from-transparent via-slate-200/5 to-transparent translate-x-[-100%] group-hover:translate-x-[100%] transition-transform duration-1000" />
+              </div>
+            </div>
+          </div>
 
           <div className="space-y-4">
             <div className="flex items-center justify-between border-b border-slate-200 dark:border-slate-800 pb-2">

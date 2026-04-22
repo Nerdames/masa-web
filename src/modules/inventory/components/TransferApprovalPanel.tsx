@@ -83,7 +83,7 @@ export function TransferApprovalPanel({ transfer, onClose }: Props) {
     setIsProcessing(action);
 
     try {
-      const response = await fetch("/api/inventory/transfers", {
+      const response = await fetch("/api/transfers", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ 
