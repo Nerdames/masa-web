@@ -120,6 +120,7 @@ enum StockTransferStatus {
   APPROVED
   REJECTED
   CANCELLED
+  COMPLETED
 }
 
 enum ExpenseType {
