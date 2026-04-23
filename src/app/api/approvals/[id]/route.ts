@@ -2,146 +2,175 @@ import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "next-auth/next";
 import { authOptions } from "@/core/lib/auth";
 import prisma from "@/core/lib/prisma";
-import { Role, ApprovalStatus, Prisma, NotificationType, PermissionAction } from "@prisma/client";
+import { z } from "zod";
+import { 
+  ApprovalStatus, 
+  Severity, 
+  Role, 
+  PermissionAction, 
+  NotificationType,
+  Prisma 
+} from "@prisma/client";
 import { applyActionDirectly } from "@/core/lib/actions";
 import { ROLE_WEIGHT } from "@/core/lib/permission";
 import { eventBus } from "@/core/events";
+import { createAuditLog } from "../route"; // Assuming forensic helper is in parent route
+import crypto from "crypto";
 
-interface Body {
-  decision: "APPROVED" | "REJECTED";
-  rejectionNote?: string;
-  expectedVersion?: number;
-}
+/* -------------------------
+  Validation Schema
+------------------------- */
+const UpdateApprovalSchema = z.object({
+  status: z.enum([ApprovalStatus.APPROVED, ApprovalStatus.REJECTED]),
+  rejectionNote: z.string().max(1000).optional().nullable(),
+  expectedVersion: z.number().int().optional(),
+});
 
-export async function PATCH(req: NextRequest, { params }: { params: { id: string } }) {
+export async function PATCH(
+  req: NextRequest,
+  { params }: { params: { id: string } }
+) {
   try {
     const session = await getServerSession(authOptions);
-    if (!session?.user?.id) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-
-    const user = session.user;
-    const { decision, rejectionNote, expectedVersion } = (await req.json()) as Body;
-
-    if (!["APPROVED", "REJECTED"].includes(decision)) {
-      return NextResponse.json({ error: "Invalid decision" }, { status: 400 });
+    const user = session?.user as any;
+    if (!user?.organizationId) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    const ip = req.headers.get("x-forwarded-for") || "unknown";
-    const device = req.headers.get("user-agent") || "unknown";
+    const body = await req.json();
+    const { status, rejectionNote, expectedVersion } = UpdateApprovalSchema.parse(body);
+
+    const requestId = crypto.randomUUID();
+    const ipAddress = req.headers.get("x-forwarded-for")?.split(",")[0] ?? "127.0.0.1";
+    const deviceInfo = req.headers.get("user-agent")?.substring(0, 255) ?? "unknown";
 
     const result = await prisma.$transaction(async (tx) => {
-      const request = await tx.approvalRequest.findUnique({ where: { id: params.id } });
+      // 1. Fetch Request & Context
+      const request = await tx.approvalRequest.findUnique({
+        where: { id: params.id },
+      });
 
       if (!request || request.organizationId !== user.organizationId) {
-        throw new Error("Approval request not found");
+        throw new Error("Authorization matrix not found.");
       }
 
-      // 1. Idempotency & Expiration
+      // 2. Idempotency & Expiration Checks
       if (request.status !== ApprovalStatus.PENDING || request.appliedAt) {
-        throw new Error("This request has already been processed");
+        throw new Error("This request has already been processed.");
       }
 
-      if (request.expiresAt && new Date() > request.expiresAt) {
-        await tx.approvalRequest.update({
-          where: { id: request.id },
-          data: { status: ApprovalStatus.EXPIRED },
+      if (request.expiresAt && request.expiresAt < new Date()) {
+        await tx.approvalRequest.update({ 
+          where: { id: request.id }, 
+          data: { status: ApprovalStatus.EXPIRED } 
         });
-        throw new Error("This approval request has expired");
+        throw new Error("The authorization window for this request has expired.");
       }
 
-      // 2. Self-Approval Check
+      // 3. Security Guardrail: Self-Approval Prevention
       if (request.requesterId === user.id && !user.isOrgOwner) {
-        throw new Error("Security Policy: Self-approval of critical actions is forbidden");
+        throw new Error("Security Policy Violation: Users cannot approve their own critical requests.");
       }
 
-      // 3. Permission & Role Weight Check (ABAC)
+      // 4. Authorization & Role Weight Check (ABAC)
       let isAuthorized = user.isOrgOwner;
       if (!isAuthorized) {
         const permission = await tx.permission.findUnique({
           where: {
             organizationId_role_action_resource: {
-              organizationId: request.organizationId,
+              organizationId: user.organizationId,
               role: user.role as Role,
               action: PermissionAction.APPROVE,
-              resource: request.targetType || "GENERAL", // Validated against table/resource map
+              resource: request.targetType || "GENERAL",
             },
           },
         });
-        
+
         const hasWeight = ROLE_WEIGHT[user.role as Role] >= ROLE_WEIGHT[request.requiredRole as Role];
         isAuthorized = !!permission || hasWeight;
       }
 
-      if (!isAuthorized) throw new Error("Insufficient authority to resolve this request");
+      if (!isAuthorized) {
+        throw new Error("Access Denied: Your role weight or permissions are insufficient for this resolution.");
+      }
 
-      // 4. Point-in-time Target Fetch for Audit & Versioning
-      // We use the tableName stored in targetType to fetch current state
+      // 5. Point-in-time Target Fetch for Audit & Versioning
+      // We use raw SQL for dynamic table resolution based on stored targetType
       const targetData = request.targetId && request.targetType
         ? await tx.$queryRawUnsafe<any[]>(`SELECT * FROM "${request.targetType}" WHERE id = $1`, request.targetId)
         : [];
-      
       const currentTarget = targetData[0] || null;
 
-      // 5. Optimistic Lock Validation (Only on Approval)
-      if (decision === "APPROVED" && expectedVersion !== undefined) {
-        if (currentTarget?.version !== undefined && currentTarget.version !== expectedVersion) {
-          throw new Error("The underlying resource was modified after this request was made. Approval denied.");
+      // 6. Optimistic Lock Validation
+      if (status === ApprovalStatus.APPROVED && expectedVersion !== undefined) {
+        if (currentTarget && "version" in currentTarget && currentTarget.version !== expectedVersion) {
+          throw new Error("Conflict: The underlying resource has changed. Please refresh and re-evaluate.");
         }
       }
 
-      // 6. Finalize Status
-      const updatedRequest = await tx.approvalRequest.update({
+      // 7. Execution of Logic (If Approved)
+      let executionResult = null;
+      if (status === ApprovalStatus.APPROVED) {
+        if (!request.targetId) throw new Error("Missing target vector for execution.");
+        
+        executionResult = await applyActionDirectly(
+          tx,
+          request.actionType,
+          request.targetId,
+          request.changes as any,
+          request.requesterId, // Context: Action executes on behalf of requester
+          request.organizationId,
+          request.branchId
+        );
+      }
+
+      // 8. Update Request Record
+      const updated = await tx.approvalRequest.update({
         where: { id: request.id },
         data: {
-          status: decision as ApprovalStatus,
+          status,
+          rejectionNote: status === ApprovalStatus.REJECTED ? rejectionNote : null,
           approverId: user.id,
-          rejectionNote: decision === "REJECTED" ? rejectionNote : null,
-          appliedAt: decision === "APPROVED" ? new Date() : null,
+          appliedAt: status === ApprovalStatus.APPROVED ? new Date() : null,
         },
       });
 
-      // 7. Execution
-      if (decision === "APPROVED") {
-        await applyActionDirectly(
-          tx, request.actionType, request.targetId!, request.changes as any,
-          user.id, request.organizationId, request.branchId
-        );
+      // 9. Forensic Forensic Audit Logging
+      await createAuditLog(tx, {
+        organizationId: user.organizationId,
+        branchId: request.branchId,
+        actorId: user.id,
+        actorRole: user.role,
+        action: `AUTHORIZATION_${status}`,
+        resourceId: updated.id,
+        description: `Protocol ${request.actionType} was ${status.toLowerCase()} by ${user.name}.`,
+        requestId, ipAddress, deviceInfo,
+        severity: status === ApprovalStatus.APPROVED ? Severity.HIGH : Severity.MEDIUM,
+        before: currentTarget ? { status: request.status, target: currentTarget } : null,
+        after: { status: updated.status, executionResult },
+        metadata: { rejectionNote, targetId: request.targetId, actionType: request.actionType },
+      });
 
-        await tx.activityLog.create({
-          data: {
-            organizationId: request.organizationId, branchId: request.branchId, personnelId: user.id,
-            action: `APPROVED_${request.actionType}`, critical: true,
-            ipAddress: ip, deviceInfo: device,
-            metadata: { approvalId: request.id, previousState: currentTarget, revertable: true } as Prisma.InputJsonValue,
-          },
-        });
-      } else {
-        await tx.activityLog.create({
-          data: {
-            organizationId: request.organizationId, branchId: request.branchId, personnelId: user.id,
-            action: `REJECTED_${request.actionType}`, critical: false,
-            ipAddress: ip, deviceInfo: device,
-            metadata: { approvalId: request.id, rejectionNote } as Prisma.InputJsonValue,
-          },
-        });
-      }
+      return { request: updated, executionResult };
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
 
-      return updatedRequest;
-    });
-
-    // 8. Async Notification
+    // 10. Post-Transaction Notification
     eventBus.emitEvent("approval.resolved", {
-      organizationId: result.organizationId,
-      branchId: result.branchId,
-      approvalId: result.id,
-      requesterId: result.requesterId,
-      status: decision,
-      actionType: result.actionType,
+      organizationId: result.request.organizationId,
+      branchId: result.request.branchId,
+      approvalId: result.request.id,
+      requesterId: result.request.requesterId,
+      status: status,
+      actionType: result.request.actionType,
       notificationType: NotificationType.APPROVAL,
     });
 
     return NextResponse.json(result);
   } catch (error: any) {
-    console.error("[APPROVAL_PATCH_ERROR]:", error);
-    return NextResponse.json({ error: error.message || "Internal Server Error" }, { status: 400 });
+    console.error("[APPROVAL_PATCH_ERROR]", error);
+    return NextResponse.json(
+      { error: error instanceof z.ZodError ? error.flatten() : error.message || "Internal Server Error" }, 
+      { status: 400 }
+    );
   }
 }

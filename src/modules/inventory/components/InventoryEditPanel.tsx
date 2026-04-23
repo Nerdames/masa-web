@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useState, useMemo } from "react";
 import {
   X,
   Maximize2,
@@ -10,7 +10,9 @@ import {
   Banknote,
   TrendingDown,
   ShieldAlert,
-  Save
+  Save,
+  ShieldCheck,
+  Clock
 } from "lucide-react";
 import { useSidePanel } from "@/core/components/layout/SidePanelContext";
 import { useAlerts } from "@/core/components/feedback/AlertProvider";
@@ -22,7 +24,7 @@ Types
 interface InventoryEditPanelProps {
   item: {
     id: string;
-    sellingPrice: number;
+    sellingPrice: number | null;
     reorderLevel: number;
     safetyStock: number;
     stock: number;
@@ -49,34 +51,57 @@ export function InventoryEditPanel({
   const { isFullScreen, toggleFullScreen } = useSidePanel();
   const { dispatch } = useAlerts();
   const [submitting, setSubmitting] = useState(false);
+  
   const [formData, setFormData] = useState({
     sellingPrice: item.sellingPrice || 0,
     reorderLevel: item.reorderLevel || 0,
     safetyStock: item.safetyStock || 0
   });
 
+  // Check if price has been modified to show "Approval Hint"
+  const isPriceChanged = useMemo(() => {
+    return Number(formData.sellingPrice) !== Number(item.sellingPrice || 0);
+  }, [formData.sellingPrice, item.sellingPrice]);
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setSubmitting(true);
+    
     try {
       const res = await fetch(`/api/inventory/fortress?id=${item.id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(formData),
       });
-      if (!res.ok) throw new Error("Update rejected");
-      
-      dispatch?.({
-        kind: "TOAST",
-        type: "SUCCESS",
-        title: "Audit Synchronized",
-        message: `${item.product.name} settings updated.`,
-      });
+
+      const result = await res.json();
+
+      if (!res.ok) {
+        throw new Error(result.error || "Update rejected by security policy");
+      }
+
+      // Handle the "Critical Action" logic from the updated API
+      if (result.approvalPending) {
+        dispatch?.({
+          kind: "TOAST",
+          type: "WARNING", // Use warning color to indicate it's not "done" yet
+          title: "Approval Dispatched",
+          message: result.message || "Price change requires management authorization.",
+        });
+      } else {
+        dispatch?.({
+          kind: "TOAST",
+          type: "SUCCESS",
+          title: "Audit Synchronized",
+          message: result.message || `${item.product.name} settings updated successfully.`,
+        });
+      }
+
       onSuccess();
     } catch (err: any) {
       dispatch?.({
         kind: "TOAST",
-        type: "WARNING",
+        type: "ERROR",
         title: "Adjustment Failed",
         message: err.message,
       });
@@ -94,7 +119,7 @@ export function InventoryEditPanel({
             Adjust Stock Policy
           </h2>
           <p className="text-[10px] text-slate-500 dark:text-slate-400 mt-1 font-mono">
-            ID: {item.id}
+            TRACE_ID: {item.id.slice(-12).toUpperCase()}
           </p>
         </div>
         <div className="flex items-center gap-2 flex-shrink-0">
@@ -103,11 +128,7 @@ export function InventoryEditPanel({
             onClick={toggleFullScreen}
             className="p-2 text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg transition-colors"
           >
-            {isFullScreen ? (
-              <Minimize2 className="w-4 h-4" />
-            ) : (
-              <Maximize2 className="w-4 h-4" />
-            )}
+            {isFullScreen ? <Minimize2 className="w-4 h-4" /> : <Maximize2 className="w-4 h-4" />}
           </button>
           <button
             type="button"
@@ -127,13 +148,13 @@ export function InventoryEditPanel({
             <Box className="w-6 h-6" />
           </div>
           <div className="min-w-0">
-            <span className="text-[9px] font-bold text-indigo-600 dark:text-indigo-400 uppercase tracking-widest">Selected Item</span>
+            <span className="text-[9px] font-bold text-indigo-600 dark:text-indigo-400 uppercase tracking-widest">Target Resource</span>
             <h3 className="text-base font-bold text-slate-900 dark:text-slate-100 truncate uppercase">
               {item.product.name}
             </h3>
             <div className="flex items-center gap-2 mt-1">
-              <span className="px-2 py-0.5 rounded bg-slate-200 dark:bg-slate-700 text-[10px] font-bold text-slate-700 dark:text-slate-300">
-                {item.stock} {item.product.uom?.abbreviation || "UNITS"} ON HAND
+              <span className="px-2 py-0.5 rounded bg-slate-200 dark:bg-slate-700 text-[10px] font-bold text-slate-700 dark:text-slate-300 uppercase tracking-tighter">
+                {item.stock} {item.product.uom?.abbreviation || "UNITS"} Physical
               </span>
             </div>
           </div>
@@ -141,33 +162,47 @@ export function InventoryEditPanel({
 
         <form id="edit-inventory-form" onSubmit={handleSubmit} className="space-y-6">
           <div className="grid gap-6">
-            <h4 className="text-[10px] font-black text-slate-400 dark:text-slate-500 uppercase tracking-[0.2em] border-b border-slate-100 dark:border-slate-800 pb-2">
-              Management Overrides
-            </h4>
+            <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-2">
+                <h4 className="text-[10px] font-black text-slate-400 dark:text-slate-500 uppercase tracking-[0.2em]">
+                Management Overrides
+                </h4>
+                {/* Visual indicator of high severity action */}
+                {isPriceChanged && (
+                    <div className="flex items-center gap-1 text-[9px] font-bold text-amber-600 dark:text-amber-400 uppercase">
+                        <Clock className="w-3 h-3" />
+                        Requires Approval
+                    </div>
+                )}
+            </div>
 
             {/* Selling Price */}
             <div className="space-y-2">
-              <label className="text-[10px] font-bold text-slate-700 dark:text-slate-300 uppercase ml-1">
-                Selling Price (₦)
+              <label className="text-[10px] font-bold text-slate-700 dark:text-slate-300 uppercase ml-1 flex justify-between">
+                <span>Selling Price (₦)</span>
+                {isPriceChanged && <span className="text-indigo-500 text-[8px]">Modified</span>}
               </label>
               <div className="relative group">
-                <Banknote className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400 group-focus-within:text-indigo-500 transition-colors" />
+                <Banknote className={`absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 transition-colors ${isPriceChanged ? 'text-indigo-500' : 'text-slate-400 group-focus-within:text-indigo-500'}`} />
                 <input
                   type="number"
+                  step="0.01"
                   value={formData.sellingPrice}
                   onChange={(e) => setFormData({ ...formData, sellingPrice: Number(e.target.value) })}
-                  className="w-full bg-white dark:bg-slate-950 border-2 border-slate-200 dark:border-slate-700 rounded-xl py-3.5 pl-12 pr-4 text-sm font-bold text-slate-900 dark:text-white outline-none focus:border-indigo-500 transition-all shadow-sm"
+                  className={`w-full bg-white dark:bg-slate-950 border-2 rounded-xl py-3.5 pl-12 pr-4 text-sm font-bold text-slate-900 dark:text-white outline-none transition-all shadow-sm ${isPriceChanged ? 'border-indigo-500/50 focus:border-indigo-500' : 'border-slate-200 dark:border-slate-700 focus:border-indigo-500'}`}
                   placeholder="0.00"
                   required
                 />
               </div>
+              <p className="text-[9px] text-slate-500 mt-1 italic">
+                Note: Significant price deviations are flagged for managerial review.
+              </p>
             </div>
 
             <div className={`grid gap-5 ${isFullScreen ? "md:grid-cols-2" : "grid-cols-1"}`}>
               {/* Reorder Level */}
               <div className="space-y-2">
                 <label className="text-[10px] font-bold text-slate-700 dark:text-slate-300 uppercase ml-1">
-                  Reorder Level
+                  Reorder Threshold
                 </label>
                 <div className="relative group">
                   <TrendingDown className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400 group-focus-within:text-indigo-500 transition-colors" />
@@ -184,7 +219,7 @@ export function InventoryEditPanel({
               {/* Safety Stock */}
               <div className="space-y-2">
                 <label className="text-[10px] font-bold text-slate-700 dark:text-slate-300 uppercase ml-1">
-                  Safety Stock
+                  Safety Buffer
                 </label>
                 <div className="relative group">
                   <ShieldAlert className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400 group-focus-within:text-red-500 transition-colors" />
@@ -208,21 +243,25 @@ export function InventoryEditPanel({
           onClick={onClose}
           className="flex-1 py-3 text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800 text-[10px] font-bold uppercase tracking-wider rounded-lg transition-all border border-transparent flex items-center justify-center"
         >
-          Cancel
+          Discard
         </button>
 
         <button
           form="edit-inventory-form"
           type="submit"
           disabled={submitting}
-          className="flex-[2] py-3 bg-slate-900 dark:bg-indigo-600 text-white hover:bg-slate-800 dark:hover:bg-indigo-500 text-[10px] font-bold uppercase tracking-wider rounded-lg shadow-md transition-all active:scale-[0.98] flex items-center justify-center gap-2"
+          className={`flex-[2] py-3 text-white text-[10px] font-bold uppercase tracking-wider rounded-lg shadow-md transition-all active:scale-[0.98] flex items-center justify-center gap-2 ${
+            isPriceChanged 
+                ? "bg-indigo-600 hover:bg-indigo-500 shadow-indigo-500/20" 
+                : "bg-slate-900 dark:bg-slate-800 hover:bg-slate-800"
+          }`}
         >
           {submitting ? (
             <Loader2 className="w-4 h-4 animate-spin" />
           ) : (
             <>
-              <Save className="w-4 h-4" />
-              Commit Changes
+              {isPriceChanged ? <ShieldCheck className="w-4 h-4" /> : <Save className="w-4 h-4" />}
+              {isPriceChanged ? "Request Update" : "Commit Changes"}
             </>
           )}
         </button>
