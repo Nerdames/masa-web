@@ -149,10 +149,15 @@ export async function GET(req: NextRequest) {
     const search = searchParams.get("search")?.trim() || "";
     const status = searchParams.get("status");
 
+    /**
+     * UPDATED LOGIC: 
+     * Now strictly displays personnel assigned to the active branch in the session.
+     * This supports the "Seamless Switching" feature for Owners/Admins.
+     */
     const baseWhere: Prisma.AuthorizedPersonnelWhereInput = {
       deletedAt: null,
       organizationId: auth.organizationId,
-      ...(auth.role === Role.MANAGER && auth.branchId && !auth.isOrgOwner && {
+      ...(auth.branchId && {
         branchAssignments: { some: { branchId: auth.branchId } }
       }),
     };
@@ -363,8 +368,8 @@ export async function PATCH(req: NextRequest) {
       let criticalActionTrigger: CriticalAction | undefined = undefined;
 
       const beforeState: any = {
-         name: targetUser.name, email: targetUser.email, role: targetUser.role,
-         disabled: targetUser.disabled, isLocked: targetUser.isLocked, branchId: targetUser.branchId
+          name: targetUser.name, email: targetUser.email, role: targetUser.role,
+          disabled: targetUser.disabled, isLocked: targetUser.isLocked, branchId: targetUser.branchId
       };
       const afterState: any = { ...beforeState };
 
