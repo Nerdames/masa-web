@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect, useCallback, useMemo } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 
 import {
@@ -23,12 +23,13 @@ import {
   Trash2,
   UserCheck,
   UserX,
+  Maximize2,
+  Minimize2,
   RefreshCw as RefreshIcon,
 } from "lucide-react";
 
 // Types and Enums imported from your module paths
 import { Personnel, UpdatePayload, AlertAction, Role } from "./types";
-
 import { PropertyRow } from "./PropertyRow";
 
 // Utilities
@@ -40,10 +41,11 @@ import {
 } from "./utils";
 import { getInitials } from "@/core/utils";
 import { useAlerts } from "@/core/components/feedback/AlertProvider";
+import { useSidePanel } from "@/core/components/layout/SidePanelContext";
 
 /* ==========================================================================
-TYPES & INTERFACES
-========================================================================== */
+   TYPES & INTERFACES
+   ========================================================================== */
 
 export interface ActivityLogDTO {
   id: string;
@@ -68,15 +70,7 @@ interface PersonnelDetailsPanelProps {
   onClose: () => void;
   onUpdate: (id: string, payload: UpdatePayload) => Promise<void>;
   onDelete: (id: string) => Promise<void>;
-  dispatch: (action: AlertAction) => void;
 }
-
-const LOG_TABS = {
-  ALL: "ALL_ACTIONS",
-  SECURITY: "SECURITY",
-  PROVISION: "PROVISION",
-  UPDATE: "UPDATE",
-} as const;
 
 type FormState = {
   name: string;
@@ -84,171 +78,20 @@ type FormState = {
 };
 
 /* ==========================================================================
-LOCAL UTILS
-========================================================================== */
-
-const parseDevice = (ua?: string | null) => {
-  if (!ua) return "System Process";
-  const lowUA = ua.toLowerCase();
-  if (lowUA.includes("windows")) return "Windows PC";
-  if (lowUA.includes("iphone") || lowUA.includes("ipad")) return "iOS Device";
-  if (lowUA.includes("android")) return "Android";
-  if (lowUA.includes("macintosh")) return "MacBook / iMac";
-  if (lowUA.includes("postman") || lowUA.includes("curl")) return "API/Dev Tool";
-  return ua.split(" ")[0] || "Unknown Device";
-};
-
-/* ==========================================================================
-SUB-COMPONENT: COMPACT ACTIVITY CARD
-========================================================================== */
-
-const ActivityCard = ({
-  log,
-  onToast,
-}: {
-  log: ActivityLogDTO;
-  onToast: (a: AlertAction) => void;
-}) => {
-  const [expanded, setExpanded] = useState(false);
-
-  // Logic: Performer Name -> Initials (Fallback to "System Authority" for System)
-  const performerName =
-    log.personnel?.name ?? log.performedBy ?? log.personnelName ?? "System Authority";
-
-  const dateStr = (() => {
-    try {
-      return new Date(log.createdAt).toLocaleString("en-US", {
-        month: "short",
-        day: "numeric",
-        hour: "2-digit",
-        minute: "2-digit",
-      });
-    } catch {
-      return String(log.createdAt);
-    }
-  })();
-
-  const action = (log.action || "").toUpperCase();
-
-  const isRed = /DELETE|DEACTIVATED|REJECTED|REMOVE|TERMINATE|PURGE/.test(action);
-  const isAmber = /DISABLED|LOCKED|WARN|BLOCK|SUSPENDED/.test(action);
-
-  const getTheme = () => {
-    if (isRed) return { dot: "bg-red-500 ring-red-100", text: "text-red-600", bg: "bg-red-50" };
-    if (isAmber) return { dot: "bg-amber-500 ring-amber-100", text: "text-amber-600", bg: "bg-amber-50" };
-    return { dot: "bg-slate-400 ring-slate-100", text: "text-slate-600", bg: "bg-slate-100" };
-  };
-
-  const theme = getTheme();
-
-  const handleCopyMeta = async () => {
-    const payload = JSON.stringify(
-      {
-        ip: log.ipAddress || "Internal",
-        ua: parseDevice(log.deviceInfo),
-        meta: log.metadata || {},
-      },
-      null,
-      2
-    );
-    await copyToClipboard(payload, onToast);
-  };
-
-  return (
-    <div className="relative group">
-      {/* Timeline Dot */}
-      <span className={`absolute -left-[21px] top-1.5 w-2 h-2 rounded-full border-2 border-white ring-2 ${theme.dot}`} />
-
-      <motion.div
-        initial={{ opacity: 0, y: 5 }}
-        animate={{ opacity: 1, y: 0 }}
-        className="flex flex-col min-w-0 bg-white border border-slate-100 rounded-lg p-3 hover:shadow-sm transition-all"
-      >
-        <div className="flex justify-between items-start gap-2 mb-1.5">
-          <div className="flex flex-col min-w-0">
-            <span className="text-[10px] font-black text-slate-800 uppercase tracking-tight truncate">
-              {performerName}
-            </span>
-
-            <span className={`text-[8px] font-bold uppercase mt-0.5 px-1.5 py-0.5 rounded w-fit tracking-wider ${theme.bg} ${theme.text}`}>
-              {log.action.replace(/_/g, " ")}
-            </span>
-          </div>
-
-          <span className="text-[9px] font-medium text-slate-400 whitespace-nowrap shrink-0">
-            {dateStr}
-          </span>
-        </div>
-
-        <p className="text-[11px] font-medium text-slate-600 leading-snug break-words">
-          {log.details || (log.metadata as any)?.details || "Audit sequence completed successfully."}
-        </p>
-
-        {(log.metadata || log.ipAddress) && (
-          <div className="mt-2 flex flex-col min-w-0">
-            <button
-              onClick={() => setExpanded(!expanded)}
-              className="text-[9px] font-bold text-indigo-500 hover:text-indigo-700 flex items-center gap-1 w-fit transition-colors"
-            >
-              {expanded ? "Hide Payload" : "View Payload"}
-              {expanded ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
-            </button>
-
-            <AnimatePresence>
-              {expanded && (
-                <motion.div
-                  initial={{ height: 0, opacity: 0 }}
-                  animate={{ height: "auto", opacity: 1 }}
-                  exit={{ height: 0, opacity: 0 }}
-                  className="overflow-hidden mt-1.5"
-                >
-                  <div className="p-2 bg-slate-900 rounded-md relative min-w-0 group/code">
-                    <button
-                      onClick={handleCopyMeta}
-                      className="absolute right-1 top-1 p-1 bg-white/10 hover:bg-white/20 rounded text-slate-300 opacity-0 group-hover/code:opacity-100 transition-all"
-                      title="Copy Payload"
-                    >
-                      <Copy className="w-3 h-3 text-[10px]" />
-                    </button>
-
-                    <pre className="text-[9px] font-mono text-emerald-400 leading-relaxed overflow-x-auto custom-scrollbar w-full whitespace-pre-wrap break-words">
-                      {JSON.stringify(
-                        {
-                          ip: log.ipAddress || "Internal",
-                          ua: parseDevice(log.deviceInfo),
-                          meta: log.metadata || {},
-                        },
-                        null,
-                        2
-                      )}
-                    </pre>
-                  </div>
-                </motion.div>
-              )}
-            </AnimatePresence>
-          </div>
-        )}
-      </motion.div>
-    </div>
-  );
-};
-
-/* ==========================================================================
-MAIN PANEL COMPONENT
-========================================================================== */
+   MAIN PANEL COMPONENT
+   ========================================================================== */
 
 export function PersonnelDetailsPanel({
   personnel,
-  logs = [],
   onClose,
   onUpdate,
   onDelete,
 }: PersonnelDetailsPanelProps) {
   const { dispatch } = useAlerts();
+  const { isFullScreen, toggleFullScreen } = useSidePanel();
 
   const [isEditing, setIsEditing] = useState(false);
   const [isLogExpanded, setIsLogExpanded] = useState(true);
-  const [logFilter, setLogFilter] = useState<string>(LOG_TABS.ALL);
   const [tempPassword, setTempPassword] = useState<string | null>(null);
   const [fetchingTemp, setFetchingTemp] = useState(false);
   const [rotationEvent, setRotationEvent] = useState<{ time: Date; key: string } | null>(null);
@@ -301,7 +144,7 @@ export function PersonnelDetailsPanel({
     const confirmMsg = !requiresPasswordChange
       ? `Force password change for ${personnel.name}?`
       : `Generate a new temporary password? The existing one will be overwritten in the vault.`;
-    if (!confirm(confirmMsg)) return;
+    if (!window.confirm(confirmMsg)) return;
 
     setFetchingTemp(true);
     const newPass = generateSecurePassword();
@@ -366,7 +209,7 @@ export function PersonnelDetailsPanel({
   };
 
   const handlePurge = async () => {
-    if (!confirm(`Purge ${personnel.name} from registry? This action is irreversible.`)) return;
+    if (!window.confirm(`Purge ${personnel.name} from registry? This action is irreversible.`)) return;
     try {
       await onDelete(personnel.id);
       dispatch({ kind: "TOAST", type: "SUCCESS", title: "Purged", message: `${personnel.name} removed from registry.` });
@@ -377,71 +220,22 @@ export function PersonnelDetailsPanel({
     }
   };
 
-  // Automated log generation and filtering
-  const displayLogs = useMemo(() => {
-    const sourceLogs: ActivityLogDTO[] = [...(logs || [])];
-
-    // Synthetic Provisioning Log
-    if (sourceLogs.length === 0) {
-      sourceLogs.push({
-        id: "synth-prov",
-        action: "PROVISION",
-        critical: false,
-        createdAt: (personnel as any).createdAt || new Date(),
-        details: "Account identity initially provisioned in the global registry.",
-      });
-
-      if (personnel.lastActivityAt) {
-        sourceLogs.push({
-          id: "synth-sync",
-          action: "ACCESS",
-          critical: false,
-          createdAt: personnel.lastActivityAt,
-          details: "Last known system handshake recorded.",
-        });
-      }
-    }
-
-    // Synthetic Rotation Log
-    if (rotationEvent) {
-      sourceLogs.unshift({
-        id: "synth-rot",
-        action: "UPDATE",
-        critical: true,
-        createdAt: rotationEvent.time,
-        details: "Temporary credential rotated and successfully written to system vault.",
-      });
-    }
-
-    // Applying Filter
-    if (logFilter === LOG_TABS.ALL) {
-      return sourceLogs.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
-    }
-
-    const filtered = sourceLogs.filter((l) => {
-      const action = (l.action || "").toUpperCase();
-      if (logFilter === LOG_TABS.SECURITY) return /LOCK|ACCESS|LOGIN|PASSWORD|AUTH|SECURITY/.test(action);
-      if (logFilter === LOG_TABS.PROVISION) return /CREATE|ASSIGN|DELETE|PROVISION/.test(action);
-      if (logFilter === LOG_TABS.UPDATE) return /UPDATE|PATCH|EDIT|ENABLE|DISABLE|STOCK_ADJUST/.test(action);
-      return action.includes(logFilter);
-    });
-
-    return filtered.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
-  }, [logs, logFilter, rotationEvent, personnel]);
+  // Calculate static event count for the header
+  const eventCount = 1 + (personnel.lastActivityAt ? 1 : 0) + (rotationEvent ? 1 : 0);
 
   return (
-    <div className="h-full flex flex-col w-[340px] bg-white relative font-sans shadow-[-10px_0_40px_rgba(0,0,0,0.04)] border-l border-slate-100">
+    <div className={`h-full flex flex-col bg-white dark:bg-slate-900 relative font-sans transition-all duration-300 ${isFullScreen ? 'w-full shadow-xl' : 'w-[340px] shadow-[-10px_0_40px_rgba(0,0,0,0.04)] border-l border-slate-100 dark:border-slate-800'}`}>
       {/* --- Inspector Header --- */}
-      <div className="p-4 border-b border-black/[0.04] flex justify-between items-center bg-white/80 backdrop-blur-md shrink-0 sticky top-0 z-20">
+      <div className="p-4 border-b border-black/[0.04] dark:border-slate-800 flex justify-between items-center bg-white/80 dark:bg-slate-900/80 backdrop-blur-md shrink-0 sticky top-0 z-20">
         <div className="flex items-center gap-2 px-1 text-[10px] font-black text-slate-400 uppercase tracking-[0.2em]">
           <Shield className="text-sm text-indigo-500 w-4 h-4" /> Personnel Inspector
         </div>
 
-        <div className="flex gap-1">
+        <div className="flex gap-1 items-center">
           {!isEditing && (
             <button
               onClick={() => setIsEditing(true)}
-              className="w-8 h-8 rounded-lg hover:bg-slate-100 flex items-center justify-center text-slate-500 transition-all active:scale-90"
+              className="w-8 h-8 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 flex items-center justify-center text-slate-500 transition-all active:scale-90"
               title="Edit Profile"
             >
               <Edit2 className="text-base w-4 h-4" />
@@ -449,300 +243,288 @@ export function PersonnelDetailsPanel({
           )}
 
           <button
+            onClick={toggleFullScreen}
+            className="w-8 h-8 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 flex items-center justify-center text-slate-500 transition-all active:scale-90"
+            title={isFullScreen ? "Minimize" : "Maximize"}
+          >
+            {isFullScreen ? <Minimize2 className="w-4 h-4" /> : <Maximize2 className="w-4 h-4" />}
+          </button>
+
+          <button
             onClick={onClose}
-            className="w-8 h-8 rounded-lg hover:bg-red-50 hover:text-red-500 flex items-center justify-center text-slate-500 transition-all active:scale-90"
+            className="w-8 h-8 rounded-lg hover:bg-red-50 dark:hover:bg-red-900/20 hover:text-red-500 flex items-center justify-center text-slate-500 transition-all active:scale-90"
           >
             <X className="text-xl w-5 h-5" />
           </button>
         </div>
       </div>
 
-      <div className="flex-1 overflow-y-auto p-6 space-y-8 custom-scrollbar pb-12">
-        {/* --- Identity Block --- */}
-        <div className="flex items-center gap-5">
-          <div className="relative group">
-            <div className="w-16 h-16 shrink-0 rounded-[1.25rem] bg-gradient-to-br from-slate-800 to-slate-950 text-white flex items-center justify-center text-2xl font-black shadow-lg shadow-slate-200">
-              {getInitials(personnel.name)}
+      <div className={`flex-1 overflow-y-auto p-6 custom-scrollbar pb-12 ${isFullScreen ? 'grid grid-cols-1 md:grid-cols-2 gap-8' : 'space-y-8'}`}>
+        
+        {/* Left Column in Full Screen / Top Block in Side Panel */}
+        <div className="space-y-8">
+          {/* --- Identity Block --- */}
+          <div className="flex items-center gap-5">
+            <div className="relative group">
+              <div className="w-16 h-16 shrink-0 rounded-[1.25rem] bg-gradient-to-br from-slate-800 to-slate-950 text-white flex items-center justify-center text-2xl font-black shadow-lg shadow-slate-200 dark:shadow-none">
+                {getInitials(personnel.name)}
+              </div>
+
+              {isOrgOwner && (
+                <div className="absolute -top-1 -right-1 w-6 h-6 bg-amber-400 border-2 border-white dark:border-slate-900 rounded-full flex items-center justify-center text-white shadow-sm">
+                  <Crown className="text-[10px] w-3 h-3" />
+                </div>
+              )}
             </div>
 
-            {isOrgOwner && (
-              <div className="absolute -top-1 -right-1 w-6 h-6 bg-amber-400 border-2 border-white rounded-full flex items-center justify-center text-white shadow-sm">
-                <Crown className="text-[10px] w-3 h-3" />
-              </div>
-            )}
-          </div>
-
-          <div className="min-w-0 flex-1">
-            {isEditing ? (
-              <input
-                autoFocus
-                value={form.name}
-                onChange={(e) => setForm({ ...form, name: e.target.value })}
-                className="w-full text-lg font-bold text-slate-900 bg-slate-50 px-2 py-1 rounded-md outline-none border border-indigo-600/20 focus:border-indigo-600 transition-all"
-              />
-            ) : (
-              <h3 className="text-xl font-black text-slate-900 leading-tight truncate tracking-tight">{personnel.name}</h3>
-            )}
-
-            <div className="flex items-center gap-1.5 mt-0.5">
-              <p className="text-[12px] font-medium text-slate-400 truncate lowercase">{personnel.email}</p>
-
-              <button onClick={() => copyToClipboard(personnel.email, dispatch)} className="text-slate-300 hover:text-indigo-500 transition-colors" aria-label="Copy email">
-                <Copy className="text-xs w-4 h-4" />
-              </button>
-            </div>
-          </div>
-        </div>
-
-        {/* --- Primary Details --- */}
-        <div className="space-y-4 border-t border-black/[0.03] pt-6">
-          <PropertyRow
-            icon={<Activity className="w-4 h-4" />}
-            label="Integrity State"
-            value={
-              <div
-                className={`flex items-center gap-2 px-2 py-1 rounded-md border text-[10px] font-black uppercase w-fit ${
-                  isActive ? "bg-emerald-50 text-emerald-600 border-emerald-100" : "bg-red-50 text-red-600 border-red-100"
-                }`}
-              >
-                <span className={`w-1.5 h-1.5 rounded-full ${isActive ? "bg-emerald-500 animate-pulse" : "bg-red-500"}`} />
-                {isActive ? "Clear & Active" : personnel.isLocked ? "Locked" : "Disabled"}
-              </div>
-            }
-          />
-
-          <PropertyRow
-            icon={<Folder className="w-4 h-4" />}
-            label="Branch Registry"
-            value={
-              <div className="flex flex-col gap-1.5 w-full">
-                {personnel.branchAssignments?.length > 0 ? (
-                  personnel.branchAssignments.map((assignment) => (
-                    <div
-                      key={assignment.branchId}
-                      className={`flex items-center gap-2 px-2.5 py-1 rounded-md border border-black/[0.04] text-[12px] font-medium truncate w-fit ${getBranchColor(assignment.isPrimary)} ${assignment.isPrimary ? 'bg-slate-50' : 'bg-transparent'}`}
-                    >
-                      <span className={`w-2 h-2 shrink-0 rounded-full ${getDepartmentColor(assignment.branch.name)}`} />
-                      <span className="truncate">{assignment.branch.name} {assignment.isPrimary && <span className="text-[10px] text-slate-400 ml-1">(Primary)</span>}</span>
-                    </div>
-                  ))
-                ) : (
-                  <div className="flex items-center gap-2 bg-slate-50 w-fit px-2.5 py-1 rounded-md border border-black/[0.04] truncate">
-                    <span className={`w-2 h-2 shrink-0 rounded-full ${getDepartmentColor(personnel.branch?.name || "Unassigned")}`} />
-                    <span className="text-[12px] font-medium text-slate-700 truncate">{personnel.branch?.name || "Global / Unassigned"}</span>
-                  </div>
-                )}
-              </div>
-            }
-          />
-
-          <PropertyRow
-            icon={<Fingerprint className="w-4 h-4" />}
-            label="Staff Code"
-            value={
-              <span className="font-mono text-[11px] font-bold bg-slate-100 text-slate-700 px-2 py-1 rounded border border-black/[0.03]">
-                {personnel.staffCode || "SYS-PROVISIONED"}
-              </span>
-            }
-          />
-
-          <PropertyRow
-            icon={<Briefcase className="w-4 h-4" />}
-            label="System Role"
-            value={
-              isEditing ? (
-                <select
-                  value={form.role}
-                  onChange={(e) => setForm({ ...form, role: e.target.value as Role })}
-                  className="text-[11px] font-black text-slate-700 bg-slate-50 px-2 py-1.5 rounded-md border border-black/5 w-full outline-none"
-                >
-                  {Object.values(Role).map((r) => (
-                    <option key={r} value={r}>{r}</option>
-                  ))}
-                </select>
+            <div className="min-w-0 flex-1">
+              {isEditing ? (
+                <input
+                  autoFocus
+                  value={form.name}
+                  onChange={(e) => setForm({ ...form, name: e.target.value })}
+                  className="w-full text-lg font-bold text-slate-900 dark:text-white bg-slate-50 dark:bg-slate-800 px-2 py-1 rounded-md outline-none border border-indigo-600/20 focus:border-indigo-600 transition-all"
+                />
               ) : (
-                <span className="text-[11px] font-black text-slate-700 bg-slate-100 px-2.5 py-1 rounded-md uppercase tracking-wider">
-                  {personnel.role}
-                </span>
-              )
-            }
-          />
+                <h3 className="text-xl font-black text-slate-900 dark:text-slate-100 leading-tight truncate tracking-tight">{personnel.name}</h3>
+              )}
 
-          {/* Credential Rotation UI */}
-          <PropertyRow
-            icon={<Key className="w-4 h-4" />}
-            label={requiresPasswordChange ? "Vault Credential" : "Security State"}
-            value={
-              fetchingTemp ? (
-                <Loader2 className="animate-spin text-slate-400 w-5 h-5" />
-              ) : tempPassword ? (
-                <div className="flex items-center gap-1">
-                  <div className="flex items-center gap-2 bg-amber-50 border border-amber-200 rounded px-2 py-1">
-                    <span className="font-mono text-[11px] font-black text-amber-700 tracking-wider">{tempPassword}</span>
-                    <button onClick={() => copyToClipboard(tempPassword, dispatch)} className="text-amber-500 hover:text-amber-700" aria-label="Copy temp credential">
-                      <Copy className="w-4 h-4" />
+              <div className="flex items-center gap-1.5 mt-0.5">
+                <p className="text-[12px] font-medium text-slate-400 truncate lowercase">{personnel.email}</p>
+
+                <button onClick={() => copyToClipboard(personnel.email, dispatch)} className="text-slate-300 hover:text-indigo-500 transition-colors" aria-label="Copy email">
+                  <Copy className="text-xs w-4 h-4" />
+                </button>
+              </div>
+            </div>
+          </div>
+
+          {/* --- Primary Details --- */}
+          <div className="space-y-4 border-t border-black/[0.03] dark:border-slate-800 pt-6">
+            <PropertyRow
+              icon={<Activity className="w-4 h-4" />}
+              label="Integrity State"
+              value={
+                <div
+                  className={`flex items-center gap-2 px-2 py-1 rounded-md border text-[10px] font-black uppercase w-fit ${
+                    isActive ? "bg-emerald-50 text-emerald-600 border-emerald-100 dark:bg-emerald-900/20 dark:border-emerald-800" : "bg-red-50 text-red-600 border-red-100 dark:bg-red-900/20 dark:border-red-800"
+                  }`}
+                >
+                  <span className={`w-1.5 h-1.5 rounded-full ${isActive ? "bg-emerald-500 animate-pulse" : "bg-red-500"}`} />
+                  {isActive ? "Clear & Active" : personnel.isLocked ? "Locked" : "Disabled"}
+                </div>
+              }
+            />
+
+            <PropertyRow
+              icon={<Folder className="w-4 h-4" />}
+              label="Branch Registry"
+              value={
+                <div className="flex flex-col gap-1.5 w-full">
+                  {personnel.branchAssignments?.length > 0 ? (
+                    personnel.branchAssignments.map((assignment: any) => (
+                      <div
+                        key={assignment.branchId}
+                        className={`flex items-center gap-2 px-2.5 py-1 rounded-md border border-black/[0.04] dark:border-slate-700 text-[12px] font-medium truncate w-fit ${getBranchColor(assignment.isPrimary)} ${assignment.isPrimary ? 'bg-slate-50 dark:bg-slate-800' : 'bg-transparent text-slate-400'}`}
+                      >
+                        <span className={`w-2 h-2 shrink-0 rounded-full ${getDepartmentColor(assignment.branch.name)}`} />
+                        <span className="truncate">{assignment.branch.name} {assignment.isPrimary && <span className="text-[10px] text-slate-400 ml-1">(Primary)</span>}</span>
+                      </div>
+                    ))
+                  ) : (
+                    <div className="flex items-center gap-2 bg-slate-50 dark:bg-slate-800 w-fit px-2.5 py-1 rounded-md border border-black/[0.04] dark:border-slate-700 truncate">
+                      <span className={`w-2 h-2 shrink-0 rounded-full ${getDepartmentColor(personnel.branch?.name || "Unassigned")}`} />
+                      <span className="text-[12px] font-medium text-slate-700 dark:text-slate-300 truncate">{personnel.branch?.name || "Global / Unassigned"}</span>
+                    </div>
+                  )}
+                </div>
+              }
+            />
+
+            <PropertyRow
+              icon={<Fingerprint className="w-4 h-4" />}
+              label="Staff Code"
+              value={
+                <span className="font-mono text-[11px] font-bold bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 px-2 py-1 rounded border border-black/[0.03] dark:border-slate-700">
+                  {personnel.staffCode || "SYS-PROVISIONED"}
+                </span>
+              }
+            />
+
+            <PropertyRow
+              icon={<Briefcase className="w-4 h-4" />}
+              label="System Role"
+              value={
+                isEditing ? (
+                  <select
+                    value={form.role}
+                    onChange={(e) => setForm({ ...form, role: e.target.value as Role })}
+                    className="text-[11px] font-black text-slate-700 dark:text-slate-200 bg-slate-50 dark:bg-slate-800 px-2 py-1.5 rounded-md border border-black/5 dark:border-slate-700 w-full outline-none"
+                  >
+                    {Object.values(Role).map((r) => (
+                      <option key={r} value={r}>{r}</option>
+                    ))}
+                  </select>
+                ) : (
+                  <span className="text-[11px] font-black text-slate-700 dark:text-slate-300 bg-slate-100 dark:bg-slate-800 px-2.5 py-1 rounded-md uppercase tracking-wider">
+                    {personnel.role}
+                  </span>
+                )
+              }
+            />
+
+            {/* Credential Rotation UI */}
+            <PropertyRow
+              icon={<Key className="w-4 h-4" />}
+              label={requiresPasswordChange ? "Vault Credential" : "Security State"}
+              value={
+                fetchingTemp ? (
+                  <Loader2 className="animate-spin text-slate-400 w-5 h-5" />
+                ) : tempPassword ? (
+                  <div className="flex items-center gap-1">
+                    <div className="flex items-center gap-2 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded px-2 py-1">
+                      <span className="font-mono text-[11px] font-black text-amber-700 dark:text-amber-400 tracking-wider">{tempPassword}</span>
+                      <button onClick={() => copyToClipboard(tempPassword, dispatch)} className="text-amber-500 hover:text-amber-700" aria-label="Copy temp credential">
+                        <Copy className="w-4 h-4" />
+                      </button>
+                    </div>
+
+                    <button
+                      onClick={handleResetPassword}
+                      className="ml-1 w-6 h-6 flex items-center justify-center rounded-md transition-all active:scale-90 text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 hover:text-blue-600"
+                      title="Regenerate Key"
+                    >
+                      <RefreshCw className="text-lg w-4 h-4" />
                     </button>
                   </div>
-
+                ) : (
                   <button
                     onClick={handleResetPassword}
-                    className="ml-1 w-6 h-6 flex items-center justify-center rounded-md transition-all active:scale-90 text-slate-400 hover:bg-slate-100 hover:text-blue-600"
-                    title="Regenerate Key"
+                    className="text-[10px] font-bold uppercase flex items-center gap-1 group text-blue-500 hover:text-blue-700 dark:hover:text-blue-400"
                   >
-                    <RefreshCw className="text-lg w-4 h-4" />
+                    <RefreshIcon className="w-4 h-4 transition-transform duration-500 group-hover:rotate-180" />
+                    {requiresPasswordChange ? "Generate New" : "Rotate Key"}
                   </button>
-                </div>
-              ) : (
+                )
+              }
+            />
+          </div>
+        </div>
+
+        {/* Right Column in Full Screen / Bottom Block in Side Panel */}
+        <div className={`space-y-8 ${isFullScreen ? 'pt-0 border-t-0' : 'pt-6 border-t border-black/[0.03] dark:border-slate-800'}`}>
+          {/* --- Action Suite --- */}
+          <div>
+            {isEditing ? (
+              <div className="flex gap-2">
                 <button
-                  onClick={handleResetPassword}
-                  className="text-[10px] font-bold uppercase flex items-center gap-1 group text-blue-500 hover:text-blue-700"
+                  onClick={handleSave}
+                  className="flex-1 py-3 bg-slate-900 dark:bg-indigo-600 text-white text-[11px] font-black uppercase tracking-widest rounded-xl hover:bg-slate-800 shadow-lg shadow-slate-200 dark:shadow-none transition-all active:scale-[0.98]"
                 >
-                  <RefreshIcon className="w-4 h-4 transition-transform duration-500 group-hover:rotate-180" />
-                  {requiresPasswordChange ? "Generate New" : "Rotate Key"}
+                  Commit Context
                 </button>
-              )
-            }
-          />
-        </div>
 
-        {/* --- Action Suite --- */}
-        <div className="pt-6 border-t border-black/[0.03]">
-          {isEditing ? (
-            <div className="flex gap-2">
-              <button
-                onClick={handleSave}
-                className="flex-1 py-3 bg-slate-900 text-white text-[11px] font-black uppercase tracking-widest rounded-xl hover:bg-slate-800 shadow-lg shadow-slate-200 transition-all active:scale-[0.98]"
-              >
-                Commit Context
-              </button>
+                <button
+                  onClick={() => {
+                    setIsEditing(false);
+                    setForm({ name: personnel.name || "", role: personnel.role });
+                  }}
+                  className="flex-1 py-3 bg-white dark:bg-slate-800 text-slate-500 dark:text-slate-300 text-[11px] font-black uppercase tracking-widest rounded-xl border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-700 transition-all"
+                >
+                  Discard
+                </button>
+              </div>
+            ) : (
+              <div className="space-y-6">
+                <div className="space-y-3">
+                  <h4 className="text-[9px] font-black text-slate-400 uppercase tracking-[0.2em]">Security Interventions</h4>
 
-              <button
-                onClick={() => {
-                  setIsEditing(false);
-                  setForm({ name: personnel.name || "", role: personnel.role });
-                }}
-                className="flex-1 py-3 bg-white text-slate-500 text-[11px] font-black uppercase tracking-widest rounded-xl border border-slate-200 hover:bg-slate-50 transition-all"
-              >
-                Discard
-              </button>
-            </div>
-          ) : (
-            <div className="space-y-6">
-              <div className="space-y-3">
-                <h4 className="text-[9px] font-black text-slate-400 uppercase tracking-[0.2em]">Security Interventions</h4>
+                  <div className="grid grid-cols-2 gap-2">
+                    <button
+                      onClick={() => toggleSecurity("isLocked", !personnel.isLocked)}
+                      className={`flex items-center justify-center gap-2 px-3 py-3 text-[11px] font-bold border rounded-xl transition-all active:scale-95 ${
+                        personnel.isLocked ? "bg-emerald-50 text-emerald-600 border-emerald-100 hover:bg-emerald-100 dark:bg-emerald-900/20 dark:border-emerald-800" : "bg-amber-50 text-amber-600 border-amber-100 hover:bg-amber-100 dark:bg-amber-900/20 dark:border-amber-800"
+                      }`}
+                    >
+                      {personnel.isLocked ? <Unlock className="text-base w-4 h-4" /> : <Lock className="text-base w-4 h-4" />}
+                      {personnel.isLocked ? "Unlock" : "Lock"}
+                    </button>
 
-                <div className="grid grid-cols-2 gap-2">
-                  <button
-                    onClick={() => toggleSecurity("isLocked", !personnel.isLocked)}
-                    className={`flex items-center justify-center gap-2 px-3 py-3 text-[11px] font-bold border rounded-xl transition-all active:scale-95 ${
-                      personnel.isLocked ? "bg-emerald-50 text-emerald-600 border-emerald-100 hover:bg-emerald-100" : "bg-amber-50 text-amber-600 border-amber-100 hover:bg-amber-100"
-                    }`}
-                  >
-                    {personnel.isLocked ? <Unlock className="text-base w-4 h-4" /> : <Lock className="text-base w-4 h-4" />}
-                    {personnel.isLocked ? "Unlock" : "Lock"}
-                  </button>
-
-                  <button
-                    onClick={() => toggleSecurity("disabled", !personnel.disabled)}
-                    className={`flex items-center justify-center gap-2 px-3 py-3 text-[11px] font-bold border rounded-xl transition-all active:scale-95 ${
-                      personnel.disabled ? "bg-slate-900 text-white border-slate-900 shadow-lg shadow-slate-200 hover:bg-slate-800" : "bg-red-50 text-red-600 border-red-100 hover:bg-red-100"
-                    }`}
-                  >
-                    {personnel.disabled ? <UserCheck className="text-base w-4 h-4" /> : <UserX className="text-base w-4 h-4" />}
-                    {personnel.disabled ? "Enable" : "Disable"}
-                  </button>
+                    <button
+                      onClick={() => toggleSecurity("disabled", !personnel.disabled)}
+                      className={`flex items-center justify-center gap-2 px-3 py-3 text-[11px] font-bold border rounded-xl transition-all active:scale-95 ${
+                        personnel.disabled ? "bg-slate-900 dark:bg-slate-700 text-white border-slate-900 shadow-lg shadow-slate-200 hover:bg-slate-800 dark:shadow-none" : "bg-red-50 text-red-600 border-red-100 hover:bg-red-100 dark:bg-red-900/20 dark:border-red-800"
+                      }`}
+                    >
+                      {personnel.disabled ? <UserCheck className="text-base w-4 h-4" /> : <UserX className="text-base w-4 h-4" />}
+                      {personnel.disabled ? "Enable" : "Disable"}
+                    </button>
+                  </div>
                 </div>
               </div>
-            </div>
-          )}
-        </div>
+            )}
+          </div>
 
-        {/* --- Collapsible Activity Log (Redesigned) --- */}
-        <div className="pt-6 border-t border-black/[0.03]">
-          <button
-            onClick={() => setIsLogExpanded(!isLogExpanded)}
-            className="w-full flex items-center justify-between p-4 bg-slate-50 hover:bg-slate-100 rounded-2xl group transition-all border border-black/[0.01]"
-          >
-            <span className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Historical Telemetry</span>
+          {/* --- Collapsible Activity Log (Static Only) --- */}
+          <div className="pt-6 border-t border-black/[0.03] dark:border-slate-800">
+            <button
+              onClick={() => setIsLogExpanded(!isLogExpanded)}
+              className="w-full flex items-center justify-between p-4 bg-slate-50 dark:bg-slate-800/50 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-2xl group transition-all border border-black/[0.01] dark:border-slate-700/50"
+            >
+              <span className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Historical Telemetry</span>
 
-            <div className="flex items-center gap-2">
-              <span className="text-[10px] font-bold text-slate-300 font-mono">{displayLogs.length} Events</span>
-              {isLogExpanded ? <ChevronUp className="text-lg text-slate-400 w-5 h-5" /> : <ChevronDown className="text-lg text-slate-400 w-5 h-5" />}
-            </div>
-          </button>
-
-          {isLogExpanded && (
-            <div className="mt-4 animate-in fade-in slide-in-from-top-2">
-              {/* Log Filters */}
-              <div className="flex gap-1 p-1 bg-slate-50 rounded-lg border border-black/[0.02] mb-5">
-                {Object.entries(LOG_TABS).map(([key, value]) => (
-                  <button
-                    key={key}
-                    onClick={() => setLogFilter(value)}
-                    className={`flex-1 py-1.5 text-[9px] font-black uppercase tracking-wider rounded-md transition-all ${
-                      logFilter === value ? "bg-white text-indigo-600 shadow-sm" : "text-slate-400 hover:text-slate-600"
-                    }`}
-                  >
-                    {key}
-                  </button>
-                ))}
+              <div className="flex items-center gap-2">
+                <span className="text-[10px] font-bold text-slate-300 dark:text-slate-500 font-mono">{eventCount} Events</span>
+                {isLogExpanded ? <ChevronUp className="text-lg text-slate-400 w-5 h-5" /> : <ChevronDown className="text-lg text-slate-400 w-5 h-5" />}
               </div>
+            </button>
 
-              {/* Seamless Log Timeline */}
-              <div className="px-2">
-                <div className="border-l-2 border-slate-100 pl-4 space-y-4">
-                  {/* System Level Events */}
-                  {rotationEvent && (
+            {isLogExpanded && (
+              <div className="mt-4 animate-in fade-in slide-in-from-top-2">
+                <div className="px-2">
+                  <div className="border-l-2 border-slate-100 dark:border-slate-800 pl-4 space-y-4">
+                    {/* System Level Events */}
+                    {rotationEvent && (
+                      <div className="relative">
+                        <span className="absolute -left-[21px] top-1 w-2 h-2 rounded-full bg-amber-500 border-2 border-white dark:border-slate-900 ring-4 ring-amber-50 dark:ring-amber-900/20" />
+                        <p className="text-[10px] font-bold text-amber-600 uppercase tracking-tight">Credential Rotated</p>
+                        <p className="text-[9px] text-slate-400">Vault entry synchronized at {rotationEvent.time.toLocaleTimeString()}</p>
+                      </div>
+                    )}
+
                     <div className="relative">
-                      <span className="absolute -left-[21px] top-1 w-2 h-2 rounded-full bg-amber-500 border-2 border-white ring-4 ring-amber-50" />
-                      <p className="text-[10px] font-bold text-amber-600 uppercase tracking-tight">Credential Rotated</p>
-                      <p className="text-[9px] text-slate-400">Vault entry synchronized at {rotationEvent.time.toLocaleTimeString()}</p>
+                      <span className="absolute -left-[21px] top-1 w-2 h-2 rounded-full bg-slate-300 dark:bg-slate-600 border-2 border-white dark:border-slate-900" />
+                      <p className="text-[10px] font-bold text-slate-800 dark:text-slate-200 uppercase tracking-tight">Account Provisioned</p>
+                      <p className="text-[9px] text-slate-400">Registry entry: {(personnel as any).createdAt ? new Date((personnel as any).createdAt).toLocaleString() : "Initial deployment"}</p>
                     </div>
-                  )}
 
-                  <div className="relative">
-                    <span className="absolute -left-[21px] top-1 w-2 h-2 rounded-full bg-slate-300 border-2 border-white" />
-                    <p className="text-[10px] font-bold text-slate-800 uppercase tracking-tight">Account Provisioned</p>
-                    <p className="text-[9px] text-slate-400">Registry entry: {(personnel as any).createdAt ? new Date((personnel as any).createdAt).toLocaleString() : "Initial deployment"}</p>
-                  </div>
-
-                  {personnel.lastActivityAt && (
-                    <div className="relative">
-                      <span className="absolute -left-[21px] top-1 w-2 h-2 rounded-full bg-indigo-500 border-2 border-white ring-4 ring-indigo-50" />
-                      <p className="text-[10px] font-bold text-slate-800 uppercase tracking-tight">Last Registry Sync</p>
-                      <p className="text-[9px] text-slate-400">
-                        {new Date(personnel.lastActivityAt).toLocaleString()}
-                      </p>
-                    </div>
-                  )}
-
-                  {/* Render computed/filtered logs via Redesigned ActivityCard */}
-                  <div className="space-y-4 pt-4 relative">
-                    {displayLogs.map((log) => (
-                      <ActivityCard key={log.id} log={log} onToast={(a) => dispatch(a)} />
-                    ))}
-
-                    {displayLogs.length === 0 && (
-                      <div className="text-[10px] text-slate-400 font-medium italic text-center py-4">No events found for this filter.</div>
+                    {personnel.lastActivityAt && (
+                      <div className="relative">
+                        <span className="absolute -left-[21px] top-1 w-2 h-2 rounded-full bg-indigo-500 border-2 border-white dark:border-slate-900 ring-4 ring-indigo-50 dark:ring-indigo-900/20" />
+                        <p className="text-[10px] font-bold text-slate-800 dark:text-slate-200 uppercase tracking-tight">Last Registry Sync</p>
+                        <p className="text-[9px] text-slate-400">
+                          {new Date(personnel.lastActivityAt).toLocaleString()}
+                        </p>
+                      </div>
                     )}
                   </div>
                 </div>
               </div>
+            )}
+          </div>
+
+          {/* --- Danger Zone --- */}
+          {!isEditing && (
+            <div className="pt-8 border-t border-red-50 dark:border-red-900/20 mt-8">
+              <button
+                onClick={handlePurge}
+                className="w-full flex items-center justify-center gap-2 px-3 py-4 text-[10px] font-black uppercase tracking-[0.2em] border rounded-2xl transition-all group border-red-100 dark:border-red-900/30 text-red-500 bg-red-50/50 dark:bg-red-900/10 hover:bg-red-500 hover:text-white"
+              >
+                <Trash2 className="text-lg w-5 h-5 group-hover:animate-bounce" /> Purge Account Data
+              </button>
             </div>
           )}
         </div>
-
-        {/* --- Danger Zone --- */}
-        {!isEditing && (
-          <div className="pt-8 border-t border-red-50 mt-8">
-            <button
-              onClick={handlePurge}
-              className="w-full flex items-center justify-center gap-2 px-3 py-4 text-[10px] font-black uppercase tracking-[0.2em] border rounded-2xl transition-all group border-red-100 text-red-500 bg-red-50/50 hover:bg-red-500 hover:text-white"
-            >
-              <Trash2 className="text-lg w-5 h-5 group-hover:animate-bounce" /> Purge Account Data
-            </button>
-          </div>
-        )}
       </div>
     </div>
   );
