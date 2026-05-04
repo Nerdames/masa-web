@@ -1,6 +1,6 @@
-// src/proxy.ts
 import { NextRequest, NextResponse, NextFetchEvent } from "next/server";
 import { getToken } from "next-auth/jwt";
+import { Role } from "@prisma/client";
 import { hasPagePermission } from "@/core/lib/permission";
 
 /* -------------------------------------------------- */
@@ -35,6 +35,10 @@ function isPublicApi(pathname: string) {
   return PUBLIC_API_ROUTES.some((p) => pathname.startsWith(p));
 }
 
+/**
+ * Identifies if the request is for data (API, RSC, or Prefetch).
+ * Crucial for returning 401 JSON instead of a 302 HTML redirect.
+ */
 function isDataRequest(req: NextRequest) {
   return (
     req.nextUrl.pathname.startsWith("/api/") ||
@@ -47,18 +51,20 @@ function isDataRequest(req: NextRequest) {
 }
 
 /**
- * Absolute redirect guard to prevent infinite loops
+ * Absolute redirect guard to prevent infinite loops and clean up redundant params.
  */
 function safeRedirect(req: NextRequest, destination: string, error?: string) {
-  const { pathname, origin } = req.nextUrl;
+  const { pathname, origin, searchParams } = req.nextUrl;
 
-  // If already at destination, do nothing
-  if (pathname === destination) return NextResponse.next();
+  // 1. Prevent Infinite Loops: If already at destination with the same error, do nothing
+  if (pathname === destination) {
+    if (!error || searchParams.get("error") === error) return NextResponse.next();
+  }
 
   const url = new URL(destination, origin);
-  
-  // Important: Prevent adding callbackUrl if we are already at signin
-  if (destination !== "/signin" && pathname !== "/") {
+
+  // 2. Attach Callback: Only if moving from a protected content page to signin
+  if (destination === "/signin" && pathname !== "/" && !isAuthRoute(pathname)) {
     url.searchParams.set("callbackUrl", pathname);
   }
 
@@ -66,19 +72,16 @@ function safeRedirect(req: NextRequest, destination: string, error?: string) {
 
   return NextResponse.redirect(url);
 }
+
 /**
- * Unified unauthorized handler
+ * Unified unauthorized handler: Distinguishes between UI redirects and API 401s.
  */
-function handleUnauthorized(
-  req: NextRequest,
-  destination: string,
-  error?: string
-) {
+function handleUnauthorized(req: NextRequest, destination: string, error?: string) {
   if (isDataRequest(req)) {
     return new NextResponse(
       JSON.stringify({
         error: error || "Unauthenticated",
-        message: "Authentication required",
+        message: "Authentication or authorization required.",
       }),
       { status: 401, headers: { "Content-Type": "application/json" } }
     );
@@ -88,7 +91,7 @@ function handleUnauthorized(
 }
 
 /**
- * Async security logging (non-blocking)
+ * Async security logging (non-blocking telemetry)
  */
 function logSecurityEvent(
   ev: NextFetchEvent,
@@ -112,12 +115,12 @@ function logSecurityEvent(
         timestamp: new Date().toISOString(),
         source: "PROXY",
       }),
-    }).catch(() => {})
+    }).catch(() => { /* Silent fail for telemetry */ })
   );
 }
 
 /* -------------------------------------------------- */
-/* MAIN PROXY                                         */
+/* MAIN PROXY ENGINE                                  */
 /* -------------------------------------------------- */
 
 export async function proxy(req: NextRequest, ev: NextFetchEvent) {
@@ -127,17 +130,15 @@ export async function proxy(req: NextRequest, ev: NextFetchEvent) {
     /* ------------------------------------------ */
     /* 1. HARD BYPASS                             */
     /* ------------------------------------------ */
+    const isInternal = req.headers.get("x-masa-internal-key") === process.env.INTERNAL_API_KEY;
 
-    const internal = req.headers.get("x-masa-internal-key") === process.env.INTERNAL_API_KEY;
-
-    if (internal || isStatic(pathname) || isPublicApi(pathname)) {
+    if (isInternal || isStatic(pathname) || isPublicApi(pathname)) {
       return NextResponse.next();
     }
 
     /* ------------------------------------------ */
     /* 2. TOKEN SAFE EXTRACTION                   */
     /* ------------------------------------------ */
-
     let token = null;
 
     try {
@@ -154,28 +155,30 @@ export async function proxy(req: NextRequest, ev: NextFetchEvent) {
     /* ------------------------------------------ */
     /* 3. NOT AUTHENTICATED                       */
     /* ------------------------------------------ */
-
     if (!token) {
       if (authPage) return NextResponse.next();
-      return handleUnauthorized(req, "/signin", "Unauthenticated");
+      // Leave error undefined for standard non-auth visits to avoid ?error= clutter
+      return handleUnauthorized(req, "/signin");
     }
 
     /* ------------------------------------------ */
-    /* 4. ACCOUNT STATE CHECK                     */
+    /* 4. ACCOUNT STATE CHECK (Supremacy Logic)   */
     /* ------------------------------------------ */
-
     if (token.disabled || token.locked || token.expired) {
-      if (authPage) return NextResponse.next();
-
       const errorCode = token.disabled
         ? "ACCOUNT_DISABLED"
         : token.locked
         ? "ACCOUNT_LOCKED"
         : "SessionExpired";
 
+      if (authPage && req.nextUrl.searchParams.get("error") === errorCode) {
+        return NextResponse.next();
+      }
+
       logSecurityEvent(ev, origin, "SECURITY_BLOCK", {
         userId: token.id,
         path: pathname,
+        reason: errorCode,
       });
 
       return handleUnauthorized(req, "/signin", errorCode);
@@ -184,7 +187,6 @@ export async function proxy(req: NextRequest, ev: NextFetchEvent) {
     /* ------------------------------------------ */
     /* 5. PASSWORD RESET ENFORCEMENT              */
     /* ------------------------------------------ */
-
     if (token.requiresPasswordChange) {
       if (
         pathname.startsWith("/reset-password") ||
@@ -192,25 +194,24 @@ export async function proxy(req: NextRequest, ev: NextFetchEvent) {
       ) {
         return NextResponse.next();
       }
-
       return handleUnauthorized(req, "/reset-password", "PasswordResetRequired");
     }
 
     /* ------------------------------------------ */
     /* 6. PREVENT AUTH PAGE ACCESS WHEN LOGGED IN */
     /* ------------------------------------------ */
-
     if (authPage) {
+      // Allow reset-password if explicitly requested and allowed, but block signin/register
+      if (pathname === "/reset-password") return NextResponse.next();
       if (pathname === "/") return NextResponse.next();
-      return safeRedirect(req, "/", undefined);
+      return safeRedirect(req, "/");
     }
 
     /* ------------------------------------------ */
-    /* 7. RBAC CHECK                             */
+    /* 7. RBAC PAGE-LEVEL CHECK                   */
     /* ------------------------------------------ */
-
     const allowed = hasPagePermission(
-      token.role as any,
+      token.role as Role,
       pathname,
       Boolean(token.isOrgOwner)
     );
@@ -222,60 +223,56 @@ export async function proxy(req: NextRequest, ev: NextFetchEvent) {
         path: pathname,
       });
 
+      // Smart Fallback mapping to prevent redirecting to an unauthorized root
       const fallbackMap: Record<string, string> = {
         ADMIN: "/",
         MANAGER: "/",
         INVENTORY: "/inventory",
         SALES: "/pos",
         CASHIER: "/pos",
-        AUDITOR: "/audit",
-        DEV: "/inventory",
+        AUDITOR: "/audit/reports",
+        DEV: "/db-inspector",
       };
 
       const fallback = fallbackMap[token.role as string] || "/";
 
-      // Prevent fallback loop
-      if (pathname === fallback) {
-        return NextResponse.next();
-      }
+      // Prevent a fallback loop if the map configuration is ever out of sync
+      if (pathname === fallback) return NextResponse.next();
 
       return handleUnauthorized(req, fallback, "AccessDenied");
     }
 
     /* ------------------------------------------ */
-    /* 8. SUCCESS                                */
+    /* 8. SUCCESS                                 */
     /* ------------------------------------------ */
-
     return NextResponse.next();
+
   } catch (err) {
     /* ------------------------------------------ */
-    /* FAIL SAFE                                 */
+    /* FAIL SAFE                                  */
     /* ------------------------------------------ */
-
+    console.error("[PROXY_ERROR]", err);
     if (isDataRequest(req)) {
       return new NextResponse(
-        JSON.stringify({
-          error: "ServerError",
-          message: "Internal server error",
-        }),
+        JSON.stringify({ error: "ServerError", message: "Internal proxy error" }),
         { status: 500, headers: { "Content-Type": "application/json" } }
       );
     }
-
-    const url = new URL("/signin", req.nextUrl.origin);
-    url.searchParams.set("error", "ServerError");
-
-    return NextResponse.redirect(url);
+    return safeRedirect(req, "/signin", "ServerError");
   }
 }
 
 /* -------------------------------------------------- */
-/* MATCHER (CRITICAL FOR STABILITY)                   */
+/* MATCHER                                            */
 /* -------------------------------------------------- */
-
-// Update your config matcher
 export const config = {
   matcher: [
-    "/((?!_next/static|_next/image|favicon.ico|signin|register|reset-password).*)",
+    /*
+     * Match all request paths except for:
+     * - api/auth (NextAuth strictly handles its own routing)
+     * - _next/static, _next/image (Next.js internals)
+     * - favicon.ico
+     */
+    "/((?!api/auth|_next/static|_next/image|favicon.ico).*)",
   ],
 };

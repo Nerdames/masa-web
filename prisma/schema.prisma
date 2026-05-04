@@ -246,7 +246,6 @@ model Organization {
   uoms        UnitOfMeasure[]
   refunds     Refund[]
   stockTakes  StockTake[]
-  permissions Permission[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -450,18 +449,6 @@ model BranchAssignment {
   @@unique([personnelId, isPrimary], map: "one_primary_branch_per_personnel")
   @@index([personnelId])
   @@index([branchId])
-}
-
-// NEW: Granular Permissions for RBAC/ABAC
-model Permission {
-  id             String           @id @default(cuid())
-  role           Role
-  action         PermissionAction
-  resource       String // e.g., "INVOICE", "STOCK_ADJUST"
-  organizationId String
-  organization   Organization     @relation(fields: [organizationId], references: [id])
-
-  @@unique([organizationId, role, action, resource])
 }
 
 ////////////////////////////////////

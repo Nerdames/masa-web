@@ -1,10 +1,29 @@
 import {
   Role,
-  PermissionAction,
-  Permission,
   AuthorizedPersonnel,
   CriticalAction,
 } from "@prisma/client";
+
+/**
+ * =========================================================
+ * LOCAL PERMISSION TYPES 
+ * (Replaces deleted Prisma Permission models)
+ * =========================================================
+ */
+export enum PermissionAction {
+  CREATE = "CREATE",
+  READ = "READ",
+  UPDATE = "UPDATE",
+  DELETE = "DELETE",
+  VOID = "VOID",
+  APPROVE = "APPROVE",
+  EXPORT = "EXPORT",
+}
+
+export interface Permission {
+  action: PermissionAction;
+  resource: string;
+}
 
 /**
  * =========================================================
@@ -26,7 +45,7 @@ export const ROLE_WEIGHT: Record<Role, number> = {
 /**
  * =========================================================
  * RESOURCE IDENTIFIERS
- * Matches the 'resource' field in the Permission model.
+ * Matches the 'resource' field in the Permission logic.
  * =========================================================
  */
 export const RESOURCES = {
@@ -113,13 +132,6 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<
  * PAGE-LEVEL RBAC (Browser URLs)
  * =========================================================
  */
-import { Role } from "@prisma/client";
-
-/**
- * PAGE_PERMISSIONS
- * Maps actual URL paths (based on your App Router structure) to allowed Roles.
- * * Note: Next.js Route Groups like (dashboard) or (terminal) do not appear in the URL.
- */
 export const PAGE_PERMISSIONS = {
   // Admin Section (from src/app/(dashboard)/admin)
   "/admin/personnels": [Role.ADMIN, Role.MANAGER, Role.DEV],
@@ -187,7 +199,7 @@ function normalizePath(path: string): string {
 }
 
 /**
- * Checks if a specific action is allowed on a resource based on dynamic DB permissions.
+ * Checks if a specific action is allowed on a resource based on dynamic/in-memory permissions.
  */
 export function canPerform(
   userPermissions: Permission[],
@@ -365,6 +377,9 @@ export function authorize({
   return { allowed: true };
 }
 
+/**
+ * CHECKS IF A CRITICAL ACTION CAN BE PERFORMED DIRECTLY
+ */
 export function canPerformAction(role: Role, action: CriticalAction): boolean {
   return !actionRequiresApproval(role, action);
 }

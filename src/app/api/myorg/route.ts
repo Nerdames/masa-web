@@ -2,15 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "next-auth/next";
 import { authOptions } from "@/core/lib/auth";
 import prisma from "@/core/lib/prisma";
-import { PermissionAction, ActorType, Severity, Prisma, Role, PreferenceScope, PreferenceCategory } from "@prisma/client";
+import { ActorType, Severity, Prisma, Role, PreferenceScope, PreferenceCategory } from "@prisma/client";
 import crypto from "crypto";
-
-// 1. IMPORT YOUR RESOURCE KEYS (Ensure these match your constants file)
-const VALID_RESOURCES = [
-  "INVOICE", "STOCK", "PRODUCT", "CUSTOMER", "EXPENSE", 
-  "PROCUREMENT", "VENDOR", "REPORT", "AUDIT", 
-  "SETTINGS", "BRANCH", "PERSONNEL", "FINANCE"
-];
 
 /* -------------------------------------------------------------------------- */
 /* FORENSIC AUDIT ENGINE                                                      */
@@ -76,7 +69,7 @@ async function createAuditLog(
 }
 
 /* -------------------------------------------------------------------------- */
-/* GET HANDLER (Fetch Org Configuration - Branches Removed)                   */
+/* GET HANDLER (Fetch Org Configuration)                                     */
 /* -------------------------------------------------------------------------- */
 
 export async function GET(req: NextRequest) {
@@ -90,7 +83,8 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: "Forbidden: Admin access required" }, { status: 403 });
     }
 
-    const [org, uoms, taxRates, permissions, preferences] = await Promise.all([
+    // Removed permission query from Promise.all
+    const [org, uoms, taxRates, preferences] = await Promise.all([
       prisma.organization.findUnique({
         where: { id: user.organizationId },
         select: { id: true, name: true, active: true, createdAt: true },
@@ -103,10 +97,6 @@ export async function GET(req: NextRequest) {
         where: { organizationId: user.organizationId },
         orderBy: { name: "asc" },
       }),
-      prisma.permission.findMany({
-        where: { organizationId: user.organizationId },
-        orderBy: { role: "asc" },
-      }),
       prisma.preference.findMany({
         where: { organizationId: user.organizationId, scope: PreferenceScope.ORGANIZATION },
       }),
@@ -114,7 +104,8 @@ export async function GET(req: NextRequest) {
 
     if (!org) return NextResponse.json({ error: "Organization not found" }, { status: 404 });
 
-    return NextResponse.json({ org, uoms, taxRates, permissions, preferences });
+    // Removed permissions from response payload
+    return NextResponse.json({ org, uoms, taxRates, preferences });
   } catch (error: any) {
     console.error("[ORG_GET_ERROR]", error);
     return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
@@ -122,7 +113,7 @@ export async function GET(req: NextRequest) {
 }
 
 /* -------------------------------------------------------------------------- */
-/* PATCH HANDLER (Multiplexer - Branches Removed - Enhanced Permissions)       */
+/* PATCH HANDLER (Multiplexer)                                               */
 /* -------------------------------------------------------------------------- */
 
 export async function PATCH(req: NextRequest) {
@@ -198,46 +189,7 @@ export async function PATCH(req: NextRequest) {
         return { success: true, data: taxRate };
       }
 
-      // 4. SYNC PERMISSIONS (Robust logic for multiple actions)
-      if (action === "SYNC_PERMISSIONS") {
-        const { targetRole, resource, actions } = payload as { targetRole: Role, resource: string, actions: PermissionAction[] };
-
-        // Typo Protection: Validate Resource Key against code constants
-        if (!VALID_RESOURCES.includes(resource)) {
-          throw new Error(`Invalid Resource Key: ${resource}. Please use a registered system key.`);
-        }
-
-        // Get existing to log changes
-        const existing = await tx.permission.findMany({
-          where: { organizationId: user.organizationId, role: targetRole, resource }
-        });
-
-        // Atomic Sync: Remove existing and recreate with the new set
-        await tx.permission.deleteMany({
-          where: { organizationId: user.organizationId, role: targetRole, resource }
-        });
-
-        const created = await tx.permission.createMany({
-          data: actions.map(act => ({
-            organizationId: user.organizationId,
-            role: targetRole,
-            resource,
-            action: act
-          }))
-        });
-
-        await createAuditLog(tx, {
-          organizationId: user.organizationId,
-          actorId: user.id, actorRole: user.role as Role,
-          action: "SYNC_PERMISSIONS", targetType: "RBAC", targetId: targetRole,
-          severity: Severity.HIGH,
-          description: `Synchronized ${actions.length} permissions for ${targetRole} on ${resource}`,
-          requestId, ipAddress, deviceInfo, before: existing, after: { role: targetRole, resource, actions },
-        });
-        return { success: true, count: created.count };
-      }
-
-      // 5. UPSERT GLOBAL PREFERENCE
+      // 4. UPSERT GLOBAL PREFERENCE
       if (action === "UPSERT_PREFERENCE") {
         const pref = await tx.preference.upsert({
           where: { 

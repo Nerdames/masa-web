@@ -22,6 +22,7 @@ import { authorize, RESOURCES } from "@/core/lib/permission";
 const DEFAULT_LIMIT = 25;
 const MAX_LIMIT = 500;
 const EXPORT_LIMIT = 10000;
+const APPROVAL_EXPIRY_DAYS = 7; // Auto-expire pending requests after 7 days
 
 export type UiBranchProduct = {
   id: string;
@@ -42,6 +43,13 @@ export type UiBranchProduct = {
   };
   lastSoldAt?: string | null;
   lastRestockedAt?: string | null;
+  // NEW: Surface pending approvals to the UI to lock inputs/show badges
+  pendingApproval?: {
+    id: string;
+    actionType: CriticalAction;
+    changes: Prisma.JsonValue;
+    createdAt: string;
+  } | null;
 };
 
 interface AuthenticatedUser {
@@ -82,7 +90,7 @@ async function createAuditLog(
     requestId: string;
     ipAddress: string;
     deviceInfo: string;
-    approvalId?: string; // GAP CLOSED: Added relation support
+    approvalId?: string; 
     metadata?: any;
     before?: any;
     after?: any;
@@ -120,7 +128,7 @@ async function createAuditLog(
       targetId: data.resourceId,
       severity: data.severity ?? Severity.MEDIUM,
       description: data.description,
-      approvalId: data.approvalId, // Relational Link
+      approvalId: data.approvalId,
       metadata: data.metadata ? (data.metadata as Prisma.InputJsonValue) : Prisma.JsonNull,
       before: data.before ? (data.before as Prisma.InputJsonValue) : Prisma.JsonNull,
       after: data.after ? (data.after as Prisma.InputJsonValue) : Prisma.JsonNull,
@@ -141,8 +149,8 @@ async function notifyManagement(
   title: string,
   message: string,
   activityLogId: string,
-  approvalId?: string, // GAP CLOSED: Added relation support
-  actionTrigger?: CriticalAction // GAP CLOSED: Added trigger support
+  approvalId?: string,
+  actionTrigger?: CriticalAction 
 ) {
   const targets = await tx.authorizedPersonnel.findMany({
     where: {
@@ -164,8 +172,8 @@ async function notifyManagement(
       title,
       message,
       activityLogId,
-      approvalId, // Relational Link
-      actionTrigger, // UI Filter Hook
+      approvalId, 
+      actionTrigger, 
       recipients: {
         create: targets.map((t) => ({ personnelId: t.id })),
       },
@@ -340,26 +348,56 @@ export async function GET(req: NextRequest) {
       });
     }
 
-    const mapped: UiBranchProduct[] = rawItems.map(bp => ({
-      id: bp.id,
-      stock: bp.stock,
-      stockVersion: bp.stockVersion,
-      reorderLevel: bp.reorderLevel ?? 0,
-      safetyStock: bp.safetyStock ?? 0,
-      sellingPrice: bp.sellingPrice ? Number(bp.sellingPrice) : null,
-      costPrice: bp.costPrice ? Number(bp.costPrice) : null,
-      vendor: bp.vendor,
-      product: {
-        id: bp.product.id,
-        name: bp.product.name,
-        sku: bp.product.sku,
-        barcode: bp.product.barcode,
-        category: bp.product.category,
-        uom: bp.product.uom
+    // NEW: Fetch Pending Approval Requests for the returned items
+    const productIds = rawItems.map(item => item.id);
+    const pendingApprovals = await prisma.approvalRequest.findMany({
+      where: {
+        organizationId: orgId,
+        targetType: "BRANCH_PRODUCT",
+        targetId: { in: productIds },
+        status: ApprovalStatus.PENDING
       },
-      lastSoldAt: bp.lastSoldAt?.toISOString() || null,
-      lastRestockedAt: bp.lastRestockedAt?.toISOString() || null
-    }));
+      select: {
+        id: true,
+        targetId: true,
+        actionType: true,
+        changes: true,
+        createdAt: true
+      }
+    });
+
+    const approvalsMap = new Map(pendingApprovals.map(app => [app.targetId, app]));
+
+    const mapped: UiBranchProduct[] = rawItems.map(bp => {
+      const pendingReq = approvalsMap.get(bp.id);
+      
+      return {
+        id: bp.id,
+        stock: bp.stock,
+        stockVersion: bp.stockVersion,
+        reorderLevel: bp.reorderLevel ?? 0,
+        safetyStock: bp.safetyStock ?? 0,
+        sellingPrice: bp.sellingPrice ? Number(bp.sellingPrice) : null,
+        costPrice: bp.costPrice ? Number(bp.costPrice) : null,
+        vendor: bp.vendor,
+        product: {
+          id: bp.product.id,
+          name: bp.product.name,
+          sku: bp.product.sku,
+          barcode: bp.product.barcode,
+          category: bp.product.category,
+          uom: bp.product.uom
+        },
+        lastSoldAt: bp.lastSoldAt?.toISOString() || null,
+        lastRestockedAt: bp.lastRestockedAt?.toISOString() || null,
+        pendingApproval: pendingReq ? {
+          id: pendingReq.id,
+          actionType: pendingReq.actionType,
+          changes: pendingReq.changes,
+          createdAt: pendingReq.createdAt.toISOString()
+        } : null
+      };
+    });
 
     return NextResponse.json({ 
       items: mapped, 
@@ -417,11 +455,30 @@ export async function PATCH(req: NextRequest) {
     }
 
     // --- CRITICAL ACTION EVALUATION ---
-    // GAP CLOSED: Null-safe extraction of Decimal fields
     const oldSellingPrice = existing.sellingPrice ? existing.sellingPrice.toNumber() : null;
     const isPriceChange = sellingPrice !== undefined && Number(sellingPrice) !== oldSellingPrice;
     
     const canAutoApprovePrice = [Role.ADMIN, Role.MANAGER, Role.AUDITOR, Role.DEV].includes(user.role) || user.isOrgOwner;
+
+    // NEW: Fail-fast deduplication check outside the transaction.
+    if (isPriceChange && !canAutoApprovePrice) {
+      const activeApproval = await prisma.approvalRequest.findFirst({
+        where: {
+          organizationId: orgId,
+          targetType: "BRANCH_PRODUCT",
+          targetId: existing.id,
+          actionType: CriticalAction.PRICE_UPDATE,
+          status: ApprovalStatus.PENDING
+        }
+      });
+
+      if (activeApproval) {
+        return NextResponse.json(
+          { error: "A price update request is already pending approval for this product." }, 
+          { status: 409 }
+        );
+      }
+    }
 
     const result = await prisma.$transaction(async (tx) => {
       let branchProduct = existing;
@@ -451,6 +508,17 @@ export async function PATCH(req: NextRequest) {
           });
           priceUpdated = true;
         } else {
+          // Strictly type the JSON Payload
+          const changesPayload: Prisma.InputJsonValue = {
+            sellingPrice: {
+              old: oldSellingPrice,
+              new: Number(sellingPrice)
+            }
+          };
+
+          const expiryDate = new Date();
+          expiryDate.setDate(expiryDate.getDate() + APPROVAL_EXPIRY_DAYS);
+
           approvalReq = await tx.approvalRequest.create({
             data: {
               organizationId: orgId,
@@ -458,15 +526,11 @@ export async function PATCH(req: NextRequest) {
               requesterId: user.id,
               actionType: CriticalAction.PRICE_UPDATE,
               requiredRole: Role.MANAGER,
-              changes: {
-                sellingPrice: {
-                  old: oldSellingPrice,
-                  new: Number(sellingPrice)
-                }
-              },
+              changes: changesPayload,
               targetType: "BRANCH_PRODUCT",
               targetId: existing.id,
-              status: ApprovalStatus.PENDING
+              status: ApprovalStatus.PENDING,
+              expiresAt: expiryDate // NEW: Enforce lifecycle expiration
             }
           });
         }
@@ -506,7 +570,7 @@ export async function PATCH(req: NextRequest) {
             "Price Update Executed", 
             `Price for ${existing.product.name} directly updated to ${sellingPrice} by ${user.role}.`, 
             log.id,
-            undefined, // No approval ID for auto-approved
+            undefined, 
             CriticalAction.PRICE_UPDATE
           );
         }
@@ -526,9 +590,9 @@ export async function PATCH(req: NextRequest) {
           requestId,
           ipAddress,
           deviceInfo,
-          approvalId: approvalReq.id, // GAP CLOSED: Tied log structurally to approval
+          approvalId: approvalReq.id, 
           before: { sellingPrice: oldSellingPrice },
-          after: { requestedPrice: Number(sellingPrice) } // Removed approvalRequestId from JSON body payload as it is mapped natively
+          after: { requestedPrice: Number(sellingPrice) } 
         });
         
         await notifyManagement(
@@ -538,8 +602,8 @@ export async function PATCH(req: NextRequest) {
           "Price Update Approval Required", 
           `User ${user.id} (${user.role}) has requested a price change for ${existing.product.name}.`, 
           log.id,
-          approvalReq.id, // GAP CLOSED: Notifies directly via the Approval relation
-          CriticalAction.PRICE_UPDATE // GAP CLOSED: Adds actionable hook for UI filter
+          approvalReq.id, 
+          CriticalAction.PRICE_UPDATE 
         );
       }
 

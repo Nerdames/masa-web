@@ -22,7 +22,7 @@ import { useSidePanel } from "@/core/components/layout/SidePanelContext";
 import { InventoryEditPanel } from "@/modules/inventory/components/InventoryEditPanel";
 
 /* -------------------------
-   Types & Interfaces
+    Types & Interfaces
 ------------------------- */
 
 export type UiBranchProduct = {
@@ -33,8 +33,8 @@ export type UiBranchProduct = {
   safetyStock: number;
   sellingPrice: number;
   costPrice: number;
-  approvalPending?: boolean; // New: Track items awaiting manager sign-off
-  isLocked?: boolean;        // New: Track items under active audit
+  approvalPending?: boolean; 
+  isLocked?: boolean;        
   vendor: { id: string; name: string } | null;
   product: {
     id: string;
@@ -54,7 +54,7 @@ interface MetaData {
 }
 
 /* -------------------------
-   Main Workspace
+    Main Workspace
 ------------------------- */
 
 export default function FortressInventoryWorkspace() {
@@ -84,33 +84,52 @@ export default function FortressInventoryWorkspace() {
   const [vendors, setVendors] = useState<MetaData[]>([]);
   const [categories, setCategories] = useState<MetaData[]>([]);
 
-  // Auth Context & Role Verification
-  const user = session?.user as any;
-  const activeBranchId = user?.branchId || user?.branches?.[0]?.id;
-  const isAdmin = user?.role === "ADMIN";
-  const isAuditor = user?.role === "AUDITOR";
+  /* -------------------------
+      Auth & Permission Logic
+  ------------------------- */
+  const user = session?.user;
+  
+  // Resolve active branch from session (Primary branch or first allowed)
+  const activeBranchId = user?.branchId || user?.allowedBranches?.[0]?.id;
+  
+  // Permission guards based on session augmentation
+  const canAccessValuation = useMemo(() => {
+    return user?.role === "ADMIN" || 
+           user?.role === "AUDITOR" || 
+           user?.permissions?.includes("READ:VALUATION");
+  }, [user]);
+
+  const canEditInventory = useMemo(() => {
+    return user?.permissions?.includes("UPDATE:INVENTORY") || 
+           ["ADMIN", "MANAGER"].includes(user?.role || "");
+  }, [user]);
 
   /* -------------------------
       Data Fetching
   ------------------------- */
 
   const fetchMeta = useCallback(async () => {
+    if (!activeBranchId) return;
     try {
       const [vRes, cRes] = await Promise.all([
         fetch(`/api/inventory/fortress?branchId=${activeBranchId}&meta=vendors`),
         fetch(`/api/inventory/fortress?branchId=${activeBranchId}&meta=categories`)
       ]);
-      const vData = await vRes.json();
-      const cData = await cRes.json();
-      setVendors(vData.items || []);
-      setCategories(cData.items || []);
+      
+      if (vRes.ok && cRes.ok) {
+        const vData = await vRes.json();
+        const cData = await cRes.json();
+        setVendors(vData.items || []);
+        setCategories(cData.items || []);
+      }
     } catch (err) {
-      console.error("Meta fetch failed", err);
+      console.error("[METADATA_SYNC_ERROR]", err);
     }
   }, [activeBranchId]);
 
   const fetchData = useCallback(async () => {
-    if (!activeBranchId) return;
+    if (!activeBranchId || sessionStatus !== "authenticated") return;
+    
     setLoading(true);
     startTransition(async () => {
       try {
@@ -122,11 +141,17 @@ export default function FortressInventoryWorkspace() {
           sort,
           search: search.trim(),
         });
+
         if (vendorFilter !== "all") params.append("vendorId", vendorFilter);
         if (categoryFilter !== "all") params.append("categoryId", categoryFilter);
 
         const res = await fetch(`/api/inventory/fortress?${params.toString()}`);
-        if (!res.ok) throw new Error("Synchronization failure with Fortress API");
+        
+        if (!res.ok) {
+          const errorData = await res.json().catch(() => ({}));
+          throw new Error(errorData.message || "Synchronization failure with Fortress API");
+        }
+
         const json = await res.json();
         setItems(json.items || []);
         setTotal(json.total || 0);
@@ -141,7 +166,11 @@ export default function FortressInventoryWorkspace() {
         setLoading(false);
       }
     });
-  }, [activeBranchId, page, limit, search, statusFilter, vendorFilter, categoryFilter, sort, dispatch]);
+  }, [activeBranchId, sessionStatus, page, limit, search, statusFilter, vendorFilter, categoryFilter, sort, dispatch]);
+
+  /* -------------------------
+      Lifecycle
+  ------------------------- */
 
   useEffect(() => {
     if (activeBranchId) fetchMeta();
@@ -149,12 +178,12 @@ export default function FortressInventoryWorkspace() {
 
   useEffect(() => {
     const timer = setTimeout(() => {
-      if (sessionStatus === "authenticated") fetchData();
+      fetchData();
     }, 400);
     return () => clearTimeout(timer);
-  }, [fetchData, sessionStatus]);
+  }, [fetchData]);
 
-  // Reset page when filters change
+  // Reset pagination on filter change
   useEffect(() => {
     setPage(1);
   }, [search, statusFilter, vendorFilter, categoryFilter, sort, limit]);
@@ -168,18 +197,26 @@ export default function FortressInventoryWorkspace() {
     const lowStock = items.filter(i => i.stock > i.safetyStock && i.stock <= i.reorderLevel).length;
     const pendingApprovals = items.filter(i => i.approvalPending).length;
     
-    const assetValuation = (isAdmin || isAuditor) 
+    const assetValuation = canAccessValuation 
       ? items.reduce((acc, curr) => acc + (curr.stock * curr.costPrice), 0) 
       : 0;
 
-    const activeVendors = new Set(items.map(i => i.vendor?.id).filter(Boolean)).size;
-
-    return { criticalStock, lowStock, assetValuation, activeVendors, pendingApprovals };
-  }, [items, isAdmin, isAuditor]);
+    return { criticalStock, lowStock, assetValuation, pendingApprovals };
+  }, [items, canAccessValuation]);
 
   const totalPages = Math.max(1, Math.ceil(total / limit));
 
   const openEditPanel = (item: UiBranchProduct) => {
+    if (!canEditInventory) {
+      dispatch({
+        kind: "TOAST",
+        type: "ERROR",
+        title: "Access Denied",
+        message: "You do not have permissions to modify registry entries."
+      });
+      return;
+    }
+
     openPanel(
       <InventoryEditPanel 
         item={item} 
@@ -338,7 +375,7 @@ export default function FortressInventoryWorkspace() {
             </div>
           </div>
 
-          {(isAdmin || isAuditor) && (
+          {canAccessValuation && (
             <div className="bg-white dark:bg-slate-900 p-4 rounded-xl border border-slate-200/60 dark:border-slate-800 flex flex-col justify-between shadow-sm">
               <p className="text-[9px] font-black text-indigo-600 dark:text-indigo-400 uppercase tracking-widest">Total Valuation</p>
               <div className="flex items-end justify-between mt-2">
@@ -416,7 +453,7 @@ export default function FortressInventoryWorkspace() {
                             <div className="text-[13px] font-black text-slate-900 dark:text-white">
                               {Number(item.sellingPrice || 0).toLocaleString()}
                             </div>
-                            {(isAdmin || isAuditor) && (
+                            {canAccessValuation && (
                               <div className="text-[9px] text-slate-400 font-bold uppercase">
                                 Cost: {Number(item.costPrice || 0).toLocaleString()}
                               </div>

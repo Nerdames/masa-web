@@ -46,7 +46,6 @@ declare module "next-auth" {
       expired?: boolean;
       // PREMIUM ADDITIONS
       allowedBranches: AllowedBranch[];
-      permissions: string[]; // Formatted as "ACTION:RESOURCE" (e.g., "CREATE:INVOICE")
     } & DefaultSession["user"];
   }
 
@@ -65,7 +64,6 @@ declare module "next-auth" {
     requiresPasswordChange: boolean;
     // PREMIUM ADDITIONS
     allowedBranches: AllowedBranch[];
-    permissions: string[];
   }
 }
 
@@ -87,7 +85,6 @@ declare module "next-auth/jwt" {
     expired?: boolean;
     // PREMIUM ADDITIONS
     allowedBranches: AllowedBranch[];
-    permissions: string[];
   }
 }
 
@@ -325,14 +322,7 @@ export const authOptions: NextAuthOptions = {
           effectiveRole = primary.role;
         }
 
-        // 5. Fetch Granular Permissions based on Effective Role
-        const rawPermissions = await prisma.permission.findMany({
-          where: { organizationId: personnel.organizationId, role: effectiveRole },
-          select: { action: true, resource: true }
-        });
-        const permissionsMap = rawPermissions.map(p => `${p.action}:${p.resource}`);
-
-        // 6. Success: Atomic State Reset & Audit
+        // 5. Success: Atomic State Reset & Audit
         await prisma.$transaction(async (tx) => {
           await tx.authorizedPersonnel.update({
             where: { id: personnel.id },
@@ -377,7 +367,6 @@ export const authOptions: NextAuthOptions = {
           locked: personnel.isLocked,
           requiresPasswordChange: personnel.requiresPasswordChange,
           allowedBranches,
-          permissions: permissionsMap,
         };
       },
     }),
@@ -407,7 +396,6 @@ export const authOptions: NextAuthOptions = {
           locked: user.locked,
           requiresPasswordChange: user.requiresPasswordChange,
           allowedBranches: user.allowedBranches,
-          permissions: user.permissions,
         };
       }
 
@@ -470,14 +458,6 @@ export const authOptions: NextAuthOptions = {
             return token; // Reject silent escalation
           }
 
-          // Fetch new granular permissions for the new role
-          const newPermissionsData = await prisma.permission.findMany({
-            where: { organizationId: token.organizationId, role: validBranchRole },
-            select: { action: true, resource: true }
-          });
-          
-          const newPermissions = newPermissionsData.map(p => `${p.action}:${p.resource}`);
-
           // Log the forensic trace of the context shift
           await prisma.$transaction(async (tx) => {
             await secureAuditLog(tx, {
@@ -499,7 +479,6 @@ export const authOptions: NextAuthOptions = {
             branchId: targetBranchId,
             branchName: validBranchName,
             role: validBranchRole,
-            permissions: newPermissions,
             allowedBranches: updatedAllowedBranches // Ensures UI dropdowns stay sync'd mid-session
           };
         }
@@ -580,7 +559,6 @@ export const authOptions: NextAuthOptions = {
         
         // PREMIUM INJECTIONS
         session.user.allowedBranches = token.allowedBranches || [];
-        session.user.permissions = token.permissions || [];
       }
       return session;
     },
