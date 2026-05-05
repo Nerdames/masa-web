@@ -1,29 +1,10 @@
 import {
   Role,
+  PermissionAction,
+  Permission,
   AuthorizedPersonnel,
   CriticalAction,
 } from "@prisma/client";
-
-/**
- * =========================================================
- * LOCAL PERMISSION TYPES 
- * (Replaces deleted Prisma Permission models)
- * =========================================================
- */
-export enum PermissionAction {
-  CREATE = "CREATE",
-  READ = "READ",
-  UPDATE = "UPDATE",
-  DELETE = "DELETE",
-  VOID = "VOID",
-  APPROVE = "APPROVE",
-  EXPORT = "EXPORT",
-}
-
-export interface Permission {
-  action: PermissionAction;
-  resource: string;
-}
 
 /**
  * =========================================================
@@ -45,7 +26,7 @@ export const ROLE_WEIGHT: Record<Role, number> = {
 /**
  * =========================================================
  * RESOURCE IDENTIFIERS
- * Matches the 'resource' field in the Permission logic.
+ * Matches the 'resource' field in the Permission model.
  * =========================================================
  */
 export const RESOURCES = {
@@ -132,35 +113,48 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<
  * PAGE-LEVEL RBAC (Browser URLs)
  * =========================================================
  */
+
+/**
+ * PAGE_PERMISSIONS
+ * Maps actual URL paths (based on your App Router structure) to allowed Roles.
+ * * Note: Next.js Route Groups like (dashboard) or (terminal) do not appear in the URL.
+ */
 export const PAGE_PERMISSIONS = {
+  // Org Owner & System Configs
+  "/myorg": [Role.ADMIN, Role.MANAGER, Role.DEV],
+
   // Admin Section (from src/app/(dashboard)/admin)
+  "/admin": [Role.ADMIN, Role.MANAGER, Role.DEV],
   "/admin/personnels": [Role.ADMIN, Role.MANAGER, Role.DEV],
-  "/admin/branches": [Role.ADMIN, Role.DEV],
+  "/admin/branches": [Role.ADMIN, Role.MANAGER, Role.DEV],
   
   // Audit Section (from src/app/(dashboard)/audit)
-  "/audit/logs": [Role.ADMIN, Role.AUDITOR, Role.DEV],
-  "/audit/reports": [Role.ADMIN, Role.AUDITOR, Role.DEV],
+  "/audit": [Role.ADMIN, Role.MANAGER, Role.AUDITOR, Role.DEV],
+  "/audit/logs": [Role.ADMIN, Role.MANAGER, Role.AUDITOR, Role.DEV],
+  "/audit/reports": [Role.ADMIN, Role.MANAGER, Role.AUDITOR, Role.DEV],
   
   // Terminal/POS Section (from src/app/(terminal))
-  "/dashboard": [Role.ADMIN, Role.MANAGER, Role.INVENTORY, Role.SALES, Role.CASHIER, Role.DEV],
+  "/dashboard": [Role.ADMIN, Role.MANAGER, Role.INVENTORY, Role.SALES, Role.CASHIER, Role.AUDITOR, Role.DEV],
   "/inventory": [Role.ADMIN, Role.MANAGER, Role.INVENTORY, Role.AUDITOR, Role.DEV],
   "/pos": [Role.ADMIN, Role.MANAGER, Role.SALES, Role.CASHIER, Role.DEV],
-  "/products": [Role.ADMIN, Role.MANAGER, Role.INVENTORY, Role.SALES, Role.DEV],
+  "/products": [Role.ADMIN, Role.MANAGER, Role.INVENTORY, Role.SALES, Role.CASHIER, Role.DEV],
 
   // Common Dashboard (from src/app/(dashboard))
   "/notifications": [Role.ADMIN, Role.MANAGER, Role.INVENTORY, Role.SALES, Role.CASHIER, Role.AUDITOR, Role.DEV],
   
   // Tools & System (matching your (tools) folder and intended dev paths)
+  "/tools": [Role.ADMIN, Role.MANAGER, Role.DEV],
   "/db-inspector": [Role.DEV],
-  "/logs": [Role.DEV, Role.ADMIN],
+  "/logs": [Role.DEV, Role.ADMIN, Role.MANAGER],
 } as const satisfies Record<string, readonly Role[]>;
 
 /**
  * Routes that trigger "Management Mode" in the UI (Sidebars/Headers)
  */
 export const MANAGEMENT_ROUTES = [
-  "/admin/branches", 
-  "/admin/personnels", 
+  "/admin",
+  "/personnel", 
+  "/branches", 
   "/db-inspector"
 ] as const;
 
@@ -168,9 +162,10 @@ export const MANAGEMENT_ROUTES = [
  * Routes accessible by any authenticated user for personal management
  */
 export const PERSONAL_ROUTES = [
+  "/profile",
   "/settings", 
   "/feedback", 
-  "/support" // Added based on your (auth)/support folder
+  "/support"
 ] as const;
 
 /**
@@ -194,12 +189,13 @@ export const ACTION_REQUIREMENTS: Record<CriticalAction, Role> = {
  * =========================================================
  */
 
-function normalizePath(path: string): string {
+// EXPORTED: Used by proxy.ts to normalize route comparisons
+export function normalizePath(path: string): string {
   return path.replace(/\/+$/, "") || "/";
 }
 
 /**
- * Checks if a specific action is allowed on a resource based on dynamic/in-memory permissions.
+ * Checks if a specific action is allowed on a resource based on dynamic DB permissions.
  */
 export function canPerform(
   userPermissions: Permission[],
@@ -295,15 +291,20 @@ export function hasPagePermission(
   pathname: string,
   isOrgOwner: boolean = false
 ): boolean {
+  // Org Owners implicitly get access to everything, including /myorg
   if (isOrgOwner) return true;
+  
   const path = normalizePath(pathname);
 
+  // Allow unrestricted access to personal routes
   if (PERSONAL_ROUTES.some((p) => path === p || path.startsWith(`${p}/`))) return true;
 
+  // Enforce management route access (Admins, Managers, Devs)
   if (MANAGEMENT_ROUTES.some((p) => path.startsWith(p))) {
-    return role === Role.ADMIN || role === Role.DEV;
+    return role === Role.ADMIN || role === Role.MANAGER || role === Role.DEV;
   }
 
+  // Match specific modules
   const sortedMatches = Object.entries(PAGE_PERMISSIONS).sort((a, b) => b[0].length - a[0].length);
   const match = sortedMatches.find(([p]) => path === p || path.startsWith(`${p}/`));
 
@@ -377,9 +378,6 @@ export function authorize({
   return { allowed: true };
 }
 
-/**
- * CHECKS IF A CRITICAL ACTION CAN BE PERFORMED DIRECTLY
- */
 export function canPerformAction(role: Role, action: CriticalAction): boolean {
   return !actionRequiresApproval(role, action);
 }
