@@ -230,7 +230,7 @@ export async function proxy(req: NextRequest, ev: NextFetchEvent) {
         INVENTORY: "/inventory",
         SALES: "/pos",
         CASHIER: "/pos",
-        AUDITOR: "/audit/reports",
+        AUDITOR: "/audit",
         DEV: "/db-inspector",
       };
 

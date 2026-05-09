@@ -33,11 +33,12 @@ export interface SidePanelContextType extends PanelConfig {
 }
 
 const MIN_WIDTH = 340;
-const MAX_WIDTH = 340; // Cap width to 340 as per original logic
+const MAX_WIDTH = 340; 
 
+// Updated DEFAULT_CONFIG to reflect the new full-screen requirement
 const DEFAULT_CONFIG: PanelConfig = {
   isOpen: false,
-  isFullScreen: false,
+  isFullScreen: true, // Defaulting to true for next open action
   width: 340,
 };
 
@@ -64,17 +65,26 @@ export function SidePanelProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const openPanel = useCallback((node: ReactNode, newTitle?: string) => {
-    // UX Enhancement: Scroll to top on mobile so the panel content is visible
-    if (typeof window !== "undefined" && window.innerWidth < 768) {
+    const isDesktop = typeof window !== "undefined" && window.innerWidth >= 768;
+
+    if (!isDesktop && typeof window !== "undefined") {
       window.scrollTo(0, 0);
     }
 
     setContent(node);
     if (newTitle) setTitle(newTitle);
-    setConfig((prev) => (prev.isOpen ? prev : { ...prev, isOpen: true }));
+    
+    setConfig((prev) => ({
+      ...prev,
+      isOpen: true,
+      // Force full screen on desktop open, otherwise maintain previous/default state
+      isFullScreen: isDesktop ? true : prev.isFullScreen, 
+    }));
   }, []);
 
   const openProvision = useCallback((data: any) => {
+    const isDesktop = typeof window !== "undefined" && window.innerWidth >= 768;
+    
     setTitle("Infrastructure Provisioning");
     setContent(
       <div className="p-6">
@@ -90,13 +100,17 @@ export function SidePanelProvider({ children }: { children: ReactNode }) {
         </p>
       </div>
     );
-    setConfig((prev) => ({ ...prev, isOpen: true }));
+
+    setConfig((prev) => ({ 
+      ...prev, 
+      isOpen: true,
+      isFullScreen: isDesktop ? true : prev.isFullScreen 
+    }));
   }, []);
 
   const closePanel = useCallback(() => {
     setConfig((prev) => ({ ...prev, isOpen: false, isFullScreen: false }));
     
-    // Wait for slide-out animation (300ms) before clearing content to prevent flashing
     setTimeout(() => {
       startTransition(() => {
         resetToDefault();

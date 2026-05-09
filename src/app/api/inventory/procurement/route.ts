@@ -174,7 +174,9 @@ async function canExport(user: AuthenticatedUser): Promise<boolean> {
       },
     });
     if (perm) return true;
-  } catch (e) {}
+  } catch (e) {
+    // If permission entity doesn't exist yet, fallback to RBAC
+  }
   return [Role.ADMIN, Role.MANAGER, Role.AUDITOR, Role.DEV].includes(user.role);
 }
 
@@ -192,9 +194,14 @@ export async function GET(req: NextRequest) {
     const meta = searchParams.get("meta");
     const orgId = user.organizationId;
     
+    // Strict isolation of scope based on role level
     const isGlobalViewer = [Role.ADMIN, Role.MANAGER, Role.AUDITOR, Role.DEV].includes(user.role) || user.isOrgOwner;
     const branchIdParam = searchParams.get("branchId");
-    const branchId = isGlobalViewer ? branchIdParam : (user.branchId || branchIdParam);
+    
+    let branchId = user.branchId;
+    if (isGlobalViewer && branchIdParam) {
+      branchId = branchIdParam; 
+    }
 
     // --- META DROPDOWNS (Optimized for performance) ---
     if (meta) {
@@ -228,7 +235,7 @@ export async function GET(req: NextRequest) {
             uom: { select: { id: true, name: true, abbreviation: true } }
           },
           orderBy: { name: "asc" },
-          take: 100, // Safety limit for dropdowns
+          take: 100, // Hard safety limit for dropdowns
         });
 
         return NextResponse.json({ 
@@ -255,7 +262,7 @@ export async function GET(req: NextRequest) {
     
     const exportAll = searchParams.get("export") === "true";
     if (exportAll && !(await canExport(user))) {
-      return NextResponse.json({ error: "ACCESS_DENIED" }, { status: 403 });
+      return NextResponse.json({ error: "ACCESS_DENIED: Export privileges required" }, { status: 403 });
     }
 
     const take = exportAll ? EXPORT_LIMIT : limit;
@@ -269,7 +276,7 @@ export async function GET(req: NextRequest) {
         action: PermissionAction.READ,
         resource: RESOURCES.AUDIT,
       });
-      if (!auth.allowed) return NextResponse.json({ error: "Unauthorized" }, { status: 403 });
+      if (!auth.allowed) return NextResponse.json({ error: "Unauthorized access to ledger" }, { status: 403 });
 
       const where: Prisma.ActivityLogWhereInput = { 
         organizationId: orgId, 
@@ -282,11 +289,11 @@ export async function GET(req: NextRequest) {
           { description: { contains: search, mode: "insensitive" } },
         ];
       }
-      if (from || to) {
-        where.createdAt = {};
-        if (from) where.createdAt.gte = from;
-        if (to) where.createdAt.lte = to;
-      }
+
+      const dateFilter: Prisma.DateTimeFilter = {};
+      if (from) dateFilter.gte = from;
+      if (to) dateFilter.lte = to;
+      if (from || to) where.createdAt = dateFilter;
 
       const [items, total] = await Promise.all([
         prisma.activityLog.findMany({
@@ -316,7 +323,7 @@ export async function GET(req: NextRequest) {
       action: PermissionAction.READ,
       resource: RESOURCES.PROCUREMENT,
     });
-    if (!authPO.allowed) return NextResponse.json({ error: "Unauthorized" }, { status: 403 });
+    if (!authPO.allowed) return NextResponse.json({ error: "Unauthorized access to procurement" }, { status: 403 });
 
     const where: Prisma.PurchaseOrderWhereInput = { 
       organizationId: orgId,
@@ -329,12 +336,19 @@ export async function GET(req: NextRequest) {
         { vendor: { name: { contains: search, mode: "insensitive" } } },
       ];
     }
-    if (status && status !== "all") where.status = status as POStatus;
-    if (from || to) {
-      where.createdAt = {};
-      if (from) where.createdAt.gte = from;
-      if (to) where.createdAt.lte = to;
+    
+    // Strict schema check on enum
+    if (status && status !== "all") {
+      const validStatuses = Object.values(POStatus);
+      if (validStatuses.includes(status as POStatus)) {
+        where.status = status as POStatus;
+      }
     }
+
+    const dateFilter: Prisma.DateTimeFilter = {};
+    if (from) dateFilter.gte = from;
+    if (to) dateFilter.lte = to;
+    if (from || to) where.createdAt = dateFilter;
 
     const [items, total] = await Promise.all([
       prisma.purchaseOrder.findMany({
@@ -353,6 +367,7 @@ export async function GET(req: NextRequest) {
             },
           },
           createdBy: { select: { name: true } },
+          approvedBy: { select: { name: true } }
         },
         orderBy: { createdAt: "desc" },
         take,
@@ -362,7 +377,7 @@ export async function GET(req: NextRequest) {
     ]);
 
     if (exportAll) {
-      const header = ["PO Number", "Date", "Vendor", "Status", "Total", "Currency", "Created By"];
+      const header = ["PO Number", "Date", "Vendor", "Status", "Total", "Currency", "Created By", "Approved By"];
       const rows = items.map((it) => [
         it.poNumber,
         it.createdAt.toISOString(),
@@ -370,7 +385,8 @@ export async function GET(req: NextRequest) {
         it.status,
         it.totalAmount.toString(),
         it.currency,
-        it.createdBy?.name || "System"
+        it.createdBy?.name || "System",
+        it.approvedBy?.name || "N/A"
       ]);
       const csv = [header, ...rows].map((r) => r.map(csvEscape).join(",")).join("\n");
       return new NextResponse(csv, {
@@ -409,7 +425,7 @@ export async function POST(req: NextRequest) {
       action: PermissionAction.CREATE,
       resource: RESOURCES.PROCUREMENT,
     });
-    if (!auth.allowed) return NextResponse.json({ error: "ACCESS_DENIED" }, { status: 403 });
+    if (!auth.allowed) return NextResponse.json({ error: "ACCESS_DENIED: Cannot create PO" }, { status: 403 });
 
     const body = await req.json().catch(() => null);
     if (!body) return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
@@ -418,6 +434,7 @@ export async function POST(req: NextRequest) {
       vendorId,
       branchId: bodyBranchId,
       expectedDate,
+      status: requestedStatus,
       notes,
       items: rawItems,
       poNumber: providedPoNumber,
@@ -432,7 +449,7 @@ export async function POST(req: NextRequest) {
     if (!branchId) return NextResponse.json({ error: "Branch resolution failed." }, { status: 400 });
 
     const vendor = await prisma.vendor.findFirst({ where: { id: vendorId, organizationId: orgId, deletedAt: null } });
-    if (!vendor) return NextResponse.json({ error: "Vendor not active." }, { status: 404 });
+    if (!vendor) return NextResponse.json({ error: "Vendor not active or missing." }, { status: 404 });
 
     // Bulk fetch products for performance and fallback evaluation
     const productIds = rawItems.map((it: any) => it.productId || it.id).filter(Boolean);
@@ -454,20 +471,18 @@ export async function POST(req: NextRequest) {
       const product = productMap.get(productId);
       if (!product) return NextResponse.json({ error: `Product not found: ${productId}` }, { status: 404 });
 
-      // Cost Fallback Logic: If missing, empty, or 0, fallback to baseCostPrice
-      let unitCostRaw = Number(it.unitCost);
-      if (!it.unitCost || isNaN(unitCostRaw) || unitCostRaw <= 0) {
-        unitCostRaw = Number(product.baseCostPrice ?? 0);
-      }
-
-      // Security measure: Prevent 0 cost POs from entering sales/reports if no base cost exists
-      if (unitCostRaw <= 0) {
+      // Highly precise Decimal resolution for core financial data
+      let unitCost: Decimal;
+      if (it.unitCost && !isNaN(Number(it.unitCost)) && Number(it.unitCost) > 0) {
+        unitCost = new Decimal(it.unitCost);
+      } else if (product.baseCostPrice && product.baseCostPrice.greaterThan(0)) {
+        unitCost = new Decimal(product.baseCostPrice.toString());
+      } else {
         return NextResponse.json({ 
           error: `Cost cannot be zero for '${product.name}' (line ${idx + 1}). Please provide a valid unit cost as no base cost was found.` 
         }, { status: 400 });
       }
 
-      const unitCost = new Decimal(unitCostRaw);
       itemsValidated.push({ 
         productId, 
         quantityOrdered: qty, 
@@ -478,11 +493,14 @@ export async function POST(req: NextRequest) {
 
     const totalAmount = itemsValidated.reduce((sum, it) => sum.add(it.totalCost), new Decimal(0));
 
+    // Dynamic resolution based on payload, default strictly to DRAFT
+    const finalStatus = requestedStatus === POStatus.ISSUED ? POStatus.ISSUED : POStatus.DRAFT;
+
     const created = await prisma.$transaction(async (tx) => {
-      // Uniqueness check for PO Number
+      // Uniqueness check for PO Number with cryptographically stable fallback
       const poNumber = providedPoNumber?.trim() || generatePONumber(branchId);
       const existing = await tx.purchaseOrder.findFirst({ where: { organizationId: orgId, poNumber } });
-      const finalPoNumber = existing ? `${poNumber}-DUP` : poNumber;
+      const finalPoNumber = existing ? `${poNumber}-${crypto.randomBytes(2).toString("hex").toUpperCase()}` : poNumber;
 
       const po = await tx.purchaseOrder.create({
         data: {
@@ -490,12 +508,13 @@ export async function POST(req: NextRequest) {
           branchId,
           vendorId,
           poNumber: finalPoNumber,
-          status: POStatus.ISSUED, 
+          status: finalStatus, 
           totalAmount,
           currency,
           expectedDate: expectedDate ? new Date(expectedDate) : null,
           notes: notes ?? null,
           createdById: user.id,
+          approvedById: finalStatus === POStatus.ISSUED ? user.id : undefined,
           items: {
             create: itemsValidated.map((it) => ({
               productId: it.productId,
@@ -516,24 +535,26 @@ export async function POST(req: NextRequest) {
         branchId,
         actorId: user.id,
         actorRole: user.role,
-        action: "CREATE_PURCHASE_ORDER",
+        action: `CREATE_PO_${finalStatus}`,
         resourceId: po.id,
         severity: Severity.MEDIUM,
-        description: `Issued PO ${po.poNumber} to ${po.vendor?.name}`,
+        description: `Created PO ${po.poNumber} (${finalStatus}) to ${po.vendor?.name}`,
         requestId,
         ipAddress,
         deviceInfo,
-        after: { poId: po.id, total: totalAmount.toString(), vendor: po.vendor?.name },
+        after: { poId: po.id, total: totalAmount.toString(), vendor: po.vendor?.name, status: finalStatus },
       });
 
-      await notifyManagement(
-        tx,
-        orgId,
-        branchId,
-        "Procurement Issued",
-        `PO ${po.poNumber} created for ${po.vendor?.name}. Total: ${currency} ${totalAmount.toFixed(2)}`,
-        log.id
-      );
+      if (finalStatus === POStatus.ISSUED) {
+        await notifyManagement(
+          tx,
+          orgId,
+          branchId,
+          "Procurement Issued",
+          `PO ${po.poNumber} created for ${po.vendor?.name}. Total: ${currency} ${totalAmount.toFixed(2)}`,
+          log.id
+        );
+      }
 
       return po;
     }, {
@@ -550,7 +571,7 @@ export async function POST(req: NextRequest) {
 
 /* -------------------------
   PATCH /api/inventory/procurement
-  (Security Logic for Rejecting/Approving POs)
+  (Security Logic for Updating/Approving POs)
 ------------------------- */
 
 export async function PATCH(req: NextRequest) {
@@ -570,7 +591,7 @@ export async function PATCH(req: NextRequest) {
       action: PermissionAction.UPDATE,
       resource: RESOURCES.PROCUREMENT,
     });
-    if (!auth.allowed) return NextResponse.json({ error: "ACCESS_DENIED" }, { status: 403 });
+    if (!auth.allowed) return NextResponse.json({ error: "ACCESS_DENIED: Cannot update PO" }, { status: 403 });
 
     const body = await req.json().catch(() => null);
     if (!body) return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
@@ -579,8 +600,8 @@ export async function PATCH(req: NextRequest) {
     if (!poId || !status) return NextResponse.json({ error: "PO ID and Status are required." }, { status: 400 });
 
     const validStatuses = Object.values(POStatus);
-    if (!validStatuses.includes(status)) {
-      return NextResponse.json({ error: "Invalid status provided." }, { status: 400 });
+    if (!validStatuses.includes(status as POStatus)) {
+      return NextResponse.json({ error: `Invalid status. Must be one of: ${validStatuses.join(", ")}` }, { status: 400 });
     }
 
     const existingPo = await prisma.purchaseOrder.findFirst({
@@ -591,23 +612,30 @@ export async function PATCH(req: NextRequest) {
     if (!existingPo) return NextResponse.json({ error: "Purchase order not found." }, { status: 404 });
 
     // Prevent altering terminal states without elevated privileges
-    if ((existingPo.status === POStatus.REJECTED || existingPo.status === POStatus.FULFILLED) && 
-        ![Role.ADMIN, Role.MANAGER].includes(user.role) && !user.isOrgOwner) {
+    if ((existingPo.status === POStatus.CANCELLED || existingPo.status === POStatus.FULFILLED) && 
+        ![Role.ADMIN, Role.MANAGER, Role.AUDITOR, Role.DEV].includes(user.role) && !user.isOrgOwner) {
       return NextResponse.json({ error: "Insufficient permissions to modify a closed purchase order." }, { status: 403 });
     }
 
     const updatedPo = await prisma.$transaction(async (tx) => {
+      const dataToUpdate: Prisma.PurchaseOrderUpdateInput = {
+        status: status as POStatus,
+        notes: notes ? `${existingPo.notes || ''}\n[Status Update]: ${notes}`.trim() : existingPo.notes,
+      };
+
+      // Set the approvedBy strictly if it crosses into ISSUED and wasn't stamped yet
+      if (status === POStatus.ISSUED && !existingPo.approvedById) {
+        dataToUpdate.approvedBy = { connect: { id: user.id } };
+      }
+
       const po = await tx.purchaseOrder.update({
         where: { id: poId },
-        data: {
-          status: status as POStatus,
-          notes: notes ? `${existingPo.notes || ''}\n[Status Update]: ${notes}`.trim() : existingPo.notes,
-        },
+        data: dataToUpdate,
       });
 
-      // Security logic for REJECTED status
-      const isRejected = status === POStatus.REJECTED;
-      const severityLevel = isRejected ? Severity.HIGH : Severity.MEDIUM;
+      // Security logic for CANCELLED status (Replacing flawed REJECTED code)
+      const isCancelled = status === POStatus.CANCELLED;
+      const severityLevel = isCancelled ? Severity.HIGH : Severity.MEDIUM;
 
       const log = await createAuditLog(tx, {
         organizationId: orgId,
@@ -625,12 +653,12 @@ export async function PATCH(req: NextRequest) {
         after: { status: po.status },
       });
 
-      if (isRejected || status === POStatus.APPROVED) {
+      if (isCancelled || status === POStatus.ISSUED) {
         await notifyManagement(
           tx,
           orgId,
           po.branchId,
-          `Procurement ${isRejected ? 'Rejected 🚨' : 'Updated'}`,
+          `Procurement ${isCancelled ? 'Cancelled 🚨' : 'Updated'}`,
           `PO ${po.poNumber} for ${existingPo.vendor?.name} was marked as ${status} by ${user.role}.`,
           log.id
         );
