@@ -1,7 +1,6 @@
 import {
   Role,
   PermissionAction,
-  Permission,
   AuthorizedPersonnel,
   CriticalAction,
 } from "@prisma/client";
@@ -25,8 +24,25 @@ export const ROLE_WEIGHT: Record<Role, number> = {
 
 /**
  * =========================================================
+ * DEFAULT TERMINALS (Fallback Routing)
+ * Maps each role to their designated functional workspace.
+ * Prevents "Blank Pages" and infinite redirect loops.
+ * =========================================================
+ */
+export const DEFAULT_TERMINALS: Record<Role, string> = {
+  DEV: "/db-inspector",
+  ADMIN: "/",
+  MANAGER: "/",
+  AUDITOR: "/audit",
+  INVENTORY: "/inventory",
+  SALES: "/pos",
+  CASHIER: "/pos",
+} as const;
+
+/**
+ * =========================================================
  * RESOURCE IDENTIFIERS
- * Matches the 'resource' field in the Permission model.
+ * Matches the 'resource' section of the string-based permission.
  * =========================================================
  */
 export const RESOURCES = {
@@ -35,14 +51,14 @@ export const RESOURCES = {
   PRODUCT: "PRODUCT",
   CUSTOMER: "CUSTOMER",
   EXPENSE: "EXPENSE",
-  PROCUREMENT: "PROCUREMENT", // PurchaseOrders/GRNs
+  PROCUREMENT: "PROCUREMENT",
   VENDOR: "VENDOR",
   REPORT: "REPORT",
-  AUDIT: "AUDIT",             // ActivityLogs
+  AUDIT: "AUDIT",
   SETTINGS: "SETTINGS",
   BRANCH: "BRANCH",
   PERSONNEL: "PERSONNEL",
-  FINANCE: "FINANCE",         // Accounts/Transactions
+  FINANCE: "FINANCE",
 } as const;
 
 export type ResourceType = (typeof RESOURCES)[keyof typeof RESOURCES];
@@ -113,43 +129,33 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<
  * PAGE-LEVEL RBAC (Browser URLs)
  * =========================================================
  */
-
-/**
- * PAGE_PERMISSIONS
- * Maps actual URL paths (based on your App Router structure) to allowed Roles.
- * * Note: Next.js Route Groups like (dashboard) or (terminal) do not appear in the URL.
- */
 export const PAGE_PERMISSIONS = {
   // Org Owner & System Configs
   "/myorg": [Role.ADMIN, Role.MANAGER, Role.DEV],
 
-  // Admin Section (from src/app/(dashboard)/admin)
+  // Admin Module
   "/admin": [Role.ADMIN, Role.MANAGER, Role.DEV],
-  "/admin/personnels": [Role.ADMIN, Role.MANAGER, Role.DEV],
-  "/admin/branches": [Role.ADMIN, Role.MANAGER, Role.DEV],
   
-  // Audit Section (from src/app/(dashboard)/audit)
+  // Audit Module
   "/audit": [Role.ADMIN, Role.MANAGER, Role.AUDITOR, Role.DEV],
-  "/audit/logs": [Role.ADMIN, Role.MANAGER, Role.AUDITOR, Role.DEV],
-  "/audit/reports": [Role.ADMIN, Role.MANAGER, Role.AUDITOR, Role.DEV],
   
-  // Terminal/POS Section (from src/app/(terminal))
-  "/dashboard": [Role.ADMIN, Role.MANAGER, Role.INVENTORY, Role.SALES, Role.CASHIER, Role.AUDITOR, Role.DEV],
+  // Primary Operations Modules
+  "/": [Role.ADMIN, Role.MANAGER, Role.INVENTORY, Role.SALES, Role.CASHIER, Role.AUDITOR, Role.DEV],
   "/inventory": [Role.ADMIN, Role.MANAGER, Role.INVENTORY, Role.AUDITOR, Role.DEV],
   "/pos": [Role.ADMIN, Role.MANAGER, Role.SALES, Role.CASHIER, Role.DEV],
   "/products": [Role.ADMIN, Role.MANAGER, Role.INVENTORY, Role.SALES, Role.CASHIER, Role.DEV],
 
-  // Common Dashboard (from src/app/(dashboard))
+  // Shared Modules
   "/notifications": [Role.ADMIN, Role.MANAGER, Role.INVENTORY, Role.SALES, Role.CASHIER, Role.AUDITOR, Role.DEV],
   
-  // Tools & System (matching your (tools) folder and intended dev paths)
+  // Developer & System Tools
   "/tools": [Role.ADMIN, Role.MANAGER, Role.DEV],
   "/db-inspector": [Role.DEV],
   "/logs": [Role.DEV, Role.ADMIN, Role.MANAGER],
 } as const satisfies Record<string, readonly Role[]>;
 
 /**
- * Routes that trigger "Management Mode" in the UI (Sidebars/Headers)
+ * Routes that trigger "Management Mode" structural layouts.
  */
 export const MANAGEMENT_ROUTES = [
   "/admin",
@@ -159,7 +165,7 @@ export const MANAGEMENT_ROUTES = [
 ] as const;
 
 /**
- * Routes accessible by any authenticated user for personal management
+ * Routes accessible by ANY authenticated user.
  */
 export const PERSONAL_ROUTES = [
   "/profile",
@@ -189,55 +195,75 @@ export const ACTION_REQUIREMENTS: Record<CriticalAction, Role> = {
  * =========================================================
  */
 
-// EXPORTED: Used by proxy.ts to normalize route comparisons
 export function normalizePath(path: string): string {
   return path.replace(/\/+$/, "") || "/";
 }
 
 /**
- * Checks if a specific action is allowed on a resource based on dynamic DB permissions.
+ * STANDARDIZED ROUTING RESOLVER
  */
-export function canPerform(
-  userPermissions: Permission[],
-  action: PermissionAction,
-  resource: string
-): boolean {
-  return userPermissions.some(
-    (p) => p.action === action && p.resource === resource
-  );
+export function getFallbackRoute(
+  role?: Role, 
+  state?: 'VALID' | 'LOCKED' | 'DISABLED' | 'EXPIRED' | 'PASSWORD_RESET'
+): string {
+  if (state === 'PASSWORD_RESET') return '/reset-password';
+  if (!role || state === 'LOCKED' || state === 'DISABLED' || state === 'EXPIRED') {
+    return `/signin${state ? `?error=ACCOUNT_${state}` : ''}`;
+  }
+  return DEFAULT_TERMINALS[role] || "/";
 }
 
 /**
- * Checks if a role has the hardcoded default permission for a resource.
+ * Validates dynamic DB permissions based on session string arrays.
+ */
+export function canPerform(
+  userPermissions: string[],
+  action: PermissionAction,
+  resource: string
+): boolean {
+  if (!userPermissions || userPermissions.length === 0) return false;
+  
+  const actionUpper = action.toUpperCase();
+  const resourceUpper = resource.toUpperCase();
+  const requiredAuth = `${actionUpper}:${resourceUpper}`;
+  
+  return userPermissions.some((p) => {
+    const perm = p.toUpperCase();
+    return (
+      perm === requiredAuth || 
+      perm === "*:*" || 
+      perm === `*:${resourceUpper}` ||
+      perm === `${actionUpper}:*`
+    );
+  });
+}
+
+/**
+ * Checks hardcoded default permissions.
  */
 export function hasDefaultPermission(
   role: Role,
   action: PermissionAction,
   resource: ResourceType
 ): boolean {
-  return (DEFAULT_ROLE_PERMISSIONS[role] as any)?.[resource]?.includes(action) ?? false;
+  return DEFAULT_ROLE_PERMISSIONS[role][resource]?.includes(action) ?? false;
 }
 
 /**
- * LOG VISIBILITY: Determines if a user can see another user's activity in logs.
- * - Devs, Admins, and Auditors see everything.
- * - Managers see only those with lower hierarchy weight.
+ * LOG VISIBILITY
  */
 export function canSeeAction(recipientRole: Role, actorRole: Role): boolean {
-  if ([Role.DEV, Role.ADMIN, Role.AUDITOR].includes(recipientRole)) {
+  if (([Role.DEV, Role.ADMIN, Role.AUDITOR] as Role[]).includes(recipientRole)) {
     return true;
   }
-
   if (recipientRole === Role.MANAGER) {
     return ROLE_WEIGHT[actorRole] < ROLE_WEIGHT[Role.MANAGER];
   }
-
   return false;
 }
 
 /**
- * MANAGEMENT RIGHTS: Validates if one user can modify another.
- * Prevents Self-Disable, Same-Level modification, and Owner jeopardy.
+ * MANAGEMENT RIGHTS
  */
 export function validateManagementRights(
   requester: { id: string; role: Role; isOrgOwner: boolean },
@@ -245,75 +271,66 @@ export function validateManagementRights(
   action: ManagementAction
 ): { authorized: boolean; reason?: string } {
   
-  // 1. Block Self-Management
   if (requester.id === target.id) {
-    return { 
-      authorized: false, 
-      reason: "Security Policy: You cannot modify your own management rights or status from here." 
-    };
+    return { authorized: false, reason: "Security Policy: You cannot modify your own management rights." };
   }
 
-  // 2. Protect Org Owners
   if (target.isOrgOwner) {
     return { authorized: false, reason: "Organization owners cannot be modified by staff members." };
   }
 
-  // 3. Org Owner Bypass
   if (requester.isOrgOwner) return { authorized: true };
 
-  // 4. Hierarchy Check (Strictly Greater Than)
-  const requesterWeight = ROLE_WEIGHT[requester.role];
-  const targetWeight = ROLE_WEIGHT[target.role];
+  const requesterWeight = ROLE_WEIGHT[requester.role] || 0;
+  const targetWeight = ROLE_WEIGHT[target.role] || 0;
 
   if (requesterWeight <= targetWeight) {
-    return { 
-      authorized: false, 
-      reason: `Insufficient Authority: A ${requester.role} cannot manage a ${target.role}.` 
-    };
+    return { authorized: false, reason: `Insufficient Authority: A ${requester.role} cannot manage a ${target.role}.` };
   }
 
-  // 5. Destructive Action Restriction
   if (action === "DELETE" && requester.role === Role.MANAGER) {
-    return {
-      authorized: false,
-      reason: "Access Denied: Managers can deactivate staff but do not have deletion privileges."
-    };
+    return { authorized: false, reason: "Access Denied: Managers can deactivate staff but lack deletion privileges." };
   }
 
   return { authorized: true };
 }
 
 /**
- * PAGE PERMISSIONS: Validates URL access.
+ * PAGE PERMISSIONS: Validates URL access dynamically.
  */
 export function hasPagePermission(
   role: Role,
   pathname: string,
   isOrgOwner: boolean = false
 ): boolean {
-  // Org Owners implicitly get access to everything, including /myorg
+  // 1. Organization Owners have unrestricted access to all modules
   if (isOrgOwner) return true;
   
   const path = normalizePath(pathname);
 
-  // Allow unrestricted access to personal routes
+  // 2. Allow unrestricted access to personal routes (Profile, Settings, etc.)
   if (PERSONAL_ROUTES.some((p) => path === p || path.startsWith(`${p}/`))) return true;
 
-  // Enforce management route access (Admins, Managers, Devs)
+  // 3. Special handling for the root path: 
+  // If the user reaches "/", they are permitted (Middleware will then redirect them to their terminal)
+  if (path === "/") return true;
+
+  // 4. Enforce structural management route access
   if (MANAGEMENT_ROUTES.some((p) => path.startsWith(p))) {
     return role === Role.ADMIN || role === Role.MANAGER || role === Role.DEV;
   }
 
-  // Match specific modules
+  // 5. Match against explicitly defined terminals
   const sortedMatches = Object.entries(PAGE_PERMISSIONS).sort((a, b) => b[0].length - a[0].length);
   const match = sortedMatches.find(([p]) => path === p || path.startsWith(`${p}/`));
 
-  if (!match) return false;
+  if (!match) return false; 
+  
   return (match[1] as readonly Role[]).includes(role);
 }
 
 /**
- * CRITICAL ACTION: Checks if an action triggers an approval flow.
+ * Checks if an action triggers an approval flow.
  */
 export function actionRequiresApproval(role: Role, action: CriticalAction): boolean {
   const requiredRole = ACTION_REQUIREMENTS[action];
@@ -332,7 +349,7 @@ type AuthorizeParams = {
   pathname?: string;
   action?: PermissionAction;
   resource?: ResourceType | string;
-  userPermissions?: Permission[];
+  userPermissions?: string[]; 
   criticalAction?: CriticalAction;
 };
 
@@ -348,22 +365,36 @@ export function authorize({
   allowed: boolean;
   requiresApproval?: boolean;
   reason?: string;
+  fallbackRoute?: string;
 } {
+  const defaultFallback = getFallbackRoute(role, 'VALID');
+
   if (isOrgOwner) return { allowed: true };
 
+  // Route Authorization Check
   if (pathname && !hasPagePermission(role, pathname, isOrgOwner)) {
-    return { allowed: false, reason: "Access denied to this module." };
+    return { 
+      allowed: false, 
+      reason: "Access denied to this module.", 
+      fallbackRoute: defaultFallback 
+    };
   }
 
+  // Resource-Level Action Check
   if (action && resource) {
     const explicit = canPerform(userPermissions, action, resource);
     const fallback = hasDefaultPermission(role, action, resource as ResourceType);
 
     if (!explicit && !fallback) {
-      return { allowed: false, reason: `Insufficient permissions for ${resource} ${action}.` };
+      return { 
+        allowed: false, 
+        reason: `Insufficient permissions for ${resource} ${action}.`,
+        fallbackRoute: defaultFallback
+      };
     }
   }
 
+  // Approval Threshold Check
   if (criticalAction) {
     const needsApproval = actionRequiresApproval(role, criticalAction);
     if (needsApproval) {

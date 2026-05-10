@@ -6,6 +6,11 @@ import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { motion, useAnimation } from "framer-motion";
 import { useAlerts } from "@/core/components/feedback/AlertProvider";
+import { 
+  Role, 
+  CriticalAction,
+  NotificationType 
+} from "@prisma/client";
 
 /**
  * MASA - Unified Sign In
@@ -15,19 +20,19 @@ import { useAlerts } from "@/core/components/feedback/AlertProvider";
 interface AuthErrorConfig {
   title: string;
   message: string;
-  type: "ERROR" | "SECURITY" | "WARNING";
+  type: NotificationType;
   kind: "PUSH" | "TOAST";
 }
 
 const ERROR_MAP: Record<string, AuthErrorConfig> = {
-  ACCOUNT_DISABLED: { title: "Account Disabled", message: "Your access has been revoked. Contact your admin.", type: "SECURITY", kind: "PUSH" },
-  ORGANIZATION_SUSPENDED: { title: "Organization Suspended", message: "Access is temporarily offline for your organization.", type: "ERROR", kind: "PUSH" },
-  ACCOUNT_LOCKED_ADMIN: { title: "Account Locked", message: "Your account is locked for security reasons.", type: "ERROR", kind: "PUSH" },
-  EXCESSIVE_FAILED_ATTEMPTS: { title: "Too Many Attempts", message: "Security lockout active. Please try again in 15 minutes.", type: "ERROR", kind: "PUSH" },
-  TEMPORARY_SECURITY_LOCKOUT: { title: "Temporary Lockout", message: "Please wait 15 minutes before trying again.", type: "SECURITY", kind: "PUSH" },
-  INVALID_CREDENTIALS: { title: "Login Failed", message: "The email or password provided is incorrect.", type: "ERROR", kind: "TOAST" },
-  CredentialsSignin: { title: "Login Failed", message: "The email or password provided is incorrect.", type: "ERROR", kind: "TOAST" },
-  SessionExpired: { title: "Session Expired", message: "Please sign in again to continue.", type: "SECURITY", kind: "PUSH" },
+  ACCOUNT_DISABLED: { title: "Account Disabled", message: "Your access has been revoked. Contact your admin.", type: NotificationType.SECURITY, kind: "PUSH" },
+  ORGANIZATION_SUSPENDED: { title: "Organization Suspended", message: "Access is temporarily offline for your organization.", type: NotificationType.SYSTEM, kind: "PUSH" },
+  ACCOUNT_LOCKED_ADMIN: { title: "Account Locked", message: "Your account is locked for security reasons.", type: NotificationType.SECURITY, kind: "PUSH" },
+  EXCESSIVE_FAILED_ATTEMPTS: { title: "Too Many Attempts", message: "Security lockout active. Please try again in 15 minutes.", type: NotificationType.SECURITY, kind: "PUSH" },
+  TEMPORARY_SECURITY_LOCKOUT: { title: "Temporary Lockout", message: "Please wait 15 minutes before trying again.", type: NotificationType.SECURITY, kind: "PUSH" },
+  INVALID_CREDENTIALS: { title: "Login Failed", message: "The email or password provided is incorrect.", type: NotificationType.SECURITY, kind: "TOAST" },
+  CredentialsSignin: { title: "Login Failed", message: "The email or password provided is incorrect.", type: NotificationType.SECURITY, kind: "TOAST" },
+  SessionExpired: { title: "Session Expired", message: "Please sign in again to continue.", type: NotificationType.SECURITY, kind: "PUSH" },
 };
 
 const SignInForm = () => {
@@ -47,7 +52,7 @@ const SignInForm = () => {
   useEffect(() => {
     if (urlError && ERROR_MAP[urlError]) {
       const config = ERROR_MAP[urlError];
-      dispatch({ kind: config.kind, type: config.type, title: config.title, message: config.message });
+      dispatch({ kind: config.kind, type: config.type, title: config.title, message: config.message, notificationId: "" });
       controls.start({ x: [-8, 8, -8, 8, 0], transition: { duration: 0.4 } });
     }
   }, [urlError, dispatch, controls]);
@@ -68,16 +73,17 @@ const SignInForm = () => {
       if (result?.error) {
         await controls.start({ x: [-8, 8, -8, 8, 0], transition: { duration: 0.4 } });
         const config = ERROR_MAP[result.error] || ERROR_MAP.INVALID_CREDENTIALS;
-        dispatch({ kind: config.kind, type: config.type, title: config.title, message: config.message });
+        dispatch({ kind: config.kind, type: config.type, title: config.title, message: config.message, notificationId: "" });
       } else {
         const session = await getSession();
         const user = session?.user;
 
         dispatch({
           kind: "PUSH",
-          type: user?.requiresPasswordChange ? "WARNING" : "SUCCESS",
+          type: user?.requiresPasswordChange ? NotificationType.SECURITY : NotificationType.SYSTEM,
           title: user?.requiresPasswordChange ? "Update Required" : "Welcome Back",
           message: "Redirecting to your dashboard...",
+          notificationId: "",
         });
 
         setTimeout(() => {
@@ -89,8 +95,8 @@ const SignInForm = () => {
           router.refresh(); 
         }, 800);
       }
-    } catch (err) {
-      dispatch({ kind: "TOAST", type: "ERROR", title: "Connection Error", message: "Unable to reach the server." });
+    } catch {
+      dispatch({ kind: "TOAST", type: NotificationType.SYSTEM, title: "Connection Error", message: "Unable to reach the server.", notificationId: "" });
     } finally {
       setLoading(false);
     }
@@ -156,7 +162,7 @@ const SignInForm = () => {
         </motion.form>
 
         <div className="flex flex-col items-center gap-3 pt-6 border-t border-slate-100">
-          <p className="text-xs text-slate-400">Don't have an account yet?</p>
+          <p className="text-xs text-slate-400">Don&apos;t have an account yet?</p>
           <Link href="/register" className="text-sm font-bold text-blue-600 hover:text-blue-800 transition-colors">
             Create Account
           </Link>
@@ -169,13 +175,11 @@ const SignInForm = () => {
 export default function SignInPage() {
   return (
     <div className="h-screen w-full bg-[#F8FAFC] flex flex-col overflow-hidden relative">
-      {/* Background Decor - Only visible on Large Screens */}
       <div className="absolute inset-0 pointer-events-none z-0 overflow-hidden hidden lg:block">
         <div className="absolute -left-20 -top-20 w-[500px] h-[500px] bg-blue-100/50 rounded-full blur-3xl" />
         <div className="absolute -right-20 -bottom-20 w-[500px] h-[500px] bg-indigo-100/50 rounded-full blur-3xl" />
       </div>
 
-      {/* Navigation */}
       <header className="flex-none z-30 h-20">
         <nav className="max-w-7xl mx-auto px-8 h-full flex items-center">
           <div className="flex items-center gap-3">
@@ -185,11 +189,8 @@ export default function SignInPage() {
         </nav>
       </header>
 
-      {/* Main Content */}
       <main className="flex-1 relative z-20 flex items-center justify-center px-6">
         <div className="max-w-7xl w-full grid grid-cols-1 lg:grid-cols-2 gap-16 items-center">
-          
-          {/* Left Side: Info - Hidden on Mobile/Tablet */}
           <section className="hidden lg:flex flex-col space-y-8">
             <div className="space-y-4">
               <div className="inline-flex items-center gap-2 bg-blue-50 text-blue-700 px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-widest border border-blue-100">
@@ -216,7 +217,6 @@ export default function SignInPage() {
             </div>
           </section>
 
-          {/* Right Side: Form - Centered on Mobile/Tablet */}
           <section className="flex justify-center lg:justify-end">
             <Suspense fallback={<div className="text-slate-400 font-bold animate-pulse">Loading Terminal...</div>}>
               <SignInForm />
@@ -224,7 +224,102 @@ export default function SignInPage() {
           </section>
         </div>
       </main>
-
     </div>
   );
+}
+
+/**
+ * =========================================================
+ * ROLE HIERARCHY & UTILITIES
+ * =========================================================
+ */
+export const ROLE_WEIGHT: Record<Role, number> = {
+  DEV: 100,
+  ADMIN: 50,
+  MANAGER: 40,
+  AUDITOR: 35,
+  INVENTORY: 30,
+  SALES: 20,
+  CASHIER: 10,
+} as const;
+
+export const DEFAULT_TERMINALS: Record<Role, string> = {
+  DEV: "/db-inspector",
+  ADMIN: "/",
+  MANAGER: "/",
+  AUDITOR: "/audit",
+  INVENTORY: "/inventory",
+  SALES: "/pos",
+  CASHIER: "/pos",
+} as const;
+
+export const RESOURCES = {
+  INVOICE: "INVOICE",
+  STOCK: "STOCK",
+  PRODUCT: "PRODUCT",
+  CUSTOMER: "CUSTOMER",
+  EXPENSE: "EXPENSE",
+  PROCUREMENT: "PROCUREMENT",
+  VENDOR: "VENDOR",
+  REPORT: "REPORT",
+  AUDIT: "AUDIT",
+  SETTINGS: "SETTINGS",
+  BRANCH: "BRANCH",
+  PERSONNEL: "PERSONNEL",
+  FINANCE: "FINANCE",
+} as const;
+
+export type ResourceType = (typeof RESOURCES)[keyof typeof RESOURCES];
+
+export type ManagementAction = 
+  | "UPDATE_ROLE" 
+  | "UPDATE_STATUS" 
+  | "DELETE" 
+  | "RESET_PASSWORD" 
+  | "TRANSFER_BRANCH";
+
+export const ACTION_REQUIREMENTS: Record<CriticalAction, Role> = {
+  USER_LOCK_UNLOCK: Role.MANAGER,
+  EMAIL_CHANGE: Role.ADMIN,
+  PASSWORD_CHANGE: Role.ADMIN,
+  PRICE_UPDATE: Role.MANAGER,
+  STOCK_ADJUST: Role.MANAGER,
+  STOCK_TRANSFER: Role.MANAGER,
+  VOID_INVOICE: Role.MANAGER,
+};
+
+export function getFallbackRoute(
+  role?: Role, 
+  state?: 'VALID' | 'LOCKED' | 'DISABLED' | 'EXPIRED' | 'PASSWORD_RESET'
+): string {
+  if (state === 'PASSWORD_RESET') return '/reset-password';
+  if (!role || state === 'LOCKED' || state === 'DISABLED' || state === 'EXPIRED') {
+    return `/signin${state ? `?error=ACCOUNT_${state}` : ''}`;
+  }
+  return DEFAULT_TERMINALS[role] || "/";
+}
+
+export function authorize({
+  role,
+  isOrgOwner = false,
+  criticalAction,
+}: {
+  role: Role;
+  isOrgOwner?: boolean;
+  criticalAction?: CriticalAction;
+}): { allowed: boolean; requiresApproval?: boolean; reason?: string } {
+  if (isOrgOwner) return { allowed: true };
+
+  if (criticalAction) {
+    const requiredRole = ACTION_REQUIREMENTS[criticalAction];
+    if (ROLE_WEIGHT[role] < ROLE_WEIGHT[requiredRole]) {
+      return {
+        allowed: false,
+        requiresApproval: true,
+        reason: "This action requires higher-level approval.",
+      };
+    }
+  }
+
+  return { allowed: true };
 }

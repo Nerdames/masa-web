@@ -18,6 +18,20 @@ import crypto from "crypto";
 import { authorize, RESOURCES } from "@/core/lib/permission";
 
 /**
+ * Interface representing the augmented NextAuth user structure.
+ * Derived from @_core_lib_auth.docx
+ */
+interface MasaUser {
+  id: string;
+  name?: string | null;
+  email?: string | null;
+  role: Role;
+  isOrgOwner: boolean;
+  organizationId: string;
+  branchId: string | null;
+}
+
+/**
  * PATCH /api/inventory/grns/[id]
  * Finalizes a Goods Receipt Note (Approves or Rejects)
  * Logic: Audit-Proof Inventory Ledger Integration
@@ -30,7 +44,8 @@ export async function PATCH(
     const session = await getServerSession(authOptions);
     if (!session?.user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     
-    const user = session.user as any;
+    // Fixed: Specified MasaUser type instead of any
+    const user = session.user as MasaUser;
     const orgId = user.organizationId;
     const { id: grnId } = await params;
 
@@ -200,7 +215,7 @@ export async function PATCH(
           branchId: grn.branchId,
           actorId: user.id,
           actorType: ActorType.USER,
-          actorRole: user.role as Role,
+          actorRole: user.role,
           action: actionTitle,
           targetType: "GRN",
           targetId: grn.id,
@@ -247,10 +262,12 @@ export async function PATCH(
       message: `Inventory successfully ${result.status === "RECEIVED" ? "updated" : "locked"}.`
     });
 
-  } catch (err: any) {
+  } catch (err: unknown) {
+    // Fixed: Replaced err: any with err: unknown and proper error checking
     console.error("[GRN_FINALIZATION_CRITICAL_FAIL]", err);
+    const errorMessage = err instanceof Error ? err.message : "A system error occurred during inventory finalization.";
     return NextResponse.json(
-      { error: err.message || "A system error occurred during inventory finalization." }, 
+      { error: errorMessage }, 
       { status: 400 }
     );
   }

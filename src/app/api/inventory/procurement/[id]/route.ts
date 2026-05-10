@@ -1,3 +1,5 @@
+"use client";
+
 import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "next-auth/next";
 import { authOptions } from "@/core/lib/auth";
@@ -48,8 +50,8 @@ async function createAuditLog(
     requestId: string;
     ipAddress: string;
     deviceInfo: string;
-    before?: any;
-    after?: any;
+    before?: Prisma.InputJsonValue;
+    after?: Prisma.InputJsonValue;
   }
 ) {
   const lastLog = await tx.activityLog.findFirst({
@@ -84,8 +86,8 @@ async function createAuditLog(
       targetId: data.resourceId,
       severity: data.severity ?? Severity.MEDIUM,
       description: data.description,
-      before: data.before ? (data.before as Prisma.InputJsonValue) : Prisma.JsonNull,
-      after: data.after ? (data.after as Prisma.InputJsonValue) : Prisma.JsonNull,
+      before: data.before ?? Prisma.JsonNull,
+      after: data.after ?? Prisma.JsonNull,
       requestId: data.requestId,
       ipAddress: data.ipAddress,
       deviceInfo: data.deviceInfo,
@@ -123,8 +125,8 @@ export async function GET(
         id,
         organizationId: user.organizationId,
         deletedAt: null,
-        // If not admin/manager, restrict to user's branch
-        branchId: [Role.ADMIN, Role.MANAGER, Role.AUDITOR].includes(user.role) || user.isOrgOwner 
+        // Typed the array to ensure Role compatibility
+        branchId: ([Role.ADMIN, Role.MANAGER, Role.AUDITOR] as Role[]).includes(user.role) || user.isOrgOwner 
           ? undefined 
           : (user.branchId ?? undefined),
       },
@@ -146,7 +148,7 @@ export async function GET(
     if (!po) return NextResponse.json({ error: "Purchase Order not found" }, { status: 404 });
 
     return NextResponse.json(po);
-  } catch (err) {
+  } catch {
     return NextResponse.json({ error: "Internal server error" }, { status: 500 });
   }
 }
@@ -177,7 +179,7 @@ export async function PATCH(
     const auth = authorize({
       role: user.role,
       isOrgOwner: user.isOrgOwner,
-      action: PermissionAction.VOID, // Explicit check for VOID/CANCEL capability
+      action: PermissionAction.VOID, 
       resource: RESOURCES.PROCUREMENT,
     });
 
@@ -200,7 +202,6 @@ export async function PATCH(
 
       if (!existingPO) throw new Error("PO_NOT_FOUND");
       
-      // Business Rules Check
       if (existingPO.status === POStatus.CANCELLED) throw new Error("PO_ALREADY_CANCELLED");
       
       const irreversibleStatuses: POStatus[] = [
@@ -212,7 +213,6 @@ export async function PATCH(
         throw new Error("CANNOT_CANCEL_RECEIVED_GOODS");
       }
 
-      // Update PO Status
       const updatedPO = await tx.purchaseOrder.update({
         where: { id: poId },
         data: { 
@@ -221,8 +221,8 @@ export async function PATCH(
         },
       });
 
-      // 5. Forensic Audit
-      await createAuditLog(tx, {
+      // 5. Forensic Audit - Cast tx to resolve client extension mismatch
+      await createAuditLog(tx as Prisma.TransactionClient, {
         organizationId: user.organizationId,
         branchId: existingPO.branchId,
         actorId: user.id,
@@ -246,7 +246,7 @@ export async function PATCH(
 
     return NextResponse.json({ success: true, status: result.status });
 
-  } catch (err: any) {
+  } catch (err) {
     console.error("[PO_VOID_ERROR]", err);
     
     const errorMap: Record<string, { m: string; s: number }> = {
@@ -255,7 +255,10 @@ export async function PATCH(
       CANNOT_CANCEL_RECEIVED_GOODS: { m: "Cannot cancel an order that has been fulfilled or partially received", s: 403 },
     };
 
-    const errorInfo = errorMap[err.message] || { m: "Internal server error", s: 500 };
+    // Narrow err to access message safely
+    const message = err instanceof Error ? err.message : "UNKNOWN_ERROR";
+    const errorInfo = errorMap[message] || { m: "Internal server error", s: 500 };
+    
     return NextResponse.json({ error: errorInfo.m }, { status: errorInfo.s });
   }
 }

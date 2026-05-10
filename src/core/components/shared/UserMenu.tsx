@@ -21,7 +21,7 @@ import ConfirmModal from "@/core/components/modal/ConfirmModal";
 import { Role } from "@prisma/client";
 
 /* ------------------------------------------
- * TYPES (Perfectly Aligned with Auth Augmentation)
+ * TYPES (Aligned with Auth Augmentation)
  * ------------------------------------------ */
 interface AllowedBranch {
   id: string;
@@ -66,7 +66,6 @@ export function UserMenu({ trigger }: UserMenuProps) {
   const [showBranches, setShowBranches] = useState(false);
   const [open, setOpen] = useState(false);
 
-  // Memoized Initials
   const initials = useMemo(() => {
     if (!user?.name) return "??";
     const parts = user.name.trim().split(/\s+/);
@@ -89,31 +88,34 @@ export function UserMenu({ trigger }: UserMenuProps) {
   }, []);
 
   /**
-   * ALIGNED BRANCH SWITCH LOGIC
-   * Triggers the dynamic DB verification and context shift in auth.ts
+   * REFINED BRANCH SWITCH LOGIC
+   * Ensures atomic transition and UI synchronization
    */
   const handleBranchSwitch = async (branchId: string) => {
-    if (branchId === user?.branchId || isSwitching) return;
+    // Prevent redundant calls or calls during active transitions
+    if (!branchId || branchId === user?.branchId || isSwitching) return;
 
     try {
       setIsSwitching(true);
       
-      // The update call triggers the 'jwt' callback in authOptions.
-      // Our backend now verifies the branch in the DB and returns 
-      // updated permissions and allowedBranches.
-      const response = await update({
+      // 1. Trigger the JWT update (handled by auth.ts logic)
+      const newSession = await update({
         action: "SWITCH_BRANCH",
         targetBranchId: branchId,
       });
 
-      if (response) {
+      // 2. Verify the session actually updated (Security Check)
+      // next-auth 'update' returns the updated session object
+      if (newSession?.user?.branchId === branchId) {
         setShowBranches(false);
-        // router.refresh forces Next.js to re-fetch Server Component data 
-        // using the new branchId in the session cookie.
+        setOpen(false); // Close the menu completely to signal transition
+        
+        // 3. Force re-validation of all server components using the new branchId context
         router.refresh();
       } else {
-        // This would only happen if the JWT callback returned the original token (rejected)
-        console.warn("[SECURITY] Branch switch rejected by server.");
+        // This indicates the 'jwt' callback rejected the switch (e.g., unauthorized)
+        console.error("[SECURITY] Branch switch rejected by server verification.");
+        // Optional: Trigger a toast notification here
       }
     } catch (error) {
       console.error("[BRANCH_SWITCH_ERROR]:", error);
@@ -138,7 +140,6 @@ export function UserMenu({ trigger }: UserMenuProps) {
     );
   }
 
-  // Logic: OrgOwners get all branches from DB; Staff get assigned ones.
   const canSwitchBranches = user.allowedBranches && user.allowedBranches.length > 1;
 
   return (
@@ -214,7 +215,10 @@ export function UserMenu({ trigger }: UserMenuProps) {
                   <div className="p-2 border-b border-slate-100 relative">
                     <button
                       disabled={isSwitching || !canSwitchBranches}
-                      onClick={() => setShowBranches(!showBranches)}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setShowBranches(!showBranches);
+                      }}
                       className="w-full group flex items-center justify-between p-2.5 rounded-xl hover:bg-slate-50 transition-colors disabled:cursor-default"
                     >
                       <div className="flex items-center gap-3 min-w-0">
@@ -333,9 +337,6 @@ export function UserMenu({ trigger }: UserMenuProps) {
   );
 }
 
-/**
- * Standardized Menu Item component utilizing Lucide icons with strict typing
- */
 const MenuAction = ({ icon: Icon, label, onClick }: { icon: LucideIcon; label: string; onClick: () => void }) => (
   <DropdownMenu.Item
     onClick={onClick}

@@ -17,6 +17,32 @@ import crypto from "crypto";
 import { authorize, RESOURCES } from "@/core/lib/permission";
 
 /* -------------------------
+  Interfaces & Types
+------------------------- */
+
+/** * Matches the Session user structure from @_core_lib_auth.docx 
+ */
+interface MasaUser {
+  id: string;
+  role: Role;
+  organizationId: string;
+  branchId: string | null;
+  isOrgOwner: boolean;
+  permissions: string[]; // Formatted as "ACTION:RESOURCE" [cite: 1608, 1609]
+}
+
+/**
+ * Payload interface for GRN items
+ */
+interface GRNItemInput {
+  productId: string;
+  poItemId?: string;
+  unitCost: number;
+  quantityAccepted: number;
+  quantityRejected: number;
+}
+
+/* -------------------------
   Helpers & Config
 ------------------------- */
 const DEFAULT_LIMIT = 25;
@@ -47,21 +73,17 @@ function generateGRNNumber(branchId?: string | null): string {
   return `GRN-${branchPart}-${suffix}`;
 }
 
-async function canExport(user: any): Promise<boolean> {
+/**
+ * Validates export permissions.
+ * Fixed: Uses the permissions array from the user token [cite: 1608] instead of a missing DB model.
+ */
+async function canExport(user: MasaUser): Promise<boolean> {
   if (user.isOrgOwner) return true;
-  try {
-    const perm = await prisma.permission.findUnique({
-      where: {
-        organizationId_role_action_resource: {
-          organizationId: user.organizationId,
-          role: user.role,
-          action: PermissionAction.EXPORT,
-          resource: RESOURCES.PROCUREMENT,
-        },
-      },
-    });
-    if (perm) return true;
-  } catch (e) {}
+  
+  // Check the injected permissions array for "EXPORT:PROCUREMENT"
+  const hasExportPerm = user.permissions.includes(`${PermissionAction.EXPORT}:${RESOURCES.PROCUREMENT}`);
+  if (hasExportPerm) return true;
+
   return [Role.ADMIN, Role.MANAGER, Role.AUDITOR, Role.DEV].includes(user.role);
 }
 
@@ -72,7 +94,9 @@ export async function GET(req: NextRequest) {
   try {
     const session = await getServerSession(authOptions);
     if (!session?.user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    const user = session.user as any;
+    
+    // Fixed: Cast to strictly typed MasaUser [cite: 1605, 1606]
+    const user = session.user as MasaUser;
 
     const { searchParams } = new URL(req.url);
     const meta = searchParams.get("meta");
@@ -214,7 +238,7 @@ export async function GET(req: NextRequest) {
     }
 
     return NextResponse.json({ items, total, page, limit: take });
-  } catch (err: any) {
+  } catch (err) {
     console.error("[GRN_GET_ERROR]", err);
     return NextResponse.json({ error: "Internal server error" }, { status: 500 });
   }
@@ -227,7 +251,8 @@ export async function POST(req: NextRequest) {
   try {
     const session = await getServerSession(authOptions);
     if (!session?.user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    const user = session.user as any;
+    
+    const user = session.user as MasaUser;
     const orgId = user.organizationId;
     
     const requestId = crypto.randomUUID();
@@ -273,7 +298,10 @@ export async function POST(req: NextRequest) {
       if (!branchId) throw new Error("Target branch is required.");
       if (!vendorId) throw new Error("Vendor is required.");
 
-      const productIds = rawItems.map((it: any) => it.productId);
+      // Fixed: Strictly typed mapping [cite: 1612]
+      const typedRawItems = rawItems as GRNItemInput[];
+      const productIds = typedRawItems.map((it) => it.productId);
+      
       const baseProducts = await tx.product.findMany({
         where: { id: { in: productIds } },
         select: { id: true, uomId: true }
@@ -297,7 +325,7 @@ export async function POST(req: NextRequest) {
         include: { vendor: { select: { name: true } } }
       });
 
-      for (const it of rawItems) {
+      for (const it of typedRawItems) {
         const itemCost = new Decimal(it.unitCost || 0);
         const qtyAccepted = Number(it.quantityAccepted || 0);
         const qtyRejected = Number(it.quantityRejected || 0);
@@ -350,7 +378,7 @@ export async function POST(req: NextRequest) {
           branchId,
           actorId: user.id,
           actorType: ActorType.USER,
-          actorRole: user.role as Role,
+          actorRole: user.role,
           action: "CREATE_GRN_PENDING",
           targetType: "GRN",
           targetId: grn.id,
@@ -386,8 +414,16 @@ export async function POST(req: NextRequest) {
     });
 
     return NextResponse.json({ success: true, id: result.id, grnNumber: result.grnNumber }, { status: 201 });
-  } catch (err: any) {
+  } catch (err: unknown) {
     console.error("[GRN_POST_ERROR]", err);
-    return NextResponse.json({ error: err.message || "Failed to process receipt." }, { status: 400 });
+    const message = err instanceof Error ? err.message : "Failed to process receipt.";
+    return NextResponse.json({ error: message }, { status: 400 });
   }
 }
+
+/* -------------------------
+  MATCHER CONFIG
+------------------------- */
+export const config = {
+  matcher: ["/api/inventory/grns/:path*"],
+};

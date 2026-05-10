@@ -39,7 +39,7 @@ export type AlertKind = "TOAST" | "PUSH";
 
 export interface MASAAlert {
   id: string; 
-  notificationId: string; 
+  notificationId?: string; // CHANGED: Made optional so local dispatch works
   kind: AlertKind;
   type: NotificationType;
   title: string;
@@ -47,6 +47,12 @@ export interface MASAAlert {
   createdAt: number;
   read: boolean;
   context?: any;
+}
+
+// Helper for the ToastItem props which was missing in the snippet
+interface ToastItemProps {
+  alert: MASAAlert;
+  onRemove: (id: string) => void;
 }
 
 interface AlertContextType {
@@ -119,7 +125,7 @@ export function AlertProvider({ children }: { children: React.ReactNode }) {
       }));
 
       setAlerts((prev) => {
-        const existingIds = new Set(prev.map((a) => a.notificationId));
+        const existingIds = new Set(prev.map((a) => a.notificationId).filter(Boolean));
         const newOnes = mapped.filter((m) => !existingIds.has(m.notificationId) && !m.read);
         return [...newOnes, ...prev].sort((a, b) => b.createdAt - a.createdAt);
       });
@@ -204,8 +210,6 @@ export function AlertProvider({ children }: { children: React.ReactNode }) {
   const activePushes = useMemo(() => alerts.filter(a => a.kind === "PUSH"), [alerts]);
   const activeToasts = useMemo(() => alerts.filter(a => a.kind === "TOAST"), [alerts]);
 
-  // FIX: Always return the Provider so child hooks don't crash.
-  // We only conditionally render the notification UI overlays when authenticated.
   return (
     <AlertContext.Provider value={{ dispatch, remove, refresh: fetchNotifications, markRead, clearActivePushes }}>
       {children}
@@ -240,7 +244,7 @@ export function AlertProvider({ children }: { children: React.ReactNode }) {
 }
 
 /* -------------------------------------------------- */
-/* SUB-COMPONENTS */
+/* SUB-COMPONENTS (Simplified/Fixed) */
 /* -------------------------------------------------- */
 
 interface PushGroupProps {
@@ -330,7 +334,6 @@ function PushItem({ alert }: { alert: MASAAlert }) {
   
   const isWelcome = alert.context?.isWelcome || alert.title.toLowerCase().includes("welcome");
 
-  // Detect Truncation
   useLayoutEffect(() => {
     if (textRef.current) {
       const isOverflowing = textRef.current.scrollHeight > textRef.current.clientHeight;
@@ -338,12 +341,20 @@ function PushItem({ alert }: { alert: MASAAlert }) {
     }
   }, [alert.message]);
 
+  const handleMarkRead = () => {
+    if (alert.notificationId) {
+      markRead(alert.notificationId, alert.id);
+    } else {
+      remove(alert.id);
+    }
+  };
+
   return (
     <motion.div
       layout
       drag={isWelcome ? false : "x"}
       dragConstraints={{ left: 0, right: 150 }}
-      onDragEnd={(_, info) => !isWelcome && info.offset.x > 80 && markRead(alert.notificationId, alert.id)}
+      onDragEnd={(_, info) => !isWelcome && info.offset.x > 80 && handleMarkRead()}
       className="bg-white dark:bg-[#202023] p-3 rounded-lg border border-transparent hover:border-black/5 dark:hover:border-white/5 mb-1 last:mb-0 touch-none select-none"
     >
       <div className="flex gap-3">
@@ -365,10 +376,9 @@ function PushItem({ alert }: { alert: MASAAlert }) {
           <div className="flex items-center gap-3 mt-2">
             {!isWelcome && (
               <>
-                <button onClick={() => markRead(alert.notificationId, alert.id)} className="text-[10px] font-bold text-blue-600 hover:underline">
+                <button onClick={handleMarkRead} className="text-[10px] font-bold text-blue-600 hover:underline">
                   Mark Read
                 </button>
-                {/* Only show Detail toggle if truncated OR extra actions/context exist */}
                 {(isTruncated || alert.context) && (
                   <button onClick={() => setIsLocalExpanded(!isLocalExpanded)} className="text-[10px] font-bold text-slate-400">
                     {isLocalExpanded ? 'Show Less' : 'Details'}

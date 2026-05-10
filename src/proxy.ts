@@ -1,7 +1,20 @@
 import { NextRequest, NextResponse, NextFetchEvent } from "next/server";
 import { getToken } from "next-auth/jwt";
 import { Role } from "@prisma/client";
-import { hasPagePermission } from "@/core/lib/permission";
+import { hasPagePermission, getFallbackRoute } from "@/core/lib/permission";
+
+/**
+ * Custom JWT interface to match the schema in @_core_lib_auth.docx
+ */
+interface MasaToken {
+  id: string;
+  role: Role;
+  isOrgOwner: boolean;
+  disabled: boolean;
+  locked: boolean;
+  requiresPasswordChange: boolean;
+  expired?: boolean;
+}
 
 /* -------------------------------------------------- */
 /* CONFIGURATION                                      */
@@ -55,19 +68,20 @@ function isDataRequest(req: NextRequest) {
  */
 function safeRedirect(req: NextRequest, destination: string, error?: string) {
   const { pathname, origin, searchParams } = req.nextUrl;
+  const url = new URL(destination, origin);
 
-  // 1. Prevent Infinite Loops: If already at destination with the same error, do nothing
-  if (pathname === destination) {
+  // 1. Prevent Infinite Loops
+  // If we are already at the destination with the exact same error, let it render
+  if (pathname === url.pathname) {
     if (!error || searchParams.get("error") === error) return NextResponse.next();
   }
 
-  const url = new URL(destination, origin);
-
-  // 2. Attach Callback: Only if moving from a protected content page to signin
-  if (destination === "/signin" && pathname !== "/" && !isAuthRoute(pathname)) {
+  // 2. Attach Callback: Only if moving from a protected content page to sign-in
+  if (url.pathname === "/signin" && pathname !== "/" && !isAuthRoute(pathname)) {
     url.searchParams.set("callbackUrl", pathname);
   }
 
+  // 3. Attach Error Code securely
   if (error) url.searchParams.set("error", error);
 
   return NextResponse.redirect(url);
@@ -97,7 +111,7 @@ function logSecurityEvent(
   ev: NextFetchEvent,
   origin: string,
   action: string,
-  meta: Record<string, any>
+  meta: Record<string, unknown>
 ) {
   const key = process.env.INTERNAL_API_KEY;
   if (!key) return;
@@ -139,13 +153,13 @@ export async function proxy(req: NextRequest, ev: NextFetchEvent) {
     /* ------------------------------------------ */
     /* 2. TOKEN SAFE EXTRACTION                   */
     /* ------------------------------------------ */
-    let token = null;
+    let token: MasaToken | null = null;
 
     try {
-      token = await getToken({
+      token = (await getToken({
         req,
         secret: process.env.NEXTAUTH_SECRET,
-      });
+      })) as unknown as MasaToken;
     } catch {
       return handleUnauthorized(req, "/signin", "Unauthenticated");
     }
@@ -157,7 +171,6 @@ export async function proxy(req: NextRequest, ev: NextFetchEvent) {
     /* ------------------------------------------ */
     if (!token) {
       if (authPage) return NextResponse.next();
-      // Leave error undefined for standard non-auth visits to avoid ?error= clutter
       return handleUnauthorized(req, "/signin");
     }
 
@@ -165,23 +178,27 @@ export async function proxy(req: NextRequest, ev: NextFetchEvent) {
     /* 4. ACCOUNT STATE CHECK (Supremacy Logic)   */
     /* ------------------------------------------ */
     if (token.disabled || token.locked || token.expired) {
-      const errorCode = token.disabled
-        ? "ACCOUNT_DISABLED"
-        : token.locked
-        ? "ACCOUNT_LOCKED"
-        : "SessionExpired";
+      const state = token.disabled ? "DISABLED" : token.locked ? "LOCKED" : "EXPIRED";
+      
+      const fallbackUrl = getFallbackRoute(token.role, state); 
 
-      if (authPage && req.nextUrl.searchParams.get("error") === errorCode) {
+      // If already on signin with correct error param, don't redirect again
+      const currentError = req.nextUrl.searchParams.get("error");
+      if (authPage && currentError === `ACCOUNT_${state}`) {
         return NextResponse.next();
       }
 
       logSecurityEvent(ev, origin, "SECURITY_BLOCK", {
         userId: token.id,
         path: pathname,
-        reason: errorCode,
+        reason: state,
       });
 
-      return handleUnauthorized(req, "/signin", errorCode);
+      // Crucial: Clear session cookies to force a fresh login attempt
+      const res = NextResponse.redirect(new URL(fallbackUrl, origin));
+      res.cookies.delete("next-auth.session-token");
+      res.cookies.delete("__Secure-next-auth.session-token");
+      return res;
     }
 
     /* ------------------------------------------ */
@@ -201,19 +218,19 @@ export async function proxy(req: NextRequest, ev: NextFetchEvent) {
     /* 6. PREVENT AUTH PAGE ACCESS WHEN LOGGED IN */
     /* ------------------------------------------ */
     if (authPage) {
-      // Allow reset-password if explicitly requested and allowed, but block signin/register
       if (pathname === "/reset-password") return NextResponse.next();
-      if (pathname === "/") return NextResponse.next();
-      return safeRedirect(req, "/");
+      
+      const terminal = getFallbackRoute(token.role, "VALID");
+      return safeRedirect(req, terminal);
     }
 
     /* ------------------------------------------ */
     /* 7. RBAC PAGE-LEVEL CHECK                   */
     /* ------------------------------------------ */
     const allowed = hasPagePermission(
-      token.role as Role,
+      token.role,
       pathname,
-      Boolean(token.isOrgOwner)
+      token.isOrgOwner
     );
 
     if (!allowed) {
@@ -223,20 +240,9 @@ export async function proxy(req: NextRequest, ev: NextFetchEvent) {
         path: pathname,
       });
 
-      // Smart Fallback mapping to prevent redirecting to an unauthorized root
-      const fallbackMap: Record<string, string> = {
-        ADMIN: "/",
-        MANAGER: "/",
-        INVENTORY: "/inventory",
-        SALES: "/pos",
-        CASHIER: "/pos",
-        AUDITOR: "/audit",
-        DEV: "/db-inspector",
-      };
+      const fallback = getFallbackRoute(token.role, "VALID");
 
-      const fallback = fallbackMap[token.role as string] || "/";
-
-      // Prevent a fallback loop if the map configuration is ever out of sync
+      // Prevent infinite loops if configuration is mismatched
       if (pathname === fallback) return NextResponse.next();
 
       return handleUnauthorized(req, fallback, "AccessDenied");
@@ -271,8 +277,8 @@ export const config = {
      * Match all request paths except for:
      * - api/auth (NextAuth strictly handles its own routing)
      * - _next/static, _next/image (Next.js internals)
-     * - favicon.ico
+     * - favicon.ico, images, assets (Static files)
      */
-    "/((?!api/auth|_next/static|_next/image|favicon.ico).*)",
+    "/((?!api/auth|_next/static|_next/image|favicon.ico|images|assets).*)",
   ],
 };
