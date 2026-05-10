@@ -22,9 +22,6 @@ const DEFAULT_LIMIT = 25;
 const MAX_LIMIT = 100;
 const EXPORT_LIMIT = 10000;
 
-/**
- * Standardizes user object from session for internal use
- */
 interface AuthenticatedUser {
   id: string;
   organizationId: string;
@@ -451,6 +448,9 @@ export async function POST(req: NextRequest) {
     const vendor = await prisma.vendor.findFirst({ where: { id: vendorId, organizationId: orgId, deletedAt: null } });
     if (!vendor) return NextResponse.json({ error: "Vendor not active or missing." }, { status: 404 });
 
+    // Restrict initial creation strictly to DRAFT or ISSUED
+    const finalStatus = requestedStatus === POStatus.ISSUED ? POStatus.ISSUED : POStatus.DRAFT;
+
     // Bulk fetch products for performance and fallback evaluation
     const productIds = rawItems.map((it: any) => it.productId || it.id).filter(Boolean);
     const products = await prisma.product.findMany({
@@ -493,9 +493,6 @@ export async function POST(req: NextRequest) {
 
     const totalAmount = itemsValidated.reduce((sum, it) => sum.add(it.totalCost), new Decimal(0));
 
-    // Dynamic resolution based on payload, default strictly to DRAFT
-    const finalStatus = requestedStatus === POStatus.ISSUED ? POStatus.ISSUED : POStatus.DRAFT;
-
     const created = await prisma.$transaction(async (tx) => {
       // Uniqueness check for PO Number with cryptographically stable fallback
       const poNumber = providedPoNumber?.trim() || generatePONumber(branchId);
@@ -514,6 +511,7 @@ export async function POST(req: NextRequest) {
           expectedDate: expectedDate ? new Date(expectedDate) : null,
           notes: notes ?? null,
           createdById: user.id,
+          // Stamp approver strictly if issued straight away
           approvedById: finalStatus === POStatus.ISSUED ? user.id : undefined,
           items: {
             create: itemsValidated.map((it) => ({
@@ -566,110 +564,5 @@ export async function POST(req: NextRequest) {
   } catch (err: any) {
     console.error("[PO_POST_ERROR]", err);
     return NextResponse.json({ error: err?.message || "Internal server error" }, { status: 500 });
-  }
-}
-
-/* -------------------------
-  PATCH /api/inventory/procurement
-  (Security Logic for Updating/Approving POs)
-------------------------- */
-
-export async function PATCH(req: NextRequest) {
-  try {
-    const session = await getServerSession(authOptions);
-    if (!session?.user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    const user = session.user as AuthenticatedUser;
-    const orgId = user.organizationId;
-
-    const requestId = crypto.randomUUID();
-    const ipAddress = req.headers.get("x-forwarded-for")?.split(",")[0] ?? "127.0.0.1";
-    const deviceInfo = req.headers.get("user-agent")?.substring(0, 255) ?? "unknown";
-
-    const auth = authorize({
-      role: user.role,
-      isOrgOwner: user.isOrgOwner,
-      action: PermissionAction.UPDATE,
-      resource: RESOURCES.PROCUREMENT,
-    });
-    if (!auth.allowed) return NextResponse.json({ error: "ACCESS_DENIED: Cannot update PO" }, { status: 403 });
-
-    const body = await req.json().catch(() => null);
-    if (!body) return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
-
-    const { poId, status, notes } = body;
-    if (!poId || !status) return NextResponse.json({ error: "PO ID and Status are required." }, { status: 400 });
-
-    const validStatuses = Object.values(POStatus);
-    if (!validStatuses.includes(status as POStatus)) {
-      return NextResponse.json({ error: `Invalid status. Must be one of: ${validStatuses.join(", ")}` }, { status: 400 });
-    }
-
-    const existingPo = await prisma.purchaseOrder.findFirst({
-      where: { id: poId, organizationId: orgId, deletedAt: null },
-      include: { vendor: { select: { name: true } } }
-    });
-
-    if (!existingPo) return NextResponse.json({ error: "Purchase order not found." }, { status: 404 });
-
-    // Prevent altering terminal states without elevated privileges
-    if ((existingPo.status === POStatus.CANCELLED || existingPo.status === POStatus.FULFILLED) && 
-        ![Role.ADMIN, Role.MANAGER, Role.AUDITOR, Role.DEV].includes(user.role) && !user.isOrgOwner) {
-      return NextResponse.json({ error: "Insufficient permissions to modify a closed purchase order." }, { status: 403 });
-    }
-
-    const updatedPo = await prisma.$transaction(async (tx) => {
-      const dataToUpdate: Prisma.PurchaseOrderUpdateInput = {
-        status: status as POStatus,
-        notes: notes ? `${existingPo.notes || ''}\n[Status Update]: ${notes}`.trim() : existingPo.notes,
-      };
-
-      // Set the approvedBy strictly if it crosses into ISSUED and wasn't stamped yet
-      if (status === POStatus.ISSUED && !existingPo.approvedById) {
-        dataToUpdate.approvedBy = { connect: { id: user.id } };
-      }
-
-      const po = await tx.purchaseOrder.update({
-        where: { id: poId },
-        data: dataToUpdate,
-      });
-
-      // Security logic for CANCELLED status (Replacing flawed REJECTED code)
-      const isCancelled = status === POStatus.CANCELLED;
-      const severityLevel = isCancelled ? Severity.HIGH : Severity.MEDIUM;
-
-      const log = await createAuditLog(tx, {
-        organizationId: orgId,
-        branchId: po.branchId,
-        actorId: user.id,
-        actorRole: user.role,
-        action: `UPDATE_PO_${status}`,
-        resourceId: po.id,
-        severity: severityLevel,
-        description: `Marked PO ${po.poNumber} as ${status}${notes ? ` - Reason: ${notes}` : ''}`,
-        requestId,
-        ipAddress,
-        deviceInfo,
-        before: { status: existingPo.status },
-        after: { status: po.status },
-      });
-
-      if (isCancelled || status === POStatus.ISSUED) {
-        await notifyManagement(
-          tx,
-          orgId,
-          po.branchId,
-          `Procurement ${isCancelled ? 'Cancelled 🚨' : 'Updated'}`,
-          `PO ${po.poNumber} for ${existingPo.vendor?.name} was marked as ${status} by ${user.role}.`,
-          log.id
-        );
-      }
-
-      return po;
-    });
-
-    return NextResponse.json(updatedPo, { status: 200 });
-  } catch (err: any) {
-    console.error("[PO_PATCH_ERROR]", err);
-    return NextResponse.json({ error: "Internal server error" }, { status: 500 });
   }
 }

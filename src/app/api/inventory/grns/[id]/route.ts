@@ -17,9 +17,13 @@ import { Decimal } from "@prisma/client/runtime/library";
 import crypto from "crypto";
 import { authorize, RESOURCES } from "@/core/lib/permission";
 
+/* -------------------------
+  ROUTE SEGMENT CONFIG 
+------------------------- */
+export const dynamic = "force-dynamic";
+
 /**
  * Interface representing the augmented NextAuth user structure.
- * Derived from @_core_lib_auth.docx
  */
 interface MasaUser {
   id: string;
@@ -29,12 +33,13 @@ interface MasaUser {
   isOrgOwner: boolean;
   organizationId: string;
   branchId: string | null;
+  permissions: string[];
 }
 
 /**
  * PATCH /api/inventory/grns/[id]
- * Finalizes a Goods Receipt Note (Approves or Rejects)
- * Logic: Audit-Proof Inventory Ledger Integration
+ * Finalizes a Goods Receipt Note (Approves or Rejects).
+ * This endpoint implements the "Point of Truth" for physical inventory entry.
  */
 export async function PATCH(
   req: NextRequest, 
@@ -44,7 +49,6 @@ export async function PATCH(
     const session = await getServerSession(authOptions);
     if (!session?.user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     
-    // Fixed: Specified MasaUser type instead of any
     const user = session.user as MasaUser;
     const orgId = user.organizationId;
     const { id: grnId } = await params;
@@ -53,7 +57,7 @@ export async function PATCH(
     const ipAddress = req.headers.get("x-forwarded-for")?.split(",")[0] ?? "127.0.0.1";
     const deviceInfo = req.headers.get("user-agent")?.substring(0, 255) ?? "unknown";
 
-    // 1. Authorization Check
+    // 1. Authorization: Requires APPROVE permission on PROCUREMENT resource
     const auth = authorize({
       role: user.role,
       isOrgOwner: user.isOrgOwner,
@@ -68,49 +72,47 @@ export async function PATCH(
       );
     }
 
-    // 2. Validate Request Body
+    // 2. Request Validation
     const body = await req.json().catch(() => null);
     if (!body || !["RECEIVED", "REJECTED"].includes(body.status)) {
       return NextResponse.json(
-        { error: "Invalid status selection. Must be RECEIVED or REJECTED." }, 
+        { error: "Invalid status selection. Status must be RECEIVED or REJECTED." }, 
         { status: 400 }
       );
     }
     const newStatus = body.status as "RECEIVED" | "REJECTED";
 
-    // 3. Atomic Transaction Block
+    // 3. Atomic Transaction: Ensures Ledger Consistency
     const result = await prisma.$transaction(async (tx) => {
-      // Fetch GRN with strict locking
+      // 3a. Lock the record and fetch relations
       const grn = await tx.goodsReceiptNote.findUnique({
         where: { id: grnId },
         include: { items: true }
       });
 
       if (!grn) throw new Error("Goods Receipt Note (GRN) record not found.");
-      if (grn.organizationId !== orgId) throw new Error("Security Breach: Organization mismatch detected.");
+      if (grn.organizationId !== orgId) throw new Error("Security Breach: Organization mismatch.");
       if (grn.status !== GRNStatus.PENDING) {
         throw new Error(`Integrity Error: GRN is already ${grn.status}. Actions are locked.`);
       }
 
-      // Update GRN Header status
+      // 3b. Update Header
       const updatedGrn = await tx.goodsReceiptNote.update({
         where: { id: grnId },
         data: {
           status: newStatus as GRNStatus,
           approvedById: user.id,
-          // Track when the audit happened
           updatedAt: new Date()
         }
       });
 
-      // 4. Processing Logic for Accepted Goods
+      // 4. Case: RECEIVED (Approval & Stock Injection)
       if (newStatus === "RECEIVED") {
         for (const item of grn.items) {
           const qtyAccepted = new Decimal(item.quantityAccepted || 0);
-          const qtyRejected = new Decimal(item.quantityRejected || 0);
-
-          // Update Stock only for accepted quantities
+          
           if (qtyAccepted.gt(0)) {
+            // Update BranchProduct: Increment physical stock and update latest cost price
             const branchProduct = await tx.branchProduct.update({
               where: { id: item.branchProductId },
               data: {
@@ -120,7 +122,7 @@ export async function PATCH(
               }
             });
 
-            // Log granular stock movement
+            // Forensic Stock Movement Ledger entry
             await tx.stockMovement.create({
               data: {
                 organizationId: orgId,
@@ -131,20 +133,19 @@ export async function PATCH(
                 quantity: qtyAccepted.toNumber(),
                 unitCost: item.unitCost,
                 totalCost: qtyAccepted.mul(new Decimal(item.unitCost)),
-                reason: `GRN:${grn.grnNumber} (Accepted: ${qtyAccepted}, Rejected: ${qtyRejected})`,
-                runningBalance: branchProduct.stock,
+                reason: `GRN Approved: ${grn.grnNumber}`,
+                runningBalance: branchProduct.stock, // Current balance after increment
                 handledById: user.id,
+                approvedAt: new Date(),
                 grnId: grn.id
               }
             });
 
-            // Link to Purchase Order Item to update fulfillment progress
+            // Cascade to Purchase Order Item (if linked)
             if (item.poItemId) {
               await tx.purchaseOrderItem.update({
                 where: { id: item.poItemId },
                 data: { 
-                  // Only increment by ACCEPTED quantity. 
-                  // Rejected items stay in "Ordered but not Received" state on the PO.
                   quantityReceived: { increment: qtyAccepted.toNumber() } 
                 }
               });
@@ -152,12 +153,13 @@ export async function PATCH(
           }
         }
 
-        // 5. Purchase Order Fulfillment Calculation
+        // 5. Cascade to Purchase Order Header (Status Balancing)
         if (grn.purchaseOrderId) {
           const allPoItems = await tx.purchaseOrderItem.findMany({ 
             where: { purchaseOrderId: grn.purchaseOrderId } 
           });
           
+          // Math Check: Is the sum of all GRNs meeting the PO requirement?
           const isFullyFulfilled = allPoItems.every(i => 
             new Decimal(i.quantityReceived).gte(new Decimal(i.quantityOrdered))
           );
@@ -165,28 +167,31 @@ export async function PATCH(
           await tx.purchaseOrder.update({
             where: { id: grn.purchaseOrderId },
             data: { 
-              status: isFullyFulfilled ? POStatus.FULFILLED : POStatus.PARTIALLY_RECEIVED 
+              status: isFullyFulfilled ? POStatus.FULFILLED : POStatus.PARTIALLY_RECEIVED,
+              updatedAt: new Date()
             }
           });
         }
-      } else if (newStatus === "REJECTED") {
-        // Processing logic for Rejected Goods
+      } 
+      
+      // 6. Case: REJECTED (Revert/Zero-out logic)
+      else if (newStatus === "REJECTED") {
         for (const item of grn.items) {
-          const totalQty = (item.quantityAccepted || 0) + (item.quantityRejected || 0);
+          const totalQtyAttempted = (item.quantityAccepted || 0) + (item.quantityRejected || 0);
 
-          // Shift all previously inputted accepted quantity to rejected
+          // SOP: If the whole GRN is rejected, move all quantities to the 'Rejected' bucket
           await tx.goodsReceiptItem.update({
             where: { id: item.id },
             data: {
               quantityAccepted: 0,
-              quantityRejected: totalQty,
+              quantityRejected: totalQtyAttempted,
               updatedAt: new Date()
             }
           });
         }
       }
 
-      // 6. Forensic Audit Chain
+      // 7. Cryptographic Activity Log
       const lastLog = await tx.activityLog.findFirst({ 
         where: { organizationId: orgId }, 
         orderBy: { createdAt: "desc" }, 
@@ -197,15 +202,9 @@ export async function PATCH(
       const actionTitle = newStatus === "RECEIVED" ? "APPROVE_GRN" : "REJECT_GRN";
       const timestamp = Date.now();
       
-      // Hash includes the result status to prevent status-tampering in DB
       const hashPayload = JSON.stringify({ 
-        previousHash, 
-        requestId, 
-        actorId: user.id, 
-        action: actionTitle, 
-        targetId: grn.id, 
-        status: newStatus,
-        timestamp 
+        previousHash, requestId, actorId: user.id, action: actionTitle, 
+        targetId: grn.id, status: newStatus, timestamp 
       });
       const hash = crypto.createHash("sha256").update(hashPayload).digest("hex");
 
@@ -220,29 +219,24 @@ export async function PATCH(
           targetType: "GRN",
           targetId: grn.id,
           severity: newStatus === "RECEIVED" ? Severity.HIGH : Severity.MEDIUM,
-          description: `GRN ${grn.grnNumber} finalized as ${newStatus}. Manager: ${user.name || 'Admin'}.`,
+          description: `GRN ${grn.grnNumber} finalized as ${newStatus}. Approved by: ${user.name || 'Manager'}.`,
           metadata: { 
             grnNumber: grn.grnNumber, 
             status: newStatus,
             itemsCount: grn.items.length 
           },
-          requestId, 
-          ipAddress, 
-          deviceInfo, 
-          previousHash, 
-          hash, 
-          critical: true,
+          requestId, ipAddress, deviceInfo, previousHash, hash, critical: true,
         },
       });
 
-      // 7. Automated Notifications
+      // 8. System Notification
       await tx.notification.create({
         data: {
           organizationId: orgId,
           branchId: grn.branchId,
-          type: NotificationType.APPROVAL,
+          type: NotificationType.INFO,
           title: `GRN ${newStatus === "RECEIVED" ? "Approved" : "Rejected"}`,
-          message: `The receipt for ${grn.grnNumber} was ${newStatus.toLowerCase()} by management.`,
+          message: `Receipt ${grn.grnNumber} has been ${newStatus.toLowerCase()} and processed into the system.`,
           activityLogId: log.id,
           recipients: { 
             create: [{ personnelId: grn.receivedById }] 
@@ -253,22 +247,18 @@ export async function PATCH(
       return updatedGrn;
     }, {
       isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
-      timeout: 25000 // Extended for heavy inventory calculations
+      timeout: 25000 
     });
 
     return NextResponse.json({ 
       success: true, 
       status: result.status,
-      message: `Inventory successfully ${result.status === "RECEIVED" ? "updated" : "locked"}.`
+      message: `Transaction complete. GRN is now ${result.status}.`
     });
 
   } catch (err: unknown) {
-    // Fixed: Replaced err: any with err: unknown and proper error checking
-    console.error("[GRN_FINALIZATION_CRITICAL_FAIL]", err);
-    const errorMessage = err instanceof Error ? err.message : "A system error occurred during inventory finalization.";
-    return NextResponse.json(
-      { error: errorMessage }, 
-      { status: 400 }
-    );
+    console.error("[GRN_PATCH_CRITICAL_FAIL]", err);
+    const errorMessage = err instanceof Error ? err.message : "A system error occurred during GRN finalization.";
+    return NextResponse.json({ error: errorMessage }, { status: 400 });
   }
 }

@@ -4,7 +4,7 @@ import React, { useState, useEffect, useMemo } from "react";
 import {
   X, Maximize2, Minimize2, Package,
   Loader2, CheckCircle2, AlertOctagon, Archive, ShieldAlert,
-  Phone, Mail, History, XCircle
+  Phone, Mail, History, XCircle, Edit3, Save, Send
 } from "lucide-react";
 import { useSidePanel } from "@/core/components/layout/SidePanelContext";
 import { useAlerts } from "@/core/components/feedback/AlertProvider";
@@ -67,20 +67,29 @@ interface PODetailViewProps {
 export default function PODetailView({ po, onClose }: PODetailViewProps) {
   const { isFullScreen, toggleFullScreen, openPanel } = useSidePanel();
   const { dispatch } = useAlerts();
+  
+  // States
   const [isVoiding, setIsVoiding] = useState(false);
+  const [isIssuing, setIsIssuing] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
+  const [isEditing, setIsEditing] = useState(false);
   const [receiveOpen, setReceiveOpen] = useState(false);
   const [isReceiving, setIsReceiving] = useState(false);
   const [isFetchingHistory, setIsFetchingHistory] = useState(false);
   const [hasRejectedReceipt, setHasRejectedReceipt] = useState(false);
 
+  // Draft Edit States
+  const [editedItems, setEditedItems] = useState<POItem[]>(po.items);
+
   const isCancelled = po.status === "CANCELLED";
   const isFulfilled = po.status === "FULFILLED";
   const isPartiallyReceived = po.status === "PARTIALLY_RECEIVED";
+  const isDraft = po.status === "DRAFT";
   const currencySymbol = po.currency === "NGN" ? "₦" : po.currency + " ";
   
   const canVoid = !isCancelled && !isFulfilled && !isPartiallyReceived && !hasRejectedReceipt;
 
-  // Check for rejected receipts on mount to lock the PO
+  // Verify receipt safety
   useEffect(() => {
     async function checkReceiptStatus() {
       try {
@@ -107,6 +116,7 @@ export default function PODetailView({ po, onClose }: PODetailViewProps) {
   );
 
   useEffect(() => {
+    setEditedItems(po.items);
     setReceiveItems(
       po.items.map((it) => ({
         poItemId: it.id,
@@ -116,13 +126,47 @@ export default function PODetailView({ po, onClose }: PODetailViewProps) {
     );
   }, [po]);
 
-  const totalCommitment = useMemo(() => Number(po.totalAmount || 0), [po]);
+  // Actions
+  async function handleUpdate(targetStatus?: string) {
+    const loadingState = targetStatus === "ISSUED" ? setIsIssuing : setIsSaving;
+    loadingState(true);
+    
+    try {
+      const res = await fetch(`/api/inventory/procurement/${po.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ 
+          status: targetStatus,
+          items: editedItems.map(it => ({
+            productId: it.productId,
+            quantityOrdered: Number(it.quantityOrdered),
+            unitCost: Number(it.unitCost)
+          }))
+        }),
+      });
+
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Update failed");
+
+      dispatch?.({ 
+        kind: "PUSH", 
+        type: "SUCCESS", 
+        title: targetStatus === "ISSUED" ? "PO Issued" : "Draft Updated", 
+        message: targetStatus === "ISSUED" ? `${po.poNumber} is now active.` : "Changes saved successfully." 
+      });
+
+      window.dispatchEvent(new CustomEvent("po:updated", { detail: { id: po.id, action: targetStatus || "UPDATE" } }));
+      if (targetStatus === "ISSUED") onClose();
+      setIsEditing(false);
+    } catch (err: any) {
+      dispatch?.({ kind: "TOAST", type: "ERROR", title: "Error", message: err.message });
+    } finally {
+      loadingState(false);
+    }
+  }
 
   async function handleVoid() {
-    if (!canVoid) {
-      dispatch?.({ kind: "TOAST", type: "ERROR", title: "Action Denied", message: "Cannot void a PO that has active or rejected receipts." });
-      return;
-    }
+    if (!canVoid) return;
     const confirm = window.confirm(`Void PO ${po.poNumber}?`);
     if (!confirm) return;
     
@@ -145,10 +189,10 @@ export default function PODetailView({ po, onClose }: PODetailViewProps) {
     }
   }
 
-  function updateReceiveQty(index: number, value: number) {
-    setReceiveItems((prev) => {
+  function updateEditItem(index: number, field: keyof POItem, value: number) {
+    setEditedItems(prev => {
       const copy = [...prev];
-      copy[index] = { ...copy[index], quantityAccepted: Math.max(0, Math.floor(Number(value) || 0)) };
+      copy[index] = { ...copy[index], [field]: value };
       return copy;
     });
   }
@@ -205,7 +249,6 @@ export default function PODetailView({ po, onClose }: PODetailViewProps) {
     try {
       const res = await fetch(`/api/inventory/grns?purchaseOrderId=${po.id}`);
       if (!res.ok) throw new Error("Failed to fetch receipt history.");
-      
       const data = await res.json();
       const grns = data.items || data.grns || [];
 
@@ -213,10 +256,8 @@ export default function PODetailView({ po, onClose }: PODetailViewProps) {
         dispatch?.({ kind: "TOAST", type: "INFO", title: "No History", message: "No receipts found for this Purchase Order yet." });
         return;
       }
-
       const latestGrn = grns[0];
       openPanel(<GRNDetailView grn={latestGrn} onClose={onClose} />, `Receipt: ${latestGrn.grnNumber}`);
-
     } catch (err: any) {
       dispatch?.({ kind: "TOAST", type: "ERROR", title: "Fetch failed", message: err.message });
     } finally {
@@ -233,6 +274,11 @@ export default function PODetailView({ po, onClose }: PODetailViewProps) {
             <h2 className="text-base md:text-md font-bold text-slate-800 dark:text-slate-100 truncate whitespace-nowrap">
               {po.poNumber}
             </h2>
+            {isDraft && (
+               <span className="flex-shrink-0 px-1.5 py-0.5 rounded text-[8px] font-bold tracking-wider bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-400 uppercase">
+                Draft
+               </span>
+            )}
             {isPartiallyReceived && (
               <span className="flex-shrink-0 px-1.5 py-0.5 rounded text-[8px] font-bold tracking-wider bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400 uppercase">
                 Partial
@@ -240,7 +286,7 @@ export default function PODetailView({ po, onClose }: PODetailViewProps) {
             )}
           </div>
           <p className="text-[10px] md:text-[11px] text-slate-500 dark:text-slate-400 mt-0.5 whitespace-nowrap">
-            Issued {new Date(po.createdAt).toLocaleDateString()}
+            Created {new Date(po.createdAt).toLocaleDateString()}
           </p>
         </div>
         <div className="flex items-center gap-1 flex-shrink-0 ml-2">
@@ -280,8 +326,8 @@ export default function PODetailView({ po, onClose }: PODetailViewProps) {
                 </span>
              </div>
              <div className="flex justify-between items-center border-b border-slate-100 dark:border-slate-800 pb-2">
-                <span className="text-[9px] md:text-[10px] font-bold text-slate-400 uppercase whitespace-nowrap">Approved By</span>
-                <span className="text-[11px] md:text-sm font-medium text-slate-700 dark:text-slate-300 truncate ml-4 text-right">{po.approvedBy?.name || "Pending"}</span>
+                <span className="text-[9px] md:text-[10px] font-bold text-slate-400 uppercase whitespace-nowrap">Created By</span>
+                <span className="text-[11px] md:text-sm font-medium text-slate-700 dark:text-slate-300 truncate ml-4 text-right">{po.createdBy?.name || "N/A"}</span>
              </div>
              <div className="flex justify-between items-center border-b border-slate-100 dark:border-slate-800 pb-2">
                 <span className="text-[9px] md:text-[10px] font-bold text-slate-400 uppercase whitespace-nowrap">Currency</span>
@@ -292,15 +338,19 @@ export default function PODetailView({ po, onClose }: PODetailViewProps) {
 
         <section className="order-3">
           <div className="flex justify-between items-center mb-3">
-            <h4 className="text-[9px] md:text-[10px] font-semibold text-slate-500 uppercase tracking-widest">Itemized Items</h4>
-            <button 
-              onClick={handleViewHistory}
-              disabled={isFetchingHistory}
-              className="flex items-center gap-1.5 text-[9px] md:text-[10px] font-bold text-emerald-600 hover:text-emerald-700 dark:text-emerald-500 transition-colors uppercase disabled:opacity-50"
-            >
-              {isFetchingHistory ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <History className="w-3.5 h-3.5" />}
-              Receipt History
-            </button>
+            <h4 className="text-[9px] md:text-[10px] font-semibold text-slate-500 uppercase tracking-widest">
+              {isEditing ? "Edit Line Items" : "Itemized Items"}
+            </h4>
+            {!isDraft && (
+              <button 
+                onClick={handleViewHistory}
+                disabled={isFetchingHistory}
+                className="flex items-center gap-1.5 text-[9px] md:text-[10px] font-bold text-emerald-600 hover:text-emerald-700 dark:text-emerald-500 transition-colors uppercase disabled:opacity-50"
+              >
+                {isFetchingHistory ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <History className="w-3.5 h-3.5" />}
+                Receipt History
+              </button>
+            )}
           </div>
           <div className="border border-slate-200 dark:border-slate-800 rounded-xl overflow-x-auto shadow-sm">
             <table className="w-full text-left text-sm min-w-[450px] md:min-w-0">
@@ -308,13 +358,13 @@ export default function PODetailView({ po, onClose }: PODetailViewProps) {
                 <tr className="border-b border-slate-200 dark:border-slate-800">
                   <th className="px-3 md:px-4 py-3 text-[8px] md:text-[10px] font-bold text-slate-500 uppercase">Product</th>
                   <th className="px-2 md:px-4 py-3 text-[8px] md:text-[10px] font-bold text-slate-500 uppercase text-center">UOM</th>
-                  <th className="px-2 md:px-4 py-3 text-[8px] md:text-[10px] font-bold text-slate-500 uppercase text-center">Ordered</th>
-                  <th className="px-2 md:px-4 py-3 text-[8px] md:text-[10px] font-bold text-slate-500 uppercase text-center">Received</th>
-                  <th className="px-3 md:px-4 py-3 text-[8px] md:text-[10px] font-bold text-slate-500 uppercase text-right">Cost</th>
+                  <th className="px-2 md:px-4 py-3 text-[8px] md:text-[10px] font-bold text-slate-500 uppercase text-center">Qty Ordered</th>
+                  <th className="px-2 md:px-4 py-3 text-[8px] md:text-[10px] font-bold text-slate-500 uppercase text-center">{isEditing ? "Unit Cost" : "Received"}</th>
+                  <th className="px-3 md:px-4 py-3 text-[8px] md:text-[10px] font-bold text-slate-500 uppercase text-right">Total Cost</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-                {po.items.map((item) => (
+                {editedItems.map((item, idx) => (
                   <tr key={item.id} className="hover:bg-slate-50/30 dark:hover:bg-slate-800/20 transition-colors">
                     <td className="px-3 md:px-4 py-2.5 min-w-[140px]">
                       <p className="font-semibold text-slate-800 dark:text-slate-200 text-[10px] md:text-sm line-clamp-1">{item.product?.name}</p>
@@ -324,12 +374,28 @@ export default function PODetailView({ po, onClose }: PODetailViewProps) {
                       {item.product?.uom?.abbreviation || "unit"}
                     </td>
                     <td className="px-2 md:px-4 py-2.5 text-center font-medium text-slate-700 dark:text-slate-300 text-[10px] md:text-sm">
-                      {item.quantityOrdered}
+                      {isEditing ? (
+                        <input 
+                          type="number" 
+                          value={item.quantityOrdered}
+                          onChange={(e) => updateEditItem(idx, "quantityOrdered", Number(e.target.value))}
+                          className="w-16 text-center border rounded border-slate-200 dark:bg-slate-900 text-xs py-1"
+                        />
+                      ) : item.quantityOrdered}
                     </td>
                     <td className="px-2 md:px-4 py-2.5 text-center font-medium text-[10px] md:text-sm">
-                      <span className={item.quantityReceived >= item.quantityOrdered ? "text-emerald-600 dark:text-emerald-400 font-bold" : "text-slate-500"}>
-                        {item.quantityReceived || 0}
-                      </span>
+                      {isEditing ? (
+                        <input 
+                          type="number" 
+                          value={item.unitCost}
+                          onChange={(e) => updateEditItem(idx, "unitCost", Number(e.target.value))}
+                          className="w-20 text-center border rounded border-slate-200 dark:bg-slate-900 text-xs py-1"
+                        />
+                      ) : (
+                        <span className={item.quantityReceived >= item.quantityOrdered ? "text-emerald-600 dark:text-emerald-400 font-bold" : "text-slate-500"}>
+                          {item.quantityReceived || 0}
+                        </span>
+                      )}
                     </td>
                     <td className="px-3 md:px-4 py-2.5 text-right font-semibold text-slate-900 dark:text-white text-[10px] md:text-sm">
                       {currencySymbol}{(item.quantityOrdered * item.unitCost).toLocaleString()}
@@ -342,6 +408,7 @@ export default function PODetailView({ po, onClose }: PODetailViewProps) {
         </section>
       </div>
 
+      {/* Footer Actions */}
       <div className="p-4 border-t border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 flex justify-between gap-3">
         {isCancelled ? (
           <button disabled className="w-full py-2.5 bg-slate-100 dark:bg-slate-800 text-slate-400 text-[10px] font-bold uppercase rounded-lg border border-slate-200 dark:border-slate-700">
@@ -355,6 +422,44 @@ export default function PODetailView({ po, onClose }: PODetailViewProps) {
           <button disabled className="w-full py-2.5 bg-red-50 dark:bg-red-900/10 text-red-600 text-[10px] font-bold uppercase rounded-lg border border-red-200 dark:border-red-900/20 flex items-center justify-center gap-2 cursor-not-allowed">
             <XCircle className="w-4 h-4" /> Receipt Rejected & Locked
           </button>
+        ) : isDraft ? (
+           <>
+              <button 
+                onClick={handleVoid} 
+                disabled={isVoiding}
+                className="flex-1 py-2.5 text-red-600 hover:bg-red-50 text-[10px] font-bold uppercase rounded-lg transition-all border border-transparent hover:border-red-200"
+              >
+                {isVoiding ? <Loader2 className="w-4 h-4 animate-spin mx-auto" /> : "Discard"}
+              </button>
+              
+              {isEditing ? (
+                <button 
+                  onClick={() => handleUpdate()} 
+                  disabled={isSaving}
+                  className="flex-[2] py-2.5 bg-emerald-600 text-white hover:bg-emerald-700 text-[10px] font-bold uppercase rounded-lg shadow-md transition-all flex items-center justify-center gap-2"
+                >
+                  {isSaving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
+                  Save Changes
+                </button>
+              ) : (
+                <>
+                  <button 
+                    onClick={() => setIsEditing(true)}
+                    className="flex-1 py-2.5 text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800 text-[10px] font-bold uppercase rounded-lg border border-slate-200 dark:border-slate-700 flex items-center justify-center gap-2"
+                  >
+                    <Edit3 className="w-4 h-4" /> Edit
+                  </button>
+                  <button 
+                    onClick={() => handleUpdate("ISSUED")} 
+                    disabled={isIssuing}
+                    className="flex-[2] py-2.5 bg-slate-900 dark:bg-slate-100 dark:text-slate-900 text-white hover:bg-slate-800 text-[10px] font-bold uppercase rounded-lg shadow-md transition-all flex items-center justify-center gap-2"
+                  >
+                    {isIssuing ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
+                    Issue PO
+                  </button>
+                </>
+              )}
+           </>
         ) : (
           <>
             <div className="flex-1">
@@ -375,6 +480,7 @@ export default function PODetailView({ po, onClose }: PODetailViewProps) {
         )}
       </div>
 
+      {/* Receive Modal (Unchanged) */}
       {receiveOpen && (
         <div className="fixed inset-0 z-[400] flex items-center justify-center bg-slate-900/40 backdrop-blur-sm p-4">
           <div className="w-full max-w-lg bg-white dark:bg-slate-900 rounded-2xl shadow-2xl overflow-hidden flex flex-col max-h-[85vh] border border-slate-200 dark:border-slate-800">
@@ -404,7 +510,11 @@ export default function PODetailView({ po, onClose }: PODetailViewProps) {
                     <input
                       type="number" min={0} max={remaining}
                       value={it.quantityAccepted}
-                      onChange={(e) => updateReceiveQty(idx, Number(e.target.value))}
+                      onChange={(e) => {
+                        const copy = [...receiveItems];
+                        copy[idx].quantityAccepted = Math.max(0, Math.floor(Number(e.target.value) || 0));
+                        setReceiveItems(copy);
+                      }}
                       className="w-full rounded-lg px-3 py-2 bg-white dark:bg-slate-950 text-sm font-bold text-slate-800 dark:text-white border border-slate-200 focus:border-emerald-500 outline-none transition-all"
                     />
                   </div>

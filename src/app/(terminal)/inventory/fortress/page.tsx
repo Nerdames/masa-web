@@ -11,7 +11,6 @@ import {
   RefreshCw,
   Loader2,
   TrendingDown,
-  Truck,
   ShieldCheck,
   Clock,
   Lock

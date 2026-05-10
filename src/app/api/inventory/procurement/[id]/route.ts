@@ -1,5 +1,3 @@
-"use client";
-
 import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "next-auth/next";
 import { authOptions } from "@/core/lib/auth";
@@ -12,6 +10,7 @@ import {
   POStatus,
   Role,
 } from "@prisma/client";
+import { Decimal } from "@prisma/client/runtime/library";
 import crypto from "crypto";
 import { authorize, RESOURCES } from "@/core/lib/permission";
 import { Ratelimit } from "@upstash/ratelimit";
@@ -22,7 +21,7 @@ import { Redis } from "@upstash/redis";
 ------------------------- */
 const ratelimit = new Ratelimit({
   redis: Redis.fromEnv(),
-  limiter: Ratelimit.slidingWindow(20, "10 s"),
+  limiter: Ratelimit.slidingWindow(30, "10 s"),
 });
 
 interface AuthenticatedUser {
@@ -50,8 +49,8 @@ async function createAuditLog(
     requestId: string;
     ipAddress: string;
     deviceInfo: string;
-    before?: Prisma.InputJsonValue;
-    after?: Prisma.InputJsonValue;
+    before?: any;
+    after?: any;
   }
 ) {
   const lastLog = await tx.activityLog.findFirst({
@@ -62,7 +61,6 @@ async function createAuditLog(
 
   const previousHash = lastLog?.hash ?? "0".repeat(64);
   const timestamp = Date.now();
-
   const hashPayload = JSON.stringify({
     previousHash,
     requestId: data.requestId,
@@ -86,8 +84,8 @@ async function createAuditLog(
       targetId: data.resourceId,
       severity: data.severity ?? Severity.MEDIUM,
       description: data.description,
-      before: data.before ?? Prisma.JsonNull,
-      after: data.after ?? Prisma.JsonNull,
+      before: data.before ? (data.before as Prisma.InputJsonValue) : Prisma.JsonNull,
+      after: data.after ? (data.after as Prisma.InputJsonValue) : Prisma.JsonNull,
       requestId: data.requestId,
       ipAddress: data.ipAddress,
       deviceInfo: data.deviceInfo,
@@ -125,8 +123,8 @@ export async function GET(
         id,
         organizationId: user.organizationId,
         deletedAt: null,
-        // Typed the array to ensure Role compatibility
-        branchId: ([Role.ADMIN, Role.MANAGER, Role.AUDITOR] as Role[]).includes(user.role) || user.isOrgOwner 
+        // Branch isolation for non-admins
+        branchId: [Role.ADMIN, Role.MANAGER, Role.AUDITOR, Role.DEV].includes(user.role) || user.isOrgOwner 
           ? undefined 
           : (user.branchId ?? undefined),
       },
@@ -136,7 +134,7 @@ export async function GET(
         items: {
           include: {
             product: {
-              select: { name: true, sku: true, barcode: true, uom: true }
+              select: { name: true, sku: true, barcode: true, uom: { select: { name: true, abbreviation: true } } }
             }
           }
         },
@@ -148,14 +146,15 @@ export async function GET(
     if (!po) return NextResponse.json({ error: "Purchase Order not found" }, { status: 404 });
 
     return NextResponse.json(po);
-  } catch {
+  } catch (err) {
+    console.error("[PO_GET_BY_ID_ERROR]", err);
     return NextResponse.json({ error: "Internal server error" }, { status: 500 });
   }
 }
 
 /* -------------------------
   PATCH /api/inventory/procurement/[id]
-  (Void / Cancel Logic)
+  (Dynamic Logic for Edits, Issuing, and Voiding)
 ------------------------- */
 export async function PATCH(
   req: NextRequest,
@@ -168,7 +167,7 @@ export async function PATCH(
     const requestId = crypto.randomUUID();
 
     // 1. Rate Limiting
-    const { success: limitOk } = await ratelimit.limit(`po_void:${ipAddress}`);
+    const { success: limitOk } = await ratelimit.limit(`po_update:${ipAddress}`);
     if (!limitOk) return NextResponse.json({ error: "Too many requests" }, { status: 429 });
 
     // 2. Auth Check
@@ -176,24 +175,12 @@ export async function PATCH(
     if (!session?.user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     const user = session.user as AuthenticatedUser;
 
-    const auth = authorize({
-      role: user.role,
-      isOrgOwner: user.isOrgOwner,
-      action: PermissionAction.VOID, 
-      resource: RESOURCES.PROCUREMENT,
-    });
+    const body = await req.json().catch(() => null);
+    if (!body) return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
 
-    if (!auth.allowed) {
-      return NextResponse.json({ error: "Insufficient permissions to void procurement" }, { status: 403 });
-    }
+    const { status: requestedStatus, items: updatedItems, vendorId, expectedDate, notes, reason } = body;
 
-    // 3. Payload Validation
-    const body = await req.json().catch(() => ({}));
-    if (body.status !== POStatus.CANCELLED) {
-      return NextResponse.json({ error: "Invalid operation. Use this endpoint for cancellation." }, { status: 400 });
-    }
-
-    // 4. Atomic Transaction
+    // 3. Process Transaction
     const result = await prisma.$transaction(async (tx) => {
       const existingPO = await tx.purchaseOrder.findFirst({
         where: { id: poId, organizationId: user.organizationId },
@@ -201,64 +188,122 @@ export async function PATCH(
       });
 
       if (!existingPO) throw new Error("PO_NOT_FOUND");
-      
-      if (existingPO.status === POStatus.CANCELLED) throw new Error("PO_ALREADY_CANCELLED");
-      
-      const irreversibleStatuses: POStatus[] = [
-        POStatus.FULFILLED, 
-        POStatus.PARTIALLY_RECEIVED
-      ];
 
-      if (irreversibleStatuses.includes(existingPO.status)) {
-        throw new Error("CANNOT_CANCEL_RECEIVED_GOODS");
+      // --- SCENARIO A: VOID/CANCEL ---
+      if (requestedStatus === POStatus.CANCELLED) {
+        if (!authorize({ role: user.role, isOrgOwner: user.isOrgOwner, action: PermissionAction.VOID, resource: RESOURCES.PROCUREMENT }).allowed) {
+          throw new Error("UNAUTHORIZED_VOID");
+        }
+        if ([POStatus.FULFILLED, POStatus.PARTIALLY_RECEIVED].includes(existingPO.status)) {
+          throw new Error("CANNOT_VOID_RECEIVED_GOODS");
+        }
+
+        const voided = await tx.purchaseOrder.update({
+          where: { id: poId },
+          data: { 
+            status: POStatus.CANCELLED,
+            notes: reason ? `${existingPO.notes || ''}\n[VOID REASON]: ${reason}`.trim() : existingPO.notes
+          },
+        });
+
+        await createAuditLog(tx, {
+          organizationId: user.organizationId,
+          branchId: existingPO.branchId,
+          actorId: user.id,
+          actorRole: user.role,
+          action: "VOID_PURCHASE_ORDER",
+          resourceId: poId,
+          severity: Severity.HIGH,
+          description: `Voided PO ${existingPO.poNumber}. Reason: ${reason || 'Not specified'}`,
+          requestId, ipAddress, deviceInfo,
+          before: { status: existingPO.status },
+          after: { status: POStatus.CANCELLED }
+        });
+
+        return voided;
       }
 
-      const updatedPO = await tx.purchaseOrder.update({
+      // --- SCENARIO B: EDITING DRAFT OR ISSUING ---
+      if (existingPO.status !== POStatus.DRAFT && requestedStatus !== POStatus.CANCELLED) {
+        throw new Error("LOCKED_FOR_EDITING");
+      }
+
+      let finalTotal = new Decimal(existingPO.totalAmount.toString());
+      let updateData: Prisma.PurchaseOrderUpdateInput = {
+        notes: notes ?? existingPO.notes,
+        expectedDate: expectedDate ? new Date(expectedDate) : existingPO.expectedDate,
+        vendorId: vendorId ?? existingPO.vendorId,
+      };
+
+      // Handle Item Updates (Only if in Draft)
+      if (Array.isArray(updatedItems)) {
+        await tx.purchaseOrderItem.deleteMany({ where: { purchaseOrderId: poId } });
+        
+        let newTotal = new Decimal(0);
+        const itemCreates = [];
+
+        for (const item of updatedItems) {
+          const unitCost = new Decimal(item.unitCost);
+          const qty = new Decimal(item.quantityOrdered);
+          const lineTotal = unitCost.mul(qty);
+          newTotal = newTotal.add(lineTotal);
+
+          itemCreates.push({
+            productId: item.productId,
+            quantityOrdered: item.quantityOrdered,
+            unitCost: unitCost,
+            totalCost: lineTotal
+          });
+        }
+        
+        updateData.items = { create: itemCreates };
+        updateData.totalAmount = newTotal;
+        finalTotal = newTotal;
+      }
+
+      // Handle Transition to ISSUED
+      if (requestedStatus === POStatus.ISSUED) {
+        updateData.status = POStatus.ISSUED;
+        updateData.approvedById = user.id; // Record who issued/locked the PO
+      }
+
+      const updated = await tx.purchaseOrder.update({
         where: { id: poId },
-        data: { 
-          status: POStatus.CANCELLED,
-          notes: body.reason ? `${existingPO.notes || ''}\n[VOID REASON]: ${body.reason}`.trim() : existingPO.notes
-        },
+        data: updateData,
       });
 
-      // 5. Forensic Audit - Cast tx to resolve client extension mismatch
-      await createAuditLog(tx as Prisma.TransactionClient, {
+      await createAuditLog(tx, {
         organizationId: user.organizationId,
         branchId: existingPO.branchId,
         actorId: user.id,
         actorRole: user.role,
-        action: "VOID_PURCHASE_ORDER",
+        action: requestedStatus === POStatus.ISSUED ? "ISSUE_PURCHASE_ORDER" : "UPDATE_PURCHASE_ORDER",
         resourceId: poId,
-        severity: Severity.HIGH,
-        description: `Voided Purchase Order ${existingPO.poNumber}. Reason: ${body.reason || 'Not specified'}`,
-        requestId,
-        ipAddress,
-        deviceInfo,
-        before: { status: existingPO.status },
-        after: { status: updatedPO.status },
+        description: `${requestedStatus === POStatus.ISSUED ? 'Issued' : 'Updated'} PO ${existingPO.poNumber}. Total: ${finalTotal.toFixed(2)}`,
+        requestId, ipAddress, deviceInfo,
+        before: { status: existingPO.status, total: existingPO.totalAmount.toString() },
+        after: { status: updated.status, total: finalTotal.toString() }
       });
 
-      return updatedPO;
+      return updated;
     }, {
       isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
-      timeout: 10000,
+      timeout: 15000
     });
 
-    return NextResponse.json({ success: true, status: result.status });
+    return NextResponse.json({ success: true, data: result });
 
-  } catch (err) {
-    console.error("[PO_VOID_ERROR]", err);
+  } catch (err: any) {
+    console.error("[PO_PATCH_ERROR]", err);
     
     const errorMap: Record<string, { m: string; s: number }> = {
-      PO_NOT_FOUND: { m: "Purchase Order not found", s: 404 },
-      PO_ALREADY_CANCELLED: { m: "This order is already cancelled", s: 400 },
-      CANNOT_CANCEL_RECEIVED_GOODS: { m: "Cannot cancel an order that has been fulfilled or partially received", s: 403 },
+      PO_NOT_FOUND: { m: "Purchase order not found", s: 404 },
+      UNAUTHORIZED_VOID: { m: "Insufficient permissions to void", s: 403 },
+      CANNOT_VOID_RECEIVED_GOODS: { m: "Cannot void an order already in the receiving process", s: 400 },
+      LOCKED_FOR_EDITING: { m: "This PO is Issued or Fulfilled and cannot be edited. You must Void it or use GRN for receiving.", s: 422 },
     };
 
-    // Narrow err to access message safely
-    const message = err instanceof Error ? err.message : "UNKNOWN_ERROR";
-    const errorInfo = errorMap[message] || { m: "Internal server error", s: 500 };
-    
-    return NextResponse.json({ error: errorInfo.m }, { status: errorInfo.s });
+    const info = errorMap[err.message] || { m: err.message || "Internal server error", s: 500 };
+    return NextResponse.json({ error: info.m }, { status: info.s });
   }
 }

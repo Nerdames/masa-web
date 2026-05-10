@@ -10,30 +10,31 @@ import {
   GRNStatus,
   POStatus,
   Role,
-  NotificationType
+  NotificationType,
+  StockMovementType
 } from "@prisma/client";
 import { Decimal } from "@prisma/client/runtime/library";
 import crypto from "crypto";
 import { authorize, RESOURCES } from "@/core/lib/permission";
 
 /* -------------------------
+  ROUTE SEGMENT CONFIG 
+------------------------- */
+// Replaces the deprecated `export const config = { matcher: ... }`
+export const dynamic = "force-dynamic";
+
+/* -------------------------
   Interfaces & Types
 ------------------------- */
-
-/** * Matches the Session user structure from @_core_lib_auth.docx 
- */
 interface MasaUser {
   id: string;
   role: Role;
   organizationId: string;
   branchId: string | null;
   isOrgOwner: boolean;
-  permissions: string[]; // Formatted as "ACTION:RESOURCE" [cite: 1608, 1609]
+  permissions: string[]; 
 }
 
-/**
- * Payload interface for GRN items
- */
 interface GRNItemInput {
   productId: string;
   poItemId?: string;
@@ -73,17 +74,10 @@ function generateGRNNumber(branchId?: string | null): string {
   return `GRN-${branchPart}-${suffix}`;
 }
 
-/**
- * Validates export permissions.
- * Fixed: Uses the permissions array from the user token [cite: 1608] instead of a missing DB model.
- */
 async function canExport(user: MasaUser): Promise<boolean> {
   if (user.isOrgOwner) return true;
-  
-  // Check the injected permissions array for "EXPORT:PROCUREMENT"
   const hasExportPerm = user.permissions.includes(`${PermissionAction.EXPORT}:${RESOURCES.PROCUREMENT}`);
   if (hasExportPerm) return true;
-
   return [Role.ADMIN, Role.MANAGER, Role.AUDITOR, Role.DEV].includes(user.role);
 }
 
@@ -95,9 +89,7 @@ export async function GET(req: NextRequest) {
     const session = await getServerSession(authOptions);
     if (!session?.user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     
-    // Fixed: Cast to strictly typed MasaUser [cite: 1605, 1606]
     const user = session.user as MasaUser;
-
     const { searchParams } = new URL(req.url);
     const meta = searchParams.get("meta");
     const orgId = user.organizationId;
@@ -169,42 +161,16 @@ export async function GET(req: NextRequest) {
       prisma.goodsReceiptNote.findMany({
         where,
         include: {
-          vendor: { 
-            select: { 
-              id: true, 
-              name: true, 
-              email: true, 
-              phone: true 
-            } 
-          },
-          purchaseOrder: { 
-            select: { 
-              poNumber: true, 
-              currency: true 
-            } 
-          },
-          receivedBy: { 
-            select: { 
-              name: true 
-            } 
-          },
-          approvedBy: { 
-            select: { 
-              name: true 
-            } 
-          },
+          vendor: { select: { id: true, name: true, email: true, phone: true } },
+          purchaseOrder: { select: { poNumber: true, currency: true } },
+          receivedBy: { select: { name: true } },
+          approvedBy: { select: { name: true } },
           items: { 
             include: { 
               product: { 
                 select: { 
-                  name: true, 
-                  sku: true, 
-                  uom: {
-                    select: {
-                      name: true,
-                      abbreviation: true
-                    }
-                  }
+                  name: true, sku: true, 
+                  uom: { select: { name: true, abbreviation: true } }
                 } 
               } 
             } 
@@ -259,6 +225,7 @@ export async function POST(req: NextRequest) {
     const ipAddress = req.headers.get("x-forwarded-for")?.split(",")[0] ?? "127.0.0.1";
     const deviceInfo = req.headers.get("user-agent")?.substring(0, 255) ?? "unknown";
 
+    // 1. Verify Create Permissions
     const auth = authorize({
       role: user.role,
       isOrgOwner: user.isOrgOwner,
@@ -266,6 +233,14 @@ export async function POST(req: NextRequest) {
       resource: RESOURCES.PROCUREMENT,
     });
     if (!auth.allowed) return NextResponse.json({ error: "ACCESS_DENIED: Insufficient permissions." }, { status: 403 });
+
+    // 2. Determine Auto-Approval Rights
+    const canApprove = authorize({
+      role: user.role,
+      isOrgOwner: user.isOrgOwner,
+      action: PermissionAction.APPROVE,
+      resource: RESOURCES.PROCUREMENT,
+    }).allowed;
 
     const body = await req.json().catch(() => null);
     if (!body) return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
@@ -286,11 +261,18 @@ export async function POST(req: NextRequest) {
     const result = await prisma.$transaction(async (tx) => {
       let branchId = bodyBranchId || user.branchId;
       let vendorId = bodyVendorId;
+      let po = null;
 
+      // 3. Resolve Purchase Order context if applicable
       if (purchaseOrderId) {
-        const po = await tx.purchaseOrder.findUnique({ where: { id: purchaseOrderId } });
+        po = await tx.purchaseOrder.findUnique({ 
+          where: { id: purchaseOrderId },
+          include: { items: true } 
+        });
         if (!po) throw new Error("Linked Purchase Order not found.");
-        if (po.status === POStatus.CANCELLED) throw new Error("Cannot receive items for a cancelled PO.");
+        if (po.status === POStatus.CANCELLED || po.status === POStatus.FULFILLED) {
+            throw new Error(`Cannot receive items for a PO in ${po.status} status.`);
+        }
         branchId = po.branchId;
         vendorId = po.vendorId;
       }
@@ -298,7 +280,6 @@ export async function POST(req: NextRequest) {
       if (!branchId) throw new Error("Target branch is required.");
       if (!vendorId) throw new Error("Vendor is required.");
 
-      // Fixed: Strictly typed mapping [cite: 1612]
       const typedRawItems = rawItems as GRNItemInput[];
       const productIds = typedRawItems.map((it) => it.productId);
       
@@ -309,7 +290,9 @@ export async function POST(req: NextRequest) {
       const productMap = new Map(baseProducts.map(p => [p.id, p]));
 
       const grnNumber = generateGRNNumber(branchId);
+      const targetStatus = canApprove ? GRNStatus.RECEIVED : GRNStatus.PENDING;
       
+      // 4. Create GRN Node
       const grn = await tx.goodsReceiptNote.create({
         data: {
           organizationId: orgId,
@@ -317,14 +300,16 @@ export async function POST(req: NextRequest) {
           vendorId,
           purchaseOrderId: purchaseOrderId || null,
           grnNumber,
-          status: GRNStatus.PENDING,
+          status: targetStatus,
           receivedAt: receivedAt ? new Date(receivedAt) : new Date(),
           receivedById: user.id,
+          approvedById: canApprove ? user.id : null,
           notes: notes || null,
         },
         include: { vendor: { select: { name: true } } }
       });
 
+      // 5. Process Items & Handle Auto-Approval Logistics
       for (const it of typedRawItems) {
         const itemCost = new Decimal(it.unitCost || 0);
         const qtyAccepted = Number(it.quantityAccepted || 0);
@@ -333,15 +318,21 @@ export async function POST(req: NextRequest) {
 
         if (!baseProduct) throw new Error(`Product ${it.productId} not found.`);
 
+        // 5a. Upsert Branch Product
+        // If auto-approving, immediately update the physical stock count.
         const branchProduct = await tx.branchProduct.upsert({
           where: { branchId_productId: { branchId, productId: it.productId } },
-          update: {}, 
+          update: canApprove ? { 
+            stock: { increment: qtyAccepted }, 
+            costPrice: itemCost, // SOP: Updates average/latest cost price upon receipt
+            lastRestockedAt: new Date()
+          } : {}, 
           create: {
             organizationId: orgId,
             branchId,
             productId: it.productId,
             vendorId,
-            stock: 0, 
+            stock: canApprove ? qtyAccepted : 0, 
             costPrice: itemCost,
             reorderLevel: 0,
             safetyStock: 0,
@@ -349,7 +340,8 @@ export async function POST(req: NextRequest) {
           }
         });
 
-        await tx.goodsReceiptItem.create({
+        // 5b. Write GRN Item
+        const grnItem = await tx.goodsReceiptItem.create({
           data: {
             grnId: grn.id,
             productId: it.productId,
@@ -360,8 +352,64 @@ export async function POST(req: NextRequest) {
             unitCost: itemCost
           }
         });
+
+        // 5c. IF APPROVED: Write Forensic Ledger (Stock Movement) & PO Item update
+        if (canApprove && qtyAccepted > 0) {
+          const movementTotal = itemCost.mul(qtyAccepted);
+
+          await tx.stockMovement.create({
+            data: {
+              organizationId: orgId,
+              branchId,
+              branchProductId: branchProduct.id,
+              productId: it.productId,
+              type: StockMovementType.IN,
+              quantity: qtyAccepted,
+              unitCost: itemCost,
+              totalCost: movementTotal,
+              reason: `GRN Received: ${grn.grnNumber}`,
+              runningBalance: branchProduct.stock, // Post-update balance from upsert
+              handledById: user.id,
+              approvedAt: new Date(),
+              grnId: grn.id
+            }
+          });
+
+          if (it.poItemId) {
+            await tx.purchaseOrderItem.update({
+              where: { id: it.poItemId },
+              data: { quantityReceived: { increment: qtyAccepted } }
+            });
+          }
+        }
       }
 
+      // 6. IF APPROVED: Cascade PO Status (The Core Gap Fix)
+      if (canApprove && purchaseOrderId && po) {
+        const updatedPoItems = await tx.purchaseOrderItem.findMany({ 
+          where: { purchaseOrderId } 
+        });
+
+        // Validation Math: Are all items completely fulfilled?
+        const allFulfilled = updatedPoItems.every(i => i.quantityReceived >= i.quantityOrdered);
+        const anyReceived = updatedPoItems.some(i => i.quantityReceived > 0);
+
+        let newPoStatus = po.status;
+        if (allFulfilled) {
+          newPoStatus = POStatus.FULFILLED;
+        } else if (anyReceived) {
+          newPoStatus = POStatus.PARTIALLY_RECEIVED;
+        }
+
+        if (newPoStatus !== po.status) {
+          await tx.purchaseOrder.update({
+            where: { id: purchaseOrderId },
+            data: { status: newPoStatus }
+          });
+        }
+      }
+
+      // 7. Audit & Cryptographic Chain
       const lastLog = await tx.activityLog.findFirst({
         where: { organizationId: orgId },
         orderBy: { createdAt: "desc" },
@@ -369,7 +417,9 @@ export async function POST(req: NextRequest) {
       });
       const previousHash = lastLog?.hash ?? "0".repeat(64);
       const timestamp = Date.now();
-      const hashPayload = JSON.stringify({ previousHash, requestId, actorId: user.id, action: "CREATE_GRN_PENDING", targetId: grn.id, timestamp });
+      const actionName = canApprove ? "RECEIVE_GRN_APPROVED" : "CREATE_GRN_PENDING";
+      
+      const hashPayload = JSON.stringify({ previousHash, requestId, actorId: user.id, action: actionName, targetId: grn.id, timestamp });
       const hash = crypto.createHash("sha256").update(hashPayload).digest("hex");
 
       const log = await tx.activityLog.create({
@@ -379,51 +429,58 @@ export async function POST(req: NextRequest) {
           actorId: user.id,
           actorType: ActorType.USER,
           actorRole: user.role,
-          action: "CREATE_GRN_PENDING",
+          action: actionName,
           targetType: "GRN",
           targetId: grn.id,
-          severity: Severity.MEDIUM,
-          description: `Pending Receipt Created: ${grn.grnNumber}. Awaiting manager approval.`,
-          requestId, ipAddress, deviceInfo, previousHash, hash, critical: false,
+          severity: canApprove ? Severity.HIGH : Severity.MEDIUM,
+          description: canApprove 
+            ? `GRN ${grn.grnNumber} Auto-Approved. Inventory incremented & PO updated.` 
+            : `Pending Receipt Created: ${grn.grnNumber}. Awaiting manager approval.`,
+          requestId, ipAddress, deviceInfo, previousHash, hash, critical: canApprove,
         },
       });
 
-      const targets = await tx.authorizedPersonnel.findMany({
-        where: { organizationId: orgId, deletedAt: null, disabled: false, OR: [{ role: Role.ADMIN }, { role: Role.MANAGER }, { role: Role.AUDITOR }, { isOrgOwner: true }] },
-        select: { id: true },
-      });
-
-      if (targets.length > 0) {
-        await tx.notification.create({
-          data: {
-            organizationId: orgId,
-            branchId,
-            type: NotificationType.APPROVAL,
-            title: "GRN Approval Required",
-            message: `Receipt ${grnNumber} from ${grn.vendor?.name || 'Vendor'} requires your approval to restock inventory.`,
-            activityLogId: log.id,
-            recipients: { create: targets.map((t) => ({ personnelId: t.id })) },
-          },
+      // 8. Notifications (Only if Pending)
+      if (!canApprove) {
+        const targets = await tx.authorizedPersonnel.findMany({
+          where: { organizationId: orgId, deletedAt: null, disabled: false, OR: [{ role: Role.ADMIN }, { role: Role.MANAGER }, { role: Role.AUDITOR }, { isOrgOwner: true }] },
+          select: { id: true },
         });
+
+        if (targets.length > 0) {
+          await tx.notification.create({
+            data: {
+              organizationId: orgId,
+              branchId,
+              type: NotificationType.APPROVAL,
+              title: "GRN Approval Required",
+              message: `Receipt ${grnNumber} from ${grn.vendor?.name || 'Vendor'} requires your approval to restock inventory.`,
+              activityLogId: log.id,
+              recipients: { create: targets.map((t) => ({ personnelId: t.id })) },
+            },
+          });
+        }
       }
 
-      return grn;
+      return { grn, autoApproved: canApprove };
     }, {
       isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
       timeout: 15000
     });
 
-    return NextResponse.json({ success: true, id: result.id, grnNumber: result.grnNumber }, { status: 201 });
+    return NextResponse.json({ 
+      success: true, 
+      id: result.grn.id, 
+      grnNumber: result.grn.grnNumber,
+      status: result.grn.status,
+      message: result.autoApproved 
+        ? "Items received successfully. Inventory and PO have been updated." 
+        : "Draft GRN created. Awaiting approval."
+    }, { status: 201 });
+
   } catch (err: unknown) {
     console.error("[GRN_POST_ERROR]", err);
     const message = err instanceof Error ? err.message : "Failed to process receipt.";
     return NextResponse.json({ error: message }, { status: 400 });
   }
 }
-
-/* -------------------------
-  MATCHER CONFIG
-------------------------- */
-export const config = {
-  matcher: ["/api/inventory/grns/:path*"],
-};

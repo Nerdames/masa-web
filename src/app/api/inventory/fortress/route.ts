@@ -19,6 +19,8 @@ import { authorize, RESOURCES } from "@/core/lib/permission";
 /* CONFIGURATION & HELPERS                                                    */
 /* -------------------------------------------------------------------------- */
 
+export const dynamic = "force-dynamic";
+
 const DEFAULT_LIMIT = 25;
 const MAX_LIMIT = 500;
 const EXPORT_LIMIT = 10000;
@@ -43,7 +45,6 @@ export type UiBranchProduct = {
   };
   lastSoldAt?: string | null;
   lastRestockedAt?: string | null;
-  // NEW: Surface pending approvals to the UI to lock inputs/show badges
   pendingApproval?: {
     id: string;
     actionType: CriticalAction;
@@ -91,9 +92,9 @@ async function createAuditLog(
     ipAddress: string;
     deviceInfo: string;
     approvalId?: string; 
-    metadata?: any;
-    before?: any;
-    after?: any;
+    metadata?: Record<string, unknown>;
+    before?: Record<string, unknown>;
+    after?: Record<string, unknown>;
   }
 ) {
   const lastLog = await tx.activityLog.findFirst({
@@ -195,7 +196,9 @@ async function canExport(user: AuthenticatedUser): Promise<boolean> {
       },
     });
     if (perm) return true;
-  } catch (e) {}
+  } catch {
+    // Suppress minor read errors, fallback to role-based check
+  }
   return [Role.ADMIN, Role.MANAGER, Role.AUDITOR, Role.DEV].includes(user.role);
 }
 
@@ -348,7 +351,7 @@ export async function GET(req: NextRequest) {
       });
     }
 
-    // NEW: Fetch Pending Approval Requests for the returned items
+    // Map Pending Approval Requests to the returned inventory items
     const productIds = rawItems.map(item => item.id);
     const pendingApprovals = await prisma.approvalRequest.findMany({
       where: {
@@ -407,8 +410,8 @@ export async function GET(req: NextRequest) {
       totalPages: Math.ceil(total / take)
     });
 
-  } catch (error: any) {
-    console.error("[FORTRESS_GET_ERROR]", error);
+  } catch (error: unknown) {
+    console.error("[FORTRESS_GET_ERROR]", error instanceof Error ? error.message : error);
     return NextResponse.json({ error: "Internal server error" }, { status: 500 });
   }
 }
@@ -445,6 +448,17 @@ export async function PATCH(req: NextRequest) {
 
     const { sellingPrice, reorderLevel, safetyStock } = body;
 
+    // Safety Checks: Prevent negative parameter injections
+    if (sellingPrice !== undefined && (isNaN(Number(sellingPrice)) || Number(sellingPrice) < 0)) {
+      return NextResponse.json({ error: "Selling price cannot be less than 0." }, { status: 400 });
+    }
+    if (reorderLevel !== undefined && (isNaN(Number(reorderLevel)) || Number(reorderLevel) < 0)) {
+      return NextResponse.json({ error: "Reorder level cannot be negative." }, { status: 400 });
+    }
+    if (safetyStock !== undefined && (isNaN(Number(safetyStock)) || Number(safetyStock) < 0)) {
+      return NextResponse.json({ error: "Safety stock cannot be negative." }, { status: 400 });
+    }
+
     const existing = await prisma.branchProduct.findUnique({
       where: { id, organizationId: orgId },
       include: { product: { select: { sku: true, name: true } } }
@@ -456,11 +470,16 @@ export async function PATCH(req: NextRequest) {
 
     // --- CRITICAL ACTION EVALUATION ---
     const oldSellingPrice = existing.sellingPrice ? existing.sellingPrice.toNumber() : null;
-    const isPriceChange = sellingPrice !== undefined && Number(sellingPrice) !== oldSellingPrice;
     
+    // SOP Check: Reject requests that result in zero real-world change
+    if (sellingPrice !== undefined && Number(sellingPrice) === oldSellingPrice) {
+      return NextResponse.json({ error: "Requested price matches the current system price. No changes made." }, { status: 400 });
+    }
+
+    const isPriceChange = sellingPrice !== undefined;
     const canAutoApprovePrice = [Role.ADMIN, Role.MANAGER, Role.AUDITOR, Role.DEV].includes(user.role) || user.isOrgOwner;
 
-    // NEW: Fail-fast deduplication check outside the transaction.
+    // Fail-fast deduplication check to prevent approval spam
     if (isPriceChange && !canAutoApprovePrice) {
       const activeApproval = await prisma.approvalRequest.findFirst({
         where: {
@@ -474,7 +493,7 @@ export async function PATCH(req: NextRequest) {
 
       if (activeApproval) {
         return NextResponse.json(
-          { error: "A price update request is already pending approval for this product." }, 
+          { error: "A price update request is already pending approval for this product. Please wait for management review." }, 
           { status: 409 }
         );
       }
@@ -485,9 +504,9 @@ export async function PATCH(req: NextRequest) {
       let approvalReq = null;
       let priceUpdated = false;
 
-      // 1. Handle Standard Threshold Updates
-      const newReorder = reorderLevel !== undefined ? Number(reorderLevel) : undefined;
-      const newSafety = safetyStock !== undefined ? Number(safetyStock) : undefined;
+      // 1. Handle Standard Threshold Updates (No Approval Required)
+      const newReorder = reorderLevel !== undefined ? Math.floor(Number(reorderLevel)) : undefined;
+      const newSafety = safetyStock !== undefined ? Math.floor(Number(safetyStock)) : undefined;
 
       if (newReorder !== undefined || newSafety !== undefined) {
         branchProduct = await tx.branchProduct.update({
@@ -508,7 +527,7 @@ export async function PATCH(req: NextRequest) {
           });
           priceUpdated = true;
         } else {
-          // Strictly type the JSON Payload
+          // Serialize Changes Payload rigidly for Forensic DB storage
           const changesPayload: Prisma.InputJsonValue = {
             sellingPrice: {
               old: oldSellingPrice,
@@ -530,7 +549,7 @@ export async function PATCH(req: NextRequest) {
               targetType: "BRANCH_PRODUCT",
               targetId: existing.id,
               status: ApprovalStatus.PENDING,
-              expiresAt: expiryDate // NEW: Enforce lifecycle expiration
+              expiresAt: expiryDate 
             }
           });
         }
@@ -543,10 +562,12 @@ export async function PATCH(req: NextRequest) {
           branchId: existing.branchId,
           actorId: user.id,
           actorRole: user.role,
-          action: priceUpdated ? "PRICE_AND_THRESHOLD_UPDATE" : "THRESHOLD_UPDATE",
+          action: priceUpdated && (newReorder !== undefined || newSafety !== undefined) 
+                    ? "PRICE_AND_THRESHOLD_UPDATE" 
+                    : priceUpdated ? "PRICE_UPDATE" : "THRESHOLD_UPDATE",
           resourceId: existing.id,
           severity: priceUpdated ? Severity.HIGH : Severity.MEDIUM,
-          description: `Updated parameters for ${existing.product.name} (SKU: ${existing.product.sku})`,
+          description: `Updated inventory parameters for ${existing.product.name} (SKU: ${existing.product.sku})`,
           requestId,
           ipAddress,
           deviceInfo,
@@ -609,7 +630,7 @@ export async function PATCH(req: NextRequest) {
 
       return { branchProduct, approvalReq };
     }, {
-      isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+      isolationLevel: Prisma.TransactionIsolationLevel.Serializable, // Prevent cryptographic hash collisions
       timeout: 15000 
     });
 
@@ -623,8 +644,8 @@ export async function PATCH(req: NextRequest) {
         : "Inventory parameters updated and securely logged."
     });
 
-  } catch (error: any) {
-    console.error("[FORTRESS_PATCH_ERROR]", error);
-    return NextResponse.json({ error: "Failed to commit inventory adjustments" }, { status: 500 });
+  } catch (error: unknown) {
+    console.error("[FORTRESS_PATCH_ERROR]", error instanceof Error ? error.message : error);
+    return NextResponse.json({ error: "Failed to commit inventory adjustments." }, { status: 500 });
   }
 }
