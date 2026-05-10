@@ -37,19 +37,43 @@ import {
 
 export type AlertKind = "TOAST" | "PUSH";
 
+/**
+ * Extended type to support UI-only states not present in the Prisma schema
+ */
+export type AlertType = NotificationType | "SUCCESS" | "WARNING" | "APPROVAL_DECISION";
+
 export interface MASAAlert {
   id: string; 
-  notificationId?: string; // CHANGED: Made optional so local dispatch works
+  notificationId?: string;
   kind: AlertKind;
-  type: NotificationType;
+  type: AlertType;
   title: string;
   message: string;
   createdAt: number;
   read: boolean;
-  context?: any;
+  context?: Record<string, unknown> | null;
 }
 
-// Helper for the ToastItem props which was missing in the snippet
+interface ServerNotification {
+  id: string;
+  type: AlertType;
+  title: string;
+  message: string;
+  createdAt: string | number;
+  read: boolean;
+  context?: Record<string, unknown>;
+}
+
+interface PusherPayload {
+  id: string;
+  kind?: AlertKind;
+  type: AlertType;
+  title: string;
+  message: string;
+  context?: Record<string, unknown>;
+  isWelcome?: boolean;
+}
+
 interface ToastItemProps {
   alert: MASAAlert;
   onRemove: (id: string) => void;
@@ -63,7 +87,10 @@ interface AlertContextType {
   clearActivePushes: () => void;
 }
 
-const TYPE_CONFIG: Record<NotificationType, { icon: LucideIcon; bg: string }> = {
+/**
+ * Maps all AlertTypes (including UI-only extensions) to icons and colors
+ */
+const TYPE_CONFIG: Record<AlertType, { icon: LucideIcon; bg: string }> = {
   SECURITY: { icon: ShieldAlert, bg: "bg-red-500" },
   SYSTEM: { icon: Settings, bg: "bg-slate-600" },
   APPROVAL: { icon: LockKeyholeOpen, bg: "bg-amber-500" },
@@ -112,7 +139,7 @@ export function AlertProvider({ children }: { children: React.ReactNode }) {
       if (!res.ok) return;
       const data = await res.json();
       
-      const mapped: MASAAlert[] = (data.notifications || []).map((n: any) => ({
+      const mapped: MASAAlert[] = (data.notifications || []).map((n: ServerNotification) => ({
         id: `srv-${n.id}`,
         notificationId: n.id,
         kind: "PUSH",
@@ -121,7 +148,7 @@ export function AlertProvider({ children }: { children: React.ReactNode }) {
         message: n.message,
         createdAt: new Date(n.createdAt).getTime(),
         read: n.read,
-        context: n.context,
+        context: n.context || null,
       }));
 
       setAlerts((prev) => {
@@ -176,29 +203,34 @@ export function AlertProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   useEffect(() => {
-    if (status === "authenticated" && session?.user?.id) {
-      fetchNotifications();
+    const initNotifications = async () => {
+      if (status === "authenticated" && session?.user?.id) {
+        await fetchNotifications();
 
-      if (!pusherRef.current) {
-        pusherRef.current = new Pusher(process.env.NEXT_PUBLIC_PUSHER_KEY!, {
-          cluster: process.env.NEXT_PUBLIC_PUSHER_CLUSTER || "mt1",
-          authEndpoint: "/api/pusher/auth",
-        });
-        const ch = pusherRef.current.subscribe(`user-${session.user.id}`);
-        
-        ch.bind("new-alert", (p: any) => {
-          dispatch({
-            kind: p.kind || "PUSH",
-            notificationId: p.id,
-            type: p.type,
-            title: p.title,
-            message: p.message,
-            context: { ...p.context, isWelcome: p.isWelcome }
+        if (!pusherRef.current) {
+          pusherRef.current = new Pusher(process.env.NEXT_PUBLIC_PUSHER_KEY!, {
+            cluster: process.env.NEXT_PUBLIC_PUSHER_CLUSTER || "mt1",
+            authEndpoint: "/api/pusher/auth",
           });
-          setIsGroupExpanded(true);
-        });
+          const ch = pusherRef.current.subscribe(`user-${session.user.id}`);
+          
+          ch.bind("new-alert", (p: PusherPayload) => {
+            dispatch({
+              kind: p.kind || "PUSH",
+              notificationId: p.id,
+              type: p.type,
+              title: p.title,
+              message: p.message,
+              context: { ...p.context, isWelcome: p.isWelcome }
+            });
+            setIsGroupExpanded(true);
+          });
+        }
       }
-    }
+    };
+
+    void initNotifications();
+
     return () => {
       if (pusherRef.current) {
         pusherRef.current.disconnect();
@@ -244,7 +276,7 @@ export function AlertProvider({ children }: { children: React.ReactNode }) {
 }
 
 /* -------------------------------------------------- */
-/* SUB-COMPONENTS (Simplified/Fixed) */
+/* SUB-COMPONENTS */
 /* -------------------------------------------------- */
 
 interface PushGroupProps {
