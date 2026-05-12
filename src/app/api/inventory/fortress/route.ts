@@ -1,20 +1,25 @@
+/**
+ * src/app/api/inventory/route.ts
+ * * CORE INVENTORY & STOCK MANAGEMENT API
+ * Integrated with Forensic Audit, RBAC, and Approval Workflows.
+ */
+
 import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "next-auth/next";
 import { authOptions } from "@/core/lib/auth";
 import prisma from "@/core/lib/prisma";
 import {
   PermissionAction,
-  ActorType,
   Severity,
   Prisma,
   Role,
-  NotificationType,
   CriticalAction,
   ApprovalStatus,
-  Resource, // Added Resource import directly from Prisma
+  Resource,
 } from "@prisma/client";
 import crypto from "crypto";
-import { authorize } from "@/core/lib/permission"; // Removed RESOURCES from here
+import { authorize } from "@/core/lib/permission";
+import { createAuditLog, notifyManagement } from "@/core/lib/audit";
 
 /* -------------------------------------------------------------------------- */
 /* CONFIGURATION & HELPERS                                                    */
@@ -25,7 +30,7 @@ export const dynamic = "force-dynamic";
 const DEFAULT_LIMIT = 25;
 const MAX_LIMIT = 500;
 const EXPORT_LIMIT = 10000;
-const APPROVAL_EXPIRY_DAYS = 7; // Auto-expire pending requests after 7 days
+const APPROVAL_EXPIRY_DAYS = 7;
 
 export type UiBranchProduct = {
   id: string;
@@ -54,12 +59,14 @@ export type UiBranchProduct = {
   } | null;
 };
 
+// Augmented Session User type based on your auth.ts injection
 interface AuthenticatedUser {
   id: string;
   organizationId: string;
   branchId: string | null;
   role: Role;
   isOrgOwner: boolean;
+  permissions: string[]; // Injected by production-ready auth.ts
 }
 
 function parseIntSafe(v: string | null, fallback: number): number {
@@ -75,136 +82,7 @@ function csvEscape(value: unknown): string {
 }
 
 /* -------------------------------------------------------------------------- */
-/* FORENSIC AUDIT & NOTIFICATION ENGINES                                      */
-/* -------------------------------------------------------------------------- */
-
-async function createAuditLog(
-  tx: Prisma.TransactionClient,
-  data: {
-    organizationId: string;
-    branchId?: string | null;
-    actorId: string;
-    actorRole: Role;
-    action: string;
-    resourceId: string;
-    description: string;
-    severity?: Severity;
-    requestId: string;
-    ipAddress: string;
-    deviceInfo: string;
-    approvalId?: string; 
-    metadata?: Record<string, unknown>;
-    before?: Record<string, unknown>;
-    after?: Record<string, unknown>;
-  }
-) {
-  const lastLog = await tx.activityLog.findFirst({
-    where: { organizationId: data.organizationId },
-    orderBy: { createdAt: "desc" },
-    select: { hash: true },
-  });
-
-  const previousHash = lastLog?.hash ?? "0".repeat(64);
-  const timestamp = Date.now();
-
-  const hashPayload = JSON.stringify({
-    previousHash,
-    requestId: data.requestId,
-    actorId: data.actorId,
-    action: data.action,
-    targetId: data.resourceId,
-    timestamp,
-  });
-
-  const hash = crypto.createHash("sha256").update(hashPayload).digest("hex");
-
-  return await tx.activityLog.create({
-    data: {
-      organizationId: data.organizationId,
-      branchId: data.branchId ?? undefined,
-      actorId: data.actorId,
-      actorType: ActorType.USER,
-      actorRole: data.actorRole,
-      action: data.action,
-      targetType: "BRANCH_PRODUCT",
-      targetId: data.resourceId,
-      severity: data.severity ?? Severity.MEDIUM,
-      description: data.description,
-      approvalId: data.approvalId,
-      metadata: data.metadata ? (data.metadata as Prisma.InputJsonValue) : Prisma.JsonNull,
-      before: data.before ? (data.before as Prisma.InputJsonValue) : Prisma.JsonNull,
-      after: data.after ? (data.after as Prisma.InputJsonValue) : Prisma.JsonNull,
-      requestId: data.requestId,
-      ipAddress: data.ipAddress,
-      deviceInfo: data.deviceInfo,
-      previousHash,
-      hash,
-      critical: data.severity === Severity.HIGH || data.severity === Severity.CRITICAL,
-    },
-  });
-}
-
-async function notifyManagement(
-  tx: Prisma.TransactionClient,
-  organizationId: string,
-  branchId: string | null | undefined,
-  title: string,
-  message: string,
-  activityLogId: string,
-  approvalId?: string,
-  actionTrigger?: CriticalAction 
-) {
-  const targets = await tx.authorizedPersonnel.findMany({
-    where: {
-      organizationId,
-      deletedAt: null,
-      disabled: false,
-      OR: [{ role: Role.ADMIN }, { role: Role.MANAGER }, { role: Role.AUDITOR }, { isOrgOwner: true }],
-    },
-    select: { id: true },
-  });
-
-  if (targets.length === 0) return;
-
-  await tx.notification.create({
-    data: {
-      organizationId,
-      branchId: branchId ?? undefined,
-      type: NotificationType.INVENTORY,
-      title,
-      message,
-      activityLogId,
-      approvalId, 
-      actionTrigger, 
-      recipients: {
-        create: targets.map((t) => ({ personnelId: t.id })),
-      },
-    },
-  });
-}
-
-async function canExport(user: AuthenticatedUser): Promise<boolean> {
-  if (user.isOrgOwner) return true;
-  try {
-    const perm = await prisma.permission.findUnique({
-      where: {
-        organizationId_role_action_resource: {
-          organizationId: user.organizationId,
-          role: user.role,
-          action: PermissionAction.EXPORT,
-          resource: Resource.INVENTORY, // Changed from RESOURCES.INVENTORY
-        },
-      },
-    });
-    if (perm) return true;
-  } catch {
-    // Suppress minor read errors, fallback to role-based check
-  }
-  return [Role.ADMIN, Role.MANAGER, Role.AUDITOR, Role.DEV].includes(user.role);
-}
-
-/* -------------------------------------------------------------------------- */
-/* [GET] DATA RETRIEVAL: INVENTORY GRID & METADATA                            */
+/* [GET] DATA RETRIEVAL: STOCK GRID & METADATA                                */
 /* -------------------------------------------------------------------------- */
 
 export async function GET(req: NextRequest) {
@@ -212,6 +90,17 @@ export async function GET(req: NextRequest) {
     const session = await getServerSession(authOptions);
     if (!session?.user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     const user = session.user as AuthenticatedUser;
+
+    // --- INTEGRATED PERMISSION CHECK (DB + FALLBACK) ---
+    const auth = authorize({
+      role: user.role,
+      isOrgOwner: user.isOrgOwner,
+      action: PermissionAction.READ,
+      resources: Resource.STOCK, // Explicitly corrected to STOCK
+      userPermissions: user.permissions, // Use pre-resolved permissions from session
+    });
+
+    if (!auth.allowed) return NextResponse.json({ error: auth.reason || "ACCESS_DENIED" }, { status: 403 });
 
     const { searchParams } = new URL(req.url);
     const orgId = user.organizationId;
@@ -246,17 +135,16 @@ export async function GET(req: NextRequest) {
     }
 
     // --- MAIN GRID QUERY ---
-    const authGrid = authorize({
-      role: user.role,
-      isOrgOwner: user.isOrgOwner,
-      action: PermissionAction.READ,
-      resources: Resource.INVENTORY, // Changed from RESOURCES.INVENTORY
-    });
-    if (!authGrid.allowed) return NextResponse.json({ error: "ACCESS_DENIED" }, { status: 403 });
-
     const exportAll = searchParams.get("export") === "true";
-    if (exportAll && !(await canExport(user))) {
-      return NextResponse.json({ error: "ACCESS_DENIED: Export Restricted." }, { status: 403 });
+    if (exportAll) {
+      const exportAuth = authorize({
+        role: user.role,
+        isOrgOwner: user.isOrgOwner,
+        action: PermissionAction.EXPORT,
+        resources: Resource.STOCK,
+        userPermissions: user.permissions,
+      });
+      if (!exportAuth.allowed) return NextResponse.json({ error: "ACCESS_DENIED: Export Restricted." }, { status: 403 });
     }
 
     const page = parseIntSafe(searchParams.get("page"), 1);
@@ -290,6 +178,7 @@ export async function GET(req: NextRequest) {
       ];
     }
 
+    // Stock Status Filtering logic
     if (status === "critical") {
       where.stock = { lte: prisma.branchProduct.fields.safetyStock };
     } else if (status === "reorder") {
@@ -347,12 +236,11 @@ export async function GET(req: NextRequest) {
       return new NextResponse(csv, {
         headers: {
           "Content-Type": "text/csv; charset=utf-8",
-          "Content-Disposition": `attachment; filename="inventory_${Date.now()}.csv"`,
+          "Content-Disposition": `attachment; filename="stock_report_${Date.now()}.csv"`,
         },
       });
     }
 
-    // Map Pending Approval Requests to the returned inventory items
     const productIds = rawItems.map(item => item.id);
     const pendingApprovals = await prisma.approvalRequest.findMany({
       where: {
@@ -374,7 +262,6 @@ export async function GET(req: NextRequest) {
 
     const mapped: UiBranchProduct[] = rawItems.map(bp => {
       const pendingReq = approvalsMap.get(bp.id);
-      
       return {
         id: bp.id,
         stock: bp.stock,
@@ -432,32 +319,29 @@ export async function PATCH(req: NextRequest) {
     const ipAddress = req.headers.get("x-forwarded-for")?.split(",")[0] ?? "127.0.0.1";
     const deviceInfo = req.headers.get("user-agent")?.substring(0, 255) ?? "unknown";
 
+    // --- INTEGRATED PERMISSION CHECK (DB + FALLBACK) ---
     const auth = authorize({
       role: user.role,
       isOrgOwner: user.isOrgOwner,
       action: PermissionAction.UPDATE,
-      resources: Resource.INVENTORY, // Changed from RESOURCES.INVENTORY
+      resources: Resource.STOCK,
+      userPermissions: user.permissions,
     });
-    if (!auth.allowed) return NextResponse.json({ error: "ACCESS_DENIED" }, { status: 403 });
+
+    if (!auth.allowed) return NextResponse.json({ error: auth.reason || "ACCESS_DENIED" }, { status: 403 });
 
     const { searchParams } = new URL(req.url);
     const id = searchParams.get("id");
-    if (!id) return NextResponse.json({ error: "BranchProduct ID parameter is missing." }, { status: 400 });
+    if (!id) return NextResponse.json({ error: "Product ID parameter is missing." }, { status: 400 });
 
     const body = await req.json().catch(() => null);
     if (!body) return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
 
     const { sellingPrice, reorderLevel, safetyStock } = body;
 
-    // Safety Checks: Prevent negative parameter injections
+    // Validation
     if (sellingPrice !== undefined && (isNaN(Number(sellingPrice)) || Number(sellingPrice) < 0)) {
       return NextResponse.json({ error: "Selling price cannot be less than 0." }, { status: 400 });
-    }
-    if (reorderLevel !== undefined && (isNaN(Number(reorderLevel)) || Number(reorderLevel) < 0)) {
-      return NextResponse.json({ error: "Reorder level cannot be negative." }, { status: 400 });
-    }
-    if (safetyStock !== undefined && (isNaN(Number(safetyStock)) || Number(safetyStock) < 0)) {
-      return NextResponse.json({ error: "Safety stock cannot be negative." }, { status: 400 });
     }
 
     const existing = await prisma.branchProduct.findUnique({
@@ -466,21 +350,16 @@ export async function PATCH(req: NextRequest) {
     });
 
     if (!existing) {
-      return NextResponse.json({ error: "Inventory record not found or inaccessible." }, { status: 404 });
+      return NextResponse.json({ error: "Stock record not found." }, { status: 404 });
     }
 
-    // --- CRITICAL ACTION EVALUATION ---
     const oldSellingPrice = existing.sellingPrice ? existing.sellingPrice.toNumber() : null;
-    
-    // SOP Check: Reject requests that result in zero real-world change
-    if (sellingPrice !== undefined && Number(sellingPrice) === oldSellingPrice) {
-      return NextResponse.json({ error: "Requested price matches the current system price. No changes made." }, { status: 400 });
-    }
+    const isPriceChange = sellingPrice !== undefined && Number(sellingPrice) !== oldSellingPrice;
 
-    const isPriceChange = sellingPrice !== undefined;
-    const canAutoApprovePrice = [Role.ADMIN, Role.MANAGER, Role.AUDITOR, Role.DEV].includes(user.role) || user.isOrgOwner;
+    // Check if the user can auto-approve critical actions based on role hierarchy or ownership
+    const canAutoApprovePrice = [Role.ADMIN, Role.MANAGER, Role.DEV].includes(user.role) || user.isOrgOwner;
 
-    // Fail-fast deduplication check to prevent approval spam
+    // Deduplication check for pending price requests
     if (isPriceChange && !canAutoApprovePrice) {
       const activeApproval = await prisma.approvalRequest.findFirst({
         where: {
@@ -491,13 +370,7 @@ export async function PATCH(req: NextRequest) {
           status: ApprovalStatus.PENDING
         }
       });
-
-      if (activeApproval) {
-        return NextResponse.json(
-          { error: "A price update request is already pending approval for this product. Please wait for management review." }, 
-          { status: 409 }
-        );
-      }
+      if (activeApproval) return NextResponse.json({ error: "A price update request is already pending." }, { status: 409 });
     }
 
     const result = await prisma.$transaction(async (tx) => {
@@ -505,7 +378,7 @@ export async function PATCH(req: NextRequest) {
       let approvalReq = null;
       let priceUpdated = false;
 
-      // 1. Handle Standard Threshold Updates (No Approval Required)
+      // 1. Handle Thresholds (Standard Action)
       const newReorder = reorderLevel !== undefined ? Math.floor(Number(reorderLevel)) : undefined;
       const newSafety = safetyStock !== undefined ? Math.floor(Number(safetyStock)) : undefined;
 
@@ -519,7 +392,7 @@ export async function PATCH(req: NextRequest) {
         });
       }
 
-      // 2. Handle Price Update (Critical Action Bridge)
+      // 2. Handle Price Change (Critical Action)
       if (isPriceChange) {
         if (canAutoApprovePrice) {
           branchProduct = await tx.branchProduct.update({
@@ -528,14 +401,6 @@ export async function PATCH(req: NextRequest) {
           });
           priceUpdated = true;
         } else {
-          // Serialize Changes Payload rigidly for Forensic DB storage
-          const changesPayload: Prisma.InputJsonValue = {
-            sellingPrice: {
-              old: oldSellingPrice,
-              new: Number(sellingPrice)
-            }
-          };
-
           const expiryDate = new Date();
           expiryDate.setDate(expiryDate.getDate() + APPROVAL_EXPIRY_DAYS);
 
@@ -546,7 +411,7 @@ export async function PATCH(req: NextRequest) {
               requesterId: user.id,
               actionType: CriticalAction.PRICE_UPDATE,
               requiredRole: Role.MANAGER,
-              changes: changesPayload,
+              changes: { sellingPrice: { old: oldSellingPrice, new: Number(sellingPrice) } },
               targetType: "BRANCH_PRODUCT",
               targetId: existing.id,
               status: ApprovalStatus.PENDING,
@@ -556,45 +421,30 @@ export async function PATCH(req: NextRequest) {
         }
       }
 
-      // 3. Robust Ledger Activity Logging
+      // 3. Centralized Audit Logging
       if (priceUpdated || newReorder !== undefined || newSafety !== undefined) {
         const log = await createAuditLog(tx, {
           organizationId: orgId,
           branchId: existing.branchId,
           actorId: user.id,
           actorRole: user.role,
-          action: priceUpdated && (newReorder !== undefined || newSafety !== undefined) 
-                    ? "PRICE_AND_THRESHOLD_UPDATE" 
-                    : priceUpdated ? "PRICE_UPDATE" : "THRESHOLD_UPDATE",
-          resourceId: existing.id,
+          action: priceUpdated ? "PRICE_UPDATE" : "THRESHOLD_UPDATE",
+          entityType: Resource.STOCK,
+          entityId: existing.id,
           severity: priceUpdated ? Severity.HIGH : Severity.MEDIUM,
-          description: `Updated inventory parameters for ${existing.product.name} (SKU: ${existing.product.sku})`,
-          requestId,
+          description: `Updated parameters for ${existing.product.name}`,
           ipAddress,
           deviceInfo,
-          before: {
-            sellingPrice: priceUpdated ? oldSellingPrice : undefined,
-            reorderLevel: newReorder !== undefined ? existing.reorderLevel : undefined,
-            safetyStock: newSafety !== undefined ? existing.safetyStock : undefined
+          changes: {
+            from: { sellingPrice: priceUpdated ? oldSellingPrice : undefined },
+            to: { sellingPrice: priceUpdated ? Number(sellingPrice) : undefined }
           },
-          after: {
-            sellingPrice: priceUpdated ? Number(sellingPrice) : undefined,
-            reorderLevel: newReorder !== undefined ? newReorder : undefined,
-            safetyStock: newSafety !== undefined ? newSafety : undefined
-          }
+          metadata: { correlationId: requestId } // Passing standard UUID for chain correlation
         });
 
+        // Trigger notifications explicitly using centralized engine
         if (priceUpdated) {
-          await notifyManagement(
-            tx, 
-            orgId, 
-            existing.branchId, 
-            "Price Update Executed", 
-            `Price for ${existing.product.name} directly updated to ${sellingPrice} by ${user.role}.`, 
-            log.id,
-            undefined, 
-            CriticalAction.PRICE_UPDATE
-          );
+          await notifyManagement(tx, orgId, existing.branchId, "Price Changed", `${existing.product.name} price updated to ${sellingPrice}`, log.id, undefined, CriticalAction.PRICE_UPDATE);
         }
       }
 
@@ -606,47 +456,40 @@ export async function PATCH(req: NextRequest) {
           actorId: user.id,
           actorRole: user.role,
           action: "REQUEST_PRICE_UPDATE",
-          resourceId: existing.id,
+          entityType: Resource.STOCK,
+          entityId: existing.id,
           severity: Severity.MEDIUM,
-          description: `Requested price update for ${existing.product.name} (SKU: ${existing.product.sku}) to ${sellingPrice}`,
-          requestId,
+          description: `Requested price change for ${existing.product.name} to ${sellingPrice}`,
           ipAddress,
           deviceInfo,
-          approvalId: approvalReq.id, 
-          before: { sellingPrice: oldSellingPrice },
-          after: { requestedPrice: Number(sellingPrice) } 
+          approvalId: approvalReq.id,
+          changes: {
+            from: { sellingPrice: oldSellingPrice },
+            to: { requestedPrice: Number(sellingPrice) }
+          },
+          metadata: { correlationId: requestId }
         });
         
-        await notifyManagement(
-          tx, 
-          orgId, 
-          existing.branchId, 
-          "Price Update Approval Required", 
-          `User ${user.id} (${user.role}) has requested a price change for ${existing.product.name}.`, 
-          log.id,
-          approvalReq.id, 
-          CriticalAction.PRICE_UPDATE 
-        );
+        await notifyManagement(tx, orgId, existing.branchId, "Approval Required", `New price request for ${existing.product.name}`, log.id, approvalReq.id, CriticalAction.PRICE_UPDATE);
       }
 
       return { branchProduct, approvalReq };
     }, {
-      isolationLevel: Prisma.TransactionIsolationLevel.Serializable, // Prevent cryptographic hash collisions
+      isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
       timeout: 15000 
     });
 
     return NextResponse.json({ 
       success: true, 
       id: result.branchProduct.id, 
-      newPrice: result.branchProduct.sellingPrice ? Number(result.branchProduct.sellingPrice) : null,
       approvalPending: !!result.approvalReq,
       message: result.approvalReq 
-        ? "Thresholds updated successfully. The requested price change has been securely forwarded for managerial approval."
-        : "Inventory parameters updated and securely logged."
+        ? "Price change request sent for approval."
+        : "Stock parameters updated and logged."
     });
 
   } catch (error: unknown) {
     console.error("[FORTRESS_PATCH_ERROR]", error instanceof Error ? error.message : error);
-    return NextResponse.json({ error: "Failed to commit inventory adjustments." }, { status: 500 });
+    return NextResponse.json({ error: "Failed to update stock record." }, { status: 500 });
   }
 }

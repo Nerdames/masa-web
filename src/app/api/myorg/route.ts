@@ -2,9 +2,9 @@ import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "next-auth/next";
 import { authOptions } from "@/core/lib/auth";
 import prisma from "@/core/lib/prisma";
+import { createAuditLog } from "@/core/lib/audit"; // Import the fortified engine
 import { invalidateOrgRole } from "@/core/lib/permissionCache";
 import { 
-  ActorType, 
   Severity, 
   Prisma, 
   Role, 
@@ -15,82 +15,17 @@ import {
 } from "@prisma/client";
 import crypto from "crypto";
 
-/* -------------------------------------------------------------------------- */
-/* FORENSIC AUDIT ENGINE                                                      */
-/* -------------------------------------------------------------------------- */
-
-async function createAuditLog(
-  tx: Prisma.TransactionClient,
-  data: {
-    organizationId: string;
-    actorId: string;
-    actorRole: Role;
-    action: string;
-    targetId: string;
-    targetType: string;
-    severity: Severity;
-    description: string;
-    requestId: string;
-    ipAddress: string;
-    deviceInfo: string;
-    before?: any;
-    after?: any;
-  }
-) {
-  const lastLog = await tx.activityLog.findFirst({
-    where: { organizationId: data.organizationId },
-    orderBy: { createdAt: "desc" },
-    select: { hash: true },
-  });
-
-  const previousHash = lastLog?.hash ?? "0".repeat(64);
-  
-  const logPayload = JSON.stringify({
-    organizationId: data.organizationId,
-    action: data.action,
-    actorId: data.actorId,
-    targetId: data.targetId,
-    requestId: data.requestId,
-    previousHash,
-    timestamp: Date.now(),
-  });
-  
-  const hash = crypto.createHash("sha256").update(logPayload).digest("hex");
-
-  return tx.activityLog.create({
-    data: {
-      organizationId: data.organizationId,
-      actorId: data.actorId,
-      actorType: ActorType.USER,
-      actorRole: data.actorRole,
-      action: data.action,
-      targetType: data.targetType,
-      targetId: data.targetId,
-      severity: data.severity,
-      description: data.description,
-      requestId: data.requestId,
-      ipAddress: data.ipAddress,
-      deviceInfo: data.deviceInfo,
-      before: data.before ? (data.before as Prisma.InputJsonValue) : Prisma.JsonNull,
-      after: data.after ? (data.after as Prisma.InputJsonValue) : Prisma.JsonNull,
-      previousHash,
-      hash,
-      critical: data.severity === Severity.HIGH || data.severity === Severity.CRITICAL,
-    },
-  });
-}
-
-/* -------------------------------------------------------------------------- */
-/* GET HANDLER (Fetch All Config & RBAC Permissions)                          */
-/* -------------------------------------------------------------------------- */
-
+/**
+ * GET: Fetch all Organization Configuration & RBAC Matrix
+ */
 export async function GET(req: NextRequest) {
   try {
     const session = await getServerSession(authOptions);
     if (!session?.user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     
-    const user = session.user as any;
+    const user = session.user;
 
+    // Security Gate: Only privileged roles can access the config multiplexer
     if (user.role !== Role.ADMIN && !user.isOrgOwner && user.role !== Role.DEV) {
       return NextResponse.json({ error: "Forbidden" }, { status: 403 });
     }
@@ -120,21 +55,20 @@ export async function GET(req: NextRequest) {
     if (!org) return NextResponse.json({ error: "Organization not found" }, { status: 404 });
 
     return NextResponse.json({ org, uoms, taxRates, preferences, permissions });
-  } catch (error: any) {
+  } catch (error) {
     console.error("[ORG_GET_ERROR]", error);
     return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
   }
 }
 
-/* -------------------------------------------------------------------------- */
-/* POST HANDLER (Create/Update RBAC Permissions)                             */
-/* -------------------------------------------------------------------------- */
-
+/**
+ * POST: Create/Update RBAC Resource Permissions
+ */
 export async function POST(req: NextRequest) {
   const requestId = crypto.randomUUID();
   try {
     const session = await getServerSession(authOptions);
-    const user = session?.user as any;
+    const user = session?.user;
 
     if (!user || (user.role !== Role.ADMIN && !user.isOrgOwner && user.role !== Role.DEV)) {
       return NextResponse.json({ error: "Forbidden" }, { status: 403 });
@@ -145,12 +79,18 @@ export async function POST(req: NextRequest) {
     
     const { role, resource, actions } = await req.json();
 
+    // Validate Actions against Prisma Enum
     const validActions = Object.values(PermissionAction);
     const validatedActions = (actions as string[]).filter((a): a is PermissionAction => 
       validActions.includes(a as PermissionAction)
     );
 
     const result = await prisma.$transaction(async (tx) => {
+      // Get 'Before' state for the audit log
+      const existing = await tx.resourcePermission.findUnique({
+        where: { organizationId_resource_role: { organizationId: user.organizationId, resource: resource as Resource, role: role as Role } }
+      });
+
       const permission = await tx.resourcePermission.upsert({
         where: {
           organizationId_resource_role: {
@@ -168,25 +108,26 @@ export async function POST(req: NextRequest) {
         }
       });
 
+      // Forensic Audit Entry
       await createAuditLog(tx, {
         organizationId: user.organizationId,
         actorId: user.id, 
         actorRole: user.role as Role,
         action: "UPDATE_RESOURCE_PERMISSION",
-        targetType: "RESOURCE_PERMISSION", 
-        targetId: permission.id,
+        entityType: Resource.SETTINGS,
+        entityId: permission.id,
         severity: Severity.HIGH,
         description: `Updated ${resource} permissions for role: ${role}`,
         requestId, 
         ipAddress, 
         deviceInfo, 
-        after: permission,
+        changes: { from: existing, to: permission }
       });
 
       return permission;
     });
 
-    // CRITICAL: Invalidate cache so changes take effect immediately
+    // Cache Invalidation
     invalidateOrgRole(user.organizationId, role as Role);
 
     return NextResponse.json(result, { status: 200 });
@@ -196,32 +137,28 @@ export async function POST(req: NextRequest) {
   }
 }
 
-/* -------------------------------------------------------------------------- */
-/* PATCH HANDLER (General Configuration Multiplexer)                          */
-/* -------------------------------------------------------------------------- */
-
+/**
+ * PATCH: Configuration Multiplexer (UOM, Tax, Preferences, Profile)
+ */
 export async function PATCH(req: NextRequest) {
   const requestId = crypto.randomUUID();
   try {
     const session = await getServerSession(authOptions);
     if (!session?.user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     
-    const user = session.user as any;
+    const user = session.user;
     if (user.role !== Role.ADMIN && !user.isOrgOwner && user.role !== Role.DEV) {
       return NextResponse.json({ error: "Forbidden" }, { status: 403 });
     }
 
     const ipAddress = req.headers.get("x-forwarded-for")?.split(",")[0] ?? "127.0.0.1";
     const deviceInfo = req.headers.get("user-agent")?.substring(0, 255) ?? "unknown";
-    const body = await req.json();
-    const { action, payload } = body;
+    const { action, payload } = await req.json();
 
     const result = await prisma.$transaction(async (tx) => {
       
       if (action === "UPDATE_PROFILE") {
         const existing = await tx.organization.findUnique({ where: { id: user.organizationId } });
-        if (!existing) throw new Error("Organization not found");
-        
         const updated = await tx.organization.update({
           where: { id: user.organizationId },
           data: { name: payload.name },
@@ -230,15 +167,16 @@ export async function PATCH(req: NextRequest) {
         await createAuditLog(tx, {
           organizationId: user.organizationId,
           actorId: user.id, actorRole: user.role as Role,
-          action: "UPDATE_ORG_PROFILE", targetType: "ORGANIZATION", targetId: updated.id,
+          action: "UPDATE_ORG_PROFILE", entityType: "ORGANIZATION", entityId: updated.id,
           severity: Severity.MEDIUM,
           description: `Updated organization name to ${updated.name}`,
-          requestId, ipAddress, deviceInfo, before: existing, after: updated,
+          requestId, ipAddress, deviceInfo, changes: { from: existing, to: updated },
         });
-        return { success: true, data: updated };
+        return updated;
       }
 
       if (action === "UPSERT_UOM") {
+        const existing = payload.id ? await tx.unitOfMeasure.findUnique({ where: { id: payload.id } }) : null;
         const uom = payload.id 
           ? await tx.unitOfMeasure.update({ where: { id: payload.id }, data: { name: payload.name, abbreviation: payload.abbreviation, active: payload.active } })
           : await tx.unitOfMeasure.create({ data: { organizationId: user.organizationId, name: payload.name, abbreviation: payload.abbreviation, active: payload.active ?? true } });
@@ -247,15 +185,16 @@ export async function PATCH(req: NextRequest) {
           organizationId: user.organizationId,
           actorId: user.id, actorRole: user.role as Role,
           action: payload.id ? "UPDATE_UOM" : "CREATE_UOM",
-          targetType: "UNIT_OF_MEASURE", targetId: uom.id,
+          entityType: "UNIT_OF_MEASURE", entityId: uom.id,
           severity: Severity.LOW,
           description: `${payload.id ? "Updated" : "Created"} UoM: ${uom.abbreviation}`,
-          requestId, ipAddress, deviceInfo, after: uom,
+          requestId, ipAddress, deviceInfo, changes: { from: existing, to: uom },
         });
-        return { success: true, data: uom };
+        return uom;
       }
 
       if (action === "UPSERT_TAX_RATE") {
+        const existing = payload.id ? await tx.taxRate.findUnique({ where: { id: payload.id } }) : null;
         const taxRate = payload.id
           ? await tx.taxRate.update({ where: { id: payload.id }, data: { name: payload.name, rate: payload.rate, active: payload.active } })
           : await tx.taxRate.create({ data: { organizationId: user.organizationId, name: payload.name, rate: payload.rate, active: payload.active ?? true } });
@@ -264,15 +203,19 @@ export async function PATCH(req: NextRequest) {
           organizationId: user.organizationId,
           actorId: user.id, actorRole: user.role as Role,
           action: payload.id ? "UPDATE_TAX_RATE" : "CREATE_TAX_RATE",
-          targetType: "TAX_RATE", targetId: taxRate.id,
+          entityType: "TAX_RATE", entityId: taxRate.id,
           severity: Severity.LOW,
           description: `Configured tax rate: ${taxRate.name} (${taxRate.rate}%)`,
-          requestId, ipAddress, deviceInfo, after: taxRate,
+          requestId, ipAddress, deviceInfo, changes: { from: existing, to: taxRate },
         });
-        return { success: true, data: taxRate };
+        return taxRate;
       }
 
       if (action === "UPSERT_PREFERENCE") {
+        const existing = await tx.preference.findFirst({
+          where: { organizationId: user.organizationId, key: payload.key, scope: PreferenceScope.ORGANIZATION }
+        });
+
         const pref = await tx.preference.upsert({
           where: { 
             scope_category_key_organizationId_branchId_personnelId_target: { 
@@ -280,9 +223,7 @@ export async function PATCH(req: NextRequest) {
               scope: PreferenceScope.ORGANIZATION, 
               category: payload.category as PreferenceCategory,
               key: payload.key,
-              branchId: null,
-              personnelId: null,
-              target: null
+              branchId: null, personnelId: null, target: null
             } 
           },
           update: { value: payload.value },
@@ -298,15 +239,15 @@ export async function PATCH(req: NextRequest) {
         await createAuditLog(tx, {
           organizationId: user.organizationId,
           actorId: user.id, actorRole: user.role as Role,
-          action: "UPDATE_PREFERENCE", targetType: "PREFERENCE", targetId: pref.id,
+          action: "UPDATE_PREFERENCE", entityType: "PREFERENCE", entityId: pref.id,
           severity: Severity.MEDIUM,
           description: `Updated global setting: ${pref.key}`,
-          requestId, ipAddress, deviceInfo, after: pref,
+          requestId, ipAddress, deviceInfo, changes: { from: existing, to: pref },
         });
-        return { success: true, data: pref };
+        return pref;
       }
 
-      throw new Error("Invalid configuration action specified.");
+      throw new Error("Invalid configuration action.");
     }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
 
     return NextResponse.json(result, { status: 200 });
