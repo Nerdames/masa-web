@@ -25,16 +25,16 @@ export default async function RootPage() {
   switch (role) {
     case Role.CASHIER:
     case Role.SALES:
-      return redirect("/terminal/pos");
+      return redirect("/pos");
 
     case Role.INVENTORY:
-      return redirect("/terminal/inventory");
+      return redirect("/inventory");
 
     case Role.AUDITOR:
       return redirect("/audit");
 
     // LEADERSHIP PORTAL (Admin, Manager, Dev, etc.)
     default:
-      return <OperationsHub session={session} />;
+      return <OperationsHub />;
   }
 }

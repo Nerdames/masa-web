@@ -1,4 +1,4 @@
 export { useDebounce } from "./useDebounce";
-export { useDashboardData } from "./useDashboardData";
+export { usePermission } from "./usePermission";
 export { usePusherNotifications } from "./usePusherNotifications";
 export { useDataTablePreference } from "./useDataTablePreference"

@@ -8,7 +8,6 @@ import { useSidePanel } from "@/core/components/layout/SidePanelContext";
 // Components
 import ContactForm from "@/core/components/shared/SupportForm";
 import { ActivityLogsPanel } from "@/modules/audit/components/ActivityLogsPanel";
-import { c } from "node_modules/@upstash/redis/error-8y4qG0W2.mjs";
 
 /* ================= TYPES ================= */
 
@@ -57,17 +56,6 @@ interface ProfileDTO {
 
 /* ================= UTILS & ANIMATIONS ================= */
 
-const getRoleStyles = (role: Role): string => {
-  const styles: Record<string, string> = {
-    ADMIN: "bg-purple-50 text-purple-700 border-purple-100",
-    DEV: "bg-slate-900 text-white border-transparent",
-    MANAGER: "bg-blue-50 text-blue-700 border-blue-100",
-    SALES: "bg-emerald-50 text-emerald-700 border-emerald-100",
-    INVENTORY: "bg-orange-50 text-orange-700 border-orange-100",
-    CASHIER: "bg-cyan-50 text-cyan-700 border-cyan-100",
-  };
-  return styles[role] || "bg-slate-50 text-slate-600 border-slate-200";
-};
 
 const panelVariants = {
   hidden: { opacity: 0, x: 20 },

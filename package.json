@@ -29,6 +29,7 @@
     "dayjs": "^1.11.19",
     "file-saver": "^2.0.5",
     "framer-motion": "^12.27.4",
+    "lru-cache": "^11.3.6",
     "lucide-react": "^1.7.0",
     "next": "16.1.4",
     "next-auth": "^4.24.13",

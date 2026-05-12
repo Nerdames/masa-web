@@ -2,7 +2,17 @@ import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "next-auth/next";
 import { authOptions } from "@/core/lib/auth";
 import prisma from "@/core/lib/prisma";
-import { ActorType, Severity, Prisma, Role, PreferenceScope, PreferenceCategory } from "@prisma/client";
+import { invalidateOrgRole } from "@/core/lib/permissionCache";
+import { 
+  ActorType, 
+  Severity, 
+  Prisma, 
+  Role, 
+  PreferenceScope, 
+  PreferenceCategory,
+  Resource,
+  PermissionAction 
+} from "@prisma/client";
 import crypto from "crypto";
 
 /* -------------------------------------------------------------------------- */
@@ -34,7 +44,9 @@ async function createAuditLog(
   });
 
   const previousHash = lastLog?.hash ?? "0".repeat(64);
+  
   const logPayload = JSON.stringify({
+    organizationId: data.organizationId,
     action: data.action,
     actorId: data.actorId,
     targetId: data.targetId,
@@ -69,7 +81,7 @@ async function createAuditLog(
 }
 
 /* -------------------------------------------------------------------------- */
-/* GET HANDLER (Fetch Org Configuration)                                     */
+/* GET HANDLER (Fetch All Config & RBAC Permissions)                          */
 /* -------------------------------------------------------------------------- */
 
 export async function GET(req: NextRequest) {
@@ -79,12 +91,11 @@ export async function GET(req: NextRequest) {
     
     const user = session.user as any;
 
-    if (user.role !== Role.ADMIN && !user.isOrgOwner) {
-      return NextResponse.json({ error: "Forbidden: Admin access required" }, { status: 403 });
+    if (user.role !== Role.ADMIN && !user.isOrgOwner && user.role !== Role.DEV) {
+      return NextResponse.json({ error: "Forbidden" }, { status: 403 });
     }
 
-    // Removed permission query from Promise.all
-    const [org, uoms, taxRates, preferences] = await Promise.all([
+    const [org, uoms, taxRates, preferences, permissions] = await Promise.all([
       prisma.organization.findUnique({
         where: { id: user.organizationId },
         select: { id: true, name: true, active: true, createdAt: true },
@@ -100,12 +111,15 @@ export async function GET(req: NextRequest) {
       prisma.preference.findMany({
         where: { organizationId: user.organizationId, scope: PreferenceScope.ORGANIZATION },
       }),
+      prisma.resourcePermission.findMany({
+        where: { organizationId: user.organizationId },
+        orderBy: [{ role: 'asc' }, { resource: 'asc' }]
+      })
     ]);
 
     if (!org) return NextResponse.json({ error: "Organization not found" }, { status: 404 });
 
-    // Removed permissions from response payload
-    return NextResponse.json({ org, uoms, taxRates, preferences });
+    return NextResponse.json({ org, uoms, taxRates, preferences, permissions });
   } catch (error: any) {
     console.error("[ORG_GET_ERROR]", error);
     return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
@@ -113,7 +127,77 @@ export async function GET(req: NextRequest) {
 }
 
 /* -------------------------------------------------------------------------- */
-/* PATCH HANDLER (Multiplexer)                                               */
+/* POST HANDLER (Create/Update RBAC Permissions)                             */
+/* -------------------------------------------------------------------------- */
+
+export async function POST(req: NextRequest) {
+  const requestId = crypto.randomUUID();
+  try {
+    const session = await getServerSession(authOptions);
+    const user = session?.user as any;
+
+    if (!user || (user.role !== Role.ADMIN && !user.isOrgOwner && user.role !== Role.DEV)) {
+      return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+    }
+
+    const ipAddress = req.headers.get("x-forwarded-for")?.split(",")[0] ?? "127.0.0.1";
+    const deviceInfo = req.headers.get("user-agent")?.substring(0, 255) ?? "unknown";
+    
+    const { role, resource, actions } = await req.json();
+
+    const validActions = Object.values(PermissionAction);
+    const validatedActions = (actions as string[]).filter((a): a is PermissionAction => 
+      validActions.includes(a as PermissionAction)
+    );
+
+    const result = await prisma.$transaction(async (tx) => {
+      const permission = await tx.resourcePermission.upsert({
+        where: {
+          organizationId_resource_role: {
+            organizationId: user.organizationId,
+            resource: resource as Resource,
+            role: role as Role,
+          }
+        },
+        update: { actions: validatedActions },
+        create: {
+          organizationId: user.organizationId,
+          role: role as Role,
+          resource: resource as Resource,
+          actions: validatedActions,
+        }
+      });
+
+      await createAuditLog(tx, {
+        organizationId: user.organizationId,
+        actorId: user.id, 
+        actorRole: user.role as Role,
+        action: "UPDATE_RESOURCE_PERMISSION",
+        targetType: "RESOURCE_PERMISSION", 
+        targetId: permission.id,
+        severity: Severity.HIGH,
+        description: `Updated ${resource} permissions for role: ${role}`,
+        requestId, 
+        ipAddress, 
+        deviceInfo, 
+        after: permission,
+      });
+
+      return permission;
+    });
+
+    // CRITICAL: Invalidate cache so changes take effect immediately
+    invalidateOrgRole(user.organizationId, role as Role);
+
+    return NextResponse.json(result, { status: 200 });
+  } catch (error: any) {
+    console.error("[ORG_POST_PERMISSIONS_ERROR]", error);
+    return NextResponse.json({ error: error.message || "Failed to update permissions" }, { status: 400 });
+  }
+}
+
+/* -------------------------------------------------------------------------- */
+/* PATCH HANDLER (General Configuration Multiplexer)                          */
 /* -------------------------------------------------------------------------- */
 
 export async function PATCH(req: NextRequest) {
@@ -123,8 +207,8 @@ export async function PATCH(req: NextRequest) {
     if (!session?.user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     
     const user = session.user as any;
-    if (user.role !== Role.ADMIN && !user.isOrgOwner) {
-      return NextResponse.json({ error: "Forbidden: Admin access required" }, { status: 403 });
+    if (user.role !== Role.ADMIN && !user.isOrgOwner && user.role !== Role.DEV) {
+      return NextResponse.json({ error: "Forbidden" }, { status: 403 });
     }
 
     const ipAddress = req.headers.get("x-forwarded-for")?.split(",")[0] ?? "127.0.0.1";
@@ -134,9 +218,10 @@ export async function PATCH(req: NextRequest) {
 
     const result = await prisma.$transaction(async (tx) => {
       
-      // 1. UPDATE ORGANIZATION PROFILE
       if (action === "UPDATE_PROFILE") {
         const existing = await tx.organization.findUnique({ where: { id: user.organizationId } });
+        if (!existing) throw new Error("Organization not found");
+        
         const updated = await tx.organization.update({
           where: { id: user.organizationId },
           data: { name: payload.name },
@@ -153,7 +238,6 @@ export async function PATCH(req: NextRequest) {
         return { success: true, data: updated };
       }
 
-      // 2. UPSERT UNIT OF MEASURE
       if (action === "UPSERT_UOM") {
         const uom = payload.id 
           ? await tx.unitOfMeasure.update({ where: { id: payload.id }, data: { name: payload.name, abbreviation: payload.abbreviation, active: payload.active } })
@@ -171,7 +255,6 @@ export async function PATCH(req: NextRequest) {
         return { success: true, data: uom };
       }
 
-      // 3. UPSERT TAX RATE
       if (action === "UPSERT_TAX_RATE") {
         const taxRate = payload.id
           ? await tx.taxRate.update({ where: { id: payload.id }, data: { name: payload.name, rate: payload.rate, active: payload.active } })
@@ -189,17 +272,20 @@ export async function PATCH(req: NextRequest) {
         return { success: true, data: taxRate };
       }
 
-      // 4. UPSERT GLOBAL PREFERENCE
       if (action === "UPSERT_PREFERENCE") {
         const pref = await tx.preference.upsert({
           where: { 
-            organizationId_scope_key: { 
+            scope_category_key_organizationId_branchId_personnelId_target: { 
               organizationId: user.organizationId, 
               scope: PreferenceScope.ORGANIZATION, 
-              key: payload.key 
+              category: payload.category as PreferenceCategory,
+              key: payload.key,
+              branchId: null,
+              personnelId: null,
+              target: null
             } 
           },
-          update: { value: payload.value, category: payload.category as PreferenceCategory },
+          update: { value: payload.value },
           create: {
             organizationId: user.organizationId,
             scope: PreferenceScope.ORGANIZATION,

@@ -11,9 +11,10 @@ import {
   NotificationType,
   CriticalAction,
   ApprovalStatus,
+  Resource, // Added Resource import directly from Prisma
 } from "@prisma/client";
 import crypto from "crypto";
-import { authorize, RESOURCES } from "@/core/lib/permission";
+import { authorize } from "@/core/lib/permission"; // Removed RESOURCES from here
 
 /* -------------------------------------------------------------------------- */
 /* CONFIGURATION & HELPERS                                                    */
@@ -191,7 +192,7 @@ async function canExport(user: AuthenticatedUser): Promise<boolean> {
           organizationId: user.organizationId,
           role: user.role,
           action: PermissionAction.EXPORT,
-          resource: RESOURCES.INVENTORY,
+          resource: Resource.INVENTORY, // Changed from RESOURCES.INVENTORY
         },
       },
     });
@@ -249,7 +250,7 @@ export async function GET(req: NextRequest) {
       role: user.role,
       isOrgOwner: user.isOrgOwner,
       action: PermissionAction.READ,
-      resource: RESOURCES.INVENTORY,
+      resources: Resource.INVENTORY, // Changed from RESOURCES.INVENTORY
     });
     if (!authGrid.allowed) return NextResponse.json({ error: "ACCESS_DENIED" }, { status: 403 });
 
@@ -435,7 +436,7 @@ export async function PATCH(req: NextRequest) {
       role: user.role,
       isOrgOwner: user.isOrgOwner,
       action: PermissionAction.UPDATE,
-      resource: RESOURCES.INVENTORY,
+      resources: Resource.INVENTORY, // Changed from RESOURCES.INVENTORY
     });
     if (!auth.allowed) return NextResponse.json({ error: "ACCESS_DENIED" }, { status: 403 });
 

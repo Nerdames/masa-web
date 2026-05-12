@@ -1,45 +1,46 @@
+/**
+ * src/core/lib/auth.ts
+ * * PRODUCTION-READY NEXTAUTH CONFIGURATION
+ * Fortified for performance, strict typing, and cookie size optimization.
+ */
+
 import CredentialsProvider from "next-auth/providers/credentials";
 import type { NextAuthOptions, DefaultSession, DefaultUser } from "next-auth";
 import type { JWT } from "next-auth/jwt";
 import bcrypt from "bcryptjs";
 import crypto from "crypto";
 import prisma from "@/core/lib/prisma";
+import { ROLE_PERMISSIONS_MATRIX } from "@/core/lib/permission";
+import { getCachedPermissions, setCachedPermissions } from "@/core/lib/permissionCache";
 import {
   Role,
   ActorType,
   Severity,
-  NotificationType,
-  CriticalAction,
-  Prisma
+  Prisma,
 } from "@prisma/client";
 
-/* ------------------------------------------
- * SHARED INTERFACES
- * ------------------------------------------ */
+// ============================================================================
+// SHARED INTERFACES & TYPES
+// ============================================================================
 export interface AllowedBranch {
   id: string;
   name: string;
   role: Role;
 }
 
-/**
- * Correctly type the transaction client to support Prisma extensions.
- * This resolves the "not assignable to TransactionClient" errors when using extended clients.
- */
+// Ensure strict typing for Prisma transactions
 type TransactionClient = Omit<
   typeof prisma,
   "$connect" | "$disconnect" | "$on" | "$transaction" | "$use" | "$extends"
 >;
 
-/* ------------------------------------------
- * MODULE AUGMENTATION (STRICT TYPING)
- * ------------------------------------------ */
+// ============================================================================
+// MODULE AUGMENTATION (STRICT TYPING)
+// ============================================================================
 declare module "next-auth" {
   interface Session {
     user: {
       id: string;
-      name?: string | null;
-      email?: string | null;
       staffCode: string | null;
       role: Role;
       isOrgOwner: boolean;
@@ -53,9 +54,9 @@ declare module "next-auth" {
       locked: boolean;
       requiresPasswordChange: boolean;
       expired?: boolean;
-      // PREMIUM ADDITIONS
       allowedBranches: AllowedBranch[];
-      permissions: string[]; // Formatted as "ACTION:RESOURCE"
+      // Permissions are injected at the Session level, NOT the JWT level, to prevent cookie bloat
+      permissions: string[];
     } & DefaultSession["user"];
   }
 
@@ -72,9 +73,7 @@ declare module "next-auth" {
     disabled: boolean;
     locked: boolean;
     requiresPasswordChange: boolean;
-    // PREMIUM ADDITIONS
     allowedBranches: AllowedBranch[];
-    permissions: string[];
   }
 }
 
@@ -94,48 +93,88 @@ declare module "next-auth/jwt" {
     locked: boolean;
     requiresPasswordChange: boolean;
     expired?: boolean;
-    // PREMIUM ADDITIONS
     allowedBranches: AllowedBranch[];
-    permissions: string[];
+    // Notice: `permissions` is intentionally omitted here to keep the cookie size under 4KB
   }
 }
 
-/* ------------------------------------------
- * CONFIGURATION & SECURITY CONSTANTS
- * ------------------------------------------ */
-const INACTIVITY_TIMEOUT_MS = 60 * 60 * 1000; // 1 Hour Auto-Logout (POS Security Standard)
-const DB_UPDATE_THROTTLE_MS = 5 * 60 * 1000;  // 5 Minutes Heartbeat Sync
+// ============================================================================
+// CONSTANTS & CONFIG
+// ============================================================================
+const INACTIVITY_TIMEOUT_MS = 60 * 60 * 1000; // 1 hour idle disconnect
+const DB_UPDATE_THROTTLE_MS = 5 * 60 * 1000;  // 5 mins between DB heartbeat checks
 const MAX_FAILED_ATTEMPTS = 5;
-const LOCKOUT_DURATION_MS = 15 * 60 * 1000;   // 15 Minutes
+const LOCKOUT_DURATION_MS = 15 * 60 * 1000;   // 15 mins temporary lockout
 
-/* ------------------------------------------
- * STATIC RBAC MATRIX (Replaces missing DB model)
- * ------------------------------------------ */
-const ROLE_PERMISSIONS_MATRIX: Record<Role, string[]> = {
-  ADMIN: ["*:*"], // Wildcard Access
-  MANAGER: ["READ:*", "CREATE:*", "UPDATE:*", "APPROVE:*"],
-  SALES: ["READ:PRODUCT", "READ:CUSTOMER", "CREATE:ORDER", "CREATE:SALE", "READ:INVOICE"],
-  INVENTORY: ["READ:PRODUCT", "UPDATE:STOCK", "CREATE:GRN", "READ:PO", "CREATE:TRANSFER"],
-  CASHIER: ["READ:PRODUCT", "CREATE:SALE", "CREATE:RECEIPT", "READ:ORDER", "READ:SESSION"],
-  DEV: ["*:*"],
-  AUDITOR: ["READ:*", "EXPORT:*", "APPROVE:STOCK_TAKE"]
-};
+// ============================================================================
+// PERMISSION RESOLUTION HELPERS
+// ============================================================================
 
-/* ------------------------------------------
- * FORENSIC LOGGING HELPER (CRYPTOGRAPHIC)
- * ------------------------------------------ */
-async function secureAuditLog(tx: TransactionClient, data: {
-  organizationId: string;
-  branchId?: string | null;
-  actorId: string;
-  actorRole?: Role;
-  action: string;
-  severity: Severity;
-  critical: boolean;
-  ipAddress: string;
-  deviceInfo: string;
-  metadata?: Prisma.JsonValue;
-}) {
+/**
+ * Loads organization-specific overrides from ResourcePermission table.
+ */
+async function loadOrgPermissionsFromDb(orgId: string, role: Role): Promise<string[]> {
+  try {
+    const rows = await prisma.resourcePermission.findMany({
+      where: { organizationId: orgId, role },
+      select: { resource: true, actions: true }
+    });
+
+    return rows.flatMap(row => 
+      row.actions.map(action => `${action}:${row.resource}`.toUpperCase())
+    );
+  } catch (error) {
+    console.error("[Auth:Permissions] Failed to load DB permissions", error);
+    return [];
+  }
+}
+
+/**
+ * Merges Role Defaults with Database Overrides.
+ * * CRITICAL PATH: Leverages O(1) Memory Cache to prevent UI rendering lag.
+ */
+async function resolvePermissionsUnion(orgId: string, role: Role): Promise<string[]> {
+  // 1. FAST PATH: Memory Cache (0ms DB latency)
+  const cached = getCachedPermissions(orgId, role);
+  if (cached) return cached;
+
+  // 2. SLOW PATH: Compute, DB Fetch, and Cache
+  if (role === Role.DEV || role === Role.ADMIN) {
+    const adminPerms = ["*:*"];
+    setCachedPermissions(orgId, role, adminPerms);
+    return adminPerms;
+  }
+
+  const defaultPerms = ROLE_PERMISSIONS_MATRIX[role] || [];
+  const dbOverrides = await loadOrgPermissionsFromDb(orgId, role);
+
+  const union = Array.from(new Set([
+    ...defaultPerms.map(p => p.toUpperCase()),
+    ...dbOverrides.map(p => p.toUpperCase())
+  ]));
+
+  setCachedPermissions(orgId, role, union);
+  return union;
+}
+
+// ============================================================================
+// FORENSIC LOGGING HELPER
+// ============================================================================
+async function secureAuditLog(
+  tx: TransactionClient,
+  data: {
+    organizationId: string;
+    branchId?: string | null;
+    actorId: string;
+    actorRole?: Role;
+    action: string;
+    severity: Severity;
+    critical: boolean;
+    ipAddress: string;
+    deviceInfo: string;
+    metadata?: Prisma.JsonValue;
+  }
+) {
   const lastLog = await tx.activityLog.findFirst({
     where: { organizationId: data.organizationId },
     orderBy: { createdAt: "desc" },
@@ -145,7 +184,6 @@ async function secureAuditLog(tx: TransactionClient, data: {
   const previousHash = lastLog?.hash ?? null;
   const requestId = crypto.randomUUID();
 
-  // Create cryptographic chain link
   const hashPayload = { ...data, previousHash, requestId, timestamp: Date.now() };
   const hash = crypto.createHash("sha256").update(JSON.stringify(hashPayload)).digest("hex");
 
@@ -161,13 +199,13 @@ async function secureAuditLog(tx: TransactionClient, data: {
   });
 }
 
-/* ------------------------------------------
- * NEXTAUTH CORE CONFIGURATION
- * ------------------------------------------ */
+// ============================================================================
+// NEXTAUTH CORE CONFIGURATION
+// ============================================================================
 export const authOptions: NextAuthOptions = {
   session: {
     strategy: "jwt",
-    maxAge: 12 * 60 * 60, // 12 Hours Maximum Shift Duration
+    maxAge: 12 * 60 * 60, // 12 hours
   },
 
   providers: [
@@ -177,52 +215,47 @@ export const authOptions: NextAuthOptions = {
       credentials: {
         identifier: { label: "Email or Staff Code", type: "text" },
         password: { label: "Password", type: "password" },
-        targetBranchId: { label: "Target Branch ID (Optional)", type: "text" }
+        targetBranchId: { label: "Target Branch ID", type: "text" },
       },
       async authorize(credentials, req) {
         if (!credentials?.identifier || !credentials?.password) return null;
 
-        const ipAddress = (req?.headers?.["x-forwarded-for"] as string)?.split(",")[0]?.trim() ||
-          (req?.headers?.["x-real-ip"] as string) ||
-          "127.0.0.1";
+        // Safe IP extraction behind reverse proxies
+        const forwardedFor = req?.headers?.["x-forwarded-for"] as string | undefined;
+        const ipAddress = forwardedFor ? forwardedFor.split(",")[0].trim() : "127.0.0.1";
         const deviceInfo = (req?.headers?.["user-agent"] as string) || "Unknown Device";
         const input = credentials.identifier.trim();
         const now = new Date();
 
-        // 1. Comprehensive Lookup (Including ALL assigned branches)
         const personnel = await prisma.authorizedPersonnel.findFirst({
           where: {
-            OR: [
-              { email: input.toLowerCase() },
-              { staffCode: input }
-            ],
+            OR: [{ email: input.toLowerCase() }, { staffCode: input }],
             deletedAt: null,
           },
           include: {
             organization: true,
-            branch: true,
+            branch: true, 
             branchAssignments: {
+              where: { branch: { active: true, deletedAt: null } },
               include: { branch: true },
             },
           },
         });
 
-        if (!personnel) {
-          console.warn(`[AUTH_WARN] Unrecognized identity attempt: ${input} from IP: ${ipAddress}`);
-          return null;
-        }
+        if (!personnel) throw new Error("INVALID_CREDENTIALS");
+        if (personnel.organization && !personnel.organization.active) throw new Error("ORGANIZATION_SUSPENDED");
 
-        if (personnel.organization && 'active' in personnel.organization && !personnel.organization.active) {
-          throw new Error("ORGANIZATION_SUSPENDED");
-        }
-
-        // 2. Account Block Verification
-        const isTemporaryLocked = personnel.lockoutUntil && personnel.lockoutUntil > now;
-
-        if (personnel.disabled || personnel.isLocked || isTemporaryLocked) {
-          const reason = personnel.disabled ? "ACCOUNT_DISABLED" :
-            personnel.isLocked ? (personnel.lockReason || "ACCOUNT_LOCKED_ADMIN") :
-            "TEMPORARY_SECURITY_LOCKOUT";
+        // -----------------------------------------------------
+        // Security & Brute Force Protection
+        // -----------------------------------------------------
+        const isTempLocked = personnel.lockoutUntil && personnel.lockoutUntil > now;
+        
+        if (personnel.disabled || personnel.isLocked || isTempLocked) {
+          const reason = personnel.disabled 
+            ? "ACCOUNT_DISABLED" 
+            : personnel.isLocked 
+              ? personnel.lockReason || "ACCOUNT_LOCKED_ADMIN" 
+              : "TEMPORARY_SECURITY_LOCKOUT";
 
           await prisma.$transaction(async (tx) => {
             await secureAuditLog(tx, {
@@ -230,140 +263,80 @@ export const authOptions: NextAuthOptions = {
               branchId: personnel.branchId,
               actorId: personnel.id,
               actorRole: personnel.role,
-              action: "LOGIN_FAILED_SECURITY_BLOCK",
+              action: "LOGIN_ATTEMPT_ON_BLOCKED_ACCOUNT",
               severity: Severity.HIGH,
               critical: true,
               ipAddress,
               deviceInfo,
-              metadata: { reason, attemptedIdentifier: input },
+              metadata: { reason },
             });
           });
           throw new Error(reason);
         }
 
-        // 3. Cryptographic Password Verification
         const isPasswordValid = await bcrypt.compare(credentials.password, personnel.password);
-
+        
         if (!isPasswordValid) {
           const attempts = personnel.failedLoginAttempts + 1;
           const shouldLock = attempts >= MAX_FAILED_ATTEMPTS;
-
+          
           await prisma.$transaction(async (tx) => {
             await tx.authorizedPersonnel.update({
               where: { id: personnel.id },
               data: {
                 failedLoginAttempts: attempts,
                 isLocked: shouldLock ? true : personnel.isLocked,
-                lockReason: shouldLock ? "EXCESSIVE_FAILED_ATTEMPTS" : personnel.lockReason,
                 lockoutUntil: shouldLock ? new Date(now.getTime() + LOCKOUT_DURATION_MS) : null,
               },
             });
-
-            const auditLog = await secureAuditLog(tx, {
-              organizationId: personnel.organizationId,
-              branchId: personnel.branchId,
-              actorId: personnel.id,
-              actorRole: personnel.role,
-              action: "LOGIN_FAILED_PASSWORD",
-              severity: shouldLock ? Severity.CRITICAL : Severity.MEDIUM,
-              critical: shouldLock,
-              ipAddress,
-              deviceInfo,
-              metadata: { attemptCount: attempts, locked: shouldLock },
-            });
-
-            if (shouldLock) {
-              const alertingPersonnel = await tx.authorizedPersonnel.findMany({
-                where: {
-                  organizationId: personnel.organizationId,
-                  deletedAt: null,
-                  disabled: false,
-                  OR: [
-                    { role: Role.ADMIN },
-                    { isOrgOwner: true }
-                  ]
-                },
-                select: { id: true }
-              });
-
-              if (alertingPersonnel.length > 0) {
-                await tx.notification.create({
-                  data: {
-                    organizationId: personnel.organizationId,
-                    type: NotificationType.SECURITY,
-                    actionTrigger: CriticalAction.USER_LOCK_UNLOCK,
-                    activityLogId: auditLog.id,
-                    title: "Security Lockout Triggered",
-                    message: `Personnel ${personnel.name || personnel.email} has been automatically locked out due to excessive failed attempts.`,
-                    recipients: {
-                      create: alertingPersonnel.map(admin => ({ personnelId: admin.id }))
-                    }
-                  }
-                });
-              }
-            }
           });
           throw new Error(shouldLock ? "EXCESSIVE_FAILED_ATTEMPTS" : "INVALID_CREDENTIALS");
         }
 
-        // 4. Branch & Role Resolution Matrix (The "Switch Branch" Foundation)
+        // -----------------------------------------------------
+        // Branch & Role Resolution
+        // -----------------------------------------------------
         let allowedBranches: AllowedBranch[] = [];
         let effectiveRole: Role = personnel.role;
         let activeBranchId: string | null = personnel.branchId;
         let activeBranchName: string | null = personnel.branch?.name ?? null;
 
         if (personnel.isOrgOwner) {
-          // Admin/Owner sees ALL active branches at login
-          const allOrgBranches = await prisma.branch.findMany({
+          const allBranches = await prisma.branch.findMany({
             where: { organizationId: personnel.organizationId, active: true, deletedAt: null },
-            select: { id: true, name: true }
+            select: { id: true, name: true },
           });
-          allowedBranches = allOrgBranches.map(b => ({ id: b.id, name: b.name, role: Role.ADMIN }));
+          allowedBranches = allBranches.map((b) => ({ id: b.id, name: b.name, role: Role.ADMIN }));
           effectiveRole = Role.ADMIN;
         } else {
-          // Standard Personnel constrained to assigned branches
-          allowedBranches = personnel.branchAssignments
-            .filter(ba => ba.branch.active && !ba.branch.deletedAt)
-            .map(ba => ({
-              id: ba.branchId,
-              name: ba.branch.name,
-              role: ba.role
-            }));
+          allowedBranches = personnel.branchAssignments.map((ba) => ({
+            id: ba.branchId,
+            name: ba.branch.name,
+            role: ba.role,
+          }));
         }
 
-        // Handle Target Branch Mapping (If provided via UI login screen or defaulting)
+        // Handle requested target branch or fallback to primary
         if (credentials.targetBranchId) {
-          const target = allowedBranches.find(b => b.id === credentials.targetBranchId);
+          const target = allowedBranches.find((b) => b.id === credentials.targetBranchId);
           if (target) {
             activeBranchId = target.id;
             activeBranchName = target.name;
             effectiveRole = target.role;
           }
         } else if (!personnel.isOrgOwner && personnel.branchAssignments.length > 0) {
-          // Default to Primary Branch
-          const primary = personnel.branchAssignments.find(ba => ba.isPrimary) || personnel.branchAssignments[0];
+          const primary = personnel.branchAssignments.find((ba) => ba.isPrimary) || personnel.branchAssignments[0];
           activeBranchId = primary.branchId;
           activeBranchName = primary.branch.name;
           effectiveRole = primary.role;
         }
 
-        // 5. Fetch Granular Permissions based on Effective Role (Using Static Matrix mapped to Enums)
-        const permissionsMap = ROLE_PERMISSIONS_MATRIX[effectiveRole] || [];
-
-        // 6. Success: Atomic State Reset & Audit
+        // Apply successful login data
         await prisma.$transaction(async (tx) => {
           await tx.authorizedPersonnel.update({
             where: { id: personnel.id },
-            data: {
-              lastLogin: now,
-              lastActivityAt: now,
-              failedLoginAttempts: 0,
-              lockoutUntil: null,
-              lastLoginIp: ipAddress,
-              lastLoginDevice: deviceInfo,
-            },
+            data: { lastLogin: now, lastActivityAt: now, failedLoginAttempts: 0 },
           });
-
           await secureAuditLog(tx, {
             organizationId: personnel.organizationId,
             branchId: activeBranchId,
@@ -374,10 +347,10 @@ export const authOptions: NextAuthOptions = {
             critical: false,
             ipAddress,
             deviceInfo,
-            metadata: { loginType: input.includes("@") ? "email" : "staff_code", activeBranchId },
           });
         });
 
+        // Return lightweight user object (no massive permissions array here)
         return {
           id: personnel.id,
           name: personnel.name,
@@ -395,7 +368,6 @@ export const authOptions: NextAuthOptions = {
           locked: personnel.isLocked,
           requiresPasswordChange: personnel.requiresPasswordChange,
           allowedBranches,
-          permissions: permissionsMap,
         };
       },
     }),
@@ -405,13 +377,11 @@ export const authOptions: NextAuthOptions = {
     async jwt({ token, user, trigger, session }): Promise<JWT> {
       const now = Date.now();
 
-      // Sign In Payload Initialization
+      // 1. Initial Sign-in Map
       if (user) {
         return {
           ...token,
           id: user.id,
-          name: user.name,
-          email: user.email,
           staffCode: user.staffCode,
           role: user.role,
           isOrgOwner: user.isOrgOwner,
@@ -425,146 +395,54 @@ export const authOptions: NextAuthOptions = {
           locked: user.locked,
           requiresPasswordChange: user.requiresPasswordChange,
           allowedBranches: user.allowedBranches,
-          permissions: user.permissions,
         };
       }
 
-      // MID-SESSION UPDATES & BRANCH SWITCHING
-      if (trigger === "update" && session) {
+      // 2. Handle Dynamic Branch Switching
+      if (trigger === "update" && session?.action === "SWITCH_BRANCH") {
+        const targetId = session.targetBranchId;
+        const target = token.allowedBranches.find(b => b.id === targetId);
 
-        // --- 1. THE BRANCH SWITCH LOGIC (NOW DYNAMIC & DB-VERIFIED) ---
-        if (session.action === "SWITCH_BRANCH" && session.targetBranchId) {
-          const targetBranchId = session.targetBranchId;
-
-          let validBranchRole: Role | null = null;
-          let validBranchName: string | null = null;
-          let updatedAllowedBranches: AllowedBranch[] = [];
-
-          if (token.isOrgOwner) {
-            // FUTURE PROOF: Query DB dynamically so OrgOwners can switch to branches
-            // created *during* their active session without needing to log out.
-            const branch = await prisma.branch.findFirst({
-              where: {
-                id: targetBranchId,
-                organizationId: token.organizationId,
-                active: true,
-                deletedAt: null
-              }
-            });
-
-            if (branch) {
-              validBranchRole = Role.ADMIN;
-              validBranchName = branch.name;
-
-              // Refresh the entire allowed branches list to catch any new additions
-              const allOrgBranches = await prisma.branch.findMany({
-                where: { organizationId: token.organizationId, active: true, deletedAt: null },
-                select: { id: true, name: true }
-              });
-              updatedAllowedBranches = allOrgBranches.map(b => ({ id: b.id, name: b.name, role: Role.ADMIN }));
-            }
-          } else {
-            // Strictly enforce standard personnel against current DB assignments
-            const assignment = await prisma.branchAssignment.findFirst({
-              where: { personnelId: token.id, branchId: targetBranchId },
-              include: { branch: true }
-            });
-
-            if (assignment && assignment.branch.active && !assignment.branch.deletedAt) {
-              validBranchRole = assignment.role;
-              validBranchName = assignment.branch.name;
-
-              // Refresh assignments list
-              const activeAssignments = await prisma.branchAssignment.findMany({
-                where: { personnelId: token.id, branch: { active: true, deletedAt: null } },
-                include: { branch: { select: { id: true, name: true } } }
-              });
-              updatedAllowedBranches = activeAssignments.map(a => ({ id: a.branch.id, name: a.branch.name, role: a.role }));
-            }
-          }
-
-          if (!validBranchRole || !validBranchName) {
-            console.warn(`[SECURITY] Invalid branch switch attempt by ${token.id} to ${targetBranchId}`);
-            return token; // Reject silent escalation
-          }
-
-          // Fetch new granular permissions for the new role mapping
-          const newPermissions = ROLE_PERMISSIONS_MATRIX[validBranchRole] || [];
-
-          // Log the forensic trace of the context shift
-          await prisma.$transaction(async (tx) => {
-            await secureAuditLog(tx, {
-              organizationId: token.organizationId,
-              branchId: targetBranchId,
-              actorId: token.id,
-              actorRole: validBranchRole as Role,
-              action: "SESSION_BRANCH_SWITCH",
-              severity: Severity.LOW,
-              critical: false,
-              ipAddress: "INTERNAL_REQ",
-              deviceInfo: "INTERNAL_REQ",
-              metadata: { fromBranch: token.branchId, toBranch: targetBranchId },
-            });
-          });
-
+        if (target || token.isOrgOwner) {
+          const effectiveRole = target?.role || (token.isOrgOwner ? Role.ADMIN : token.role);
+          
           return {
             ...token,
-            branchId: targetBranchId,
-            branchName: validBranchName,
-            role: validBranchRole,
-            permissions: newPermissions,
-            allowedBranches: updatedAllowedBranches // Ensures UI dropdowns stay sync'd mid-session
+            branchId: targetId,
+            branchName: target?.name || "Main",
+            role: effectiveRole,
           };
         }
-
-        // --- 2. STANDARD PROFILE UPDATES ---
-        return {
-          ...token,
-          name: session.name ?? token.name,
-          requiresPasswordChange: session.requiresPasswordChange ?? token.requiresPasswordChange
-        };
       }
 
-      // Dynamic Heartbeat & Mid-Session Security Revocation
+      // 3. Security Heartbeat & DB Sync Throttling
       if (token.id && !token.expired) {
-        const lastActivity = (token.lastActivityAt as number) || 0;
-        const idleTime = now - lastActivity;
-
-        if (idleTime > INACTIVITY_TIMEOUT_MS) {
+        const idle = now - (token.lastActivityAt || 0);
+        
+        // Force expiry if inactive
+        if (idle > INACTIVITY_TIMEOUT_MS) {
           return { ...token, expired: true } as JWT;
         }
 
-        // Throttle DB calls to preserve connection pool under heavy POS load
-        if (idleTime > DB_UPDATE_THROTTLE_MS) {
+        // Throttle DB checks to prevent connection exhaustion
+        if (idle > DB_UPDATE_THROTTLE_MS) {
           try {
-            const personnelState = await prisma.authorizedPersonnel.update({
+            const dbState = await prisma.authorizedPersonnel.findUnique({
               where: { id: token.id },
-              data: { lastActivityAt: new Date(now) },
-              select: {
-                disabled: true,
-                isLocked: true,
-                deletedAt: true,
-                branchAssignments: { select: { branchId: true } }
-              }
+              select: { disabled: true, isLocked: true, deletedAt: true },
             });
 
-            // INSTANT KILL-SWITCH: If admin disabled the user mid-session
-            if (!personnelState || personnelState.disabled || personnelState.isLocked || personnelState.deletedAt) {
-              return { ...token, expired: true, disabled: true, locked: true } as JWT;
+            if (!dbState || dbState.disabled || dbState.isLocked || dbState.deletedAt) {
+              return { ...token, expired: true, disabled: true } as JWT;
             }
 
-            // MID-SESSION REVOCATION CHECK: Did an admin remove their access to the current active branch?
-            // OrgOwners are exempt as they inherently have access to all active branches.
-            if (!token.isOrgOwner) {
-              const stillHasAccess = personnelState.branchAssignments.some(ba => ba.branchId === token.branchId);
-              if (!stillHasAccess) {
-                return { ...token, expired: true, disabled: true } as JWT; // Force logout if current branch revoked
-              }
-            }
-
+            await prisma.authorizedPersonnel.update({
+              where: { id: token.id },
+              data: { lastActivityAt: new Date(now) },
+            });
             token.lastActivityAt = now;
-          } catch (e) {
-            console.error("[AUTH_HEARTBEAT_ERROR]", e);
+          } catch (error) {
+            console.error("[Auth:Heartbeat] DB Check Failed", error);
           }
         }
       }
@@ -574,51 +452,36 @@ export const authOptions: NextAuthOptions = {
 
     async session({ session, token }) {
       if (token?.id) {
-        session.user.id = token.id;
-        session.user.name = token.name;
-        session.user.email = token.email;
-        session.user.staffCode = token.staffCode;
-        session.user.role = token.role;
-        session.user.isOrgOwner = token.isOrgOwner;
-        session.user.organizationId = token.organizationId;
-        session.user.organizationName = token.organizationName;
-        session.user.branchId = token.branchId;
-        session.user.branchName = token.branchName;
-        session.user.lastLogin = token.lastLogin;
-        session.user.lastActivityAt = new Date(token.lastActivityAt as number).toISOString();
-        session.user.disabled = token.disabled;
-        session.user.locked = token.locked;
-        session.user.requiresPasswordChange = token.requiresPasswordChange;
-        session.user.expired = token.expired || false;
+        // DYNAMIC INJECTION: Resolve permissions here via O(1) Cache instead of bloating the JWT cookie
+        const finalPermissions = await resolvePermissionsUnion(token.organizationId, token.role);
 
-        // PREMIUM INJECTIONS
-        session.user.allowedBranches = token.allowedBranches || [];
-        session.user.permissions = token.permissions || [];
+        session.user = {
+          ...session.user,
+          id: token.id,
+          staffCode: token.staffCode,
+          role: token.role,
+          isOrgOwner: token.isOrgOwner,
+          organizationId: token.organizationId,
+          organizationName: token.organizationName,
+          branchId: token.branchId,
+          branchName: token.branchName,
+          lastLogin: token.lastLogin,
+          lastActivityAt: new Date(token.lastActivityAt).toISOString(),
+          disabled: token.disabled,
+          locked: token.locked,
+          requiresPasswordChange: token.requiresPasswordChange,
+          expired: token.expired || false,
+          allowedBranches: token.allowedBranches,
+          permissions: finalPermissions, // Injected for client use
+        };
       }
       return session;
     },
   },
 
-  events: {
-    // Precise Audit Trail for Sign Outs
-    async signOut({ token }) {
-      if (token?.id) {
-        try {
-          await prisma.authorizedPersonnel.update({
-            where: { id: token.id },
-            data: { lastActivityAt: new Date() },
-          });
-        } catch (e) {
-          console.error("[AUTH_SIGNOUT_ERROR] Failed to mark final activity", e);
-        }
-      }
-    },
+  pages: { 
+    signIn: "/signin", 
+    error: "/signin" 
   },
-
-  pages: {
-    signIn: "/signin",
-    error: "/signin",
-  },
-
   secret: process.env.NEXTAUTH_SECRET,
 };

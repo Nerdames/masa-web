@@ -35,6 +35,22 @@ enum PermissionAction {
   EXPORT
 }
 
+enum Resource {
+  INVOICE
+  STOCK
+  PRODUCT
+  CUSTOMER
+  EXPENSE
+  PROCUREMENT
+  VENDOR
+  REPORT
+  AUDIT
+  SETTINGS
+  BRANCH
+  PERSONNEL
+  FINANCE
+}
+
 enum ActorType {
   USER
   SYSTEM
@@ -246,6 +262,7 @@ model Organization {
   uoms        UnitOfMeasure[]
   refunds     Refund[]
   stockTakes  StockTake[]
+  resourcePermissions  ResourcePermission[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -392,6 +409,28 @@ model AuthorizedPersonnel {
   @@index([failedLoginAttempts])
   @@index([lockoutUntil])
   @@index([isLocked])
+}
+
+////////////////////////////////////
+// RESOURCE PERMISSIONS (RBAC)
+////////////////////////////////////
+model ResourcePermission {
+  id             String             @id @default(cuid())
+  organizationId String
+  
+  role           Role               
+  resource       Resource           
+  actions        PermissionAction[] @default([]) 
+
+  createdAt      DateTime           @default(now())
+  updatedAt      DateTime           @updatedAt
+
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  // Enforce one permission record per role/resource combo per organization
+  @@unique([organizationId, resource, role])
+  @@index([organizationId])
+  @@index([role])
 }
 
 ////////////////////////////////////
