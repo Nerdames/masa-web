@@ -15,10 +15,12 @@ import {
   Clock,
   Lock
 } from "lucide-react";
-import { useSession } from "next-auth/react";
 import { useAlerts } from "@/core/components/feedback/AlertProvider";
 import { useSidePanel } from "@/core/components/layout/SidePanelContext";
 import { InventoryEditPanel } from "@/modules/inventory/components/InventoryEditPanel";
+// Import the centralized permission hook and Prisma enums
+import { usePermission } from "@/core/hooks/usePermission"; 
+import { Resource, Role } from "@prisma/client";
 
 /* -------------------------
     Types & Interfaces
@@ -57,7 +59,9 @@ interface MetaData {
 ------------------------- */
 
 export default function FortressInventoryWorkspace() {
-  const { data: session, status: sessionStatus } = useSession();
+  // Use the new centralized permission hook instead of raw useSession
+  const { user, isAuthenticated, isLoading: sessionLoading, canSee, canEdit, canExport, isAtLeast } = usePermission();
+  
   const { dispatch } = useAlerts();
   const { openPanel, closePanel } = useSidePanel();
   const [isPending, startTransition] = useTransition();
@@ -86,22 +90,16 @@ export default function FortressInventoryWorkspace() {
   /* -------------------------
       Auth & Permission Logic
   ------------------------- */
-  const user = session?.user;
-  
   // Resolve active branch from session (Primary branch or first allowed)
   const activeBranchId = user?.branchId || user?.allowedBranches?.[0]?.id;
   
-  // Permission guards based on session augmentation
+  // Permission guards evaluated seamlessly via the new usePermission hook
   const canAccessValuation = useMemo(() => {
-    return user?.role === "ADMIN" || 
-           user?.role === "AUDITOR" || 
-           user?.permissions?.includes("READ:VALUATION");
-  }, [user]);
+    return isAtLeast(Role.AUDITOR) || canSee(Resource.FINANCE) || canSee(Resource.REPORT);
+  }, [isAtLeast, canSee]);
 
-  const canEditInventory = useMemo(() => {
-    return user?.permissions?.includes("UPDATE:INVENTORY") || 
-           ["ADMIN", "MANAGER"].includes(user?.role || "");
-  }, [user]);
+  const canEditInventory = canEdit(Resource.STOCK);
+  const canExportInventory = canExport(Resource.STOCK);
 
   /* -------------------------
       Data Fetching
@@ -110,16 +108,13 @@ export default function FortressInventoryWorkspace() {
   const fetchMeta = useCallback(async () => {
     if (!activeBranchId) return;
     try {
-      const [vRes, cRes] = await Promise.all([
-        fetch(`/api/inventory/fortress?branchId=${activeBranchId}&meta=vendors`),
-        fetch(`/api/inventory/fortress?branchId=${activeBranchId}&meta=categories`)
-      ]);
+      // FIXED: Single unified call matching the API's 'meta=filters' logic
+      const res = await fetch(`/api/inventory/fortress?branchId=${activeBranchId}&meta=filters`);
       
-      if (vRes.ok && cRes.ok) {
-        const vData = await vRes.json();
-        const cData = await cRes.json();
-        setVendors(vData.items || []);
-        setCategories(cData.items || []);
+      if (res.ok) {
+        const data = await res.json();
+        setVendors(data.vendors || []); 
+        setCategories(data.categories || []);
       }
     } catch (err) {
       console.error("[METADATA_SYNC_ERROR]", err);
@@ -127,7 +122,7 @@ export default function FortressInventoryWorkspace() {
   }, [activeBranchId]);
 
   const fetchData = useCallback(async () => {
-    if (!activeBranchId || sessionStatus !== "authenticated") return;
+    if (!activeBranchId || !isAuthenticated) return;
     
     setLoading(true);
     startTransition(async () => {
@@ -148,7 +143,7 @@ export default function FortressInventoryWorkspace() {
         
         if (!res.ok) {
           const errorData = await res.json().catch(() => ({}));
-          throw new Error(errorData.message || "Synchronization failure with Fortress API");
+          throw new Error(errorData.error || errorData.message || "Synchronization failure with Fortress API");
         }
 
         const json = await res.json();
@@ -165,7 +160,7 @@ export default function FortressInventoryWorkspace() {
         setLoading(false);
       }
     });
-  }, [activeBranchId, sessionStatus, page, limit, search, statusFilter, vendorFilter, categoryFilter, sort, dispatch]);
+  }, [activeBranchId, isAuthenticated, page, limit, search, statusFilter, vendorFilter, categoryFilter, sort, dispatch]);
 
   /* -------------------------
       Lifecycle
@@ -194,10 +189,10 @@ export default function FortressInventoryWorkspace() {
   const stats = useMemo(() => {
     const criticalStock = items.filter(i => i.stock <= i.safetyStock).length;
     const lowStock = items.filter(i => i.stock > i.safetyStock && i.stock <= i.reorderLevel).length;
-    const pendingApprovals = items.filter(i => i.approvalPending).length;
+    const pendingApprovals = items.filter(i => i.approvalPending || (i as any).pendingApproval).length; 
     
     const assetValuation = canAccessValuation 
-      ? items.reduce((acc, curr) => acc + (curr.stock * curr.costPrice), 0) 
+      ? items.reduce((acc, curr) => acc + (curr.stock * (curr.costPrice || 0)), 0) 
       : 0;
 
     return { criticalStock, lowStock, assetValuation, pendingApprovals };
@@ -225,6 +220,15 @@ export default function FortressInventoryWorkspace() {
     );
   };
 
+  const handleExport = () => {
+    if (!canExportInventory) {
+      dispatch({ kind: "TOAST", type: "ERROR", title: "Export Blocked", message: "Export privileges are restricted." });
+      return;
+    }
+    const params = new URLSearchParams({ branchId: activeBranchId || "", export: "true" });
+    window.location.href = `/api/inventory/fortress?${params.toString()}`;
+  };
+
   const getStatusConfig = (item: UiBranchProduct) => {
     if (item.isLocked) {
         return {
@@ -233,7 +237,7 @@ export default function FortressInventoryWorkspace() {
           icon: Lock,
         };
     }
-    if (item.approvalPending) {
+    if (item.approvalPending || (item as any).pendingApproval) {
         return {
           label: "PENDING",
           classes: "bg-amber-100 text-amber-700 border-amber-200 animate-pulse dark:bg-amber-900/40 dark:text-amber-400 dark:border-amber-800",
@@ -265,7 +269,7 @@ export default function FortressInventoryWorkspace() {
     <div className="h-screen flex flex-col bg-[#FAFAFA] dark:bg-slate-950 text-slate-900 dark:text-slate-100 font-sans relative overflow-hidden transition-colors duration-300">
       
       {/* Loading Overlay */}
-      {(isPending || loading) && items.length === 0 && (
+      {(isPending || loading || sessionLoading) && items.length === 0 && (
         <div className="absolute inset-0 flex flex-col justify-center items-center bg-white/60 dark:bg-slate-950/60 backdrop-blur-[2px] z-[200]">
           <Loader2 className="w-10 h-10 text-indigo-600 dark:text-indigo-500 animate-spin" />
           <span className="text-[10px] font-black tracking-[0.3em] text-slate-500 uppercase mt-4">Initializing Secure Sync...</span>
@@ -315,7 +319,11 @@ export default function FortressInventoryWorkspace() {
             </button>
 
             <div className="hidden md:flex gap-2 items-center border-l border-slate-200 dark:border-slate-800 pl-3 ml-1">
-              <button className="h-8 px-3 bg-slate-900 dark:bg-slate-100 text-white dark:text-slate-900 text-[10px] font-black uppercase tracking-wider rounded-md hover:opacity-90 transition-all flex items-center gap-2">
+              <button 
+                onClick={handleExport}
+                disabled={!canExportInventory}
+                className="h-8 px-3 bg-slate-900 dark:bg-slate-100 text-white dark:text-slate-900 text-[10px] font-black uppercase tracking-wider rounded-md hover:opacity-90 transition-all flex items-center gap-2 disabled:opacity-40 disabled:cursor-not-allowed"
+              >
                 <Download className="w-3.5 h-3.5" />
                 <span>Export</span>
               </button>
@@ -330,7 +338,8 @@ export default function FortressInventoryWorkspace() {
               <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest">Vendor_Origin</label>
               <select value={vendorFilter} onChange={(e) => setVendorFilter(e.target.value)} className="rounded bg-slate-50 dark:bg-slate-800 px-2 py-1 text-[11px] font-bold outline-none border border-slate-200 dark:border-slate-700">
                 <option value="all">ALL_VENDORS</option>
-                {vendors.map((v) => <option key={v.id} value={v.id}>{v.name.toUpperCase()}</option>)}
+                {/* FIXED: Optional chaining to prevent any undefined 'name' crashes */}
+                {vendors.map((v) => <option key={v.id} value={v.id}>{v.name?.toUpperCase() || 'UNKNOWN'}</option>)}
               </select>
             </div>
 
@@ -338,7 +347,8 @@ export default function FortressInventoryWorkspace() {
               <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest">Category_Class</label>
               <select value={categoryFilter} onChange={(e) => setCategoryFilter(e.target.value)} className="rounded bg-slate-50 dark:bg-slate-800 px-2 py-1 text-[11px] font-bold outline-none border border-slate-200 dark:border-slate-700">
                 <option value="all">ALL_CATEGORIES</option>
-                {categories.map((c) => <option key={c.id} value={c.id}>{c.name.toUpperCase()}</option>)}
+                {/* FIXED: Optional chaining to prevent any undefined 'name' crashes */}
+                {categories.map((c) => <option key={c.id} value={c.id}>{c.name?.toUpperCase() || 'UNKNOWN'}</option>)}
               </select>
             </div>
 
@@ -357,8 +367,10 @@ export default function FortressInventoryWorkspace() {
 
       {/* MAIN CONTENT AREA */}
       <div className="flex-1 overflow-y-auto custom-scrollbar pb-12">
-        <section className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-4 px-4 lg:px-6 py-4">
-          <div className="bg-white dark:bg-slate-900 p-4 rounded-xl border border-slate-200/60 dark:border-slate-800 flex flex-col justify-between shadow-sm">
+        
+        {/* FLEX RELAXED STAT CARDS */}
+        <section className="flex flex-wrap gap-4 px-4 lg:px-6 py-4">
+          <div className="flex-1 min-w-[200px] max-w-full bg-white dark:bg-slate-900 p-4 rounded-xl border border-slate-200/60 dark:border-slate-800 flex flex-col justify-between shadow-sm">
             <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest">Registry SKUs</p>
             <div className="flex items-end justify-between mt-2">
               <h3 className="text-xl font-black text-slate-900 dark:text-white">{total}</h3>
@@ -366,7 +378,7 @@ export default function FortressInventoryWorkspace() {
             </div>
           </div>
 
-          <div className="bg-white dark:bg-slate-900 p-4 rounded-xl border border-slate-200/60 dark:border-slate-800 flex flex-col justify-between shadow-sm border-l-4 border-l-amber-500">
+          <div className="flex-1 min-w-[200px] max-w-full bg-white dark:bg-slate-900 p-4 rounded-xl border border-slate-200/60 dark:border-slate-800 flex flex-col justify-between shadow-sm border-l-4 border-l-amber-500">
             <p className="text-[9px] font-black text-amber-600 dark:text-amber-400 uppercase tracking-widest">Pending Review</p>
             <div className="flex items-end justify-between mt-2">
               <h3 className="text-xl font-black text-slate-900 dark:text-white">{stats.pendingApprovals}</h3>
@@ -375,7 +387,7 @@ export default function FortressInventoryWorkspace() {
           </div>
 
           {canAccessValuation && (
-            <div className="bg-white dark:bg-slate-900 p-4 rounded-xl border border-slate-200/60 dark:border-slate-800 flex flex-col justify-between shadow-sm">
+            <div className="flex-1 min-w-[200px] max-w-full bg-white dark:bg-slate-900 p-4 rounded-xl border border-slate-200/60 dark:border-slate-800 flex flex-col justify-between shadow-sm">
               <p className="text-[9px] font-black text-indigo-600 dark:text-indigo-400 uppercase tracking-widest">Total Valuation</p>
               <div className="flex items-end justify-between mt-2">
                 <h3 className="text-xl font-black text-slate-900 dark:text-white">₦{stats.assetValuation.toLocaleString()}</h3>
@@ -384,7 +396,7 @@ export default function FortressInventoryWorkspace() {
             </div>
           )}
 
-          <div className="bg-white dark:bg-slate-900 p-4 rounded-xl border border-slate-200/60 dark:border-slate-800 flex flex-col justify-between shadow-sm">
+          <div className="flex-1 min-w-[200px] max-w-full bg-white dark:bg-slate-900 p-4 rounded-xl border border-slate-200/60 dark:border-slate-800 flex flex-col justify-between shadow-sm">
             <p className="text-[9px] font-black text-orange-600 dark:text-orange-400 uppercase tracking-widest">Low Stock</p>
             <div className="flex items-end justify-between mt-2">
               <h3 className="text-xl font-black text-slate-900 dark:text-white">{stats.lowStock}</h3>
@@ -392,7 +404,7 @@ export default function FortressInventoryWorkspace() {
             </div>
           </div>
 
-          <div className="bg-white dark:bg-slate-900 p-4 rounded-xl border border-slate-200/60 dark:border-slate-800 flex flex-col justify-between shadow-sm border-l-4 border-l-red-600">
+          <div className="flex-1 min-w-[200px] max-w-full bg-white dark:bg-slate-900 p-4 rounded-xl border border-slate-200/60 dark:border-slate-800 flex flex-col justify-between shadow-sm border-l-4 border-l-red-600">
             <p className="text-[9px] font-black text-red-600 dark:text-red-400 uppercase tracking-widest">Stockout Risk</p>
             <div className="flex items-end justify-between mt-2">
               <h3 className="text-xl font-black text-slate-900 dark:text-white">{stats.criticalStock}</h3>

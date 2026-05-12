@@ -12,10 +12,14 @@ import {
   ShieldAlert,
   Save,
   ShieldCheck,
-  Clock
+  Clock,
+  Lock,
+  AlertCircle
 } from "lucide-react";
 import { useSidePanel } from "@/core/components/layout/SidePanelContext";
 import { useAlerts } from "@/core/components/feedback/AlertProvider";
+import { usePermission } from "@/core/hooks/usePermission";
+import { Resource, CriticalAction } from "@prisma/client";
 
 /* -------------------------
 Types
@@ -28,6 +32,7 @@ interface InventoryEditPanelProps {
     reorderLevel: number;
     safetyStock: number;
     stock: number;
+    hasPendingApproval?: boolean; // New: SOP safety check
     product: {
       name: string;
       uom?: {
@@ -50,6 +55,7 @@ export function InventoryEditPanel({
 }: InventoryEditPanelProps) {
   const { isFullScreen, toggleFullScreen } = useSidePanel();
   const { dispatch } = useAlerts();
+  const { canEdit, checkCritical } = usePermission();
   const [submitting, setSubmitting] = useState(false);
   
   const [formData, setFormData] = useState({
@@ -58,13 +64,33 @@ export function InventoryEditPanel({
     safetyStock: item.safetyStock || 0
   });
 
-  // Check if price has been modified to show "Approval Hint"
+  // Concurrency Guard: Check if an unapproved process is already active
+  const isLocked = !!item.hasPendingApproval;
+  const hasEditPermission = canEdit(Resource.STOCK);
+
   const isPriceChanged = useMemo(() => {
     return Number(formData.sellingPrice) !== Number(item.sellingPrice || 0);
   }, [formData.sellingPrice, item.sellingPrice]);
 
+  const priceApprovalState = useMemo(() => {
+    if (!isPriceChanged) return { requiresApproval: false };
+    return checkCritical(CriticalAction.PRICE_UPDATE);
+  }, [isPriceChanged, checkCritical]);
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    
+    // SOP Safety: Block submission if a process is already pending or user lacks permission
+    if (!hasEditPermission || isLocked) {
+      dispatch?.({
+        kind: "TOAST",
+        type: "ERROR",
+        title: "SOP Violation",
+        message: "Action blocked: This resource has a pending approval process.",
+      });
+      return;
+    }
+    
     setSubmitting(true);
     
     try {
@@ -80,11 +106,10 @@ export function InventoryEditPanel({
         throw new Error(result.error || "Update rejected by security policy");
       }
 
-      // Handle the "Critical Action" logic from the updated API
       if (result.approvalPending) {
         dispatch?.({
           kind: "TOAST",
-          type: "WARNING", // Use warning color to indicate it's not "done" yet
+          type: "WARNING", 
           title: "Approval Dispatched",
           message: result.message || "Price change requires management authorization.",
         });
@@ -109,6 +134,19 @@ export function InventoryEditPanel({
       setSubmitting(false);
     }
   };
+
+  if (!hasEditPermission) {
+    return (
+      <div className="flex flex-col items-center justify-center h-full p-10 text-center space-y-4">
+        <div className="w-16 h-16 bg-red-50 dark:bg-red-900/20 rounded-full flex items-center justify-center text-red-600">
+          <Lock className="w-8 h-8" />
+        </div>
+        <h3 className="text-sm font-black uppercase tracking-widest text-slate-900 dark:text-white">Access Denied</h3>
+        <p className="text-xs text-slate-500">You do not have the <span className="font-mono text-red-500">UPDATE_STOCK</span> privilege required for this action.</p>
+        <button onClick={onClose} className="px-6 py-2 bg-slate-100 dark:bg-slate-800 rounded-lg text-[10px] font-bold uppercase">Return to Inventory</button>
+      </div>
+    );
+  }
 
   return (
     <div className="flex flex-col h-full w-full bg-white dark:bg-slate-900 shadow-2xl relative">
@@ -142,6 +180,22 @@ export function InventoryEditPanel({
 
       {/* Scrollable Content */}
       <div className="flex-1 overflow-y-auto p-5 space-y-8 custom-scrollbar">
+        
+        {/* SOP Safety Banner: Unapproved Process Check */}
+        {isLocked && (
+          <div className="bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-2xl p-4 flex items-center gap-4">
+            <div className="w-10 h-10 rounded-full bg-amber-100 dark:bg-amber-800 flex items-center justify-center text-amber-600 shrink-0 animate-pulse">
+              <AlertCircle className="w-5 h-5" />
+            </div>
+            <div>
+              <h4 className="text-[11px] font-black text-amber-800 dark:text-amber-400 uppercase tracking-tight">Pending Approval Active</h4>
+              <p className="text-[10px] text-amber-700 dark:text-amber-500 mt-0.5 leading-relaxed">
+                Changes are currently locked. An existing update for this resource is awaiting management authorization and has not yet expired.
+              </p>
+            </div>
+          </div>
+        )}
+
         {/* Entity Banner */}
         <div className="bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700 rounded-2xl p-4 flex items-start gap-4">
           <div className="w-12 h-12 rounded-xl bg-indigo-600 flex items-center justify-center text-white shadow-lg shadow-indigo-500/20 shrink-0">
@@ -161,16 +215,15 @@ export function InventoryEditPanel({
         </div>
 
         <form id="edit-inventory-form" onSubmit={handleSubmit} className="space-y-6">
-          <div className="grid gap-6">
+          <div className={`grid gap-6 ${isLocked ? 'opacity-50 pointer-events-none' : ''}`}>
             <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-2">
                 <h4 className="text-[10px] font-black text-slate-400 dark:text-slate-500 uppercase tracking-[0.2em]">
                 Management Overrides
                 </h4>
-                {/* Visual indicator of high severity action */}
                 {isPriceChanged && (
                     <div className="flex items-center gap-1 text-[9px] font-bold text-amber-600 dark:text-amber-400 uppercase">
                         <Clock className="w-3 h-3" />
-                        Requires Approval
+                        {priceApprovalState.requiresApproval ? "Approval Required" : "Auto-Authorized"}
                     </div>
                 )}
             </div>
@@ -186,6 +239,7 @@ export function InventoryEditPanel({
                 <input
                   type="number"
                   step="0.01"
+                  disabled={isLocked}
                   value={formData.sellingPrice}
                   onChange={(e) => setFormData({ ...formData, sellingPrice: Number(e.target.value) })}
                   className={`w-full bg-white dark:bg-slate-950 border-2 rounded-xl py-3.5 pl-12 pr-4 text-sm font-bold text-slate-900 dark:text-white outline-none transition-all shadow-sm ${isPriceChanged ? 'border-indigo-500/50 focus:border-indigo-500' : 'border-slate-200 dark:border-slate-700 focus:border-indigo-500'}`}
@@ -193,9 +247,6 @@ export function InventoryEditPanel({
                   required
                 />
               </div>
-              <p className="text-[9px] text-slate-500 mt-1 italic">
-                Note: Significant price deviations are flagged for managerial review.
-              </p>
             </div>
 
             <div className={`grid gap-5 ${isFullScreen ? "md:grid-cols-2" : "grid-cols-1"}`}>
@@ -208,6 +259,7 @@ export function InventoryEditPanel({
                   <TrendingDown className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400 group-focus-within:text-indigo-500 transition-colors" />
                   <input
                     type="number"
+                    disabled={isLocked}
                     value={formData.reorderLevel}
                     onChange={(e) => setFormData({ ...formData, reorderLevel: Number(e.target.value) })}
                     className="w-full bg-white dark:bg-slate-950 border-2 border-slate-200 dark:border-slate-700 rounded-xl py-3.5 pl-12 pr-4 text-sm font-bold text-slate-900 dark:text-white outline-none focus:border-indigo-500 transition-all shadow-sm"
@@ -225,6 +277,7 @@ export function InventoryEditPanel({
                   <ShieldAlert className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400 group-focus-within:text-red-500 transition-colors" />
                   <input
                     type="number"
+                    disabled={isLocked}
                     value={formData.safetyStock}
                     onChange={(e) => setFormData({ ...formData, safetyStock: Number(e.target.value) })}
                     className="w-full bg-white dark:bg-slate-950 border-2 border-slate-200 dark:border-slate-700 rounded-xl py-3.5 pl-12 pr-4 text-sm font-bold text-slate-900 dark:text-white outline-none focus:border-indigo-500 transition-all shadow-sm"
@@ -249,19 +302,26 @@ export function InventoryEditPanel({
         <button
           form="edit-inventory-form"
           type="submit"
-          disabled={submitting}
+          disabled={submitting || isLocked}
           className={`flex-[2] py-3 text-white text-[10px] font-bold uppercase tracking-wider rounded-lg shadow-md transition-all active:scale-[0.98] flex items-center justify-center gap-2 ${
-            isPriceChanged 
-                ? "bg-indigo-600 hover:bg-indigo-500 shadow-indigo-500/20" 
+            isLocked 
+              ? "bg-slate-400 cursor-not-allowed opacity-50" 
+              : isPriceChanged && priceApprovalState.requiresApproval
+                ? "bg-amber-600 hover:bg-amber-500 shadow-amber-500/20" 
                 : "bg-slate-900 dark:bg-slate-800 hover:bg-slate-800"
           }`}
         >
           {submitting ? (
             <Loader2 className="w-4 h-4 animate-spin" />
+          ) : isLocked ? (
+            <>
+              <Lock className="w-4 h-4" />
+              Locked by Process
+            </>
           ) : (
             <>
-              {isPriceChanged ? <ShieldCheck className="w-4 h-4" /> : <Save className="w-4 h-4" />}
-              {isPriceChanged ? "Request Update" : "Commit Changes"}
+              {isPriceChanged && priceApprovalState.requiresApproval ? <ShieldCheck className="w-4 h-4" /> : <Save className="w-4 h-4" />}
+              {isPriceChanged && priceApprovalState.requiresApproval ? "Request Approval" : "Commit Changes"}
             </>
           )}
         </button>
