@@ -12,10 +12,8 @@ import {
   ShieldAlert,
   Save,
   ShieldCheck,
-  Clock,
   Lock,
-  AlertCircle,
-  ArrowRightLeft,
+  ArrowRight,
   Info,
   ShieldQuestion,
   Database
@@ -54,55 +52,55 @@ Sub-Component: Comparison Field
 ------------------------- */
 
 interface ComparisonFieldProps {
+  id: string;
   label: string;
   icon: React.ElementType;
   oldValue: string | number;
-  newValue: string | number;
   isModified: boolean;
   children: React.ReactNode;
   unit?: string;
 }
 
-function ComparisonField({ label, icon: Icon, oldValue, newValue, isModified, children, unit }: ComparisonFieldProps) {
+function ComparisonField({ 
+  id, 
+  label, 
+  icon: Icon, 
+  oldValue, 
+  isModified, 
+  children, 
+  unit 
+}: ComparisonFieldProps) {
   return (
-    <div className={`group relative p-4 rounded-2xl border-2 transition-all duration-300 ${
+    <div className={`p-3 rounded-lg border transition-colors ${
       isModified 
-        ? "border-indigo-500/30 bg-indigo-50/30 dark:bg-indigo-500/5 shadow-lg shadow-indigo-500/5" 
-        : "border-slate-100 dark:border-slate-800 bg-white dark:bg-slate-900/50"
+        ? "border-indigo-200 bg-indigo-50/30 dark:border-indigo-800/50 dark:bg-indigo-900/10" 
+        : "border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900"
     }`}>
-      <div className="flex items-center justify-between mb-3">
-        <div className="flex items-center gap-2">
-          <div className={`p-1.5 rounded-lg transition-colors ${isModified ? 'bg-indigo-500 text-white' : 'bg-slate-100 dark:bg-slate-800 text-slate-500'}`}>
-            <Icon className="w-3.5 h-3.5" />
-          </div>
-          <span className="text-[10px] font-black uppercase tracking-widest text-slate-500 dark:text-slate-400">
-            {label}
-          </span>
-        </div>
+      <div className="flex items-center justify-between mb-2">
+        <label htmlFor={id} className="flex items-center gap-1.5 text-xs font-semibold text-slate-700 dark:text-slate-300">
+          <Icon className="w-3.5 h-3.5 text-slate-400" aria-hidden="true" />
+          {label}
+        </label>
         {isModified && (
-          <span className="text-[9px] font-bold text-indigo-500 animate-pulse uppercase tracking-tighter">
-            Pending Update
+          <span className="text-[10px] uppercase tracking-wider font-bold text-indigo-600 dark:text-indigo-400">
+            Modified
           </span>
         )}
       </div>
 
-      <div className="grid grid-cols-7 items-center gap-2">
-        {/* Old Value */}
-        <div className="col-span-3">
-          <label className="text-[8px] font-bold text-slate-400 uppercase block mb-1">Current</label>
-          <div className="text-xs font-mono font-bold text-slate-400 line-through decoration-slate-300/50">
-            {oldValue} {unit}
-          </div>
+      <div className="flex items-center gap-2">
+        {/* Current Value Display */}
+        <div className="flex-1 bg-slate-50 dark:bg-slate-800/50 px-2 py-1.5 rounded border border-slate-100 dark:border-slate-800 flex flex-col justify-center">
+          <span className="text-[10px] text-slate-400 uppercase font-medium">Current</span>
+          <span className="text-xs font-semibold text-slate-600 dark:text-slate-300 truncate">
+            {oldValue} <span className="text-[10px] opacity-70">{unit}</span>
+          </span>
         </div>
 
-        {/* Separator */}
-        <div className="col-span-1 flex justify-center">
-          <ArrowRightLeft className={`w-3 h-3 ${isModified ? 'text-indigo-500' : 'text-slate-200 dark:text-slate-700'}`} />
-        </div>
+        <ArrowRight className="w-3.5 h-3.5 text-slate-300 dark:text-slate-600 shrink-0" aria-hidden="true" />
 
-        {/* Input Wrapper */}
-        <div className="col-span-3">
-          <label className={`text-[8px] font-bold uppercase block mb-1 ${isModified ? 'text-indigo-500' : 'text-slate-400'}`}>Target</label>
+        {/* New Value Input Wrapper */}
+        <div className="flex-1">
           {children}
         </div>
       </div>
@@ -130,6 +128,7 @@ export function InventoryEditPanel({
     safetyStock: item.safetyStock || 0
   });
 
+  // Strict Lock Check: If pending approvals exist, editing is disabled.
   const isLocked = !!item.hasPendingApproval;
   const hasEditPermission = canEdit(Resource.STOCK);
 
@@ -157,18 +156,18 @@ export function InventoryEditPanel({
       });
 
       const result = await res.json();
-      if (!res.ok) throw new Error(result.error || "SOP Update Rejected");
+      if (!res.ok) throw new Error(result.error || "Update Failed");
 
       dispatch?.({
         kind: "TOAST",
         type: result.approvalPending ? "WARNING" : "SUCCESS",
-        title: result.approvalPending ? "Approval Dispatched" : "Audit Synchronized",
+        title: result.approvalPending ? "Approval Required" : "Update Successful",
         message: result.message,
       });
 
       onSuccess();
     } catch (err: any) {
-      dispatch?.({ kind: "TOAST", type: "ERROR", title: "Policy Violation", message: err.message });
+      dispatch?.({ kind: "TOAST", type: "ERROR", title: "Error", message: err.message });
     } finally {
       setSubmitting(false);
     }
@@ -176,118 +175,121 @@ export function InventoryEditPanel({
 
   if (!hasEditPermission) {
     return (
-      <div className="flex flex-col items-center justify-center h-full p-10 text-center space-y-4">
-        <div className="w-16 h-16 bg-red-50 dark:bg-red-900/10 rounded-full flex items-center justify-center text-red-600">
-          <ShieldQuestion className="w-8 h-8" />
+      <div className="flex flex-col items-center justify-center h-full p-8 text-center bg-white dark:bg-slate-950">
+        <div className="w-12 h-12 bg-red-50 dark:bg-red-900/20 rounded-full flex items-center justify-center text-red-600 mb-4">
+          <ShieldQuestion className="w-6 h-6" />
         </div>
-        <div className="space-y-1">
-          <h3 className="text-sm font-black uppercase tracking-[0.2em] text-slate-900 dark:text-white">Security Block</h3>
-          <p className="text-[10px] text-slate-500 max-w-[200px] leading-relaxed uppercase">
-            You lack <span className="text-red-500 font-mono">STOCK_UPDATE</span> privileges for this resource.
-          </p>
-        </div>
-        <button onClick={onClose} className="px-8 py-2.5 bg-slate-900 text-white dark:bg-white dark:text-black rounded-lg text-[9px] font-black uppercase tracking-widest">Return</button>
+        <h3 className="text-sm font-semibold text-slate-900 dark:text-white">Access Denied</h3>
+        <p className="text-xs text-slate-500 mt-1 max-w-xs">Required permissions for Resource: STOCK are missing.</p>
+        <button onClick={onClose} className="mt-4 text-xs font-medium text-indigo-600 hover:underline">Dismiss</button>
       </div>
     );
   }
 
   return (
-    <div className="flex flex-col h-full w-full bg-white dark:bg-slate-950 shadow-2xl relative overflow-hidden">
-      {/* Header Section */}
-      <div className="px-6 py-5 border-b border-slate-100 dark:border-slate-900 flex justify-between items-center bg-white/80 dark:bg-slate-950/80 backdrop-blur-md z-40">
-        <div className="min-w-0">
-          <div className="flex items-center gap-2 mb-1">
-            <div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-            <h2 className="text-[11px] font-black text-slate-900 dark:text-white uppercase tracking-[0.25em]">
-              Fortress Intelligence
-            </h2>
-          </div>
-          <p className="text-[9px] text-slate-400 dark:text-slate-500 font-mono tracking-tighter uppercase">
-            SEC_LOG: {item.id.toUpperCase()}
-          </p>
+    <div className="flex flex-col h-full w-full bg-white dark:bg-slate-950">
+      {/* Header - Reduced text and height */}
+      <header className="px-4 py-3 border-b border-slate-200 dark:border-slate-800 flex justify-between items-center bg-white dark:bg-slate-950">
+        <div>
+          <h2 className="text-[13px] font-bold text-slate-900 dark:text-white flex items-center gap-2">
+            Edit Inventory Details
+          </h2>
+          <p className="text-[11px] font-mono text-slate-500 mt-0.5">Ref: {item.id}</p>
         </div>
-        <div className="flex items-center gap-2">
-          <button onClick={toggleFullScreen} className="p-2 text-slate-400 hover:text-slate-900 dark:hover:text-white transition-colors">
+        <div className="flex items-center gap-0.5">
+          <button 
+            onClick={toggleFullScreen} 
+            className="p-1.5 rounded-md text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800"
+          >
             {isFullScreen ? <Minimize2 className="w-4 h-4" /> : <Maximize2 className="w-4 h-4" />}
           </button>
-          <button onClick={onClose} className="p-2 text-slate-300 hover:text-red-500 transition-colors">
-            <X className="w-5 h-5" />
+          <button 
+            onClick={onClose} 
+            className="p-1.5 rounded-md text-slate-400 hover:text-red-500 dark:hover:bg-red-900/20 transition-colors"
+          >
+            <X className="w-4 h-4" />
           </button>
         </div>
-      </div>
+      </header>
 
-      <div className="flex-1 overflow-y-auto p-6 space-y-6 custom-scrollbar">
-        {/* SOP Critical Status Banner */}
-        {isLocked ? (
-          <div className="bg-amber-500/10 border-2 border-amber-500/20 rounded-3xl p-5 flex items-start gap-4">
-            <div className="w-12 h-12 rounded-2xl bg-amber-500 flex items-center justify-center text-white shrink-0 shadow-lg shadow-amber-500/20">
-              <Lock className="w-5 h-5" />
-            </div>
-            <div>
-              <h4 className="text-[10px] font-black text-amber-600 dark:text-amber-400 uppercase tracking-widest">Resource Immutable</h4>
-              <p className="text-[10px] text-amber-700 dark:text-amber-500/80 mt-1 leading-relaxed">
-                A pending approval process exists for this entity. All adjustments are locked to prevent synchronization conflicts until management authorization is complete.
+      <div className="flex-1 overflow-y-auto p-4 space-y-4">
+        {isLocked && (
+          <div className="bg-amber-50/50 dark:bg-amber-900/10 border border-amber-200/50 rounded-lg p-3 flex gap-3">
+            <Lock className="w-4 h-4 text-amber-600 shrink-0" />
+            <div className="space-y-0.5">
+              <h4 className="text-xs font-bold text-amber-800 dark:text-amber-400">Adjustment Locked</h4>
+              <p className="text-[11px] text-amber-700 dark:text-amber-500 leading-relaxed">
+                A pending approval process exists. This record is read-only until resolved.
               </p>
-            </div>
-          </div>
-        ) : (
-          <div className="bg-slate-50 dark:bg-slate-900/50 border border-slate-100 dark:border-slate-800 rounded-3xl p-5 flex items-center gap-4">
-            <div className="w-12 h-12 rounded-2xl bg-indigo-600 flex items-center justify-center text-white shadow-xl shadow-indigo-500/20">
-              <Box className="w-6 h-6" />
-            </div>
-            <div className="min-w-0">
-              <span className="text-[8px] font-black text-indigo-500 uppercase tracking-widest">Active Target</span>
-              <h3 className="text-sm font-bold text-slate-900 dark:text-slate-100 truncate uppercase tracking-tight">
-                {item.product.name}
-              </h3>
-              <div className="flex items-center gap-2 mt-1">
-                <span className="px-2 py-0.5 rounded-md bg-slate-200 dark:bg-slate-800 text-[9px] font-bold text-slate-600 dark:text-slate-400 uppercase">
-                  {item.stock} {item.product.uom?.abbreviation || "UNITS"} Physical
-                </span>
-                <span className="w-1 h-1 rounded-full bg-slate-300" />
-                <span className="text-[9px] font-mono text-slate-400 uppercase">{item.product.sku || 'No SKU'}</span>
-              </div>
             </div>
           </div>
         )}
 
-        <form id="fortress-adjustment-form" onSubmit={handleSubmit} className={`space-y-4 ${isLocked ? 'pointer-events-none opacity-40' : ''}`}>
+        {/* Product Card */}
+        <div className="bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg p-3 flex items-center gap-3">
+          <div className="w-9 h-9 rounded bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 flex items-center justify-center text-indigo-500 shrink-0">
+            <Box className="w-5 h-5" />
+          </div>
+          <div className="min-w-0">
+            <h3 className="text-xs font-bold text-slate-900 dark:text-slate-100 truncate">
+              {item.product.name}
+            </h3>
+            <div className="flex items-center gap-2 mt-0.5 text-[10px] text-slate-500 font-medium">
+              <span className="text-indigo-600 dark:text-indigo-400">{item.stock} {item.product.uom?.abbreviation || "UNITS"}</span>
+              <span className="opacity-30">•</span>
+              <span>SKU: {item.product.sku || 'N/A'}</span>
+            </div>
+          </div>
+        </div>
+
+        <form 
+          id="inventory-edit-form" 
+          onSubmit={handleSubmit} 
+          className={`space-y-4 ${isLocked ? 'opacity-50 pointer-events-none' : ''}`}
+        >
           <div className="flex items-center justify-between px-1">
-            <h4 className="text-[9px] font-black text-slate-400 uppercase tracking-widest flex items-center gap-2">
-              <Database className="w-3 h-3" /> Policy Parameters
+            <h4 className="text-[11px] uppercase tracking-wider font-bold text-slate-400 flex items-center gap-1.5">
+              <Database className="w-3 h-3" /> 
+              Parameters
             </h4>
             {mods.price && (
-              <div className={`flex items-center gap-1.5 px-2 py-1 rounded-full text-[8px] font-black uppercase ${priceApprovalState.requiresApproval ? 'bg-amber-100 text-amber-700' : 'bg-emerald-100 text-emerald-700'}`}>
-                <Clock className="w-3 h-3" />
-                {priceApprovalState.requiresApproval ? "Elevated Approval Required" : "Auto-Authorized"}
-              </div>
+              <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${
+                priceApprovalState.requiresApproval 
+                  ? 'text-amber-600 bg-amber-50 dark:bg-amber-900/20' 
+                  : 'text-emerald-600 bg-emerald-50 dark:bg-emerald-900/20'
+              }`}>
+                {priceApprovalState.requiresApproval ? "Needs Approval" : "Authorized"}
+              </span>
             )}
           </div>
 
-          <div className="grid gap-4">
-            {/* Field: Selling Price */}
+          <div className="space-y-3">
             <ComparisonField 
-              label="Market Rate (Selling)" 
+              id="field-selling-price"
+              label="Selling Price" 
               icon={Banknote} 
               oldValue={`₦${Number(item.sellingPrice || 0).toLocaleString()}`}
-              newValue={`₦${Number(formData.sellingPrice).toLocaleString()}`}
               isModified={mods.price}
             >
-              <input
-                type="number" step="0.01"
-                value={formData.sellingPrice}
-                onChange={(e) => setFormData({ ...formData, sellingPrice: Number(e.target.value) })}
-                className="w-full bg-transparent border-b-2 border-slate-200 dark:border-slate-700 focus:border-indigo-500 py-1 text-xs font-black text-slate-900 dark:text-white outline-none transition-colors"
-              />
+              <div className="relative">
+                <span className="absolute left-2 top-1/2 -translate-y-1/2 text-[10px] text-slate-400">₦</span>
+                <input
+                  type="number" 
+                  step="0.01"
+                  value={formData.sellingPrice}
+                  onChange={(e) => setFormData({ ...formData, sellingPrice: Number(e.target.value) })}
+                  className="block w-full pl-5 pr-2 py-1.5 bg-white dark:bg-slate-950 border border-slate-300 dark:border-slate-700 rounded text-xs focus:ring-1 focus:ring-indigo-500 outline-none"
+                  disabled={isLocked}
+                />
+              </div>
             </ComparisonField>
 
-            <div className={`grid gap-4 ${isFullScreen ? 'md:grid-cols-2' : 'grid-cols-1'}`}>
-              {/* Field: Reorder Level */}
+            <div className={`grid gap-3 ${isFullScreen ? 'grid-cols-2' : 'grid-cols-1'}`}>
               <ComparisonField 
-                label="Reorder Threshold" 
+                id="field-reorder-level"
+                label="Reorder Level" 
                 icon={TrendingDown} 
                 oldValue={item.reorderLevel}
-                newValue={formData.reorderLevel}
                 isModified={mods.reorder}
                 unit={item.product.uom?.abbreviation}
               >
@@ -295,16 +297,16 @@ export function InventoryEditPanel({
                   type="number"
                   value={formData.reorderLevel}
                   onChange={(e) => setFormData({ ...formData, reorderLevel: Number(e.target.value) })}
-                  className="w-full bg-transparent border-b-2 border-slate-200 dark:border-slate-700 focus:border-indigo-500 py-1 text-xs font-black text-slate-900 dark:text-white outline-none transition-colors"
+                  className="block w-full px-2 py-1.5 bg-white dark:bg-slate-950 border border-slate-300 dark:border-slate-700 rounded text-xs focus:ring-1 focus:ring-indigo-500 outline-none"
+                  disabled={isLocked}
                 />
               </ComparisonField>
 
-              {/* Field: Safety Stock */}
               <ComparisonField 
-                label="Safety Buffer" 
+                id="field-safety-stock"
+                label="Safety Stock" 
                 icon={ShieldAlert} 
                 oldValue={item.safetyStock}
-                newValue={formData.safetyStock}
                 isModified={mods.safety}
                 unit={item.product.uom?.abbreviation}
               >
@@ -312,57 +314,56 @@ export function InventoryEditPanel({
                   type="number"
                   value={formData.safetyStock}
                   onChange={(e) => setFormData({ ...formData, safetyStock: Number(e.target.value) })}
-                  className="w-full bg-transparent border-b-2 border-slate-200 dark:border-slate-700 focus:border-red-500 py-1 text-xs font-black text-slate-900 dark:text-white outline-none transition-colors"
+                  className="block w-full px-2 py-1.5 bg-white dark:bg-slate-950 border border-slate-300 dark:border-slate-700 rounded text-xs focus:ring-1 focus:ring-indigo-500 outline-none"
+                  disabled={isLocked}
                 />
               </ComparisonField>
             </div>
           </div>
           
-          <div className="p-4 bg-slate-50 dark:bg-slate-900 rounded-2xl flex gap-3 items-start">
-            <Info className="w-4 h-4 text-slate-400 shrink-0 mt-0.5" />
-            <p className="text-[9px] text-slate-500 dark:text-slate-400 leading-relaxed uppercase font-bold">
-              Verification Mode: Please ensure target values are correct. Adjustments are logged with your user signature and Trace ID for the audit trail.
+          <div className="p-3 bg-blue-50/30 dark:bg-blue-900/10 rounded flex gap-2 border border-blue-100/50 dark:border-blue-900/30">
+            <Info className="w-3.5 h-3.5 text-blue-500 shrink-0" />
+            <p className="text-[11px] text-blue-700 dark:text-blue-400 italic leading-snug">
+              Changes are logged to the audit trail. Sensitive adjustments may trigger workflow authorization.
             </p>
           </div>
         </form>
       </div>
 
-      {/* Action Footer */}
-      <div className="p-6 border-t border-slate-100 dark:border-slate-900 bg-white/80 dark:bg-slate-950/80 backdrop-blur-md flex justify-between gap-4">
+      {/* Action Footer - Tightened and wrap-resistant */}
+      <footer className="px-4 py-3 border-t border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-900 flex justify-end items-center gap-2">
         <button
+          type="button"
           onClick={onClose}
-          className="px-6 py-3.5 text-slate-500 hover:text-slate-900 dark:hover:text-white text-[10px] font-black uppercase tracking-widest transition-all"
+          className="px-3 py-1.5 text-xs font-medium text-slate-600 dark:text-slate-400 hover:bg-slate-200 dark:hover:bg-slate-800 rounded transition-colors"
         >
-          Discard
+          Cancel
         </button>
 
         <button
-          form="fortress-adjustment-form"
+          form="inventory-edit-form"
           type="submit"
           disabled={submitting || isLocked}
-          className={`flex-1 py-3.5 rounded-xl text-white text-[10px] font-black uppercase tracking-[0.2em] shadow-xl transition-all active:scale-[0.98] flex items-center justify-center gap-3 ${
+          className={`flex items-center gap-1.5 px-4 py-1.5 rounded text-xs font-bold transition-all shadow-sm ${
             isLocked 
-              ? "bg-slate-200 dark:bg-slate-800 text-slate-400 cursor-not-allowed shadow-none" 
+              ? "bg-slate-200 text-slate-400 dark:bg-slate-800 cursor-not-allowed" 
               : mods.price && priceApprovalState.requiresApproval
-                ? "bg-amber-600 hover:bg-amber-500 shadow-amber-500/20" 
-                : "bg-slate-900 dark:bg-white dark:text-black hover:opacity-90 shadow-slate-900/20"
+                ? "bg-amber-600 text-white hover:bg-amber-700" 
+                : "bg-indigo-600 text-white hover:bg-indigo-700"
           }`}
         >
           {submitting ? (
-            <Loader2 className="w-4 h-4 animate-spin" />
+            <Loader2 className="w-3 h-3 animate-spin" />
           ) : isLocked ? (
-            <>
-              <Lock className="w-3.5 h-3.5" />
-              Locked by SOP
-            </>
+            <><Lock className="w-3 h-3" /> Locked</>
           ) : (
             <>
-              {mods.price && priceApprovalState.requiresApproval ? <ShieldCheck className="w-4 h-4" /> : <Save className="w-4 h-4" />}
-              {mods.price && priceApprovalState.requiresApproval ? "Submit for Approval" : "Commit Changes"}
+              {mods.price && priceApprovalState.requiresApproval ? <ShieldCheck className="w-3.5 h-3.5" /> : <Save className="w-3.5 h-3.5" />}
+              {mods.price && priceApprovalState.requiresApproval ? "Request Approval" : "Save Changes"}
             </>
           )}
         </button>
-      </div>
+      </footer>
     </div>
   );
 }
