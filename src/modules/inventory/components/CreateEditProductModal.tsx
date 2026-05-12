@@ -1,14 +1,15 @@
 "use client";
 
 import React, { useCallback, useEffect, useState } from "react";
-import { X, Plus, CheckCircle2, RefreshCw, Save } from "lucide-react";
+import { X, Plus, CheckCircle2, RefreshCw, Save, ShieldAlert } from "lucide-react";
 import { useAlerts } from "@/core/components/feedback/AlertProvider";
+import { usePermission } from "@/core/hooks/usePermission"; // [Integrated Hook]
+import { PermissionAction, Resource } from "@prisma/client";
 
 /**
  * PRODUCTION-READY PRODUCT MODAL
- * - Uses verified fetch logic for Categories & UoMs
+ * - RBAC Gated: Integrated usePermission for secure catalog management
  * - Strict Prisma Schema alignment
- * - High-fidelity MASA UI design
  */
 
 interface ICategory {
@@ -47,6 +48,12 @@ export function CreateEditProductModal({
   onRefresh: () => void; 
 }) {
   const { dispatch } = useAlerts();
+  const { can, canCreate, canEdit } = usePermission(); // [Permission Destructuring]
+
+  // Determine Permission State
+  const canSave = product 
+    ? can(PermissionAction.UPDATE, Resource.PRODUCT) 
+    : can(PermissionAction.CREATE, Resource.PRODUCT);
 
   const [formData, setFormData] = useState({
     name: product?.name || "",
@@ -64,7 +71,6 @@ export function CreateEditProductModal({
   const [categories, setCategories] = useState<ICategory[]>([]);
   const [uoms, setUoms] = useState<IUom[]>([]);
 
-  // Inline Creation State
   const [isAddingCategory, setIsAddingCategory] = useState(false);
   const [newCategoryName, setNewCategoryName] = useState("");
   
@@ -72,10 +78,6 @@ export function CreateEditProductModal({
   const [newUomName, setNewUomName] = useState("");
   const [newUomAbbrev, setNewUomAbbrev] = useState("");
 
-  /**
-   * VERIFIED FETCH LOGIC:
-   * Handles direct array responses or wrapped data responses.
-   */
   const fetchRelations = useCallback(async () => {
     try {
       const [catRes, uomRes] = await Promise.all([
@@ -104,7 +106,7 @@ export function CreateEditProductModal({
   }, [fetchRelations]);
 
   const handleCreateCategory = async () => {
-    if (!newCategoryName.trim()) return;
+    if (!newCategoryName.trim() || !canCreate(Resource.SETTINGS)) return;
     try {
       const res = await fetch("/api/categories", {
         method: "POST",
@@ -112,7 +114,7 @@ export function CreateEditProductModal({
         body: JSON.stringify({ name: newCategoryName.trim(), organizationId })
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error?.message || data.error || "Failed to create category");
+      if (!res.ok) throw new Error(data.error?.message || data.error || "Failed");
       
       const newCat = data.data || data;
       setCategories(prev => [...prev, newCat]);
@@ -126,7 +128,7 @@ export function CreateEditProductModal({
   };
 
   const handleCreateUom = async () => {
-    if (!newUomName.trim() || !newUomAbbrev.trim()) return;
+    if (!newUomName.trim() || !newUomAbbrev.trim() || !canCreate(Resource.SETTINGS)) return;
     try {
       const res = await fetch("/api/uoms", {
         method: "POST",
@@ -138,7 +140,7 @@ export function CreateEditProductModal({
         })
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error?.message || data.error || "Failed to create UoM");
+      if (!res.ok) throw new Error(data.error?.message || data.error || "Failed");
 
       const newUom = data.data || data;
       setUoms(prev => [...prev, newUom]);
@@ -154,6 +156,11 @@ export function CreateEditProductModal({
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!canSave) {
+      dispatch({ kind: "TOAST", type: "WARNING", title: "Access Denied", message: "You do not have permission to modify the product catalog." });
+      return;
+    }
+
     setIsSubmitting(true);
     try {
       const payload = {
@@ -169,7 +176,6 @@ export function CreateEditProductModal({
       };
 
       const url = product ? `/api/products?id=${product.id}` : "/api/products";
-
       const res = await fetch(url, {
         method: product ? "PATCH" : "POST",
         headers: { "Content-Type": "application/json" },
@@ -183,13 +189,13 @@ export function CreateEditProductModal({
         kind: "TOAST",
         type: "SUCCESS",
         title: product ? "Catalog Updated" : "Product Registered",
-        message: `Successfully ${product ? "modified" : "added"} ${data.data?.name || formData.name}.`
+        message: `Successfully processed ${data.data?.name || formData.name}.`
       });
 
       onRefresh();
       onClose();
     } catch (err: any) {
-      dispatch({ kind: "TOAST", type: "WARNING", title: "Registration Error", message: err.message || "Operation failed" });
+      dispatch({ kind: "TOAST", type: "WARNING", title: "Registration Error", message: err.message });
       setIsSubmitting(false);
     }
   };
@@ -211,29 +217,37 @@ export function CreateEditProductModal({
 
         {/* Scrollable Form Body */}
         <div className="p-6 overflow-y-auto max-h-[70vh] custom-scrollbar">
+          {!canSave && (
+            <div className="mb-6 p-3 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-xl flex items-center gap-3">
+              <ShieldAlert className="w-5 h-5 text-amber-600 dark:text-amber-500 shrink-0" />
+              <p className="text-[11px] font-medium text-amber-800 dark:text-amber-400">
+                You are in <span className="font-bold">View Only</span> mode. You do not have permission to modify this resource.
+              </p>
+            </div>
+          )}
+
           <form id="product-form" onSubmit={handleSubmit} className="space-y-5">
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              
               <div className="md:col-span-2">
-                <label className="block text-[10px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-widest mb-1.5">Product Name <span className="text-indigo-500">*</span></label>
-                <input type="text" required value={formData.name} onChange={(e) => setFormData({ ...formData, name: e.target.value })} className="w-full border border-slate-200 dark:border-slate-700 rounded-lg text-[13px] font-medium p-2.5 focus:ring-1 focus:ring-indigo-500 outline-none bg-white dark:bg-slate-950 dark:text-white transition-colors" placeholder="e.g. Apex Widget Pro" />
+                <label className="block text-[10px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-widest mb-1.5">Product Name</label>
+                <input disabled={!canSave} type="text" required value={formData.name} onChange={(e) => setFormData({ ...formData, name: e.target.value })} className="w-full border border-slate-200 dark:border-slate-700 rounded-lg text-[13px] font-medium p-2.5 focus:ring-1 focus:ring-indigo-500 outline-none bg-white dark:bg-slate-950 dark:text-white disabled:opacity-60 transition-colors" placeholder="e.g. Apex Widget Pro" />
               </div>
 
               <div>
-                <label className="block text-[10px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-widest mb-1.5">SKU <span className="text-indigo-500">*</span></label>
-                <input type="text" required value={formData.sku} onChange={(e) => setFormData({ ...formData, sku: e.target.value })} className="w-full border border-slate-200 dark:border-slate-700 rounded-lg text-[13px] font-medium p-2.5 focus:ring-1 focus:ring-indigo-500 outline-none bg-white dark:bg-slate-950 dark:text-white transition-colors uppercase" placeholder="APX-WGT-001" />
+                <label className="block text-[10px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-widest mb-1.5">SKU</label>
+                <input disabled={!canSave} type="text" required value={formData.sku} onChange={(e) => setFormData({ ...formData, sku: e.target.value })} className="w-full border border-slate-200 dark:border-slate-700 rounded-lg text-[13px] font-medium p-2.5 focus:ring-1 focus:ring-indigo-500 outline-none bg-white dark:bg-slate-950 dark:text-white disabled:opacity-60 transition-colors uppercase" placeholder="APX-WGT-001" />
               </div>
 
               <div>
                 <label className="block text-[10px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-widest mb-1.5">Barcode (Optional)</label>
-                <input type="text" value={formData.barcode} onChange={(e) => setFormData({ ...formData, barcode: e.target.value })} className="w-full border border-slate-200 dark:border-slate-700 rounded-lg text-[13px] font-medium p-2.5 focus:ring-1 focus:ring-indigo-500 outline-none bg-white dark:bg-slate-950 dark:text-white transition-colors" placeholder="UPC / EAN" />
+                <input disabled={!canSave} type="text" value={formData.barcode} onChange={(e) => setFormData({ ...formData, barcode: e.target.value })} className="w-full border border-slate-200 dark:border-slate-700 rounded-lg text-[13px] font-medium p-2.5 focus:ring-1 focus:ring-indigo-500 outline-none bg-white dark:bg-slate-950 dark:text-white disabled:opacity-60 transition-colors" placeholder="UPC / EAN" />
               </div>
 
               {/* Category Field */}
               <div className="flex flex-col justify-end">
                 <div className="flex justify-between items-end mb-1.5">
                   <label className="block text-[10px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-widest">Category</label>
-                  {!isAddingCategory && (
+                  {!isAddingCategory && canCreate(Resource.SETTINGS) && (
                     <button type="button" onClick={() => setIsAddingCategory(true)} className="text-[9px] text-indigo-500 font-bold uppercase flex items-center gap-1 hover:text-indigo-600 transition-colors">
                       <Plus className="w-3 h-3"/> New
                     </button>
@@ -246,7 +260,7 @@ export function CreateEditProductModal({
                     <button type="button" onClick={() => setIsAddingCategory(false)} className="p-1 hover:bg-white dark:hover:bg-slate-700 rounded"><X className="w-4 h-4 text-red-500"/></button>
                   </div>
                 ) : (
-                  <select value={formData.categoryId} onChange={(e) => setFormData({ ...formData, categoryId: e.target.value })} className="w-full h-[42px] border border-slate-200 dark:border-slate-700 rounded-lg text-[13px] font-medium px-2.5 focus:ring-1 focus:ring-indigo-500 outline-none bg-white dark:bg-slate-950 dark:text-white transition-colors">
+                  <select disabled={!canSave} value={formData.categoryId} onChange={(e) => setFormData({ ...formData, categoryId: e.target.value })} className="w-full h-[42px] border border-slate-200 dark:border-slate-700 rounded-lg text-[13px] font-medium px-2.5 focus:ring-1 focus:ring-indigo-500 outline-none bg-white dark:bg-slate-950 dark:text-white disabled:opacity-60 transition-colors">
                     <option value="">-- Select Category --</option>
                     {categories.map(cat => <option key={cat.id} value={cat.id}>{cat.name}</option>)}
                   </select>
@@ -257,7 +271,7 @@ export function CreateEditProductModal({
               <div className="flex flex-col justify-end">
                 <div className="flex justify-between items-end mb-1.5">
                   <label className="block text-[10px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-widest">Unit of Measure</label>
-                  {!isAddingUom && (
+                  {!isAddingUom && canCreate(Resource.SETTINGS) && (
                     <button type="button" onClick={() => setIsAddingUom(true)} className="text-[9px] text-indigo-500 font-bold uppercase flex items-center gap-1 hover:text-indigo-600 transition-colors">
                       <Plus className="w-3 h-3"/> New
                     </button>
@@ -272,7 +286,7 @@ export function CreateEditProductModal({
                     <button type="button" onClick={() => setIsAddingUom(false)} className="p-1 hover:bg-white dark:hover:bg-slate-700 rounded"><X className="w-4 h-4 text-red-500"/></button>
                   </div>
                 ) : (
-                  <select value={formData.uomId} onChange={(e) => setFormData({ ...formData, uomId: e.target.value })} className="w-full h-[42px] border border-slate-200 dark:border-slate-700 rounded-lg text-[13px] font-medium px-2.5 focus:ring-1 focus:ring-indigo-500 outline-none bg-white dark:bg-slate-950 dark:text-white transition-colors">
+                  <select disabled={!canSave} value={formData.uomId} onChange={(e) => setFormData({ ...formData, uomId: e.target.value })} className="w-full h-[42px] border border-slate-200 dark:border-slate-700 rounded-lg text-[13px] font-medium px-2.5 focus:ring-1 focus:ring-indigo-500 outline-none bg-white dark:bg-slate-950 dark:text-white disabled:opacity-60 transition-colors">
                     <option value="">-- Select UoM --</option>
                     {uoms.map(uom => <option key={uom.id} value={uom.id}>{uom.name} ({uom.abbreviation})</option>)}
                   </select>
@@ -280,36 +294,33 @@ export function CreateEditProductModal({
               </div>
 
               <div>
-                <label className="block text-[10px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-widest mb-1.5">Base Cost Price <span className="text-indigo-500">*</span></label>
-                <input type="number" step="0.01" min="0" required value={formData.baseCostPrice} onChange={(e) => setFormData({ ...formData, baseCostPrice: parseFloat(e.target.value), costPrice: parseFloat(e.target.value) })} className="w-full border border-slate-200 dark:border-slate-700 rounded-lg text-[13px] font-medium p-2.5 focus:ring-1 focus:ring-indigo-500 outline-none bg-white dark:bg-slate-950 dark:text-white transition-colors" placeholder="0.00" />
+                <label className="block text-[10px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-widest mb-1.5">Base Cost Price</label>
+                <input disabled={!canSave} type="number" step="0.01" min="0" required value={formData.baseCostPrice} onChange={(e) => setFormData({ ...formData, baseCostPrice: parseFloat(e.target.value), costPrice: parseFloat(e.target.value) })} className="w-full border border-slate-200 dark:border-slate-700 rounded-lg text-[13px] font-medium p-2.5 focus:ring-1 focus:ring-indigo-500 outline-none bg-white dark:bg-slate-950 dark:text-white disabled:opacity-60 transition-colors" placeholder="0.00" />
               </div>
 
               <div>
                 <label className="block text-[10px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-widest mb-1.5">Currency</label>
-                <select value={formData.currency} onChange={(e) => setFormData({ ...formData, currency: e.target.value })} className="w-full border border-slate-200 dark:border-slate-700 rounded-lg text-[13px] font-medium p-2.5 focus:ring-1 focus:ring-indigo-500 outline-none bg-white dark:bg-slate-950 dark:text-white transition-colors">
+                <select disabled={!canSave} value={formData.currency} onChange={(e) => setFormData({ ...formData, currency: e.target.value })} className="w-full border border-slate-200 dark:border-slate-700 rounded-lg text-[13px] font-medium p-2.5 focus:ring-1 focus:ring-indigo-500 outline-none bg-white dark:bg-slate-950 dark:text-white disabled:opacity-60 transition-colors">
                   <option value="NGN">NGN (Naira)</option>
                   <option value="USD">USD (US Dollar)</option>
-                  <option value="EUR">EUR (Euro)</option>
-                  <option value="GBP">GBP (British Pound)</option>
                 </select>
               </div>
-            </div>
-
-            <div>
-              <label className="block text-[10px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-widest mb-1.5">Description & Notes</label>
-              <textarea value={formData.description} onChange={(e) => setFormData({ ...formData, description: e.target.value })} rows={3} className="w-full border border-slate-200 dark:border-slate-700 rounded-lg text-[13px] font-medium p-2.5 focus:ring-1 focus:ring-indigo-500 outline-none bg-white dark:bg-slate-950 dark:text-white resize-none transition-colors" placeholder="Internal product notes..." />
             </div>
           </form>
         </div>
 
         {/* Action Footer */}
         <div className="px-6 py-4 border-t border-slate-100 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-800/50 flex justify-end gap-3 rounded-b-2xl">
-          <button type="button" onClick={onClose} disabled={isSubmitting} className="px-4 py-2 text-[10px] font-bold text-slate-500 dark:text-slate-400 hover:bg-slate-200 dark:hover:bg-slate-700 rounded-lg transition-colors uppercase tracking-widest">Cancel</button>
-
-          <button type="submit" form="product-form" disabled={isSubmitting} className="flex items-center gap-2 px-6 py-2 text-[10px] font-bold text-white bg-indigo-600 hover:bg-indigo-700 rounded-lg transition-all uppercase tracking-widest disabled:opacity-70 shadow-md shadow-indigo-500/10">
-            {isSubmitting ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />}
-            {product ? "Update Catalog" : "Save Product"}
+          <button type="button" onClick={onClose} disabled={isSubmitting} className="px-4 py-2 text-[10px] font-bold text-slate-500 dark:text-slate-400 hover:bg-slate-200 dark:hover:bg-slate-700 rounded-lg transition-colors uppercase tracking-widest">
+            {canSave ? "Cancel" : "Close"}
           </button>
+
+          {canSave && (
+            <button type="submit" form="product-form" disabled={isSubmitting} className="flex items-center gap-2 px-6 py-2 text-[10px] font-bold text-white bg-indigo-600 hover:bg-indigo-700 rounded-lg transition-all uppercase tracking-widest disabled:opacity-70 shadow-md shadow-indigo-500/10">
+              {isSubmitting ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />}
+              {product ? "Update Catalog" : "Save Product"}
+            </button>
+          )}
         </div>
       </div>
     </div>
