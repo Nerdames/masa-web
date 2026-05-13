@@ -10,7 +10,7 @@ import { useSidePanel } from "@/core/components/layout/SidePanelContext";
 import { useAlerts } from "@/core/components/feedback/AlertProvider";
 import { useSession } from "next-auth/react";
 import { usePermission } from "@/core/hooks/usePermission"; // Path based on standard project structure
-import { PermissionAction, Resource } from "@prisma/client";
+import { Resource } from "@prisma/client";
 
 /* -------------------------
 Types - Precisely Aligned with Backend Prisma Include
