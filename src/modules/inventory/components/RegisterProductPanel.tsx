@@ -1,142 +1,245 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import { 
-  X, Maximize2, Minimize2, Save, 
-  Loader2, Dices, PackageSearch
+  X, Maximize2, Minimize2, Save, Loader2, 
+  Dices, PackageSearch, Plus, CheckCircle2, 
+  ShieldAlert
 } from "lucide-react";
 import { useSidePanel } from "@/core/components/layout/SidePanelContext";
+import { useAlerts } from "@/core/components/feedback/AlertProvider";
+import { usePermission } from "@/core/hooks/usePermission";
+import { PermissionAction, Resource } from "@prisma/client";
 
-/* -------------------------
-  Types & Interfaces
-------------------------- */
+/* -------------------------------------------------------------------------- */
+/* TYPES & INTERFACES                                                         */
+/* -------------------------------------------------------------------------- */
 
-export interface ICategory {
+interface ICategory {
   id: string;
   name: string;
 }
 
-export interface IUOM {
+interface IUOM {
   id: string;
   name: string;
   abbreviation: string;
 }
 
-export interface IVendor {
+interface IProduct {
   id: string;
   name: string;
-}
-
-export interface RegisterProductPayload {
-  // Master Product Data
-  name: string;
   sku: string;
-  barcode: string;
-  description: string;
-  categoryId: string;
-  uomId: string;
-  baseCostPrice: number;
-  
-  // Branch Specific Data
-  vendorId: string;
-  sellingPrice: number;
-  reorderLevel: number;
-  safetyStock: number;
+  barcode?: string | null;
+  description?: string | null;
+  baseCostPrice: number | string; 
+  costPrice: number | string;
+  currency: string;
+  categoryId?: string | null;
+  uomId?: string | null;
 }
 
-interface RegisterProductPanelProps {
-  categories: ICategory[];
-  uoms: IUOM[];
-  vendors: IVendor[];
+interface ProductPanelProps {
+  product?: IProduct | null; 
+  organizationId: string;
+  initialCategories?: ICategory[];
+  initialUoms?: IUOM[];
   onClose: () => void;
-  onCreate: (payload: RegisterProductPayload) => Promise<void>;
+  onSuccess: () => void;
 }
 
-/* -------------------------
-  Component
-------------------------- */
+/* -------------------------------------------------------------------------- */
+/* COMPONENT                                                                  */
+/* -------------------------------------------------------------------------- */
 
 export default function RegisterProductPanel({ 
-  categories,
-  uoms,
-  vendors, 
+  product,
+  organizationId,
+  initialCategories = [],
+  initialUoms = [],
   onClose, 
-  onCreate 
-}: RegisterProductPanelProps) {
+  onSuccess 
+}: ProductPanelProps) {
   const { isFullScreen, toggleFullScreen } = useSidePanel();
+  const { dispatch } = useAlerts();
+  const { can, canCreate } = usePermission();
 
-  // Form State
+  // Permission Logic [Synchronized with Resource.PRODUCT]
+  const canSave = product 
+    ? can(PermissionAction.UPDATE, Resource.PRODUCT) 
+    : can(PermissionAction.CREATE, Resource.PRODUCT);
+
+  const canManageSettings = canCreate(Resource.SETTINGS);
+
+  // Form State (isGlobal removed to match V3.0 API)
   const [formData, setFormData] = useState({
-    name: "",
-    sku: "",
-    barcode: "",
-    categoryId: "",
-    uomId: "",
-    vendorId: "",
-    baseCostPrice: "",
-    sellingPrice: "",
-    reorderLevel: "0",
-    safetyStock: "0",
-    description: ""
+    name: product?.name || "",
+    sku: product?.sku || "",
+    barcode: product?.barcode || "",
+    description: product?.description || "",
+    categoryId: product?.categoryId || "",
+    uomId: product?.uomId || "",
+    baseCostPrice: product ? Number(product.baseCostPrice) : 0,
+    costPrice: product ? Number(product.costPrice) : 0,
+    currency: product?.currency || "NGN",
   });
 
-  // UI State
+  // Dropdown Data State
+  const [categories, setCategories] = useState<ICategory[]>(initialCategories);
+  const [uoms, setUoms] = useState<IUOM[]>(initialUoms);
+  const [isLoadingMetadata, setIsLoadingMetadata] = useState(false);
+
+  // Persistence for Inline Creation
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [isAddingCategory, setIsAddingCategory] = useState(false);
+  const [newCategoryName, setNewCategoryName] = useState("");
+  const [isAddingUom, setIsAddingUom] = useState(false);
+  const [newUomName, setNewUomName] = useState("");
+  const [newUomAbbrev, setNewUomAbbrev] = useState("");
 
-  /* --- Actions --- */
+  /* --- Data Fetching: Dropdown Mapping Safety --- */
+  const fetchMetadata = useCallback(async () => {
+    if (categories.length > 0 && uoms.length > 0) return;
+    setIsLoadingMetadata(true);
+    try {
+      const [catRes, uomRes] = await Promise.all([
+        fetch(`/api/categories?mode=dropdown&organizationId=${organizationId}`),
+        fetch(`/api/uoms?mode=dropdown&organizationId=${organizationId}`)
+      ]);
+      
+      const [catData, uomData] = await Promise.all([catRes.json(), uomRes.json()]);
+      
+      if (catRes.ok) setCategories(catData.data || catData);
+      if (uomRes.ok) setUoms(uomData.data || uomData);
+    } catch (error) {
+      console.error("Failed to hydrate product metadata", error);
+    } finally {
+      setIsLoadingMetadata(false);
+    }
+  }, [organizationId, categories.length, uoms.length]);
 
-  const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>) => {
-    const { name, value } = e.target;
-    setFormData(prev => ({ ...prev, [name]: value }));
+  useEffect(() => {
+    fetchMetadata();
+  }, [fetchMetadata]);
+
+  /* --- Inline Creation Handlers --- */
+
+  const handleCreateCategory = async () => {
+    if (!newCategoryName.trim() || !canManageSettings) return;
+    try {
+      const res = await fetch("/api/categories", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: newCategoryName.trim(), organizationId })
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error?.message || data.error || "Failed to create category");
+      
+      const newCat = data.data || data;
+      setCategories(prev => [...prev, newCat]);
+      setFormData(prev => ({ ...prev, categoryId: newCat.id }));
+      setIsAddingCategory(false);
+      setNewCategoryName("");
+      dispatch({ kind: "TOAST", type: "SUCCESS", title: "Category Created", message: "New category added." });
+    } catch (err: any) {
+      dispatch({ kind: "TOAST", type: "WARNING", title: "Error", message: err.message });
+    }
   };
 
+  const handleCreateUom = async () => {
+    if (!newUomName.trim() || !newUomAbbrev.trim() || !canManageSettings) return;
+    try {
+      const res = await fetch("/api/uoms", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ 
+          name: newUomName.trim(), 
+          abbreviation: newUomAbbrev.trim().toUpperCase(), 
+          organizationId 
+        })
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error?.message || data.error || "Failed to create UoM");
+
+      const newUom = data.data || data;
+      setUoms(prev => [...prev, newUom]);
+      setFormData(prev => ({ ...prev, uomId: newUom.id }));
+      setIsAddingUom(false);
+      setNewUomName("");
+      setNewUomAbbrev("");
+      dispatch({ kind: "TOAST", type: "SUCCESS", title: "UoM Created", message: "New unit of measure added." });
+    } catch (err: any) {
+      dispatch({ kind: "TOAST", type: "WARNING", title: "Error", message: err.message });
+    }
+  };
+
+  /* --- Standard SKU Logic: Derived from Product Name --- */
   const generateSKU = () => {
-    const prefix = formData.categoryId 
-      ? categories.find(c => c.id === formData.categoryId)?.name.substring(0, 3).toUpperCase() 
-      : "PRD";
-    const randomStr = Math.random().toString(36).substring(2, 6).toUpperCase();
+    const productName = formData.name.trim();
+    if (!productName) {
+      dispatch({ 
+        kind: "TOAST", 
+        type: "WARNING", 
+        title: "Input Required", 
+        message: "Please enter a product name to generate a standard SKU." 
+      });
+      return;
+    }
+    
+    const prefix = productName.substring(0, 3).toUpperCase();
+    const randomStr = Math.random().toString(36).substring(2, 7).toUpperCase();
     setFormData(prev => ({ ...prev, sku: `${prefix}-${randomStr}` }));
   };
 
+  /* --- Submit Handler: Synchronized with Fortified API V3.0 --- */
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!canSave) {
+      dispatch({ kind: "TOAST", type: "WARNING", title: "Access Denied", message: "Insufficient permissions." });
+      return;
+    }
+
     setIsSubmitting(true);
-    setError(null);
-
-    // Validation
-    if (!formData.name || !formData.sku) {
-      setError("Product Name and SKU are strictly required.");
-      setIsSubmitting(false);
-      return;
-    }
-
-    if (Number(formData.baseCostPrice) < 0 || Number(formData.sellingPrice) < 0) {
-      setError("Financial values cannot be negative.");
-      setIsSubmitting(false);
-      return;
-    }
-
     try {
-      const payload: RegisterProductPayload = {
-        name: formData.name.trim(),
-        sku: formData.sku.trim(),
-        barcode: formData.barcode.trim(),
-        description: formData.description.trim(),
-        categoryId: formData.categoryId,
-        uomId: formData.uomId,
-        vendorId: formData.vendorId,
-        baseCostPrice: Number(formData.baseCostPrice) || 0,
-        sellingPrice: Number(formData.sellingPrice) || 0,
-        reorderLevel: Number(formData.reorderLevel) || 0,
-        safetyStock: Number(formData.safetyStock) || 0,
+      const payload = {
+        ...formData,
+        organizationId, 
+        sku: formData.sku.toUpperCase().trim(),
+        categoryId: formData.categoryId || null,
+        uomId: formData.uomId || null,
+        barcode: formData.barcode?.trim() || null,
+        description: formData.description?.trim() || null,
+        baseCostPrice: Number(formData.baseCostPrice),
+        costPrice: Number(formData.costPrice || formData.baseCostPrice),
       };
 
-      await onCreate(payload);
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "Failed to register product.";
-      setError(msg);
-    } finally {
+      const url = product ? `/api/products?id=${product.id}` : "/api/products";
+      const res = await fetch(url, {
+        method: product ? "PATCH" : "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+
+      const result = await res.json();
+      
+      if (!res.ok) {
+        const errorMsg = typeof result.error === 'object' 
+          ? Object.values(result.error).flat().join(", ") 
+          : result.error;
+        throw new Error(errorMsg || "Operation failed.");
+      }
+
+      dispatch({
+        kind: "TOAST",
+        type: "SUCCESS",
+        title: product ? "Catalog Updated" : "Product Registered",
+        message: `Processed ${result.data?.name || formData.name} successfully.`
+      });
+
+      onSuccess();
+      onClose();
+    } catch (err: any) {
+      dispatch({ kind: "TOAST", type: "WARNING", title: "Registration Error", message: err.message });
       setIsSubmitting(false);
     }
   };
@@ -144,266 +247,164 @@ export default function RegisterProductPanel({
   return (
     <div className="flex flex-col h-full w-full bg-white dark:bg-slate-900 shadow-2xl relative overflow-hidden">
       {/* Header */}
-      <div className="px-6 py-4 border-b border-slate-200 dark:border-slate-800 flex justify-between items-center bg-slate-50 dark:bg-slate-800/50 shrink-0">
-        <div className="flex items-center gap-3">
-          <div className="p-2 bg-emerald-100 dark:bg-emerald-900/30 text-emerald-600 dark:text-emerald-400 rounded-lg">
-            <PackageSearch className="w-5 h-5" />
+      <div className="px-4 py-3 border-b border-slate-200 dark:border-slate-800 flex justify-between items-center bg-slate-50 dark:bg-slate-800/50 shrink-0">
+        <div className="flex items-center gap-2">
+          <div className="p-1.5 bg-emerald-100 dark:bg-emerald-900/30 text-emerald-600 dark:text-emerald-400 rounded-lg">
+            <PackageSearch className="w-4 h-4" />
           </div>
           <div>
-            <h2 className="text-lg font-bold text-slate-900 dark:text-white">Register Product</h2>
-            <p className="text-[11px] text-slate-700 dark:text-slate-300 uppercase tracking-wide font-medium">
-              Master Catalog & Inventory Params
+            <h2 className="text-sm font-bold text-slate-900 dark:text-white">
+              {product ? "Update Product" : "Register Master Product"}
+            </h2>
+            <p className="text-[8px] text-slate-500 dark:text-slate-400 uppercase tracking-widest font-bold">
+              Product Registry V3.0
             </p>
           </div>
         </div>
-        <div className="flex items-center gap-2">
-          <button 
-            type="button"
-            onClick={toggleFullScreen} 
-            className="p-2 text-slate-600 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white hover:bg-slate-200 dark:hover:bg-slate-800 rounded-full transition-colors" 
-            title="Toggle Fullscreen"
-          >
-            {isFullScreen ? <Minimize2 className="w-4 h-4" /> : <Maximize2 className="w-4 h-4" />}
+        <div className="flex items-center gap-1">
+          <button type="button" onClick={toggleFullScreen} className="p-1.5 text-slate-400 hover:text-slate-600 dark:hover:text-white transition-colors">
+            {isFullScreen ? <Minimize2 className="w-3.5 h-3.5" /> : <Maximize2 className="w-3.5 h-3.5" />}
           </button>
-          <button 
-            type="button"
-            onClick={onClose} 
-            className="p-2 text-slate-600 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white hover:bg-slate-200 dark:hover:bg-slate-800 rounded-full transition-colors" 
-            title="Close Panel"
-          >
-            <X className="w-5 h-5" />
+          <button type="button" onClick={onClose} className="p-1.5 text-slate-400 hover:text-red-500 transition-colors">
+            <X className="w-4 h-4" />
           </button>
         </div>
       </div>
 
       {/* Body */}
-      <div className="flex-1 overflow-y-auto p-6 custom-scrollbar">
-        {error && (
-          <div className="mb-4 p-3 bg-red-50 text-red-700 rounded-lg text-xs font-bold border border-red-200 dark:bg-red-900/30 dark:text-red-400 dark:border-red-900/50 flex items-center gap-2">
-            <span className="block w-1.5 h-full bg-red-500 rounded-full"></span>
-            {error}
+      <div className="flex-1 overflow-y-auto p-4 custom-scrollbar">
+        {!canSave && (
+          <div className="mb-4 p-2 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-lg flex items-center gap-2">
+            <ShieldAlert className="w-4 h-4 text-amber-600 shrink-0" />
+            <p className="text-[9px] font-medium text-amber-800 dark:text-amber-400">
+              <span className="font-bold uppercase">View Only:</span> Insufficient permissions to modify the catalog.
+            </p>
           </div>
         )}
 
-        <form id="product-form" onSubmit={handleSubmit} className="space-y-8">
-          
+        <form id="product-form" onSubmit={handleSubmit} className="space-y-6">
           {/* Section 1: Core Identity */}
-          <section className="space-y-4">
-            <h3 className="text-[11px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-widest border-b border-slate-100 dark:border-slate-800 pb-2">
-              Core Identity
+          <section className="space-y-3">
+            <h3 className="text-[9px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest border-b border-slate-100 dark:border-slate-800 pb-1">
+                Core Identity
             </h3>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div className="space-y-1.5 md:col-span-2">
-                <label className="block text-[11px] font-bold text-slate-800 dark:text-slate-200 uppercase tracking-wider">
-                  Product Name <span className="text-red-500">*</span>
-                </label>
-                <input 
-                  type="text" 
-                  name="name"
-                  value={formData.name} 
-                  onChange={handleChange} 
-                  required 
-                  placeholder="e.g., Premium Widget V2"
-                  className="w-full border border-slate-300 dark:border-slate-700 rounded-lg text-sm p-2.5 focus:ring-2 focus:ring-emerald-500 outline-none bg-white dark:bg-slate-950 dark:text-white transition-colors" 
-                />
+
+            <div className={`grid gap-3 ${isFullScreen ? "grid-cols-1 md:grid-cols-2" : "grid-cols-1"}`}>
+              <div className={`${isFullScreen ? "md:col-span-2" : ""} space-y-1`}>
+                <label className="block text-[9px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-wider">Product Name *</label>
+                <input disabled={!canSave} type="text" required value={formData.name} onChange={e => setFormData({...formData, name: e.target.value})} className="w-full border border-slate-200 dark:border-slate-700 rounded-md text-xs p-2 bg-white dark:bg-slate-950 dark:text-white focus:ring-1 focus:ring-emerald-500 outline-none transition-all" placeholder="Enter product name" />
               </div>
 
-              <div className="space-y-1.5 relative">
-                <label className="block text-[11px] font-bold text-slate-800 dark:text-slate-200 uppercase tracking-wider">
-                  Stock Keeping Unit (SKU) <span className="text-red-500">*</span>
-                </label>
-                <div className="flex gap-2">
-                  <input 
-                    type="text" 
-                    name="sku"
-                    value={formData.sku} 
-                    onChange={handleChange} 
-                    required 
-                    placeholder="e.g., WID-002"
-                    className="flex-1 border border-slate-300 dark:border-slate-700 rounded-lg text-sm p-2.5 focus:ring-2 focus:ring-emerald-500 outline-none bg-white dark:bg-slate-950 dark:text-white transition-colors font-mono uppercase" 
-                  />
-                  <button 
-                    type="button" 
-                    onClick={generateSKU}
-                    className="px-3 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-300 rounded-lg transition-colors border border-slate-300 dark:border-slate-700 flex items-center justify-center"
-                    title="Auto-generate SKU"
-                  >
-                    <Dices className="w-4 h-4" />
-                  </button>
+              <div className="space-y-1">
+                <label className="block text-[9px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-wider">SKU *</label>
+                <div className="flex gap-1.5">
+                  <input disabled={!canSave} type="text" required value={formData.sku} onChange={e => setFormData({...formData, sku: e.target.value})} className="flex-1 border border-slate-200 dark:border-slate-700 rounded-md text-xs p-2 font-mono uppercase bg-white dark:bg-slate-950 dark:text-white focus:ring-1 focus:ring-emerald-500 outline-none transition-all" />
+                  {canSave && (
+                    <button type="button" onClick={generateSKU} className="p-2 bg-slate-100 dark:bg-slate-800 rounded-md hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors border border-slate-200 dark:border-slate-700">
+                      <Dices className="w-3.5 h-3.5 text-slate-500" />
+                    </button>
+                  )}
                 </div>
               </div>
 
-              <div className="space-y-1.5">
-                <label className="block text-[11px] font-bold text-slate-800 dark:text-slate-200 uppercase tracking-wider">
-                  Barcode (UPC/EAN)
-                </label>
-                <input 
-                  type="text" 
-                  name="barcode"
-                  value={formData.barcode} 
-                  onChange={handleChange} 
-                  placeholder="Scan or enter barcode..."
-                  className="w-full border border-slate-300 dark:border-slate-700 rounded-lg text-sm p-2.5 focus:ring-2 focus:ring-emerald-500 outline-none bg-white dark:bg-slate-950 dark:text-white transition-colors font-mono" 
-                />
+              <div className="space-y-1">
+                <label className="block text-[9px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-wider">Barcode</label>
+                <input disabled={!canSave} type="text" value={formData.barcode || ""} onChange={e => setFormData({...formData, barcode: e.target.value})} className="w-full border border-slate-200 dark:border-slate-700 rounded-md text-xs p-2 bg-white dark:bg-slate-950 dark:text-white" placeholder="UPC / EAN / Internal" />
               </div>
             </div>
           </section>
 
           {/* Section 2: Classification */}
-          <section className="space-y-4">
-            <h3 className="text-[11px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-widest border-b border-slate-100 dark:border-slate-800 pb-2">
-              Classification & Sourcing
+          <section className="space-y-3">
+            <h3 className="text-[9px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest border-b border-slate-100 dark:border-slate-800 pb-1">
+              Classification
             </h3>
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-              <div className="space-y-1.5">
-                <label className="block text-[11px] font-bold text-slate-800 dark:text-slate-200 uppercase tracking-wider">
-                  Category
-                </label>
-                <select 
-                  name="categoryId"
-                  value={formData.categoryId} 
-                  onChange={handleChange} 
-                  className="w-full border border-slate-300 dark:border-slate-700 rounded-lg text-sm p-2.5 focus:ring-2 focus:ring-emerald-500 outline-none bg-white dark:bg-slate-950 dark:text-white transition-colors"
-                >
-                  <option value="">None</option>
-                  {categories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-                </select>
+            <div className={`grid gap-3 ${isFullScreen ? "grid-cols-1 md:grid-cols-2" : "grid-cols-1"}`}>
+              <div className="space-y-1">
+                <div className="flex justify-between items-center">
+                  <label className="text-[9px] font-bold text-slate-600 dark:text-slate-400 uppercase">Category</label>
+                  {!isAddingCategory && canManageSettings && (
+                    <button type="button" onClick={() => setIsAddingCategory(true)} className="text-[8px] text-emerald-600 font-bold uppercase flex items-center gap-0.5 hover:underline">
+                      <Plus className="w-2.5 h-2.5"/> New
+                    </button>
+                  )}
+                </div>
+                {isAddingCategory ? (
+                  <div className="flex gap-1.5 items-center bg-slate-50 dark:bg-slate-800/50 p-1 rounded-md border border-emerald-200 dark:border-emerald-900/30">
+                    <input autoFocus value={newCategoryName} onChange={e=>setNewCategoryName(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && (e.preventDefault(), handleCreateCategory())} className="flex-1 text-[11px] px-1.5 bg-transparent outline-none dark:text-white" placeholder="Category name..." />
+                    <button type="button" onClick={handleCreateCategory} className="p-1 text-emerald-500 hover:bg-emerald-50 rounded"><CheckCircle2 className="w-3.5 h-3.5"/></button>
+                    <button type="button" onClick={() => setIsAddingCategory(false)} className="p-1 text-red-400 hover:bg-red-50 rounded"><X className="w-3.5 h-3.5"/></button>
+                  </div>
+                ) : (
+                  <select disabled={!canSave || isLoadingMetadata} value={formData.categoryId || ""} onChange={e => setFormData({...formData, categoryId: e.target.value})} className="w-full border border-slate-200 dark:border-slate-700 rounded-md text-xs p-2 bg-white dark:bg-slate-950 dark:text-white outline-none focus:ring-1 focus:ring-emerald-500">
+                    <option value="">{isLoadingMetadata ? "Loading..." : "Select Category"}</option>
+                    {categories.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+                  </select>
+                )}
               </div>
 
-              <div className="space-y-1.5">
-                <label className="block text-[11px] font-bold text-slate-800 dark:text-slate-200 uppercase tracking-wider">
-                  Unit of Measure
-                </label>
-                <select 
-                  name="uomId"
-                  value={formData.uomId} 
-                  onChange={handleChange} 
-                  className="w-full border border-slate-300 dark:border-slate-700 rounded-lg text-sm p-2.5 focus:ring-2 focus:ring-emerald-500 outline-none bg-white dark:bg-slate-950 dark:text-white transition-colors"
-                >
-                  <option value="">Select UoM...</option>
-                  {uoms.map((u) => <option key={u.id} value={u.id}>{u.name} ({u.abbreviation})</option>)}
-                </select>
-              </div>
-
-              <div className="space-y-1.5">
-                <label className="block text-[11px] font-bold text-slate-800 dark:text-slate-200 uppercase tracking-wider">
-                  Primary Vendor
-                </label>
-                <select 
-                  name="vendorId"
-                  value={formData.vendorId} 
-                  onChange={handleChange} 
-                  className="w-full border border-slate-300 dark:border-slate-700 rounded-lg text-sm p-2.5 focus:ring-2 focus:ring-emerald-500 outline-none bg-white dark:bg-slate-950 dark:text-white transition-colors"
-                >
-                  <option value="">No Primary Vendor</option>
-                  {vendors.map((v) => <option key={v.id} value={v.id}>{v.name}</option>)}
-                </select>
+              <div className="space-y-1">
+                <div className="flex justify-between items-center">
+                  <label className="text-[9px] font-bold text-slate-600 dark:text-slate-400 uppercase">Unit of Measure</label>
+                  {!isAddingUom && canManageSettings && (
+                    <button type="button" onClick={() => setIsAddingUom(true)} className="text-[8px] text-emerald-600 font-bold uppercase flex items-center gap-0.5 hover:underline">
+                      <Plus className="w-2.5 h-2.5"/> New
+                    </button>
+                  )}
+                </div>
+                {isAddingUom ? (
+                  <div className="flex gap-1.5 items-center bg-slate-50 dark:bg-slate-800/50 p-1 rounded-md border border-emerald-200 dark:border-emerald-900/30">
+                    <input autoFocus value={newUomName} onChange={e=>setNewUomName(e.target.value)} className="w-1/2 text-[11px] px-1.5 bg-transparent outline-none dark:text-white" placeholder="Name" />
+                    <input value={newUomAbbrev} onChange={e=>setNewUomAbbrev(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && (e.preventDefault(), handleCreateUom())} className="w-1/4 text-[11px] px-1.5 bg-transparent outline-none dark:text-white border-l border-slate-200" placeholder="Abbr" />
+                    <button type="button" onClick={handleCreateUom} className="p-1 text-emerald-500 rounded"><CheckCircle2 className="w-3.5 h-3.5"/></button>
+                    <button type="button" onClick={() => setIsAddingUom(false)} className="p-1 text-red-400 rounded"><X className="w-3.5 h-3.5"/></button>
+                  </div>
+                ) : (
+                  <select disabled={!canSave || isLoadingMetadata} value={formData.uomId || ""} onChange={e => setFormData({...formData, uomId: e.target.value})} className="w-full border border-slate-200 dark:border-slate-700 rounded-md text-xs p-2 bg-white dark:bg-slate-950 dark:text-white outline-none focus:ring-1 focus:ring-emerald-500">
+                    <option value="">{isLoadingMetadata ? "Loading..." : "Select UoM"}</option>
+                    {uoms.map(u => <option key={u.id} value={u.id}>{u.name} ({u.abbreviation})</option>)}
+                  </select>
+                )}
               </div>
             </div>
           </section>
 
-          {/* Section 3: Financials & Stock Parameters */}
-          <section className="space-y-4">
-            <h3 className="text-[11px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-widest border-b border-slate-100 dark:border-slate-800 pb-2">
-              Financials & Stock Parameters
+          {/* Section 3: Financials */}
+          <section className="space-y-3">
+            <h3 className="text-[9px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest border-b border-slate-100 dark:border-slate-800 pb-1">
+              Financial Master Data
             </h3>
-            <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-              <div className="space-y-1.5">
-                <label className="block text-[11px] font-bold text-slate-800 dark:text-slate-200 uppercase tracking-wider">
-                  Base Cost (₦) <span className="text-red-500">*</span>
-                </label>
-                <input 
-                  type="number" 
-                  name="baseCostPrice"
-                  min="0"
-                  step="0.01"
-                  value={formData.baseCostPrice} 
-                  onChange={handleChange} 
-                  required
-                  className="w-full border border-slate-300 dark:border-slate-700 rounded-lg text-sm p-2.5 focus:ring-2 focus:ring-emerald-500 outline-none bg-white dark:bg-slate-950 dark:text-white transition-colors font-mono" 
-                />
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1">
+                <label className="block text-[9px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-wider">Base Cost ({formData.currency})</label>
+                <input disabled={!canSave} type="number" step="0.01" value={formData.baseCostPrice} onChange={e => setFormData({...formData, baseCostPrice: parseFloat(e.target.value) || 0})} className="w-full border border-slate-200 dark:border-slate-700 rounded-md text-xs p-2 font-mono bg-white dark:bg-slate-950 dark:text-white outline-none focus:ring-1 focus:ring-emerald-500" />
               </div>
-
-              <div className="space-y-1.5">
-                <label className="block text-[11px] font-bold text-slate-800 dark:text-slate-200 uppercase tracking-wider">
-                  Selling Price (₦)
-                </label>
-                <input 
-                  type="number" 
-                  name="sellingPrice"
-                  min="0"
-                  step="0.01"
-                  value={formData.sellingPrice} 
-                  onChange={handleChange} 
-                  className="w-full border border-slate-300 dark:border-slate-700 rounded-lg text-sm p-2.5 focus:ring-2 focus:ring-emerald-500 outline-none bg-white dark:bg-slate-950 dark:text-white transition-colors font-mono" 
-                />
-              </div>
-
-              <div className="space-y-1.5">
-                <label className="block text-[11px] font-bold text-slate-800 dark:text-slate-200 uppercase tracking-wider">
-                  Reorder Level
-                </label>
-                <input 
-                  type="number" 
-                  name="reorderLevel"
-                  min="0"
-                  value={formData.reorderLevel} 
-                  onChange={handleChange} 
-                  className="w-full border border-slate-300 dark:border-slate-700 rounded-lg text-sm p-2.5 focus:ring-2 focus:ring-emerald-500 outline-none bg-white dark:bg-slate-950 dark:text-white transition-colors font-mono" 
-                />
-              </div>
-
-              <div className="space-y-1.5">
-                <label className="block text-[11px] font-bold text-slate-800 dark:text-slate-200 uppercase tracking-wider">
-                  Safety Stock
-                </label>
-                <input 
-                  type="number" 
-                  name="safetyStock"
-                  min="0"
-                  value={formData.safetyStock} 
-                  onChange={handleChange} 
-                  className="w-full border border-slate-300 dark:border-slate-700 rounded-lg text-sm p-2.5 focus:ring-2 focus:ring-emerald-500 outline-none bg-white dark:bg-slate-950 dark:text-white transition-colors font-mono" 
-                />
+              <div className="space-y-1">
+                <label className="block text-[9px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-wider">Valuation Cost ({formData.currency})</label>
+                <input disabled={!canSave} type="number" step="0.01" value={formData.costPrice} onChange={e => setFormData({...formData, costPrice: parseFloat(e.target.value) || 0})} className="w-full border border-slate-200 dark:border-slate-700 rounded-md text-xs p-2 font-mono bg-white dark:bg-slate-950 dark:text-white outline-none focus:ring-1 focus:ring-emerald-500" />
               </div>
             </div>
           </section>
 
           {/* Section 4: Details */}
-          <section className="space-y-1.5">
-            <label className="block text-[11px] font-bold text-slate-800 dark:text-slate-200 uppercase tracking-wider">
-              Description / Internal Notes
-            </label>
-            <textarea 
-              name="description"
-              value={formData.description} 
-              onChange={handleChange} 
-              rows={3} 
-              placeholder="Describe the product, its utility, or special handling instructions..." 
-              className="w-full border border-slate-300 dark:border-slate-700 rounded-lg text-sm p-2.5 focus:ring-2 focus:ring-emerald-500 outline-none bg-white dark:bg-slate-950 dark:text-white resize-none transition-colors placeholder:text-slate-500"
-            />
+          <section className="space-y-1">
+            <label className="block text-[9px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-wider">Internal Notes</label>
+            <textarea disabled={!canSave} value={formData.description || ""} onChange={e => setFormData({...formData, description: e.target.value})} rows={3} className="w-full border border-slate-200 dark:border-slate-700 rounded-md text-xs p-2 bg-white dark:bg-slate-950 dark:text-white resize-none outline-none focus:ring-1 focus:ring-emerald-500 transition-all" placeholder="Additional specifications..." />
           </section>
         </form>
       </div>
 
       {/* Footer */}
-      <div className="px-6 py-4 border-t border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/50 flex justify-end items-center gap-3 shrink-0">
-        <button 
-          type="button" 
-          onClick={onClose} 
-          className="px-4 py-2 text-[11px] font-bold text-slate-700 dark:text-slate-300 uppercase tracking-wider hover:text-slate-900 dark:hover:text-white transition-colors"
-        >
+      <div className="px-4 py-3 border-t border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/50 flex justify-end items-center gap-2 shrink-0">
+        <button type="button" onClick={onClose} disabled={isSubmitting} className="px-3 py-1.5 text-[9px] font-bold text-slate-500 uppercase tracking-widest hover:text-slate-800 dark:hover:text-slate-300 transition-colors">
           Discard
         </button>
-        <button 
-          type="submit" 
-          form="product-form" 
-          disabled={isSubmitting} 
-          className="h-9 px-6 bg-emerald-600 text-white text-[11px] font-bold uppercase tracking-wider rounded-lg hover:bg-emerald-700 transition-all shadow-md flex items-center gap-2 disabled:opacity-50"
-        >
-          {isSubmitting ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />}
-          Register Product
-        </button>
+        {canSave && (
+          <button type="submit" form="product-form" disabled={isSubmitting} className="flex items-center gap-1.5 px-4 py-2 bg-emerald-600 text-white text-[9px] font-bold uppercase tracking-widest rounded-md hover:bg-emerald-700 transition-all shadow-lg shadow-emerald-500/20 disabled:opacity-50">
+            {isSubmitting ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />}
+            {product ? "Update Product" : "Commit Record"}
+          </button>
+        )}
       </div>
     </div>
   );

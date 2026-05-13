@@ -1,30 +1,26 @@
 "use client";
 
-import React, { useCallback, useEffect, useMemo, useState, useTransition } from "react";
+import { useCallback, useEffect, useMemo, useState, useTransition } from "react";
 import {
   Search,
   Plus,
-  Box,
   Database,
-  CheckCircle2,
   RefreshCw,
-  X,
-  Archive,
   Edit3,
   Loader2,
-  Package,
-  Save,
   Filter,
   Download,
-  Tag,
-  Barcode,
-  Banknote,
-  Hash
+  Package,
+  Archive,
+  BarChart3,
+  TrendingUp
 } from "lucide-react";
 import { saveAs } from "file-saver";
 import { useAlerts } from "@/core/components/feedback/AlertProvider";
 import { useSidePanel } from "@/core/components/layout/SidePanelContext";
-import { CreateEditProductModal} from "@/modules/inventory/components/CreateEditProductModal"
+// Replaced Modal with Panel [cite: 4, 186]
+import RegisterProductPanel from "@/modules/inventory/components/RegisterProductPanel";
+import ProductDetailPanel from "@/modules/inventory/components/ProductDetailPanel";
 
 /* -------------------------
    Types
@@ -90,8 +86,6 @@ export default function ProductRegistryWorkspace({ organizationId }: { organizat
   const [total, setTotal] = useState(0);
 
   const [isPending, startTransition] = useTransition();
-  const [isModalOpen, setIsModalOpen] = useState(false);
-  const [editingProduct, setEditingProduct] = useState<IProduct | null>(null);
   const [selectedProduct, setSelectedProduct] = useState<IProduct | null>(null);
   const [showFilters, setShowFilters] = useState(false);
 
@@ -109,8 +103,8 @@ export default function ProductRegistryWorkspace({ organizationId }: { organizat
   }, []);
 
   /* -------------------------
-     Data Loaders
-     ------------------------- */
+      Data Loaders
+      ------------------------- */
 
   const buildQuery = (opts?: {
     page?: number;
@@ -162,8 +156,8 @@ export default function ProductRegistryWorkspace({ organizationId }: { organizat
   }, [loadProducts, page, searchTerm]);
 
   /* -------------------------
-     Archive / Delete Handler
-     ------------------------- */
+      Archive / Delete Handler
+      ------------------------- */
 
   const handleArchive = async (id: string) => {
     const ok = confirm(
@@ -205,8 +199,22 @@ export default function ProductRegistryWorkspace({ organizationId }: { organizat
   };
 
   /* -------------------------
-     Side panel opener
-     ------------------------- */
+      Panel Logic
+      ------------------------- */
+
+  const handleOpenRegisterPanel = (product?: IProduct) => {
+    openPanel(
+      <RegisterProductPanel
+        organizationId={organizationId}
+        product={product}
+        onClose={closePanel}
+        onSuccess={() => {
+          refreshAll();
+          closePanel();
+        }}
+      />
+    );
+  };
 
   const openProductPanel = (product: IProduct) => {
     setSelectedProduct(product);
@@ -217,19 +225,22 @@ export default function ProductRegistryWorkspace({ organizationId }: { organizat
           setSelectedProduct(null);
           closePanel();
         }}
-        onEdit={() => {
-          setEditingProduct(product);
-          setIsModalOpen(true);
-        }}
+        onEdit={() => handleOpenRegisterPanel(product)} // Integrated RegisterProductPanel [cite: 4, 186]
         onArchive={() => handleArchive(product.id)}
       />
     );
   };
 
   /* -------------------------
-     Derived Stats & Filtering
-     ------------------------- */
+      Derived Stats & Filtering
+      ------------------------- */
 
+  const stats = useMemo(() => {
+    const active = products.filter(p => !p.deletedAt).length;
+    const archived = products.filter(p => p.deletedAt).length;
+    const totalVal = products.reduce((acc, p) => acc + Number(p.baseCostPrice || 0), 0);
+    return { active, archived, totalVal, totalCount: total };
+  }, [products, total]);
 
   const filteredProducts = useMemo(() => {
     const term = searchTerm.trim().toLowerCase();
@@ -263,8 +274,8 @@ export default function ProductRegistryWorkspace({ organizationId }: { organizat
   }, [products, searchTerm, statusFilter, sort, fromDate, toDate]);
 
   /* -------------------------
-     Export Logic
-     ------------------------- */
+      Export Logic
+      ------------------------- */
 
   const exportCSV = async (all = false) => {
     try {
@@ -298,8 +309,8 @@ export default function ProductRegistryWorkspace({ organizationId }: { organizat
   const totalPages = Math.max(1, Math.ceil(total / limit));
 
   /* -------------------------
-     Render
-     ------------------------- */
+      Render
+      ------------------------- */
 
   return (
     <div className="h-screen flex flex-col bg-[#FAFAFA] dark:bg-slate-950 text-slate-900 dark:text-slate-100 font-sans relative overflow-hidden transition-colors duration-300">
@@ -356,10 +367,7 @@ export default function ProductRegistryWorkspace({ organizationId }: { organizat
             </div>
 
             <button
-              onClick={() => {
-                setEditingProduct(null);
-                setIsModalOpen(true);
-              }}
+              onClick={() => handleOpenRegisterPanel()} // Replaced Modal Logic [cite: 186]
               className="flex h-8 px-3 bg-indigo-600 text-white text-[11px] font-bold uppercase tracking-wider rounded-md hover:bg-indigo-700 transition-all items-center gap-1.5 shadow-sm"
             >
               <Plus className="w-3.5 h-3.5" />
@@ -408,6 +416,14 @@ export default function ProductRegistryWorkspace({ organizationId }: { organizat
 
       <div className="flex-1 overflow-y-auto custom-scrollbar flex flex-col xl:flex-row p-4">
         <main className="flex-1 px-4 lg:px-4 flex flex-col gap-6">
+          {/* Stat Cards Section - Consistent with Purchase Orders [cite: 145] */}
+          <section className="grid grid-cols-1 md:grid-cols-4 gap-4 pt-4">
+            <StatCard title="Total Registry" value={total} icon={Database} color="emerald" />
+            <StatCard title="Active Catalog" value={stats.active} icon={Package} color="blue" />
+            <StatCard title="Archived Items" value={stats.archived} icon={Archive} color="red" />
+            <StatCard title="Registry Value" value={`₦${stats.totalVal.toLocaleString()}`} icon={BarChart3} color="emerald" />
+          </section>
+
           {/* Main Table Container */}
           <div className="border border-slate-200 dark:border-slate-700 rounded-lg overflow-hidden flex flex-col min-h-[500px] transition-colors bg-white dark:bg-slate-900">
             <div className="overflow-x-auto custom-scrollbar flex-1">
@@ -489,8 +505,7 @@ export default function ProductRegistryWorkspace({ organizationId }: { organizat
                               <button
                                 onClick={(e) => {
                                   e.stopPropagation();
-                                  setEditingProduct(product);
-                                  setIsModalOpen(true);
+                                  handleOpenRegisterPanel(product);
                                 }}
                                 className="p-1.5 bg-white dark:bg-slate-900 hover:bg-slate-50 dark:hover:bg-slate-800 rounded border border-slate-200 dark:border-slate-700 text-slate-400 hover:text-blue-600 dark:hover:text-blue-400 transition-colors"
                                 title="Update Catalog Entry"
@@ -547,137 +562,47 @@ export default function ProductRegistryWorkspace({ organizationId }: { organizat
           </div>
         </main>
       </div>
-
-      {isModalOpen && (
-        <CreateEditProductModal
-          product={editingProduct}
-          organizationId={organizationId}
-          onClose={() => {
-            setIsModalOpen(false);
-            setEditingProduct(null);
-          }}
-          onRefresh={refreshAll}
-        />
-      )}
     </div>
   );
 }
 
 /* -------------------------
-   Subcomponents
-   ------------------------- */
+Helpers & Subcomponents
+------------------------- */
 
+interface StatCardProps {
+  title: string;
+  value: string | number;
+  icon: React.ElementType;
+  color: "emerald" | "blue" | "red";
+}
 
-function ProductDetailPanel({ product, onClose, onEdit, onArchive }: { product: IProduct; onClose: () => void; onEdit: () => void; onArchive: () => void; }) {
+function StatCard({ title, value, icon: Icon, color }: StatCardProps) {
+  const colorMap = {
+    emerald: "text-emerald-600 dark:text-emerald-400",
+    blue: "text-blue-600 dark:text-blue-400",
+    red: "text-red-600 dark:text-red-400"
+  };
+  const iconColorMap = {
+    emerald: "text-emerald-200 dark:text-emerald-900/40",
+    blue: "text-blue-200 dark:text-blue-900/40",
+    red: "text-red-200 dark:text-red-900/40"
+  };
+
   return (
-    <>
-      <div
-        className="fixed inset-0 bg-slate-900/20 dark:bg-slate-950/50 backdrop-blur-sm z-[90] transition-opacity"
-        onClick={onClose}
-      />
-      <div className="fixed right-0 top-0 bottom-0 w-full max-w-[380px] bg-white dark:bg-slate-900 shadow-2xl z-[150] flex flex-col animate-in slide-in-from-right duration-300 border-l border-slate-100 dark:border-slate-800">
-        <div className="h-full flex flex-col">
-          <div className="p-4 border-b border-black/[0.04] flex items-center justify-between bg-white/80 backdrop-blur-md shrink-0 sticky top-0 z-20">
-            <div className="flex items-center gap-2 px-1 text-[10px] font-black text-slate-400 uppercase tracking-[0.2em]">
-              <i className="bx bx-shield-quarter text-sm text-indigo-500" /> Catalog Inspector
-            </div>
-
-            <div className="flex gap-1">
-              <button
-                onClick={onClose}
-                className="w-8 h-8 rounded-lg hover:bg-red-50 hover:text-red-500 flex items-center justify-center text-slate-500 transition-all active:scale-90"
-                title="Close"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-          </div>
-
-          <div className="flex-1 overflow-y-auto p-6 space-y-8 custom-scrollbar pb-12">
-            <div className="flex items-center gap-5">
-              <div className="relative group">
-                <div className="w-16 h-16 shrink-0 rounded-[1.25rem] bg-gradient-to-br from-indigo-600 to-indigo-800 text-white flex items-center justify-center text-2xl font-black shadow-lg">
-                  {product.name.substring(0, 2).toUpperCase()}
-                </div>
-              </div>
-
-              <div className="min-w-0 flex-1">
-                <h3 className="text-xl font-black text-slate-900 leading-tight tracking-tight">{product.name}</h3>
-                <div className="flex items-center gap-1.5 mt-1">
-                  <span className="text-[10px] bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 px-2 py-0.5 rounded font-mono uppercase font-bold tracking-wider">
-                    {product.sku}
-                  </span>
-                </div>
-              </div>
-            </div>
-
-            <div className="space-y-4 border-t border-black/[0.03] pt-6">
-              <div className="grid grid-cols-2 gap-4">
-                <ProfileField label="Base Cost" value={`${product.currency} ${Number(product.baseCostPrice).toLocaleString()}`} icon={Banknote} />
-                <ProfileField label="Unit (UoM)" value={product.uom?.abbreviation || "N/A"} icon={Box} />
-              </div>
-
-              <div className="space-y-4 pt-2">
-                <h4 className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-2">Master Details</h4>
-                <ContactRow icon={Tag} label="Category" value={product.category?.name || "Uncategorized"} />
-                <ContactRow icon={Barcode} label="Barcode (UPC/EAN)" value={product.barcode || "No barcode assigned"} />
-                <ContactRow icon={Hash} label="System ID" value={product.id} />
-
-                {product.description && (
-                  <div className="mt-4 pt-4 border-t border-slate-100 dark:border-slate-800">
-                    <span className="text-[9px] font-bold text-slate-400 uppercase tracking-widest block mb-1">Description</span>
-                    <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed">{product.description}</p>
-                  </div>
-                )}
-              </div>
-            </div>
-          </div>
-
-          {!product.deletedAt && (
-            <div className="p-4 border-t border-slate-100 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/50 flex gap-3">
-              <button
-                onClick={onEdit}
-                className="flex-1 py-2 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300 text-[11px] font-bold uppercase tracking-wider rounded-lg hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors"
-              >
-                Modify Entry
-              </button>
-
-              <button
-                onClick={onArchive}
-                className="px-4 py-2 border border-red-200 dark:border-red-900/40 text-red-600 dark:text-red-500 bg-white dark:bg-slate-900 hover:bg-red-50 dark:hover:bg-red-900/30 rounded-lg transition-colors"
-                title="Archive Product"
-              >
-                <Archive className="w-4 h-4" />
-              </button>
-            </div>
-          )}
+    <div className="bg-white dark:bg-slate-900 p-4 lg:p-5 rounded-xl border border-slate-200/60 dark:border-slate-800 shadow-sm flex flex-col justify-between min-h-[100px] relative overflow-hidden group hover:border-slate-300 dark:hover:border-slate-700 transition-all">
+      <div className="flex justify-between items-start">
+        <div>
+          <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">{title}</p>
+          <h3 className="text-xl font-black text-slate-900 dark:text-white tracking-tight">{value}</h3>
+        </div>
+        <div className={`p-2 rounded-lg bg-slate-50 dark:bg-slate-800/50 ${colorMap[color]}`}>
+           <Icon className="w-5 h-5" />
         </div>
       </div>
-    </>
-  );
-}
-
-function ContactRow({ icon: Icon, label, value }: { icon: any; label: string; value: string }) {
-  return (
-    <div className="flex items-start gap-3 group/row">
-      <div className="p-2 bg-slate-50 dark:bg-slate-800/50 rounded-lg border border-slate-100 dark:border-slate-700/50">
-        <Icon className="w-3.5 h-3.5 text-slate-400 group-hover/row:text-indigo-500 transition-colors" />
+      <div className={`absolute -right-2 -bottom-2 opacity-[0.03] dark:opacity-[0.05] group-hover:scale-110 transition-transform ${iconColorMap[color]}`}>
+        <Icon className="w-16 h-16" />
       </div>
-
-      <div className="flex flex-col">
-        <span className="text-[9px] font-bold text-slate-400 uppercase tracking-widest mb-0.5">{label}</span>
-        <span className="text-[12px] font-medium text-slate-700 dark:text-slate-300 break-all">{value}</span>
-      </div>
-    </div>
-  );
-}
-
-function ProfileField({ label, value, icon: Icon }: { label: string; value: string; icon: any }) {
-  return (
-    <div className="bg-slate-50 dark:bg-slate-800/30 p-4 rounded-xl border border-slate-100 dark:border-slate-800 flex flex-col items-center gap-1">
-      <Icon className="w-4 h-4 text-indigo-600 dark:text-indigo-400 mb-1" />
-      <span className="text-sm font-bold text-slate-900 dark:text-white truncate w-full text-center">{value}</span>
-      <span className="text-[9px] font-bold text-slate-400 uppercase tracking-widest">{label}</span>
     </div>
   );
 }

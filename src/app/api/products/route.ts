@@ -1,17 +1,25 @@
+/**
+ * src/app/api/products/route.ts
+ * PRODUCTION-READY PRODUCT MANAGEMENT API (V3.1 - FORTIFIED)
+ * Optimized for: Forensic Auditing, Concurrency, and Strict Authorization.
+ * Fix: Integration with fixed Forensic Audit Engine to prevent Decimal serialization errors.
+ */
+
 import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "next-auth/next";
 import { authOptions } from "@/core/lib/auth";
 import prisma from "@/core/lib/prisma";
 import {
   PermissionAction,
-  ActorType,
   Severity,
   Prisma,
-  Role,
+  Resource,
+  NotificationType,
 } from "@prisma/client";
 import crypto from "crypto";
 import { z } from "zod";
-import { authorize, RESOURCES } from "@/core/lib/permission";
+import { authorize } from "@/core/lib/permission";
+import { createAuditLog } from "@/core/lib/audit";
 
 /* -------------------------------------------------------------------------- */
 /* CONFIG & SCHEMAS                                                           */
@@ -20,120 +28,88 @@ import { authorize, RESOURCES } from "@/core/lib/permission";
 const DEFAULT_LIMIT = 25;
 const MAX_LIMIT = 1000;
 
-// Validation Schema for Product Creation
 const productSchema = z.object({
-  name: z.string().min(2, "Product name must be at least 2 characters"),
-  sku: z.string().min(2, "SKU is required"),
-  barcode: z.string().optional().nullable(),
-  description: z.string().optional().nullable(),
+  name: z.string().trim().min(2, "Product name must be at least 2 characters"),
+  sku: z.string().trim().min(2, "SKU is required"),
+  barcode: z.string().trim().optional().nullable(),
+  description: z.string().trim().optional().nullable(),
   categoryId: z.string().cuid().optional().nullable(),
   uomId: z.string().cuid().optional().nullable(),
   baseCostPrice: z.number().min(0, "Base cost cannot be negative"),
-  costPrice: z.number().optional(), // Defaults to baseCostPrice if omitted
-  currency: z.string().default("NGN"),
+  costPrice: z.number().optional(),
+  currency: z.string().length(3).default("NGN"),
 });
 
-// Validation Schema for Product Updates
 const productPatchSchema = productSchema.partial();
 
 /* -------------------------------------------------------------------------- */
-/* FORENSIC AUDIT ENGINE                                                      */
+/* INTERNAL HELPERS                                                           */
 /* -------------------------------------------------------------------------- */
 
-/**
- * Creates a cryptographically chained audit log for maximum compliance.
- * This ensures that the history of the product is tamper-evident.
- */
-async function createAuditLog(
+async function triggerProductNotification(
   tx: Prisma.TransactionClient,
-  data: {
+  { organizationId, userId, message, type = NotificationType.INVENTORY }: {
     organizationId: string;
-    actorId: string;
-    actorRole: Role;
-    action: string;
-    targetId: string;
-    severity: Severity;
-    description: string;
-    requestId: string;
-    ipAddress: string;
-    deviceInfo: string;
-    before?: any;
-    after?: any;
+    userId: string;
+    message: string;
+    type?: NotificationType;
   }
 ) {
-  // Fetch the hash of the last log for this organization to maintain the chain
-  const lastLog = await tx.activityLog.findFirst({
-    where: { organizationId: data.organizationId },
-    orderBy: { createdAt: "desc" },
-    select: { hash: true },
-  });
-
-  const previousHash = lastLog?.hash ?? "0".repeat(64);
-  
-  // Construct a payload for the cryptographic hash
-  const logPayload = JSON.stringify({
-    action: data.action,
-    actorId: data.actorId,
-    targetId: data.targetId,
-    requestId: data.requestId,
-    previousHash,
-    timestamp: Date.now(),
-  });
-  
-  const hash = crypto.createHash("sha256").update(logPayload).digest("hex");
-
-  return tx.activityLog.create({
+  return tx.notification.create({
     data: {
-      organizationId: data.organizationId,
-      actorId: data.actorId,
-      actorType: ActorType.USER,
-      actorRole: data.actorRole,
-      action: data.action,
-      targetType: "PRODUCT",
-      targetId: data.targetId,
-      severity: data.severity,
-      description: data.description,
-      requestId: data.requestId,
-      ipAddress: data.ipAddress,
-      deviceInfo: data.deviceInfo,
-      before: data.before ? (data.before as Prisma.InputJsonValue) : Prisma.JsonNull,
-      after: data.after ? (data.after as Prisma.InputJsonValue) : Prisma.JsonNull,
-      previousHash,
-      hash,
-      critical: data.severity === Severity.HIGH || data.severity === Severity.CRITICAL,
+      organizationId,
+      title: "Product Registry Update",
+      message,
+      type,
+      // Create the recipient record to link this notification to the user
+      recipients: {
+        create: {
+          personnelId: userId,
+          read: false, // Moved here as read status is tracked per user 
+        },
+      },
     },
   });
 }
 
 /* -------------------------------------------------------------------------- */
-/* GET HANDLER                                                                */
+/* GET HANDLER (READ)                                                         */
 /* -------------------------------------------------------------------------- */
 
 export async function GET(req: NextRequest) {
+  const requestId = crypto.randomUUID();
   try {
     const session = await getServerSession(authOptions);
     if (!session?.user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    
-    const user = session.user as any;
+
+    const user = session.user;
     const { searchParams } = new URL(req.url);
     const id = searchParams.get("id");
+    const mode = searchParams.get("mode");
 
     const auth = authorize({
       role: user.role,
       isOrgOwner: user.isOrgOwner,
       action: PermissionAction.READ,
-      resource: RESOURCES.INVENTORY || "INVENTORY",
+      resources: Resource.PRODUCT,
     });
-    if (!auth.allowed) return NextResponse.json({ error: "Forbidden: Insufficient Permissions" }, { status: 403 });
 
-    // Single Product Fetch
+    if (!auth.allowed) {
+      return NextResponse.json({ error: auth.reason || "Forbidden" }, { status: 403 });
+    }
+
+    if (mode === "dropdown") {
+      const options = await prisma.product.findMany({
+        where: { organizationId: user.organizationId, deletedAt: null },
+        select: { id: true, name: true, sku: true, barcode: true },
+        orderBy: { name: "asc" },
+      });
+      return NextResponse.json(options);
+    }
+
     if (id) {
-      const product = await prisma.product.findUnique({
-        where: { 
-          id, 
-          organizationId: user.organizationId, 
-          deletedAt: null 
-        },
+      const product = await prisma.product.findFirst({
+        where: { id, organizationId: user.organizationId, deletedAt: null },
         include: {
           category: { select: { id: true, name: true } },
           uom: { select: { id: true, name: true, abbreviation: true } },
@@ -145,7 +121,6 @@ export async function GET(req: NextRequest) {
       return NextResponse.json(product);
     }
 
-    // List Fetch with Pagination & Filtering
     const page = Math.max(1, parseInt(searchParams.get("page") || "1", 10));
     const limit = Math.min(parseInt(searchParams.get("limit") || String(DEFAULT_LIMIT), 10), MAX_LIMIT);
     const search = searchParams.get("search")?.trim() || "";
@@ -154,16 +129,15 @@ export async function GET(req: NextRequest) {
     const where: Prisma.ProductWhereInput = {
       organizationId: user.organizationId,
       deletedAt: null,
+      ...(categoryId && { categoryId }),
+      ...(search && {
+        OR: [
+          { name: { contains: search, mode: "insensitive" } },
+          { sku: { contains: search, mode: "insensitive" } },
+          { barcode: { contains: search, mode: "insensitive" } },
+        ],
+      }),
     };
-
-    if (categoryId) where.categoryId = categoryId;
-    if (search) {
-      where.OR = [
-        { name: { contains: search, mode: "insensitive" } },
-        { sku: { contains: search, mode: "insensitive" } },
-        { barcode: { contains: search, mode: "insensitive" } },
-      ];
-    }
 
     const [items, total] = await Promise.all([
       prisma.product.findMany({
@@ -171,23 +145,30 @@ export async function GET(req: NextRequest) {
         include: {
           category: { select: { id: true, name: true } },
           uom: { select: { id: true, name: true, abbreviation: true } },
+          createdBy: { select: { name: true } },
+          updatedBy: { select: { name: true } },
         },
-        orderBy: { name: "asc" },
+        orderBy: { updatedAt: "desc" },
         take: limit,
         skip: (page - 1) * limit,
       }),
       prisma.product.count({ where }),
     ]);
 
-    return NextResponse.json({ items, total, page, limit });
+    return NextResponse.json({
+      items,
+      pagination: { total, page, limit, totalPages: Math.ceil(total / limit) },
+      requestId
+    });
+
   } catch (error: any) {
-    console.error("[PRODUCT_GET_ERROR]", error);
-    return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
+    console.error(`[${requestId}] PRODUCT_GET_ERROR:`, error);
+    return NextResponse.json({ error: "Failed to retrieve product data" }, { status: 500 });
   }
 }
 
 /* -------------------------------------------------------------------------- */
-/* POST HANDLER                                                              */
+/* POST HANDLER (CREATE)                                                      */
 /* -------------------------------------------------------------------------- */
 
 export async function POST(req: NextRequest) {
@@ -195,70 +176,79 @@ export async function POST(req: NextRequest) {
   try {
     const session = await getServerSession(authOptions);
     if (!session?.user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    
-    const user = session.user as any;
-    const ipAddress = req.headers.get("x-forwarded-for")?.split(",")[0] ?? "127.0.0.1";
-    const deviceInfo = req.headers.get("user-agent")?.substring(0, 255) ?? "unknown";
 
+    const user = session.user;
     const auth = authorize({
       role: user.role,
       isOrgOwner: user.isOrgOwner,
       action: PermissionAction.CREATE,
-      resource: RESOURCES.INVENTORY || "INVENTORY",
+      resources: Resource.PRODUCT,
     });
-    if (!auth.allowed) return NextResponse.json({ error: "Forbidden: Insufficient Permissions" }, { status: 403 });
+    if (!auth.allowed) return NextResponse.json({ error: auth.reason }, { status: 403 });
 
-    const body = await req.json();
+    let body;
+    try {
+      body = await req.json();
+    } catch (e) {
+      return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
+    }
+
     const parsed = productSchema.safeParse(body);
     if (!parsed.success) return NextResponse.json({ error: parsed.error.format() }, { status: 400 });
 
-    const data = parsed.data;
+    const input = parsed.data;
+    const ipAddress = req.headers.get("x-forwarded-for")?.split(",")[0] ?? "127.0.0.1";
+    const deviceInfo = req.headers.get("user-agent")?.substring(0, 255) ?? "unknown";
 
-    // Use SERIALIZABLE to prevent SKU/Barcode race conditions
     const result = await prisma.$transaction(async (tx) => {
-      // 1. Uniqueness Checks
-      const existingSku = await tx.product.findUnique({
-        where: { organizationId_sku: { organizationId: user.organizationId, sku: data.sku } },
+      // CONFLICT CHECK (SKU/BARCODE)
+      const conflict = await tx.product.findFirst({
+        where: {
+          organizationId: user.organizationId,
+          OR: [
+            { sku: input.sku },
+            { barcode: input.barcode ? input.barcode : undefined }
+          ],
+          deletedAt: null
+        }
       });
-      if (existingSku) throw new Error(`SKU '${data.sku}' already exists.`);
-
-      if (data.barcode) {
-        const existingBarcode = await tx.product.findUnique({
-          where: { organizationId_barcode: { organizationId: user.organizationId, barcode: data.barcode } },
-        });
-        if (existingBarcode) throw new Error(`Barcode '${data.barcode}' is already in use.`);
+      
+      if (conflict) {
+        throw new Error(`Conflict: SKU or Barcode already exists (${conflict.name})`);
       }
 
-      // 2. Insert Product
       const product = await tx.product.create({
         data: {
           organizationId: user.organizationId,
-          name: data.name,
-          sku: data.sku,
-          barcode: data.barcode || null,
-          description: data.description || null,
-          categoryId: data.categoryId || null,
-          uomId: data.uomId || null,
-          baseCostPrice: new Prisma.Decimal(data.baseCostPrice),
-          costPrice: new Prisma.Decimal(data.costPrice ?? data.baseCostPrice),
-          currency: data.currency,
+          ...input,
+          baseCostPrice: new Prisma.Decimal(input.baseCostPrice),
+          costPrice: new Prisma.Decimal(input.costPrice ?? input.baseCostPrice),
           createdById: user.id,
+          updatedById: user.id,
         },
       });
 
-      // 3. Create Audit Trail
+      // FORENSIC AUDIT INTEGRATION (Now safely handles Decimal types)
       await createAuditLog(tx, {
+        action: "CREATE_PRODUCT",
+        resource: Resource.PRODUCT,
+        resourceId: product.id,
         organizationId: user.organizationId,
         actorId: user.id,
-        actorRole: user.role as Role,
-        action: "CREATE_PRODUCT",
-        targetId: product.id,
+        actorRole: user.role,
         severity: Severity.MEDIUM,
-        description: `Registered new master product: ${product.name} (${product.sku})`,
-        requestId,
+        description: `Product Registered: ${product.name} [${product.sku}]`,
+        changes: product,
         ipAddress,
         deviceInfo,
-        after: product,
+        requestId,
+      });
+
+      await triggerProductNotification(tx, {
+        organizationId: user.organizationId,
+        userId: user.id,
+        message: `Catalog Update: ${product.name} (${product.sku}) created.`,
+        type: NotificationType.INVENTORY
       });
 
       return product;
@@ -266,13 +256,13 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json({ success: true, data: result }, { status: 201 });
   } catch (error: any) {
-    console.error("[PRODUCT_POST_ERROR]", error);
-    return NextResponse.json({ error: error.message || "Failed to create product" }, { status: 400 });
+    console.error(`[${requestId}] PRODUCT_POST_ERROR:`, error.message);
+    return NextResponse.json({ error: error.message || "Product creation failed" }, { status: 400 });
   }
 }
 
 /* -------------------------------------------------------------------------- */
-/* PATCH HANDLER                                                             */
+/* PATCH HANDLER (UPDATE)                                                     */
 /* -------------------------------------------------------------------------- */
 
 export async function PATCH(req: NextRequest) {
@@ -280,106 +270,78 @@ export async function PATCH(req: NextRequest) {
   try {
     const session = await getServerSession(authOptions);
     if (!session?.user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    
-    const user = session.user as any;
+
+    const user = session.user;
     const { searchParams } = new URL(req.url);
     const id = searchParams.get("id");
-    
-    if (!id) return NextResponse.json({ error: "Product ID is required." }, { status: 400 });
-
-    const ipAddress = req.headers.get("x-forwarded-for")?.split(",")[0] ?? "127.0.0.1";
-    const deviceInfo = req.headers.get("user-agent")?.substring(0, 255) ?? "unknown";
+    if (!id) return NextResponse.json({ error: "Missing Product ID" }, { status: 400 });
 
     const auth = authorize({
       role: user.role,
       isOrgOwner: user.isOrgOwner,
       action: PermissionAction.UPDATE,
-      resource: RESOURCES.INVENTORY || "INVENTORY",
+      resources: Resource.PRODUCT,
     });
-    if (!auth.allowed) return NextResponse.json({ error: "Forbidden: Insufficient Permissions" }, { status: 403 });
+    if (!auth.allowed) return NextResponse.json({ error: auth.reason }, { status: 403 });
 
     const body = await req.json();
     const parsed = productPatchSchema.safeParse(body);
     if (!parsed.success) return NextResponse.json({ error: parsed.error.format() }, { status: 400 });
 
-    const data = parsed.data;
+    const updateInput = parsed.data;
+    const ipAddress = req.headers.get("x-forwarded-for")?.split(",")[0] ?? "127.0.0.1";
+    const deviceInfo = req.headers.get("user-agent") ?? "unknown";
 
     const result = await prisma.$transaction(async (tx) => {
-      // 1. Snapshot Before State
-      const existing = await tx.product.findUnique({
-        where: { id, organizationId: user.organizationId },
+      const existing = await tx.product.findFirst({
+        where: { id, organizationId: user.organizationId, deletedAt: null },
       });
-      if (!existing || existing.deletedAt) throw new Error("Product not found.");
+      if (!existing) throw new Error("Target product record not found.");
 
-      // 2. Uniqueness Validations for SKU/Barcode changes
-      if (data.sku && data.sku !== existing.sku) {
-        const skuCheck = await tx.product.findUnique({
-          where: { organizationId_sku: { organizationId: user.organizationId, sku: data.sku } },
+      if (updateInput.sku && updateInput.sku !== existing.sku) {
+        const skuConflict = await tx.product.findFirst({
+          where: { organizationId: user.organizationId, sku: updateInput.sku, deletedAt: null },
         });
-        if (skuCheck) throw new Error(`SKU '${data.sku}' is already taken.`);
+        if (skuConflict) throw new Error("The target SKU is already assigned to another product.");
       }
-
-      if (data.barcode && data.barcode !== existing.barcode) {
-        const barcodeCheck = await tx.product.findUnique({
-          where: { organizationId_barcode: { organizationId: user.organizationId, barcode: data.barcode } },
-        });
-        if (barcodeCheck) throw new Error(`Barcode '${data.barcode}' is already in use.`);
-      }
-
-      // 3. Prepare Update Data
-      const updateData: Prisma.ProductUpdateInput = {
-        updatedBy: { connect: { id: user.id } },
-      };
-      
-      if (data.name !== undefined) updateData.name = data.name;
-      if (data.sku !== undefined) updateData.sku = data.sku;
-      if (data.barcode !== undefined) updateData.barcode = data.barcode || null;
-      if (data.description !== undefined) updateData.description = data.description || null;
-      
-      if (data.categoryId !== undefined) {
-        updateData.category = data.categoryId ? { connect: { id: data.categoryId } } : { disconnect: true };
-      }
-      if (data.uomId !== undefined) {
-        updateData.uom = data.uomId ? { connect: { id: data.uomId } } : { disconnect: true };
-      }
-      
-      if (data.baseCostPrice !== undefined) updateData.baseCostPrice = new Prisma.Decimal(data.baseCostPrice);
-      if (data.costPrice !== undefined) updateData.costPrice = new Prisma.Decimal(data.costPrice);
-      if (data.currency !== undefined) updateData.currency = data.currency;
 
       const updated = await tx.product.update({
         where: { id },
-        data: updateData,
+        data: {
+          ...updateInput,
+          baseCostPrice: updateInput.baseCostPrice ? new Prisma.Decimal(updateInput.baseCostPrice) : undefined,
+          costPrice: updateInput.costPrice ? new Prisma.Decimal(updateInput.costPrice) : undefined,
+          updatedById: user.id,
+        },
       });
 
-      // 4. Create Forensic Log with Before/After
+      // FORENSIC AUDIT INTEGRATION
       await createAuditLog(tx, {
+        action: "UPDATE_PRODUCT",
+        resource: Resource.PRODUCT,
+        resourceId: id,
         organizationId: user.organizationId,
         actorId: user.id,
-        actorRole: user.role as Role,
-        action: "UPDATE_PRODUCT",
-        targetId: updated.id,
+        actorRole: user.role,
         severity: Severity.LOW,
-        description: `Updated product properties for: ${updated.sku}`,
-        requestId,
+        description: `Metadata modified for SKU: ${existing.sku}`,
+        changes: { from: existing, to: updated },
         ipAddress,
         deviceInfo,
-        before: existing,
-        after: updated,
+        requestId,
       });
 
       return updated;
     }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
 
-    return NextResponse.json({ success: true, data: result }, { status: 200 });
+    return NextResponse.json({ success: true, data: result });
   } catch (error: any) {
-    console.error("[PRODUCT_PATCH_ERROR]", error);
-    return NextResponse.json({ error: error.message || "Failed to update product" }, { status: 400 });
+    return NextResponse.json({ error: error.message || "Update operation failed" }, { status: 400 });
   }
 }
 
 /* -------------------------------------------------------------------------- */
-/* DELETE HANDLER                                                            */
+/* DELETE HANDLER (SOFT DELETE)                                               */
 /* -------------------------------------------------------------------------- */
 
 export async function DELETE(req: NextRequest) {
@@ -387,60 +349,74 @@ export async function DELETE(req: NextRequest) {
   try {
     const session = await getServerSession(authOptions);
     if (!session?.user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    
-    const user = session.user as any;
+
+    const user = session.user;
     const { searchParams } = new URL(req.url);
     const id = searchParams.get("id");
-
-    if (!id) return NextResponse.json({ error: "Product ID is required." }, { status: 400 });
-
-    const ipAddress = req.headers.get("x-forwarded-for")?.split(",")[0] ?? "127.0.0.1";
-    const deviceInfo = req.headers.get("user-agent")?.substring(0, 255) ?? "unknown";
+    if (!id) return NextResponse.json({ error: "Product ID required" }, { status: 400 });
 
     const auth = authorize({
       role: user.role,
       isOrgOwner: user.isOrgOwner,
       action: PermissionAction.DELETE,
-      resource: RESOURCES.INVENTORY || "INVENTORY",
+      resources: Resource.PRODUCT,
     });
-    if (!auth.allowed) return NextResponse.json({ error: "Forbidden: Insufficient Permissions" }, { status: 403 });
+    if (!auth.allowed) return NextResponse.json({ error: auth.reason }, { status: 403 });
+
+    const ipAddress = req.headers.get("x-forwarded-for")?.split(",")[0] ?? "127.0.0.1";
+    const deviceInfo = req.headers.get("user-agent") ?? "unknown";
 
     await prisma.$transaction(async (tx) => {
-      // 1. Check Existence and active relations
-      const existing = await tx.product.findUnique({
-        where: { id, organizationId: user.organizationId },
+      const target = await tx.product.findFirst({
+        where: { id, organizationId: user.organizationId, deletedAt: null },
       });
-      if (!existing || existing.deletedAt) throw new Error("Product not found or already deleted.");
+      if (!target) throw new Error("Product not found or already decommissioned.");
 
-      // 2. Perform Soft Delete
+      // BLOCK DELETION IF STOCK REMAINS
+      const stockSummary = await tx.branchProduct.aggregate({
+        where: { productId: id, organizationId: user.organizationId },
+        _sum: { stock: true }
+      });
+      
+      const totalQty = Number(stockSummary._sum.stock || 0);
+      if (totalQty > 0) {
+        throw new Error(`Deletion Forbidden: ${totalQty} units remain in inventory.`);
+      }
+
       const deleted = await tx.product.update({
         where: { id },
         data: { 
-          deletedAt: new Date(),
-          updatedBy: { connect: { id: user.id } } 
+          deletedAt: new Date(), 
+          updatedById: user.id 
         },
       });
 
-      // 3. Create Audit Log
+      // FORENSIC AUDIT INTEGRATION
       await createAuditLog(tx, {
+        action: "DELETE_PRODUCT",
+        resource: Resource.PRODUCT,
+        resourceId: id,
         organizationId: user.organizationId,
         actorId: user.id,
-        actorRole: user.role as Role,
-        action: "DELETE_PRODUCT",
-        targetId: deleted.id,
+        actorRole: user.role,
         severity: Severity.HIGH,
-        description: `Soft deleted master product: ${deleted.sku}`,
-        requestId,
+        description: `Soft-delete: ${target.sku} decommissioned.`,
+        changes: { from: target, to: deleted },
         ipAddress,
         deviceInfo,
-        before: existing,
-        after: deleted,
+        requestId,
       });
-    });
 
-    return NextResponse.json({ success: true, message: "Product deleted successfully." }, { status: 200 });
+      await triggerProductNotification(tx, {
+        organizationId: user.organizationId,
+        userId: user.id,
+        message: `Alert: Product ${target.sku} archived by ${user.name}.`,
+        type: NotificationType.INVENTORY
+      });
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
+
+    return NextResponse.json({ success: true, message: "Product archived successfully." });
   } catch (error: any) {
-    console.error("[PRODUCT_DELETE_ERROR]", error);
-    return NextResponse.json({ error: error.message || "Failed to delete product" }, { status: 400 });
+    return NextResponse.json({ error: error.message || "Archive operation failed" }, { status: 400 });
   }
 }
