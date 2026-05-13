@@ -2,21 +2,21 @@
  * src/core/lib/auth.ts
  * * PRODUCTION-READY NEXTAUTH CONFIGURATION
  * Fortified for performance, strict typing, and cookie size optimization.
+ * Integrated with Forensic Audit Engine V2.6 for cryptographic integrity.
  */
 
 import CredentialsProvider from "next-auth/providers/credentials";
 import type { NextAuthOptions, DefaultSession, DefaultUser } from "next-auth";
 import type { JWT } from "next-auth/jwt";
 import bcrypt from "bcryptjs";
-import crypto from "crypto";
 import prisma from "@/core/lib/prisma";
 import { ROLE_PERMISSIONS_MATRIX } from "@/core/lib/permission";
 import { getCachedPermissions, setCachedPermissions } from "@/core/lib/permissionCache";
+import { createAuditLog } from "@/core/lib/audit";
 import {
   Role,
-  ActorType,
   Severity,
-  Prisma,
+  Resource,
 } from "@prisma/client";
 
 // ============================================================================
@@ -27,12 +27,6 @@ export interface AllowedBranch {
   name: string;
   role: Role;
 }
-
-// Ensure strict typing for Prisma transactions
-type TransactionClient = Omit<
-  typeof prisma,
-  "$connect" | "$disconnect" | "$on" | "$transaction" | "$use" | "$extends"
->;
 
 // ============================================================================
 // MODULE AUGMENTATION (STRICT TYPING)
@@ -158,48 +152,6 @@ async function resolvePermissionsUnion(orgId: string, role: Role): Promise<strin
 }
 
 // ============================================================================
-// FORENSIC LOGGING HELPER
-// ============================================================================
-async function secureAuditLog(
-  tx: TransactionClient,
-  data: {
-    organizationId: string;
-    branchId?: string | null;
-    actorId: string;
-    actorRole?: Role;
-    action: string;
-    severity: Severity;
-    critical: boolean;
-    ipAddress: string;
-    deviceInfo: string;
-    metadata?: Prisma.JsonValue;
-  }
-) {
-  const lastLog = await tx.activityLog.findFirst({
-    where: { organizationId: data.organizationId },
-    orderBy: { createdAt: "desc" },
-    select: { hash: true },
-  });
-
-  const previousHash = lastLog?.hash ?? null;
-  const requestId = crypto.randomUUID();
-
-  const hashPayload = { ...data, previousHash, requestId, timestamp: Date.now() };
-  const hash = crypto.createHash("sha256").update(JSON.stringify(hashPayload)).digest("hex");
-
-  return await tx.activityLog.create({
-    data: {
-      ...data,
-      actorType: ActorType.USER,
-      requestId,
-      previousHash,
-      hash,
-      metadata: data.metadata ?? Prisma.JsonNull,
-    },
-  });
-}
-
-// ============================================================================
 // NEXTAUTH CORE CONFIGURATION
 // ============================================================================
 export const authOptions: NextAuthOptions = {
@@ -258,12 +210,15 @@ export const authOptions: NextAuthOptions = {
               : "TEMPORARY_SECURITY_LOCKOUT";
 
           await prisma.$transaction(async (tx) => {
-            await secureAuditLog(tx, {
+            await createAuditLog(tx, {
               organizationId: personnel.organizationId,
               branchId: personnel.branchId,
               actorId: personnel.id,
               actorRole: personnel.role,
               action: "LOGIN_ATTEMPT_ON_BLOCKED_ACCOUNT",
+              resource: Resource.PERSONNEL,
+              resourceId: personnel.id,
+              description: `Blocked login attempt: ${reason}`,
               severity: Severity.HIGH,
               critical: true,
               ipAddress,
@@ -337,12 +292,16 @@ export const authOptions: NextAuthOptions = {
             where: { id: personnel.id },
             data: { lastLogin: now, lastActivityAt: now, failedLoginAttempts: 0 },
           });
-          await secureAuditLog(tx, {
+
+          await createAuditLog(tx, {
             organizationId: personnel.organizationId,
             branchId: activeBranchId,
             actorId: personnel.id,
             actorRole: effectiveRole,
             action: "LOGIN_SUCCESS",
+            resource: Resource.PERSONNEL,
+            resourceId: personnel.id,
+            description: "User logged in successfully via credentials",
             severity: Severity.LOW,
             critical: false,
             ipAddress,

@@ -1,14 +1,62 @@
+/**
+ * src/app/api/notifications/route.ts
+ * * ENTERPRISE-GRADE NOTIFICATIONS API
+ * Fortified with:
+ * 1. O(1) Memory Cache Authorization (via auth.ts)
+ * 2. Hierarchical Role Validations (via permission.ts)
+ * 3. Cryptographic Forensic Auditing (via audit.ts)
+ * 4. ACID-Compliant Transactions & Strict Payload Validation
+ */
+
 import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "next-auth/next";
 import { authOptions } from "@/core/lib/auth";
 import prisma from "@/core/lib/prisma";
 import { pusherServer } from "@/core/lib/pusher";
-import { Role, NotificationType, CriticalAction } from "@prisma/client";
+import { createAuditLog } from "@/core/lib/audit";
+import { ROLE_WEIGHT } from "@/core/lib/permission";
+import { 
+  Role, 
+  NotificationType, 
+  CriticalAction, 
+  Severity, 
+  Resource} from "@prisma/client";
 import { z } from "zod";
 
-/* -------------------------------------------------- */
-/* GET: FETCH NOTIFICATIONS (PAGINATED & DEDUPLICATED) */
-/* -------------------------------------------------- */
+/* -------------------------------------------------------------------------- */
+/* UTILITIES & SCHEMAS                                                        */
+/* -------------------------------------------------------------------------- */
+
+// Extract IP and Device Info for Forensic Auditing
+function getRequestMetadata(req: NextRequest) {
+  const forwardedFor = req.headers.get("x-forwarded-for");
+  const ipAddress = forwardedFor ? forwardedFor.split(",")[0].trim() : "127.0.0.1";
+  const deviceInfo = req.headers.get("user-agent") || "Unknown Device";
+  return { ipAddress, deviceInfo };
+}
+
+const postSchema = z.object({
+  type: z.nativeEnum(NotificationType),
+  title: z.string().min(1, "Title is required"),
+  message: z.string().min(1, "Message is required"),
+  branchId: z.string().optional().nullable(),
+  actionTrigger: z.nativeEnum(CriticalAction).optional().nullable(),
+  activityLogId: z.string().optional().nullable(),
+  approvalId: z.string().optional().nullable(),
+  kind: z.string().default("PUSH"),
+});
+
+const patchSchema = z.object({
+  id: z.string().optional(),
+  read: z.boolean().optional(),
+  markAll: z.boolean().optional(),
+}).refine(data => data.markAll || (data.id && typeof data.read === "boolean"), {
+  message: "Must provide either markAll=true, or both an ID and read status",
+});
+
+/* -------------------------------------------------------------------------- */
+/* GET: FETCH NOTIFICATIONS (PAGINATED & DEDUPLICATED)                        */
+/* -------------------------------------------------------------------------- */
 export async function GET(req: NextRequest) {
   try {
     const session = await getServerSession(authOptions);
@@ -28,14 +76,8 @@ export async function GET(req: NextRequest) {
       notification: { deletedAt: null }
     };
 
-    if (filterRead !== null) {
-      baseWhere.read = filterRead === "true";
-    }
-
-    if (filterType && filterType !== "ALL") {
-      baseWhere.notification.type = filterType;
-    }
-
+    if (filterRead !== null) baseWhere.read = filterRead === "true";
+    if (filterType && filterType !== "ALL") baseWhere.notification.type = filterType;
     if (filterSearch) {
       baseWhere.notification.OR = [
         { title: { contains: filterSearch, mode: "insensitive" } },
@@ -67,7 +109,7 @@ export async function GET(req: NextRequest) {
       ...(cursor && { skip: 1, cursor: { id: cursor } }),
     });
 
-    // Production Safeguard: Deduplicate by recipientEntryId to prevent frontend crashes
+    // Production Safeguard: Deduplicate by recipientEntryId to prevent frontend memory leaks
     const seenIds = new Set();
     const notifications = recipientEntries
       .filter((entry) => {
@@ -124,32 +166,31 @@ export async function GET(req: NextRequest) {
   }
 }
 
-/* -------------------------------------------------- */
-/* POST: CREATE & BROADCAST (PUSHER)                  */
-/* -------------------------------------------------- */
-const postSchema = z.object({
-  type: z.nativeEnum(NotificationType),
-  title: z.string().min(1),
-  message: z.string().min(1),
-  branchId: z.string().optional().nullable(),
-  actionTrigger: z.nativeEnum(CriticalAction).optional().nullable(),
-  activityLogId: z.string().optional().nullable(),
-  approvalId: z.string().optional().nullable(),
-  kind: z.string().default("PUSH"),
-});
-
+/* -------------------------------------------------------------------------- */
+/* POST: CREATE & BROADCAST (PUSHER)                                          */
+/* -------------------------------------------------------------------------- */
 export async function POST(req: NextRequest) {
   try {
     const session = await getServerSession(authOptions);
     if (!session?.user?.id) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
+    // 1. RBAC Validation: Only Managers and above can execute manual global broadcasts
+    const userWeight = ROLE_WEIGHT[session.user.role as Role] || 0;
+    const managerWeight = ROLE_WEIGHT[Role.MANAGER];
+    
+    if (userWeight < managerWeight && !session.user.isOrgOwner) {
+      return NextResponse.json({ error: "Insufficient privileges to broadcast notifications" }, { status: 403 });
+    }
+
     const body = await req.json();
     const parsed = postSchema.safeParse(body);
-    if (!parsed.success) return NextResponse.json({ error: "Invalid payload" }, { status: 400 });
+    if (!parsed.success) return NextResponse.json({ error: "Invalid payload", details: parsed.error.format() }, { status: 400 });
 
     const { type, title, message, branchId, actionTrigger, activityLogId, approvalId, kind } = parsed.data;
-    const organizationId = session.user.organizationId;
+    const { organizationId, id: actorId, role: actorRole } = session.user;
+    const { ipAddress, deviceInfo } = getRequestMetadata(req);
 
+    // 2. Identify Targets
     const recipients = await prisma.authorizedPersonnel.findMany({
       where: {
         organizationId,
@@ -161,29 +202,51 @@ export async function POST(req: NextRequest) {
           { isOrgOwner: true },
           branchId ? { role: Role.MANAGER, branchId } : {},
         ],
-        NOT: { id: session.user.id }
+        NOT: { id: actorId } // Don't notify the sender
       },
       select: { id: true },
     });
 
-    if (!recipients.length) return NextResponse.json({ success: true, message: "No valid targets" });
+    if (!recipients.length) return NextResponse.json({ success: true, message: "No valid targets found" });
 
-    const notification = await prisma.notification.create({
-      data: {
+    // 3. ACID Transaction: Create Notification, Map Recipients, & Log Forensic Audit
+    const notification = await prisma.$transaction(async (tx) => {
+      const newNotif = await tx.notification.create({
+        data: {
+          organizationId,
+          branchId,
+          type,
+          title,
+          message,
+          actionTrigger,
+          activityLogId,
+          approvalId,
+          recipients: {
+            create: recipients.map((r) => ({ personnelId: r.id })),
+          },
+        },
+      });
+
+      await createAuditLog(tx, {
+        action: "BROADCAST_NOTIFICATION",
+        resource: Resource.SETTINGS,
+        resourceId: newNotif.id,
         organizationId,
         branchId,
-        type,
-        title,
-        message,
-        actionTrigger,
-        activityLogId,
-        approvalId,
-        recipients: {
-          create: recipients.map((r) => ({ personnelId: r.id })),
-        },
-      },
+        actorId,
+        actorRole: actorRole as Role,
+        severity: Severity.MEDIUM,
+        critical: false,
+        description: `Broadcasted ${type} notification to ${recipients.length} recipients.`,
+        ipAddress,
+        deviceInfo,
+        metadata: { title, targetCount: recipients.length },
+      });
+
+      return newNotif;
     });
 
+    // 4. Dispatch WebSocket Events
     const alertPayload = {
       id: notification.id,
       kind,
@@ -205,47 +268,72 @@ export async function POST(req: NextRequest) {
   }
 }
 
-/* -------------------------------------------------- */
-/* PATCH: UPDATE READ STATUS                          */
-/* -------------------------------------------------- */
+/* -------------------------------------------------------------------------- */
+/* PATCH: UPDATE READ STATUS                                                  */
+/* -------------------------------------------------------------------------- */
 export async function PATCH(req: NextRequest) {
   try {
     const session = await getServerSession(authOptions);
     if (!session?.user?.id) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
     const body = await req.json();
-    const { id, read, markAll } = body;
-    const personnelId = session.user.id;
+    const parsed = patchSchema.safeParse(body);
+    if (!parsed.success) return NextResponse.json({ error: "Invalid payload", details: parsed.error.format() }, { status: 400 });
 
-    if (markAll === true) {
-      await prisma.notificationRecipient.updateMany({
-        where: { personnelId, read: false },
-        data: { read: true },
-      });
-      await pusherServer.trigger(`user-${personnelId}`, "notifications-read", { type: "all" });
-      return NextResponse.json({ success: true, updated: "all" });
-    }
+    const { id, read, markAll } = parsed.data;
+    const { id: personnelId, organizationId, role: actorRole } = session.user;
+    const { ipAddress, deviceInfo } = getRequestMetadata(req);
 
-    if (!id || typeof read !== "boolean") return NextResponse.json({ error: "Invalid payload" }, { status: 400 });
+    await prisma.$transaction(async (tx) => {
+      if (markAll) {
+        await tx.notificationRecipient.updateMany({
+          where: { personnelId, read: false },
+          data: { read: true },
+        });
 
-    /**
-     * Optimized Atomic Update:
-     * Handles both 'recipientEntryId' or 'notificationId' in a single query 
-     * using the personnelId as a security boundary.
-     */
-    await prisma.notificationRecipient.updateMany({
-      where: {
-        personnelId,
-        OR: [
-          { id: id },
-          { notificationId: id }
-        ]
-      },
-      data: { read },
+        await createAuditLog(tx, {
+          action: "MARK_ALL_NOTIFICATIONS_READ",
+          resource: Resource.PERSONNEL,
+          resourceId: personnelId,
+          organizationId,
+          actorId: personnelId,
+          actorRole: actorRole as Role,
+          severity: Severity.LOW,
+          description: "User marked all pending notifications as read.",
+          ipAddress,
+          deviceInfo,
+        });
+
+      } else if (id && read !== undefined) {
+        /**
+         * Optimized Atomic Update:
+         * Handles both 'recipientEntryId' or 'notificationId' in a single query 
+         * using the personnelId as a strict security boundary to prevent IDOR.
+         */
+        await tx.notificationRecipient.updateMany({
+          where: {
+            personnelId,
+            OR: [
+              { id: id },
+              { notificationId: id }
+            ]
+          },
+          data: { read },
+        });
+
+        // Skip forensic logging for individual reads to prevent database bloat, 
+        // as individual reads are usually considered low-value operational noise.
+      }
     });
 
-    await pusherServer.trigger(`user-${personnelId}`, "notifications-read", { type: "single", id, read });
-    return NextResponse.json({ success: true });
+    if (markAll) {
+      await pusherServer.trigger(`user-${personnelId}`, "notifications-read", { type: "all" });
+      return NextResponse.json({ success: true, updated: "all" });
+    } else {
+      await pusherServer.trigger(`user-${personnelId}`, "notifications-read", { type: "single", id, read });
+      return NextResponse.json({ success: true });
+    }
+
   } catch (error) {
     console.error("[PATCH_NOTIFICATION_ERROR]:", error);
     return NextResponse.json({ error: "Update failed" }, { status: 500 });

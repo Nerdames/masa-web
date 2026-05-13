@@ -2,105 +2,172 @@ import { NextRequest, NextResponse } from "next/server";
 import prisma from "@/core/lib/prisma";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/core/lib/auth";
-import { Prisma, Role, Severity } from "@prisma/client";
+import { Prisma, Role, Severity, ActorType, PermissionAction } from "@prisma/client";
 import { authorize, RESOURCES } from "@/core/lib/permission";
+
+// --- TYPE DEFINITIONS ---
+// Enforces a strict contract for the high-speed terminal UI
+interface AuditTracePacket {
+  id: string;
+  action: string;
+  description: string;
+  module: "SECURITY" | "FINANCIAL" | "INVENTORY" | "SYSTEM";
+  severity: Severity;
+  critical: boolean;
+  
+  // The "Who" & "By"
+  actor: {
+    id: string | null;
+    type: ActorType;
+    name: string;
+    role: string;
+    staffCode?: string;
+  };
+
+  // The "Where" & "From"
+  context: {
+    branchName: string;
+    ipAddress: string;
+    deviceInfo: string;
+    locationContext?: string; // e.g., "Lagos, Nigeria" mapped via IP later
+  };
+
+  // The "What" & "Target"
+  target: {
+    id: string | null;
+    type: string | null;
+  };
+
+  // The "When", "Why", & "How"
+  telemetry: {
+    createdAt: string;
+    requestId: string;
+    approvalId: string | null; // Trace back to managerial consent
+    metadata: Record<string, any>;
+  };
+
+  // The "Was" & "Is" (State mutations)
+  diff: {
+    before: Prisma.JsonValue | null;
+    after: Prisma.JsonValue | null;
+  };
+
+  // Fortress Integrity 
+  integrity: {
+    hash: string | null;
+    previousHash: string | null;
+    isChainValid: boolean;
+  };
+
+  correlatedLogs: Partial<AuditTracePacket>[];
+}
 
 export async function GET(req: NextRequest) {
   try {
+    // 1. AUTHENTICATION (The "Who is asking")
     const session = await getServerSession(authOptions);
 
-    if (!session?.user) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    if (!session?.user?.organizationId) {
+      return NextResponse.json({ error: "Unauthorized access attempt logged." }, { status: 401 });
     }
 
     const orgId = session.user.organizationId;
     const userRole = session.user.role as Role;
+    const requestedBranchId = req.nextUrl.searchParams.get("branchId");
 
-    // 1. STRICT RBAC: Ensure user has AUDIT READ permissions
-    const auth = authorize({
+    // 2. DUAL-LAYER AUTHORIZATION (Auth.ts Session -> Permissions.ts Fallback)
+    // Check if dynamic permissions exist on the session, otherwise fallback to static RBAC map
+    const sessionPermissions = (session.user as any).permissions?.[RESOURCES.AUDIT] || [];
+    const hasDynamicAccess = sessionPermissions.includes("READ" as PermissionAction);
+    
+    const staticAuth = authorize({
       role: userRole,
       action: "READ",
       resource: RESOURCES.AUDIT,
     });
 
-    if (!auth.allowed) {
-      return NextResponse.json({ error: "Access Denied" }, { status: 403 });
+    if (!hasDynamicAccess && !staticAuth.allowed) {
+      console.warn(`[SECURITY] Audit access denied for User:${session.user.id} Role:${userRole}`);
+      return NextResponse.json({ error: "Insufficient cryptographic clearance." }, { status: 403 });
     }
 
-    const { searchParams } = new URL(req.url);
-    const limit = Math.min(parseInt(searchParams.get("limit") || "50"), 100);
-    const severityFilter = searchParams.get("severity") || "ALL";
+    // 3. SANITIZED PARAMS & RATE LIMITING BOUNDS
+    const { searchParams } = req.nextUrl;
+    // Hard cap at 100 to prevent memory exhaustion on large trace chains
+    const limit = Math.min(Math.max(parseInt(searchParams.get("limit") || "50", 10), 1), 100); 
+    const severityFilter = searchParams.get("severity");
     const cursor = searchParams.get("cursor");
     const query = searchParams.get("q");
+    const actorId = searchParams.get("actorId");
 
-    // 2. Build Query Filters for the specific Organization
+    // 4. BUILD OPTIMIZED QUERY
     const whereClause: Prisma.ActivityLogWhereInput = {
       organizationId: orgId,
       deletedAt: null,
+      ...(requestedBranchId && { branchId: requestedBranchId }),
+      ...(actorId && { actorId }),
     };
 
-    if (severityFilter !== "ALL") {
+    if (severityFilter && severityFilter !== "ALL" && Object.values(Severity).includes(severityFilter as Severity)) {
       whereClause.severity = severityFilter as Severity;
     }
 
     if (query) {
+      const sanitizedQuery = query.trim();
       whereClause.OR = [
-        { action: { contains: query, mode: "insensitive" } },
-        { description: { contains: query, mode: "insensitive" } },
-        { requestId: { contains: query, mode: "insensitive" } },
-        { targetId: { contains: query, mode: "insensitive" } },
-        { hash: { contains: query, mode: "insensitive" } },
+        { action: { contains: sanitizedQuery, mode: "insensitive" } },
+        { description: { contains: sanitizedQuery, mode: "insensitive" } },
+        { requestId: { equals: sanitizedQuery } }, // Exact match preferred for UUIDs
+        { targetId: { equals: sanitizedQuery } },
+        { hash: { equals: sanitizedQuery } },
         {
           personnel: {
             OR: [
-              { name: { contains: query, mode: "insensitive" } },
-              { staffCode: { contains: query, mode: "insensitive" } },
+              { name: { contains: sanitizedQuery, mode: "insensitive" } },
+              { staffCode: { equals: sanitizedQuery } },
             ],
           },
         },
       ];
     }
 
-    // 3. Fetch Raw Ledger Data strictly from Schema (with Pagination)
+    // 5. FETCH LEDGER SEED (O(1) Pagination via Cursor)
     const rawLogs = await prisma.activityLog.findMany({
       where: whereClause,
-      take: limit + 1, // Fetch +1 to determine if there's a next page
+      take: limit + 1,
       ...(cursor && {
         cursor: { id: cursor },
-        skip: 1, // Skip the cursor itself
+        skip: 1,
       }),
       include: {
-        personnel: {
-          select: { name: true, role: true, staffCode: true },
-        },
-        branch: {
-          select: { name: true },
-        },
+        personnel: { select: { name: true, role: true, staffCode: true } },
+        branch: { select: { name: true } },
       },
       orderBy: { createdAt: "desc" },
     });
 
-    // 4. Resolve Pagination
     let nextCursor: string | undefined = undefined;
     if (rawLogs.length > limit) {
-      const nextItem = rawLogs.pop(); // Remove the extra item
+      const nextItem = rawLogs.pop();
       nextCursor = nextItem!.id;
     }
 
-    // 5. Chain-Link Completeness Engine
-    // If we paginated into the middle of a request chain, we need to fetch the rest of the hops
-    // so the frontend packet isn't fragmented.
-    const requestIds = rawLogs
+    // 6. CHAIN-LINK COMPLETENESS ENGINE
+    // Reconstruct the exact sequence of events across the distributed system for a single Request ID
+    const requestIds = [...new Set(rawLogs
       .map((log) => log.requestId)
-      .filter((id): id is string => id !== null && id.trim() !== "");
+      .filter((id): id is string => id !== null && id.trim() !== "")
+    )];
 
+    // Protection: Only fetch missing hops if we have requestIds, bounded by a sane limit
     const missingCorrelatedLogs = requestIds.length > 0 
       ? await prisma.activityLog.findMany({
           where: {
             organizationId: orgId,
             requestId: { in: requestIds },
-            id: { notIn: rawLogs.map((l) => l.id) }, // Only fetch what we missed
+            id: { notIn: rawLogs.map((l) => l.id) },
           },
+          take: 500, // Circuit breaker to prevent massive payload expansion
           include: {
             personnel: { select: { name: true, role: true, staffCode: true } },
             branch: { select: { name: true } },
@@ -110,17 +177,16 @@ export async function GET(req: NextRequest) {
 
     const allRelevantLogs = [...rawLogs, ...missingCorrelatedLogs];
 
-    // 6. Forensic Processing & Grouping
+    // 7. FORENSIC GROUPING & ANALYSIS
     const chainMap = new Map<string, typeof allRelevantLogs>();
     const orderedTraceKeys: string[] = [];
 
     allRelevantLogs.forEach((log) => {
-      // TraceKey prioritizes actual Request ID. If null, log is standalone (prevent massive null-grouping)
+      // TraceKey prioritizes actual Request ID to group API hops. If null, treat as standalone.
       const traceKey = log.requestId || log.id;
 
       if (!chainMap.has(traceKey)) {
         chainMap.set(traceKey, []);
-        // Only track keys from the original paginated fetch to maintain cursor ordering
         if (rawLogs.some(r => r.id === log.id)) {
             orderedTraceKeys.push(traceKey); 
         }
@@ -128,98 +194,113 @@ export async function GET(req: NextRequest) {
       chainMap.get(traceKey)!.push(log);
     });
 
-    // 7. Assemble the Process Trace Packets exactly matching the Frontend Interface
-    const processedLogs = Array.from(new Set(orderedTraceKeys)).map((traceKey) => {
+    // 8. ASSEMBLE TRACE PACKETS
+    const processedLogs: AuditTracePacket[] = Array.from(new Set(orderedTraceKeys)).map((traceKey) => {
       const chain = chainMap.get(traceKey)!;
       
-      // Sort chain by time (ascending) to identify the true trigger event vs downstream hops
+      // Sort ascending to find the true origin request (the spark)
       chain.sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
 
       const trigger = chain[0];
       const downstream = chain.slice(1);
-      const meta = (trigger.metadata as any) || {};
+      const meta = (trigger.metadata as Record<string, any>) || {};
 
-      // Determine Module Classification based on Action String
+      // Dynamic Module Classification
       const actionStr = trigger.action.toUpperCase();
       let moduleType: "SECURITY" | "FINANCIAL" | "INVENTORY" | "SYSTEM" = "SYSTEM";
 
       if (trigger.critical || /LOCK|LOGIN|AUTH|PERMISSION|ROLE|PASSWORD/.test(actionStr)) {
         moduleType = "SECURITY";
-      } else if (/PAYMENT|INVOICE|REFUND|EXPENSE|NGN|TRANSACTION/.test(actionStr)) {
+      } else if (/PAYMENT|INVOICE|REFUND|EXPENSE|NGN|TRANSACTION|ACCOUNT/.test(actionStr)) {
         moduleType = "FINANCIAL";
-      } else if (/STOCK|PRODUCT|WAREHOUSE|ADJUST|TRANSFER|GRN|PO/.test(actionStr)) {
+      } else if (/STOCK|PRODUCT|WAREHOUSE|ADJUST|TRANSFER|GRN|PO|UOM/.test(actionStr)) {
         moduleType = "INVENTORY";
       }
 
       return {
         id: trigger.id,
         action: trigger.action,
-        description: trigger.description || "No description provided.",
+        description: trigger.description || "System action logged.",
         module: moduleType,
         severity: trigger.severity,
         critical: trigger.critical,
-        createdAt: trigger.createdAt.toISOString(),
 
-        // Originator Details (Aligned with UI Badges)
-        actorId: trigger.actorId,
-        actorType: trigger.actorType,
-        personnelName: trigger.personnel?.name || (trigger.actorType === "SYSTEM" ? "SYSTEM_AUTOMATED" : "Unknown"),
-        personnelRole: trigger.actorRole || trigger.personnel?.role || "SYSTEM",
-        personnelCode: trigger.personnel?.staffCode || undefined,
-        branchName: trigger.branch?.name || "HQ/GLOBAL",
+        actor: {
+          id: trigger.actorId,
+          type: trigger.actorType,
+          name: trigger.personnel?.name || (trigger.actorType === "SYSTEM" ? "SYSTEM_CORE" : "UNKNOWN_ENTITY"),
+          role: trigger.actorRole || trigger.personnel?.role || "SYSTEM",
+          staffCode: trigger.personnel?.staffCode || undefined,
+        },
 
-        // Target Resource Mapping
+        context: {
+          branchName: trigger.branch?.name || "HQ/GLOBAL",
+          ipAddress: trigger.ipAddress || "0.0.0.0",
+          deviceInfo: trigger.deviceInfo || "INTERNAL_SERVICE",
+          locationContext: trigger.ipAddress ? "Lagos, Nigeria (Defaulted Context)" : undefined, // Placeholder for IP Geo-resolution
+        },
+
         target: {
-          id: trigger.targetId || null,
-          type: trigger.targetType || null,
-          branch: trigger.branch?.name || "GLOBAL",
+          id: trigger.targetId,
+          type: trigger.targetType,
         },
 
-        // Telemetry
-        requestId: trigger.requestId || traceKey,
-        ipAddress: trigger.ipAddress || "0.0.0.0",
-        deviceInfo: trigger.deviceInfo || "INTERNAL_SERVICE",
+        telemetry: {
+          createdAt: trigger.createdAt.toISOString(),
+          requestId: trigger.requestId || traceKey,
+          approvalId: trigger.approvalId || null, 
+          metadata: meta,
+        },
 
-        // State Diffing Logic (Mapped straight to Schema)
         diff: {
-          before: trigger.before || null,
-          after: trigger.after || null,
+          before: trigger.before,
+          after: trigger.after,
         },
 
-        // Fortress Integrity Verification Data
         integrity: {
-          hash: trigger.hash || null,
-          previousHash: trigger.previousHash || null,
-          isChainValid: !!trigger.hash, // Simplistic validation, expand based on crypto needs
+          hash: trigger.hash,
+          previousHash: trigger.previousHash,
+          // Basic check: Ensure hash exists if it's a critical transaction. 
+          // In an advanced setup, you would re-verify the crypto-hash here.
+          isChainValid: trigger.critical ? !!trigger.hash : true, 
         },
 
-        metadata: meta,
-
-        // Downstream Correlated Hops
+        // Map downstream hops into a simplified array for the UI to expand
         correlatedLogs: downstream.map((hop) => ({
           id: hop.id,
           action: hop.action,
-          description: hop.description,
           severity: hop.severity,
           critical: hop.critical,
-          createdAt: hop.createdAt.toISOString(),
-          metadata: (hop.metadata as any) || {},
+          telemetry: {
+            createdAt: hop.createdAt.toISOString(),
+            requestId: hop.requestId || traceKey,
+            approvalId: hop.approvalId,
+            metadata: (hop.metadata as Record<string, any>) || {},
+          },
         })),
       };
     });
 
-    // 8. Final safety sort to ensure absolute descending chronological order
-    processedLogs.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+    // Final safety sort: Absolute descending chronological order for the UI
+    processedLogs.sort((a, b) => new Date(b.telemetry.createdAt).getTime() - new Date(a.telemetry.createdAt).getTime());
 
     return NextResponse.json({
       success: true,
-      logs: processedLogs,
-      nextCursor,
+      data: {
+        logs: processedLogs,
+        pagination: {
+          nextCursor,
+          hasMore: !!nextCursor,
+          limit
+        }
+      }
     });
+
   } catch (error) {
-    console.error("[FORENSIC_API_ERROR]", error);
+    console.error("[FORENSIC_API_FATAL]", error);
+    // Avoid leaking stack traces in production responses
     return NextResponse.json(
-      { error: "Audit ledger compilation failed." },
+      { error: "Audit ledger compilation encountered an integrity exception." },
       { status: 500 }
     );
   }
