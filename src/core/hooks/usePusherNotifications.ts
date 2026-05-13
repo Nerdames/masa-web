@@ -1,4 +1,3 @@
-// src/core/hooks/usePusherNotifications.ts
 "use client";
 
 import { useEffect, useRef, useCallback } from "react";
@@ -6,55 +5,96 @@ import { useSession } from "next-auth/react";
 import { getPusherClient } from "@/core/lib/pusher";
 import { useAlerts } from "@/core/components/feedback/AlertProvider";
 import { useSWRConfig } from "swr";
-import { NotificationType } from "@prisma/client";
+import { NotificationType, Resource } from "@prisma/client";
+import { usePermission } from "@/core/hooks/usePermission";
 
+/**
+ * TYPE DEFINITIONS FOR ENTERPRISE PAYLOADS
+ */
+interface PusherAlertPayload {
+  id: string;
+  kind: "PUSH" | "TOAST";
+  type: NotificationType;
+  title: string;
+  message: string;
+  actionTrigger?: string | null;
+  approvalId?: string | null;
+  activityId?: string | null;
+  createdAt: number;
+}
+
+/**
+ * PRODUCTION-READY PUSHER HOOK
+ * Synchronizes real-time notifications with the core RBAC engine and SWR cache.
+ */
 export const usePusherNotifications = () => {
   const { data: session } = useSession();
   const { dispatch } = useAlerts();
   const { mutate } = useSWRConfig();
+  const { canSee } = usePermission();
+  
   const activeChannels = useRef<Set<string>>(new Set());
 
-  const playNotificationSound = useCallback(() => {
-    // Check if we are in the browser and user has interacted
-    const audio = new Audio("/sounds/notification-chime.mp3");
-    audio.volume = 0.4;
-    audio.play().catch(() => {
-      // Browsers often block auto-play until user interaction
-      console.log("Audio playback delayed until interaction.");
-    });
+  // 1. REQUEST SYSTEM PERMISSION FOR NATIVE CHIME
+  useEffect(() => {
+    if (typeof window !== "undefined" && "Notification" in window) {
+      if (Notification.permission !== "granted" && Notification.permission !== "denied") {
+        Notification.requestPermission();
+      }
+    }
   }, []);
 
-  const handleIncoming = useCallback((data: {
-    id: string;
-    type: NotificationType;
-    title: string;
-    message: string;
-    approvalId?: string;
-    activityId?: string;
-  }) => {
-    playNotificationSound();
+  const triggerSystemNotification = useCallback((title: string, message: string) => {
+    if (typeof window !== "undefined" && "Notification" in window && Notification.permission === "granted") {
+      try {
+        new Notification(title, {
+          body: message,
+          icon: "/logo.png",
+          silent: false, // Triggers default OS chime
+        });
+      } catch (error) {
+        console.warn("[SYSTEM] Native notification failed:", error);
+      }
+    }
+  }, []);
+
+  const handleIncoming = useCallback((data: PusherAlertPayload) => {
+    // 2. CLEARANCE CHECK
+    if (data.type === "SECURITY" && !canSee(Resource.AUDIT)) {
+      return; 
+    }
+
+    // 3. AUDITORY & SYSTEM FEEDBACK
+    triggerSystemNotification(data.title, data.message);
     
+    // 4. UI DISPATCH
     dispatch({
-      // High-priority types stay on screen (PUSH), others disappear (TOAST)
-      kind: (data.type === "SECURITY" || data.type === "APPROVAL") ? "PUSH" : "TOAST",
+      kind: data.kind,
       notificationId: data.id,
       type: data.type,
       title: data.title,
       message: data.message,
       context: { 
-        approvalId: data.approvalId, 
-        activityId: data.activityId,
-        // Tagging welcome notifications for special UI treatment
-        isWelcome: data.title.toLowerCase().includes("welcome") 
+        approvalId: data.approvalId || undefined, 
+        activityId: data.activityId || undefined,
+        isWelcome: data.title.toLowerCase().includes("welcome"),
+        isCritical: data.type === "SECURITY" || data.type === "APPROVAL"
       },
     });
 
+    // 5. CACHE SYNCHRONIZATION
     mutate("/api/notifications");
-  }, [dispatch, mutate, playNotificationSound]);
+    
+    // Type-safe key check for forensic audit synchronization
+    if (data.activityId || data.type === "SECURITY") {
+      mutate((key: unknown) => typeof key === 'string' && key.startsWith("/api/audit"));
+    }
+  }, [dispatch, mutate, triggerSystemNotification, canSee]);
 
   const userId = session?.user?.id;
   const orgId = session?.user?.organizationId;
 
+  // 6. DYNAMIC SUBSCRIPTION MANAGEMENT
   useEffect(() => {
     if (!userId || !orgId) return;
 
@@ -65,8 +105,15 @@ export const usePusherNotifications = () => {
     channelsToSubscribe.forEach((name) => {
       if (!currentSubs.has(name)) {
         const channel = pusher.subscribe(name);
-        channel.bind("notification:new", handleIncoming);
-        channel.bind("notifications-read", () => mutate("/api/notifications"));
+        
+        // Listener for new alerts
+        channel.bind("new-alert", handleIncoming);
+        
+        // FIX: Removed unused 'readData' parameter to resolve ESLint error
+        channel.bind("notifications-read", () => {
+          mutate("/api/notifications");
+        });
+
         currentSubs.add(name);
       }
     });
