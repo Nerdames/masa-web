@@ -12,18 +12,16 @@ import {
   Download,
   Package,
   Archive,
-  BarChart3,
-  TrendingUp
+  BarChart3
 } from "lucide-react";
 import { saveAs } from "file-saver";
 import { useAlerts } from "@/core/components/feedback/AlertProvider";
 import { useSidePanel } from "@/core/components/layout/SidePanelContext";
-// Replaced Modal with Panel [cite: 4, 186]
 import RegisterProductPanel from "@/modules/inventory/components/RegisterProductPanel";
 import ProductDetailPanel from "@/modules/inventory/components/ProductDetailPanel";
 
 /* -------------------------
-   Types
+   Types (Aligned with V3.1 API)
    ------------------------- */
 
 interface ICategory {
@@ -50,21 +48,28 @@ interface IProduct {
   uomId?: string | null;
   deletedAt?: string | null;
   createdAt: string;
+  updatedAt: string; // Added for sorting parity
   category?: ICategory | null;
   uom?: IUom | null;
   createdBy?: { name: string | null } | null;
   updatedBy?: { name: string | null } | null;
 }
 
-interface ProductsResponse {
-  items: IProduct[];
+interface PaginationMeta {
   total: number;
   page: number;
   limit: number;
+  totalPages: number;
+}
+
+interface ProductsResponse {
+  items: IProduct[];
+  pagination: PaginationMeta;
+  requestId: string;
 }
 
 const DEFAULT_LIMIT = 25;
-const EXPORT_LIMIT = 10000;
+const EXPORT_LIMIT = 1000; // Aligned with API MAX_LIMIT
 
 /* -------------------------
    Main Component
@@ -74,16 +79,22 @@ export default function ProductRegistryWorkspace({ organizationId }: { organizat
   const { dispatch } = useAlerts();
   const { openPanel, closePanel } = useSidePanel();
 
+  // State Management
   const [products, setProducts] = useState<IProduct[]>([]);
   const [searchTerm, setSearchTerm] = useState("");
   const [statusFilter, setStatusFilter] = useState<"all" | "active" | "archived">("active");
-  const [sort, setSort] = useState<"name_asc" | "name_desc" | "cost_desc" | "createdAt_desc">("name_asc");
+  const [sort, setSort] = useState<"name_asc" | "name_desc" | "cost_desc" | "createdAt_desc">("createdAt_desc");
+  const [lastRequestId, setLastRequestId] = useState<string | null>(null);
+
+  // Filter states
   const [fromDate, setFromDate] = useState<string | null>(null);
   const [toDate, setToDate] = useState<string | null>(null);
 
+  // Pagination states (Synced with API Pagination object)
   const [page, setPage] = useState(1);
   const [limit, setLimit] = useState(DEFAULT_LIMIT);
   const [total, setTotal] = useState(0);
+  const [totalPages, setTotalPages] = useState(1);
 
   const [isPending, startTransition] = useTransition();
   const [selectedProduct, setSelectedProduct] = useState<IProduct | null>(null);
@@ -106,50 +117,61 @@ export default function ProductRegistryWorkspace({ organizationId }: { organizat
       Data Loaders
       ------------------------- */
 
-  const buildQuery = (opts?: {
+  const buildQuery = useCallback((opts?: {
     page?: number;
     limit?: number;
     search?: string;
-    exportAll?: boolean;
   }) => {
     const q = new URLSearchParams();
     q.set("page", String(opts?.page ?? page));
     q.set("limit", String(opts?.limit ?? limit));
-    if (opts?.search ?? searchTerm) q.set("search", opts?.search ?? searchTerm);
-    if (opts?.exportAll) q.set("export", "true");
+    
+    const currentSearch = opts?.search ?? searchTerm;
+    if (currentSearch.trim()) q.set("search", currentSearch.trim());
+    
     return q.toString();
-  };
+  }, [page, limit, searchTerm]);
 
   const loadProducts = useCallback(
     async (opts?: { page?: number; limit?: number; search?: string }) => {
       startTransition(async () => {
         try {
-          const q = buildQuery({ page: opts?.page, limit: opts?.limit, search: opts?.search });
-          const res = await fetch(`/api/products?${q.toString()}`);
-          const data: ProductsResponse | { error?: string } = await res.json();
+          const queryString = buildQuery(opts);
+          const res = await fetch(`/api/products?${queryString}`);
+          const data = await res.json();
 
-          if (!res.ok) throw new Error((data as any).error || "Failed to load products");
+          if (!res.ok) {
+            throw new Error(data.error || "Registry synchronization failed");
+          }
 
-          setProducts((data as ProductsResponse).items || []);
-          setTotal((data as ProductsResponse).total || 0);
-          setPage((data as ProductsResponse).page || opts?.page || page);
+          const response = data as ProductsResponse;
+          setProducts(response.items);
+          setTotal(response.pagination.total);
+          setTotalPages(response.pagination.totalPages);
+          setPage(response.pagination.page);
+          setLastRequestId(response.requestId);
         } catch (err: any) {
-          dispatch({ kind: "TOAST", type: "WARNING", title: "Sync Error", message: err.message || "Failed to load catalog" });
+          dispatch({ 
+            kind: "TOAST", 
+            type: "WARNING", 
+            title: "Audit Sync Error", 
+            message: err.message || "Failed to retrieve product data" 
+          });
           setProducts([]);
-          setTotal(0);
         }
       });
     },
-    [dispatch, limit, page, searchTerm]
+    [dispatch, buildQuery]
   );
 
+  // Trigger load on dependency changes
   useEffect(() => {
-    setPage(1);
-  }, [searchTerm, statusFilter, sort, fromDate, toDate, limit]);
+    loadProducts({ page: 1 });
+  }, [searchTerm, limit, loadProducts]);
 
   useEffect(() => {
-    loadProducts({ page, limit });
-  }, [page, limit, loadProducts]);
+    loadProducts({ page });
+  }, [page, loadProducts]);
 
   const refreshAll = useCallback(() => {
     loadProducts({ page, search: searchTerm });
@@ -161,7 +183,7 @@ export default function ProductRegistryWorkspace({ organizationId }: { organizat
 
   const handleArchive = async (id: string) => {
     const ok = confirm(
-      "Are you sure you want to archive this master product? This action is immutable and will be recorded in the forensic audit log."
+      "SECURITY ALERT: Are you sure you want to archive this master product? This action will be logged for forensic auditing and cannot be undone if linked to historical transactions."
     );
     if (!ok) return;
 
@@ -169,30 +191,29 @@ export default function ProductRegistryWorkspace({ organizationId }: { organizat
       try {
         const res = await fetch(`/api/products?id=${encodeURIComponent(id)}`, {
           method: "DELETE",
-          headers: { "Accept": "application/json" },
         });
 
-        const data = await res.json().catch(() => ({}));
+        const data = await res.json();
 
         if (res.ok) {
           dispatch({
             kind: "TOAST",
             type: "SUCCESS",
-            title: "Product Archived",
-            message: "Master catalog entry archived successfully.",
+            title: "Registry Updated",
+            message: "Product successfully archived and decommissioned.",
           });
           setSelectedProduct(null);
           refreshAll();
-          return;
+        } else {
+          // Captures "Deletion Forbidden: X units remain" from API
+          throw new Error(data.error || "Archive operation failed");
         }
-
-        throw new Error(data.error || "Archive failed. See server response.");
       } catch (err: any) {
         dispatch({
           kind: "TOAST",
           type: "WARNING",
-          title: "Archive Failed",
-          message: err?.message || "Unexpected error occurred.",
+          title: "Constraint Violation",
+          message: err.message,
         });
       }
     });
@@ -225,7 +246,7 @@ export default function ProductRegistryWorkspace({ organizationId }: { organizat
           setSelectedProduct(null);
           closePanel();
         }}
-        onEdit={() => handleOpenRegisterPanel(product)} // Integrated RegisterProductPanel [cite: 4, 186]
+        onEdit={() => handleOpenRegisterPanel(product)}
         onArchive={() => handleArchive(product.id)}
       />
     );
@@ -239,25 +260,18 @@ export default function ProductRegistryWorkspace({ organizationId }: { organizat
     const active = products.filter(p => !p.deletedAt).length;
     const archived = products.filter(p => p.deletedAt).length;
     const totalVal = products.reduce((acc, p) => acc + Number(p.baseCostPrice || 0), 0);
-    return { active, archived, totalVal, totalCount: total };
-  }, [products, total]);
+    return { active, archived, totalVal };
+  }, [products]);
 
+  // Frontend filtering for refined UI state (Status/Date/Sort)
   const filteredProducts = useMemo(() => {
-    const term = searchTerm.trim().toLowerCase();
     return products.filter((p) => {
-      if (term) {
-        const inName = p.name.toLowerCase().includes(term);
-        const inSku = p.sku.toLowerCase().includes(term);
-        const inBarcode = (p.barcode || "").toLowerCase().includes(term);
-        if (!inName && !inSku && !inBarcode) return false;
-      }
-      if (statusFilter !== "all") {
-        if (statusFilter === "active" && p.deletedAt) return false;
-        if (statusFilter === "archived" && !p.deletedAt) return false;
-      }
-      if (fromDate) {
-        if (new Date(p.createdAt) < new Date(fromDate)) return false;
-      }
+      // Status Logic
+      if (statusFilter === "active" && p.deletedAt) return false;
+      if (statusFilter === "archived" && !p.deletedAt) return false;
+      
+      // Date Logic
+      if (fromDate && new Date(p.createdAt) < new Date(fromDate)) return false;
       if (toDate) {
         const end = new Date(toDate);
         end.setDate(end.getDate() + 1);
@@ -271,7 +285,7 @@ export default function ProductRegistryWorkspace({ organizationId }: { organizat
       if (sort === "createdAt_desc") return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
       return 0;
     });
-  }, [products, searchTerm, statusFilter, sort, fromDate, toDate]);
+  }, [products, statusFilter, sort, fromDate, toDate]);
 
   /* -------------------------
       Export Logic
@@ -279,7 +293,11 @@ export default function ProductRegistryWorkspace({ organizationId }: { organizat
 
   const exportCSV = async (all = false) => {
     try {
-      const q = buildQuery({ exportAll: all, limit: all ? EXPORT_LIMIT : limit, page: 1 });
+      const q = new URLSearchParams();
+      q.set("limit", all ? String(EXPORT_LIMIT) : String(limit));
+      q.set("page", "1");
+      if (searchTerm) q.set("search", searchTerm);
+
       const res = await fetch(`/api/products?${q}`);
       if (!res.ok) throw new Error("Export failed");
       const data = await res.json();
@@ -300,17 +318,11 @@ export default function ProductRegistryWorkspace({ organizationId }: { organizat
       ]);
       const csv = [header.join(","), ...rows.map((r) => r.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(","))].join("\n");
       const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
-      saveAs(blob, `product_registry_${new Date().toISOString()}.csv`);
+      saveAs(blob, `registry_audit_${new Date().toISOString()}.csv`);
     } catch (e: any) {
-      dispatch({ kind: "TOAST", type: "WARNING", title: "Export Error", message: e.message || "Export error" });
+      dispatch({ kind: "TOAST", type: "WARNING", title: "Export Error", message: e.message });
     }
   };
-
-  const totalPages = Math.max(1, Math.ceil(total / limit));
-
-  /* -------------------------
-      Render
-      ------------------------- */
 
   return (
     <div className="h-screen flex flex-col bg-[#FAFAFA] dark:bg-slate-950 text-slate-900 dark:text-slate-100 font-sans relative overflow-hidden transition-colors duration-300">
@@ -326,7 +338,9 @@ export default function ProductRegistryWorkspace({ organizationId }: { organizat
             <div className="p-1.5 bg-gradient-to-br from-indigo-600 to-blue-500 rounded-lg shadow-sm">
               <Database className="w-4 h-4 text-white" />
             </div>
-            <h1 className="text-[16px] font-bold tracking-tight text-slate-900 dark:text-white">Product Registry</h1>
+            <div>
+              <h1 className="text-[16px] font-bold tracking-tight text-slate-900 dark:text-white">Product Registry</h1>
+            </div>
           </div>
 
           <div className="flex items-center gap-2 sm:gap-3">
@@ -336,13 +350,13 @@ export default function ProductRegistryWorkspace({ organizationId }: { organizat
                 type="text"
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
-                placeholder="Filter catalog..."
+                placeholder="Search SKU or Name..."
                 className="bg-slate-100/80 dark:bg-slate-800/80 border-none py-1.5 pl-8 pr-4 text-[11px] font-medium w-48 lg:w-64 rounded-md focus:ring-1 focus:ring-indigo-500 outline-none dark:text-white transition-colors"
               />
             </div>
 
             <button
-              onClick={() => loadProducts({ page })}
+              onClick={() => refreshAll()}
               disabled={isPending}
               className="p-1.5 text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-slate-800 rounded-md transition-colors disabled:opacity-50"
             >
@@ -367,7 +381,7 @@ export default function ProductRegistryWorkspace({ organizationId }: { organizat
             </div>
 
             <button
-              onClick={() => handleOpenRegisterPanel()} // Replaced Modal Logic [cite: 186]
+              onClick={() => handleOpenRegisterPanel()}
               className="flex h-8 px-3 bg-indigo-600 text-white text-[11px] font-bold uppercase tracking-wider rounded-md hover:bg-indigo-700 transition-all items-center gap-1.5 shadow-sm"
             >
               <Plus className="w-3.5 h-3.5" />
@@ -381,34 +395,31 @@ export default function ProductRegistryWorkspace({ organizationId }: { organizat
             <div className="flex items-center gap-2">
               <label className="text-[11px] text-slate-500 dark:text-slate-400">Status</label>
               <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value as any)} className="rounded-md bg-slate-50 dark:bg-slate-800 px-2 py-1 text-sm outline-none">
-                <option value="all">All Statuses</option>
-                <option value="active">Active</option>
-                <option value="archived">Archived</option>
+                <option value="all">All Registry</option>
+                <option value="active">Active Only</option>
+                <option value="archived">Archived Only</option>
               </select>
             </div>
 
             <div className="flex items-center gap-2">
-              <label className="text-[11px] text-slate-500 dark:text-slate-400">Sort</label>
+              <label className="text-[11px] text-slate-500 dark:text-slate-400">Sort By</label>
               <select value={sort} onChange={(e) => setSort(e.target.value as any)} className="rounded-md bg-slate-50 dark:bg-slate-800 px-2 py-1 text-sm outline-none">
-                <option value="name_asc">Name (A-Z)</option>
-                <option value="name_desc">Name (Z-A)</option>
-                <option value="cost_desc">Highest Cost</option>
-                <option value="createdAt_desc">Newest First</option>
+                <option value="createdAt_desc">Newest Registered</option>
+                <option value="name_asc">Alphabetical (A-Z)</option>
+                <option value="name_desc">Alphabetical (Z-A)</option>
+                <option value="cost_desc">Financial Value (High)</option>
               </select>
             </div>
 
             <div className="flex items-center gap-2">
-              <label className="text-[11px] text-slate-500 dark:text-slate-400">From</label>
-              <input type="date" value={fromDate ?? ""} onChange={(e) => setFromDate(e.target.value || null)} className="rounded-md bg-slate-50 dark:bg-slate-800 px-2 py-1 text-sm outline-none" />
-            </div>
-
-            <div className="flex items-center gap-2">
-              <label className="text-[11px] text-slate-500 dark:text-slate-400">To</label>
-              <input type="date" value={toDate ?? ""} onChange={(e) => setToDate(e.target.value || null)} className="rounded-md bg-slate-50 dark:bg-slate-800 px-2 py-1 text-sm outline-none" />
+              <label className="text-[11px] text-slate-500 dark:text-slate-400">Range</label>
+              <input type="date" value={fromDate ?? ""} onChange={(e) => setFromDate(e.target.value || null)} className="rounded-md bg-slate-50 dark:bg-slate-800 px-2 py-1 text-xs outline-none" />
+              <span className="text-slate-400">to</span>
+              <input type="date" value={toDate ?? ""} onChange={(e) => setToDate(e.target.value || null)} className="rounded-md bg-slate-50 dark:bg-slate-800 px-2 py-1 text-xs outline-none" />
             </div>
 
             <div className="ml-auto flex items-center gap-2">
-              <button onClick={() => exportCSV(true)} className="px-3 py-1 rounded-md bg-indigo-600 hover:bg-indigo-700 text-white text-[11px] font-bold uppercase transition-colors">Export All CSV</button>
+              <button onClick={() => exportCSV(true)} className="px-3 py-1 rounded-md bg-indigo-600 hover:bg-indigo-700 text-white text-[11px] font-bold uppercase transition-colors">Forensic Export (All)</button>
             </div>
           </div>
         )}
@@ -416,7 +427,6 @@ export default function ProductRegistryWorkspace({ organizationId }: { organizat
 
       <div className="flex-1 overflow-y-auto custom-scrollbar flex flex-col xl:flex-row p-4">
         <main className="flex-1 px-4 lg:px-4 flex flex-col gap-6">
-          {/* Stat Cards Section - Consistent with Purchase Orders [cite: 145] */}
           <section className="grid grid-cols-1 md:grid-cols-4 gap-4 pt-4">
             <StatCard title="Total Registry" value={total} icon={Database} color="emerald" />
             <StatCard title="Active Catalog" value={stats.active} icon={Package} color="blue" />
@@ -424,7 +434,6 @@ export default function ProductRegistryWorkspace({ organizationId }: { organizat
             <StatCard title="Registry Value" value={`₦${stats.totalVal.toLocaleString()}`} icon={BarChart3} color="emerald" />
           </section>
 
-          {/* Main Table Container */}
           <div className="border border-slate-200 dark:border-slate-700 rounded-lg overflow-hidden flex flex-col min-h-[500px] transition-colors bg-white dark:bg-slate-900">
             <div className="overflow-x-auto custom-scrollbar flex-1">
               <table className="w-full text-left border-collapse whitespace-nowrap">
@@ -522,7 +531,7 @@ export default function ProductRegistryWorkspace({ organizationId }: { organizat
               </table>
             </div>
 
-            {/* Pagination Footer */}
+            {/* Pagination Footer - Integrated with API Metadata */}
             <div className="px-4 py-3 bg-slate-50 dark:bg-slate-800/50 border-t border-slate-200 dark:border-slate-700 flex items-center justify-between">
               <div className="flex items-center gap-4">
                 <select
