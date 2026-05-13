@@ -4,20 +4,23 @@ import { authOptions } from "@/core/lib/auth";
 import prisma from "@/core/lib/prisma";
 import {
   PermissionAction,
-  ActorType,
   Severity,
   Prisma,
   POStatus,
   Role,
   NotificationType,
+  Resource,
 } from "@prisma/client";
 import { Decimal } from "@prisma/client/runtime/library";
 import crypto from "crypto";
 import { authorize, RESOURCES } from "@/core/lib/permission";
+import { createAuditLog } from "@/core/lib/audit";
+import { z } from "zod";
 
-/* -------------------------
-  Helpers & Config
-------------------------- */
+/* -------------------------------------------------------------------------- */
+/* CONFIG & HELPERS                                                           */
+/* -------------------------------------------------------------------------- */
+
 const DEFAULT_LIMIT = 25;
 const MAX_LIMIT = 100;
 const EXPORT_LIMIT = 10000;
@@ -28,6 +31,7 @@ interface AuthenticatedUser {
   branchId: string | null;
   role: Role;
   isOrgOwner: boolean;
+  permissions: string[];
 }
 
 function parseIntSafe(v: string | null, fallback: number): number {
@@ -54,72 +58,55 @@ function generatePONumber(branchId?: string | null): string {
   return `PO-${branchPart}-${suffix}`;
 }
 
-/* -------------------------
-  Forensic Audit & Notification Engines
-------------------------- */
+/* -------------------------------------------------------------------------- */
+/* ZOD SCHEMAS (RUNTIME VALIDATION)                                           */
+/* -------------------------------------------------------------------------- */
 
-async function createAuditLog(
-  tx: Prisma.TransactionClient,
-  data: {
-    organizationId: string;
-    branchId?: string | null;
-    actorId: string;
-    actorRole: Role;
-    action: string;
-    resourceId: string;
-    description: string;
-    severity?: Severity;
-    requestId: string;
-    ipAddress: string;
-    deviceInfo: string;
-    metadata?: any;
-    before?: any;
-    after?: any;
+// [FIX] Added z.coerce to safely handle stringified numbers from the frontend
+// [FIX] Changed .optional() to .nullish() to accept null/empty frontend payloads
+const poItemSchema = z.object({
+  productId: z.string().min(1, "Product ID is required."),
+  quantityOrdered: z.coerce.number().int().positive("Quantity ordered must be at least 1."),
+  unitCost: z.coerce.number().nonnegative("Unit cost cannot be negative.").nullish(),
+});
+
+const createPOSchema = z.object({
+  vendorId: z.string().min(1, "Vendor selection is required."),
+  branchId: z.string().nullish(),
+  // [FIX] Safely transform YYYY-MM-DD or empty strings into valid Date objects or null
+  expectedDate: z.union([z.string(), z.date()]).nullish().transform(val => {
+    if (!val) return null;
+    const d = new Date(val);
+    return isNaN(d.getTime()) ? null : d;
+  }),
+  status: z.nativeEnum(POStatus).nullish().default(POStatus.DRAFT),
+  notes: z.string().max(2000, "Notes cannot exceed 2000 characters.").nullish(),
+  poNumber: z.string().max(50, "PO Number cannot exceed 50 characters.").nullish(),
+  currency: z.string().length(3, "Currency must be a 3-letter ISO code.").nullish().default("NGN"),
+  items: z.array(poItemSchema).min(1, "You must add at least one line item to the PO."),
+});
+
+/* -------------------------------------------------------------------------- */
+/* PERMISSION & NOTIFICATION ENGINES                                          */
+/* -------------------------------------------------------------------------- */
+
+async function canExport(user: AuthenticatedUser): Promise<boolean> {
+  if (user.isOrgOwner) return true;
+  if ([Role.ADMIN, Role.MANAGER, Role.AUDITOR, Role.DEV].includes(user.role)) return true;
+
+  try {
+    const perm = await prisma.resourcePermission.findFirst({
+      where: {
+        organizationId: user.organizationId,
+        role: user.role,
+        resource: Resource.PROCUREMENT,
+        actions: { has: PermissionAction.EXPORT },
+      },
+    });
+    return !!perm;
+  } catch (e) {
+    return false;
   }
-) {
-  const lastLog = await tx.activityLog.findFirst({
-    where: { organizationId: data.organizationId },
-    orderBy: { createdAt: "desc" },
-    select: { hash: true },
-  });
-
-  const previousHash = lastLog?.hash ?? "0".repeat(64);
-  const timestamp = Date.now();
-
-  const hashPayload = JSON.stringify({
-    previousHash,
-    requestId: data.requestId,
-    actorId: data.actorId,
-    action: data.action,
-    targetId: data.resourceId,
-    timestamp,
-  });
-
-  const hash = crypto.createHash("sha256").update(hashPayload).digest("hex");
-
-  return await tx.activityLog.create({
-    data: {
-      organizationId: data.organizationId,
-      branchId: data.branchId ?? undefined,
-      actorId: data.actorId,
-      actorType: ActorType.USER,
-      actorRole: data.actorRole,
-      action: data.action,
-      targetType: "PURCHASE_ORDER",
-      targetId: data.resourceId,
-      severity: data.severity ?? Severity.MEDIUM,
-      description: data.description,
-      metadata: data.metadata ? (data.metadata as Prisma.InputJsonValue) : Prisma.JsonNull,
-      before: data.before ? (data.before as Prisma.InputJsonValue) : Prisma.JsonNull,
-      after: data.after ? (data.after as Prisma.InputJsonValue) : Prisma.JsonNull,
-      requestId: data.requestId,
-      ipAddress: data.ipAddress,
-      deviceInfo: data.deviceInfo,
-      previousHash,
-      hash,
-      critical: data.severity === Severity.HIGH || data.severity === Severity.CRITICAL,
-    },
-  });
 }
 
 async function notifyManagement(
@@ -157,41 +144,20 @@ async function notifyManagement(
   });
 }
 
-async function canExport(user: AuthenticatedUser): Promise<boolean> {
-  if (user.isOrgOwner) return true;
-  try {
-    const perm = await prisma.permission.findUnique({
-      where: {
-        organizationId_role_action_resource: {
-          organizationId: user.organizationId,
-          role: user.role,
-          action: PermissionAction.EXPORT,
-          resource: RESOURCES.PROCUREMENT,
-        },
-      },
-    });
-    if (perm) return true;
-  } catch (e) {
-    // If permission entity doesn't exist yet, fallback to RBAC
-  }
-  return [Role.ADMIN, Role.MANAGER, Role.AUDITOR, Role.DEV].includes(user.role);
-}
-
-/* -------------------------
-  GET /api/inventory/procurement
-------------------------- */
+/* -------------------------------------------------------------------------- */
+/* GET: LIST PROCUREMENT / DROPDOWNS                                          */
+/* -------------------------------------------------------------------------- */
 
 export async function GET(req: NextRequest) {
   try {
     const session = await getServerSession(authOptions);
-    if (!session?.user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    if (!session?.user) return NextResponse.json({ error: "Session expired. Please log in again." }, { status: 401 });
     const user = session.user as AuthenticatedUser;
 
     const { searchParams } = new URL(req.url);
     const meta = searchParams.get("meta");
     const orgId = user.organizationId;
     
-    // Strict isolation of scope based on role level
     const isGlobalViewer = [Role.ADMIN, Role.MANAGER, Role.AUDITOR, Role.DEV].includes(user.role) || user.isOrgOwner;
     const branchIdParam = searchParams.get("branchId");
     
@@ -200,7 +166,6 @@ export async function GET(req: NextRequest) {
       branchId = branchIdParam; 
     }
 
-    // --- META DROPDOWNS (Optimized for performance) ---
     if (meta) {
       if (meta === "vendors") {
         const vendors = await prisma.vendor.findMany({
@@ -232,7 +197,7 @@ export async function GET(req: NextRequest) {
             uom: { select: { id: true, name: true, abbreviation: true } }
           },
           orderBy: { name: "asc" },
-          take: 100, // Hard safety limit for dropdowns
+          take: 100,
         });
 
         return NextResponse.json({ 
@@ -245,11 +210,19 @@ export async function GET(req: NextRequest) {
           })) 
         });
       }
-      return NextResponse.json({ error: "Unknown meta type" }, { status: 400 });
+      return NextResponse.json({ error: "Invalid metadata request type." }, { status: 400 });
     }
 
-    // --- MAIN QUERY ---
-    const type = searchParams.get("type") || "po";
+    const authPO = authorize({
+      role: user.role,
+      isOrgOwner: user.isOrgOwner,
+      action: PermissionAction.READ,
+      resources: RESOURCES.PROCUREMENT,
+      userPermissions: user.permissions,
+    });
+    
+    if (!authPO.allowed) return NextResponse.json({ error: "Access Denied: You lack permissions to view Purchase Orders." }, { status: 403 });
+
     const page = parseIntSafe(searchParams.get("page"), 1);
     const limit = Math.min(parseIntSafe(searchParams.get("limit"), DEFAULT_LIMIT), MAX_LIMIT);
     const search = searchParams.get("search")?.trim() || null;
@@ -259,73 +232,17 @@ export async function GET(req: NextRequest) {
     
     const exportAll = searchParams.get("export") === "true";
     if (exportAll && !(await canExport(user))) {
-      return NextResponse.json({ error: "ACCESS_DENIED: Export privileges required" }, { status: 403 });
+      return NextResponse.json({ error: "Access Denied: You lack permissions to export procurement data." }, { status: 403 });
     }
 
     const take = exportAll ? EXPORT_LIMIT : limit;
     const skip = (page - 1) * take;
 
-    /* --- LEDGER VIEW --- */
-    if (type === "ledger") {
-      const auth = authorize({
-        role: user.role,
-        isOrgOwner: user.isOrgOwner,
-        action: PermissionAction.READ,
-        resource: RESOURCES.AUDIT,
-      });
-      if (!auth.allowed) return NextResponse.json({ error: "Unauthorized access to ledger" }, { status: 403 });
-
-      const where: Prisma.ActivityLogWhereInput = { 
-        organizationId: orgId, 
-        targetType: "PURCHASE_ORDER" 
-      };
-      if (branchId) where.branchId = branchId;
-      if (search) {
-        where.OR = [
-          { action: { contains: search, mode: "insensitive" } },
-          { description: { contains: search, mode: "insensitive" } },
-        ];
-      }
-
-      const dateFilter: Prisma.DateTimeFilter = {};
-      if (from) dateFilter.gte = from;
-      if (to) dateFilter.lte = to;
-      if (from || to) where.createdAt = dateFilter;
-
-      const [items, total] = await Promise.all([
-        prisma.activityLog.findMany({
-          where,
-          orderBy: { createdAt: "desc" },
-          take,
-          skip,
-          include: { personnel: { select: { name: true, role: true } } },
-        }),
-        prisma.activityLog.count({ where }),
-      ]);
-
-      return NextResponse.json({
-        items: items.map(it => ({
-          ...it,
-          actorRole: it.personnel?.role ?? it.actorRole,
-          actorName: it.personnel?.name ?? "System",
-        })),
-        total, page, limit: take 
-      });
-    }
-
-    /* --- PO LIST VIEW --- */
-    const authPO = authorize({
-      role: user.role,
-      isOrgOwner: user.isOrgOwner,
-      action: PermissionAction.READ,
-      resource: RESOURCES.PROCUREMENT,
-    });
-    if (!authPO.allowed) return NextResponse.json({ error: "Unauthorized access to procurement" }, { status: 403 });
-
     const where: Prisma.PurchaseOrderWhereInput = { 
       organizationId: orgId,
       deletedAt: null 
     };
+    
     if (branchId) where.branchId = branchId;
     if (search) {
       where.OR = [
@@ -334,7 +251,6 @@ export async function GET(req: NextRequest) {
       ];
     }
     
-    // Strict schema check on enum
     if (status && status !== "all") {
       const validStatuses = Object.values(POStatus);
       if (validStatuses.includes(status as POStatus)) {
@@ -378,7 +294,7 @@ export async function GET(req: NextRequest) {
       const rows = items.map((it) => [
         it.poNumber,
         it.createdAt.toISOString(),
-        it.vendor?.name || "",
+        it.vendor?.name || "DELETED VENDOR",
         it.status,
         it.totalAmount.toString(),
         it.currency,
@@ -397,18 +313,18 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ items, total, page, limit: take });
   } catch (err: any) {
     console.error("[PO_GET_ERROR]", err);
-    return NextResponse.json({ error: "Internal server error" }, { status: 500 });
+    return NextResponse.json({ error: "An unexpected error occurred while fetching procurement data." }, { status: 500 });
   }
 }
 
-/* -------------------------
-  POST /api/inventory/procurement
-------------------------- */
+/* -------------------------------------------------------------------------- */
+/* POST: CREATE PURCHASE ORDER                                                */
+/* -------------------------------------------------------------------------- */
 
 export async function POST(req: NextRequest) {
   try {
     const session = await getServerSession(authOptions);
-    if (!session?.user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    if (!session?.user) return NextResponse.json({ error: "Session expired. Please log in again." }, { status: 401 });
     const user = session.user as AuthenticatedUser;
     const orgId = user.organizationId;
     
@@ -420,12 +336,24 @@ export async function POST(req: NextRequest) {
       role: user.role,
       isOrgOwner: user.isOrgOwner,
       action: PermissionAction.CREATE,
-      resource: RESOURCES.PROCUREMENT,
+      resources: RESOURCES.PROCUREMENT,
+      userPermissions: user.permissions,
     });
-    if (!auth.allowed) return NextResponse.json({ error: "ACCESS_DENIED: Cannot create PO" }, { status: 403 });
+    
+    if (!auth.allowed) {
+      // [FIX] Improved clarity on permission denial
+      return NextResponse.json({ error: "Access Denied: You do not have permission to create or draft Purchase Orders." }, { status: 403 });
+    }
 
-    const body = await req.json().catch(() => null);
-    if (!body) return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
+    const rawBody = await req.json().catch(() => null);
+    if (!rawBody) return NextResponse.json({ error: "Invalid request. Could not parse the submitted data." }, { status: 400 });
+
+    const parsedBody = createPOSchema.safeParse(rawBody);
+    if (!parsedBody.success) {
+      // [FIX] Cleanly formatted, readable validation errors
+      const errorMessages = parsedBody.error.issues.map(err => `${err.path.join('.')}: ${err.message}`).join(" | ");
+      return NextResponse.json({ error: `Validation Failed - ${errorMessages}` }, { status: 400 });
+    }
 
     const {
       vendorId,
@@ -433,88 +361,96 @@ export async function POST(req: NextRequest) {
       expectedDate,
       status: requestedStatus,
       notes,
-      items: rawItems,
+      items: validatedItems,
       poNumber: providedPoNumber,
-      currency = "NGN",
-    } = body;
-
-    if (!vendorId) return NextResponse.json({ error: "Vendor is required." }, { status: 400 });
-    if (!Array.isArray(rawItems) || rawItems.length === 0) return NextResponse.json({ error: "Line items required." }, { status: 400 });
+      currency,
+    } = parsedBody.data;
 
     const isGlobalCreator = [Role.ADMIN, Role.MANAGER, Role.DEV].includes(user.role) || user.isOrgOwner;
-    const branchId = isGlobalCreator ? (bodyBranchId ?? user.branchId) : user.branchId;
-    if (!branchId) return NextResponse.json({ error: "Branch resolution failed." }, { status: 400 });
+    const targetBranchId = isGlobalCreator ? (bodyBranchId ?? user.branchId) : user.branchId;
+    
+    if (!targetBranchId) {
+      return NextResponse.json({ error: "Branch resolution failed. Please ensure you are logged into an active branch." }, { status: 400 });
+    }
+
+    const branchExists = await prisma.branch.findFirst({
+      where: { id: targetBranchId, organizationId: orgId }
+    });
+    if (!branchExists) {
+      return NextResponse.json({ error: "Access Denied: The specified branch does not exist in your organization." }, { status: 403 });
+    }
 
     const vendor = await prisma.vendor.findFirst({ where: { id: vendorId, organizationId: orgId, deletedAt: null } });
-    if (!vendor) return NextResponse.json({ error: "Vendor not active or missing." }, { status: 404 });
+    if (!vendor) {
+      // [FIX] Made vendor missing error friendlier
+      return NextResponse.json({ error: "The selected vendor could not be found or has been deactivated." }, { status: 404 });
+    }
 
-    // Restrict initial creation strictly to DRAFT or ISSUED
     const finalStatus = requestedStatus === POStatus.ISSUED ? POStatus.ISSUED : POStatus.DRAFT;
 
-    // Bulk fetch products for performance and fallback evaluation
-    const productIds = rawItems.map((it: any) => it.productId || it.id).filter(Boolean);
+    const productIds = validatedItems.map((it) => it.productId);
     const products = await prisma.product.findMany({
       where: { id: { in: productIds }, organizationId: orgId, deletedAt: null },
       select: { id: true, name: true, baseCostPrice: true }
     });
     const productMap = new Map(products.map(p => [p.id, p]));
 
-    const itemsValidated = [];
-    for (const [idx, it] of rawItems.entries()) {
-      const productId = it.productId || it.id;
-      const qty = Number(it.quantityOrdered ?? 0);
-
-      if (!productId || qty <= 0) {
-        return NextResponse.json({ error: `Invalid item data on line ${idx + 1}` }, { status: 400 });
+    const itemsForInsert = [];
+    for (const [idx, it] of validatedItems.entries()) {
+      const product = productMap.get(it.productId);
+      if (!product) {
+        return NextResponse.json({ error: `Product on line ${idx + 1} could not be found or is inactive.` }, { status: 404 });
       }
 
-      const product = productMap.get(productId);
-      if (!product) return NextResponse.json({ error: `Product not found: ${productId}` }, { status: 404 });
-
-      // Highly precise Decimal resolution for core financial data
       let unitCost: Decimal;
-      if (it.unitCost && !isNaN(Number(it.unitCost)) && Number(it.unitCost) > 0) {
+      if (it.unitCost !== undefined && it.unitCost !== null && it.unitCost > 0) {
         unitCost = new Decimal(it.unitCost);
       } else if (product.baseCostPrice && product.baseCostPrice.greaterThan(0)) {
         unitCost = new Decimal(product.baseCostPrice.toString());
       } else {
+        // [FIX] Highly contextualized message indicating exactly what needs fixing based on intention (draft vs issue)
+        const actionVerb = finalStatus === POStatus.ISSUED ? "issue" : "save";
         return NextResponse.json({ 
-          error: `Cost cannot be zero for '${product.name}' (line ${idx + 1}). Please provide a valid unit cost as no base cost was found.` 
+          error: `Unit cost is missing or zero for '${product.name}' (line ${idx + 1}). Please provide a valid cost to ${actionVerb} this Purchase Order.` 
         }, { status: 400 });
       }
 
-      itemsValidated.push({ 
-        productId, 
-        quantityOrdered: qty, 
+      const qty = new Decimal(it.quantityOrdered);
+      itemsForInsert.push({ 
+        productId: it.productId, 
+        quantityOrdered: it.quantityOrdered, 
         unitCost, 
         totalCost: unitCost.mul(qty) 
       });
     }
 
-    const totalAmount = itemsValidated.reduce((sum, it) => sum.add(it.totalCost), new Decimal(0));
+    const totalAmount = itemsForInsert.reduce((sum, it) => sum.add(it.totalCost), new Decimal(0));
 
     const created = await prisma.$transaction(async (tx) => {
-      // Uniqueness check for PO Number with cryptographically stable fallback
-      const poNumber = providedPoNumber?.trim() || generatePONumber(branchId);
-      const existing = await tx.purchaseOrder.findFirst({ where: { organizationId: orgId, poNumber } });
+      let poNumber = providedPoNumber?.trim();
+      
+      if (!poNumber) {
+        poNumber = generatePONumber(targetBranchId);
+      }
+      
+      const existing = await tx.purchaseOrder.findUnique({ where: { organizationId_poNumber: { organizationId: orgId, poNumber } } });
       const finalPoNumber = existing ? `${poNumber}-${crypto.randomBytes(2).toString("hex").toUpperCase()}` : poNumber;
 
       const po = await tx.purchaseOrder.create({
         data: {
           organizationId: orgId,
-          branchId,
+          branchId: targetBranchId,
           vendorId,
           poNumber: finalPoNumber,
           status: finalStatus, 
           totalAmount,
-          currency,
-          expectedDate: expectedDate ? new Date(expectedDate) : null,
+          currency: currency ?? "NGN",
+          expectedDate,
           notes: notes ?? null,
           createdById: user.id,
-          // Stamp approver strictly if issued straight away
           approvedById: finalStatus === POStatus.ISSUED ? user.id : undefined,
           items: {
-            create: itemsValidated.map((it) => ({
+            create: itemsForInsert.map((it) => ({
               productId: it.productId,
               quantityOrdered: it.quantityOrdered,
               unitCost: it.unitCost,
@@ -529,27 +465,28 @@ export async function POST(req: NextRequest) {
       });
 
       const log = await createAuditLog(tx, {
+        action: `CREATE_PO_${finalStatus}`,
+        resource: Resource.PROCUREMENT,
+        resourceId: po.id,
         organizationId: orgId,
-        branchId,
+        branchId: targetBranchId,
         actorId: user.id,
         actorRole: user.role,
-        action: `CREATE_PO_${finalStatus}`,
-        resourceId: po.id,
         severity: Severity.MEDIUM,
-        description: `Created PO ${po.poNumber} (${finalStatus}) to ${po.vendor?.name}`,
+        description: `Created PO ${po.poNumber} (${finalStatus}) for ${po.vendor?.name}`,
+        changes: { to: { poId: po.id, total: totalAmount.toString(), vendor: po.vendor?.name, status: finalStatus, currency: currency ?? "NGN" } },
         requestId,
         ipAddress,
         deviceInfo,
-        after: { poId: po.id, total: totalAmount.toString(), vendor: po.vendor?.name, status: finalStatus },
       });
 
       if (finalStatus === POStatus.ISSUED) {
         await notifyManagement(
           tx,
           orgId,
-          branchId,
-          "Procurement Issued",
-          `PO ${po.poNumber} created for ${po.vendor?.name}. Total: ${currency} ${totalAmount.toFixed(2)}`,
+          targetBranchId,
+          "Purchase Order Issued",
+          `PO ${po.poNumber} was created and issued to ${po.vendor?.name}. Total: ${currency ?? "NGN"} ${totalAmount.toFixed(2)}`,
           log.id
         );
       }
@@ -563,6 +500,6 @@ export async function POST(req: NextRequest) {
     return NextResponse.json(created, { status: 201 });
   } catch (err: any) {
     console.error("[PO_POST_ERROR]", err);
-    return NextResponse.json({ error: err?.message || "Internal server error" }, { status: 500 });
+    return NextResponse.json({ error: "An unexpected database error occurred while trying to save the Purchase Order." }, { status: 500 });
   }
 }

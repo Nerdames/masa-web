@@ -4,21 +4,22 @@ import { authOptions } from "@/core/lib/auth";
 import prisma from "@/core/lib/prisma";
 import {
   PermissionAction,
-  ActorType,
   Severity,
   Prisma,
   POStatus,
   Role,
+  Resource,
 } from "@prisma/client";
 import { Decimal } from "@prisma/client/runtime/library";
 import crypto from "crypto";
 import { authorize, RESOURCES } from "@/core/lib/permission";
+import { createAuditLog } from "@/core/lib/audit";
 import { Ratelimit } from "@upstash/ratelimit";
 import { Redis } from "@upstash/redis";
 
-/* -------------------------
-  Security & Rate Limiting
-------------------------- */
+/* -------------------------------------------------------------------------- */
+/* SECURITY & RATE LIMITING                                                   */
+/* -------------------------------------------------------------------------- */
 const ratelimit = new Ratelimit({
   redis: Redis.fromEnv(),
   limiter: Ratelimit.slidingWindow(30, "10 s"),
@@ -30,75 +31,12 @@ interface AuthenticatedUser {
   branchId: string | null;
   role: Role;
   isOrgOwner: boolean;
+  permissions: string[]; // Integrated from auth.ts
 }
 
-/* -------------------------
-  Forensic Audit Engine
-------------------------- */
-async function createAuditLog(
-  tx: Prisma.TransactionClient,
-  data: {
-    organizationId: string;
-    branchId?: string | null;
-    actorId: string;
-    actorRole: Role;
-    action: string;
-    resourceId: string;
-    description: string;
-    severity?: Severity;
-    requestId: string;
-    ipAddress: string;
-    deviceInfo: string;
-    before?: any;
-    after?: any;
-  }
-) {
-  const lastLog = await tx.activityLog.findFirst({
-    where: { organizationId: data.organizationId },
-    orderBy: { createdAt: "desc" },
-    select: { hash: true },
-  });
-
-  const previousHash = lastLog?.hash ?? "0".repeat(64);
-  const timestamp = Date.now();
-  const hashPayload = JSON.stringify({
-    previousHash,
-    requestId: data.requestId,
-    actorId: data.actorId,
-    action: data.action,
-    targetId: data.resourceId,
-    timestamp,
-  });
-
-  const hash = crypto.createHash("sha256").update(hashPayload).digest("hex");
-
-  return await tx.activityLog.create({
-    data: {
-      organizationId: data.organizationId,
-      branchId: data.branchId ?? undefined,
-      actorId: data.actorId,
-      actorType: ActorType.USER,
-      actorRole: data.actorRole,
-      action: data.action,
-      targetType: "PURCHASE_ORDER",
-      targetId: data.resourceId,
-      severity: data.severity ?? Severity.MEDIUM,
-      description: data.description,
-      before: data.before ? (data.before as Prisma.InputJsonValue) : Prisma.JsonNull,
-      after: data.after ? (data.after as Prisma.InputJsonValue) : Prisma.JsonNull,
-      requestId: data.requestId,
-      ipAddress: data.ipAddress,
-      deviceInfo: data.deviceInfo,
-      previousHash,
-      hash,
-      critical: data.severity === Severity.HIGH || data.severity === Severity.CRITICAL,
-    },
-  });
-}
-
-/* -------------------------
-  GET /api/inventory/procurement/[id]
-------------------------- */
+/* -------------------------------------------------------------------------- */
+/* GET /api/inventory/procurement/[id]                                        */
+/* -------------------------------------------------------------------------- */
 export async function GET(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
@@ -109,11 +47,13 @@ export async function GET(
     if (!session?.user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     const user = session.user as AuthenticatedUser;
 
+    // ALIGNED: using `resources` and passing `userPermissions` memory cache
     const auth = authorize({
       role: user.role,
       isOrgOwner: user.isOrgOwner,
       action: PermissionAction.READ,
-      resource: RESOURCES.PROCUREMENT,
+      resources: RESOURCES.PROCUREMENT,
+      userPermissions: user.permissions,
     });
 
     if (!auth.allowed) return NextResponse.json({ error: "Access Denied" }, { status: 403 });
@@ -123,7 +63,7 @@ export async function GET(
         id,
         organizationId: user.organizationId,
         deletedAt: null,
-        // Branch isolation for non-admins
+        // Branch isolation for non-global viewers
         branchId: [Role.ADMIN, Role.MANAGER, Role.AUDITOR, Role.DEV].includes(user.role) || user.isOrgOwner 
           ? undefined 
           : (user.branchId ?? undefined),
@@ -152,10 +92,10 @@ export async function GET(
   }
 }
 
-/* -------------------------
-  PATCH /api/inventory/procurement/[id]
-  (Dynamic Logic for Edits, Issuing, and Voiding)
-------------------------- */
+/* -------------------------------------------------------------------------- */
+/* PATCH /api/inventory/procurement/[id]                                      */
+/* (Dynamic Logic for Edits, Issuing, and Voiding)                            */
+/* -------------------------------------------------------------------------- */
 export async function PATCH(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
@@ -191,9 +131,15 @@ export async function PATCH(
 
       // --- SCENARIO A: VOID/CANCEL ---
       if (requestedStatus === POStatus.CANCELLED) {
-        if (!authorize({ role: user.role, isOrgOwner: user.isOrgOwner, action: PermissionAction.VOID, resource: RESOURCES.PROCUREMENT }).allowed) {
-          throw new Error("UNAUTHORIZED_VOID");
-        }
+        const auth = authorize({ 
+            role: user.role, 
+            isOrgOwner: user.isOrgOwner, 
+            action: PermissionAction.VOID, 
+            resources: RESOURCES.PROCUREMENT,
+            userPermissions: user.permissions
+        });
+        if (!auth.allowed) throw new Error("UNAUTHORIZED_VOID");
+        
         if ([POStatus.FULFILLED, POStatus.PARTIALLY_RECEIVED].includes(existingPO.status)) {
           throw new Error("CANNOT_VOID_RECEIVED_GOODS");
         }
@@ -206,18 +152,24 @@ export async function PATCH(
           },
         });
 
+        // ALIGNED: Mapped before/after structure directly to changes.from/to for V2.5 Audit Engine
         await createAuditLog(tx, {
+          action: "VOID_PURCHASE_ORDER",
+          resource: Resource.PROCUREMENT,
+          resourceId: poId,
           organizationId: user.organizationId,
           branchId: existingPO.branchId,
           actorId: user.id,
           actorRole: user.role,
-          action: "VOID_PURCHASE_ORDER",
-          resourceId: poId,
           severity: Severity.HIGH,
           description: `Voided PO ${existingPO.poNumber}. Reason: ${reason || 'Not specified'}`,
-          requestId, ipAddress, deviceInfo,
-          before: { status: existingPO.status },
-          after: { status: POStatus.CANCELLED }
+          changes: { 
+            from: { status: existingPO.status }, 
+            to: { status: POStatus.CANCELLED } 
+          },
+          requestId, 
+          ipAddress, 
+          deviceInfo,
         });
 
         return voided;
@@ -273,16 +225,22 @@ export async function PATCH(
       });
 
       await createAuditLog(tx, {
+        action: requestedStatus === POStatus.ISSUED ? "ISSUE_PURCHASE_ORDER" : "UPDATE_PURCHASE_ORDER",
+        resource: Resource.PROCUREMENT,
+        resourceId: poId,
         organizationId: user.organizationId,
         branchId: existingPO.branchId,
         actorId: user.id,
         actorRole: user.role,
-        action: requestedStatus === POStatus.ISSUED ? "ISSUE_PURCHASE_ORDER" : "UPDATE_PURCHASE_ORDER",
-        resourceId: poId,
+        severity: Severity.MEDIUM,
         description: `${requestedStatus === POStatus.ISSUED ? 'Issued' : 'Updated'} PO ${existingPO.poNumber}. Total: ${finalTotal.toFixed(2)}`,
-        requestId, ipAddress, deviceInfo,
-        before: { status: existingPO.status, total: existingPO.totalAmount.toString() },
-        after: { status: updated.status, total: finalTotal.toString() }
+        changes: { 
+            from: { status: existingPO.status, total: existingPO.totalAmount.toString() }, 
+            to: { status: updated.status, total: finalTotal.toString() } 
+        },
+        requestId, 
+        ipAddress, 
+        deviceInfo,
       });
 
       return updated;

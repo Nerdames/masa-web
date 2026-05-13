@@ -4,11 +4,13 @@ import React, { useState, useMemo } from "react";
 import {
   X, Maximize2, Minimize2, Package,
   Loader2, CheckCircle2, AlertOctagon,
-  Phone, Mail, XCircle, User, Calendar, Hash, ShieldCheck
+  Phone, Mail, XCircle, ShieldCheck
 } from "lucide-react";
 import { useSidePanel } from "@/core/components/layout/SidePanelContext";
 import { useAlerts } from "@/core/components/feedback/AlertProvider";
 import { useSession } from "next-auth/react";
+import { usePermission } from "@/core/hooks/usePermission"; // Path based on standard project structure
+import { PermissionAction, Resource } from "@prisma/client";
 
 /* -------------------------
 Types - Precisely Aligned with Backend Prisma Include
@@ -65,11 +67,13 @@ export default function GRNDetailView({ grn, onClose }: GRNDetailViewProps) {
   const { data: session } = useSession();
   const { isFullScreen, toggleFullScreen } = useSidePanel();
   const { dispatch } = useAlerts();
+  const { canApprove, canVoid } = usePermission();
   
-  // Role Check
-  const canPerformActions = session?.user?.role === "ADMIN" || session?.user?.role === "MANAGER";
+  // RBAC: Use granular permissions instead of static role strings
+  const canFinalize = canApprove(Resource.PROCUREMENT);
+  const canReject = canVoid(Resource.PROCUREMENT);
 
-  // Production Sync: Local status state ensures UI snappiness after updates
+  // Production Sync: Local status state ensures UI snappiness
   const [currentStatus, setCurrentStatus] = useState<"PENDING" | "RECEIVED" | "REJECTED">(grn.status);
   const [isProcessing, setIsProcessing] = useState<"APPROVE" | "REJECT" | null>(null);
 
@@ -114,7 +118,6 @@ export default function GRNDetailView({ grn, onClose }: GRNDetailViewProps) {
         throw new Error(result.error || `Failed to ${actionLabel} the record.`);
       }
 
-      // Success logic: update local state before firing global events
       setCurrentStatus(targetStatus);
 
       dispatch?.({ 
@@ -124,6 +127,7 @@ export default function GRNDetailView({ grn, onClose }: GRNDetailViewProps) {
         message: `Successfully updated ${grn.grnNumber} to ${targetStatus.toLowerCase()}.` 
       });
 
+      // Notify parent components or lists to refresh
       window.dispatchEvent(new CustomEvent("grn:updated", { 
         detail: { id: grn.id, status: targetStatus } 
       }));
@@ -133,7 +137,7 @@ export default function GRNDetailView({ grn, onClose }: GRNDetailViewProps) {
         kind: "TOAST", 
         type: "ERROR", 
         title: "Action Failed", 
-        message: err.message || "An unexpected error occurred during processing." 
+        message: err.message || "An unexpected error occurred." 
       });
     } finally {
       setIsProcessing(null);
@@ -224,9 +228,9 @@ export default function GRNDetailView({ grn, onClose }: GRNDetailViewProps) {
                 </div>
                 {!isPending && (
                   <div className="flex justify-between items-center pt-1 border-t border-slate-200 dark:border-slate-700 mt-1">
-                    <span className="text-[10px] text-slate-500">Approved By</span>
+                    <span className="text-[10px] text-slate-500">Status Verified By</span>
                     <span className="text-[10px] font-bold text-emerald-600 dark:text-emerald-400 truncate pl-4">
-                      {grn.approvedBy?.name || "Manager"}
+                      {grn.approvedBy?.name || "Auth Personnel"}
                     </span>
                   </div>
                 )}
@@ -304,8 +308,8 @@ export default function GRNDetailView({ grn, onClose }: GRNDetailViewProps) {
             <ShieldCheck className="w-4 h-4" /> Transaction Finalized & Stock Updated
           </div>
         ) : (
-          canPerformActions && (
-            <>
+          <div className="flex w-full gap-3">
+            {canReject && (
               <button 
                 onClick={() => handleAction("REJECT")} 
                 disabled={isProcessing !== null} 
@@ -314,6 +318,9 @@ export default function GRNDetailView({ grn, onClose }: GRNDetailViewProps) {
                 {isProcessing === "REJECT" ? <Loader2 className="w-4 h-4 animate-spin" /> : <XCircle className="w-4 h-4" />}
                 Reject
               </button>
+            )}
+            
+            {canFinalize && (
               <button 
                 onClick={() => handleAction("APPROVE")} 
                 disabled={isProcessing !== null} 
@@ -322,8 +329,14 @@ export default function GRNDetailView({ grn, onClose }: GRNDetailViewProps) {
                 {isProcessing === "APPROVE" ? <Loader2 className="w-4 h-4 animate-spin" /> : <CheckCircle2 className="w-4 h-4" />}
                 Approve & Restock
               </button>
-            </>
-          )
+            )}
+
+            {!canFinalize && !canReject && (
+              <div className="w-full py-2.5 text-slate-400 text-[10px] text-center italic">
+                You do not have permission to approve or reject this receipt.
+              </div>
+            )}
+          </div>
         )}
       </div>
     </div>

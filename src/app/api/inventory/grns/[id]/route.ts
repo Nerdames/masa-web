@@ -11,11 +11,13 @@ import {
   POStatus, 
   Role, 
   StockMovementType, 
-  NotificationType 
+  NotificationType,
+  Resource
 } from "@prisma/client";
 import { Decimal } from "@prisma/client/runtime/library";
 import crypto from "crypto";
 import { authorize, RESOURCES } from "@/core/lib/permission";
+import { createAuditLog } from "@/core/lib/audit";
 
 /* -------------------------
   ROUTE SEGMENT CONFIG 
@@ -23,56 +25,47 @@ import { authorize, RESOURCES } from "@/core/lib/permission";
 export const dynamic = "force-dynamic";
 
 /**
- * Interface representing the augmented NextAuth user structure.
- */
-interface MasaUser {
-  id: string;
-  name?: string | null;
-  email?: string | null;
-  role: Role;
-  isOrgOwner: boolean;
-  organizationId: string;
-  branchId: string | null;
-  permissions: string[];
-}
-
-/**
  * PATCH /api/inventory/grns/[id]
  * Finalizes a Goods Receipt Note (Approves or Rejects).
- * This endpoint implements the "Point of Truth" for physical inventory entry.
+ * Implements strict ledger consistency and forensic audit trails.
  */
 export async function PATCH(
   req: NextRequest, 
   { params }: { params: Promise<{ id: string }> } 
 ) {
+  const requestId = crypto.randomUUID();
+  
   try {
+    // 1. Session & Identity Extraction
     const session = await getServerSession(authOptions);
-    if (!session?.user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    if (!session?.user) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
     
-    const user = session.user as MasaUser;
+    const user = session.user;
     const orgId = user.organizationId;
     const { id: grnId } = await params;
 
-    const requestId = crypto.randomUUID();
     const ipAddress = req.headers.get("x-forwarded-for")?.split(",")[0] ?? "127.0.0.1";
     const deviceInfo = req.headers.get("user-agent")?.substring(0, 255) ?? "unknown";
 
-    // 1. Authorization: Requires APPROVE permission on PROCUREMENT resource
+    // 2. Authorization: Centralized RBAC Check
     const auth = authorize({
       role: user.role,
       isOrgOwner: user.isOrgOwner,
       action: PermissionAction.APPROVE,
-      resource: RESOURCES.PROCUREMENT,
+      resources: RESOURCES.PROCUREMENT,
+      userPermissions: user.permissions,
     });
     
     if (!auth.allowed) {
       return NextResponse.json(
-        { error: "ACCESS_DENIED: Managerial approval rights required." }, 
+        { error: auth.reason || "ACCESS_DENIED: Procurement approval rights required." }, 
         { status: 403 }
       );
     }
 
-    // 2. Request Validation
+    // 3. Request Validation
     const body = await req.json().catch(() => null);
     if (!body || !["RECEIVED", "REJECTED"].includes(body.status)) {
       return NextResponse.json(
@@ -82,9 +75,9 @@ export async function PATCH(
     }
     const newStatus = body.status as "RECEIVED" | "REJECTED";
 
-    // 3. Atomic Transaction: Ensures Ledger Consistency
+    // 4. Atomic Transaction: Serializable Isolation for Financial/Stock Integrity
     const result = await prisma.$transaction(async (tx) => {
-      // 3a. Lock the record and fetch relations
+      // 4a. Fetch and Lock GRN record
       const grn = await tx.goodsReceiptNote.findUnique({
         where: { id: grnId },
         include: { items: true }
@@ -96,7 +89,9 @@ export async function PATCH(
         throw new Error(`Integrity Error: GRN is already ${grn.status}. Actions are locked.`);
       }
 
-      // 3b. Update Header
+      const previousStatus = grn.status;
+
+      // 4b. Update Header
       const updatedGrn = await tx.goodsReceiptNote.update({
         where: { id: grnId },
         data: {
@@ -106,13 +101,13 @@ export async function PATCH(
         }
       });
 
-      // 4. Case: RECEIVED (Approval & Stock Injection)
+      // 5. Logic Branch: RECEIVED (Stock Injection)
       if (newStatus === "RECEIVED") {
         for (const item of grn.items) {
           const qtyAccepted = new Decimal(item.quantityAccepted || 0);
           
           if (qtyAccepted.gt(0)) {
-            // Update BranchProduct: Increment physical stock and update latest cost price
+            // Update BranchProduct: Increment physical stock and cost basis
             const branchProduct = await tx.branchProduct.update({
               where: { id: item.branchProductId },
               data: {
@@ -122,7 +117,7 @@ export async function PATCH(
               }
             });
 
-            // Forensic Stock Movement Ledger entry
+            // Log Stock Movement (Forensic Balance Tracking)
             await tx.stockMovement.create({
               data: {
                 organizationId: orgId,
@@ -134,14 +129,14 @@ export async function PATCH(
                 unitCost: item.unitCost,
                 totalCost: qtyAccepted.mul(new Decimal(item.unitCost)),
                 reason: `GRN Approved: ${grn.grnNumber}`,
-                runningBalance: branchProduct.stock, // Current balance after increment
+                runningBalance: branchProduct.stock,
                 handledById: user.id,
                 approvedAt: new Date(),
                 grnId: grn.id
               }
             });
 
-            // Cascade to Purchase Order Item (if linked)
+            // Update associated Purchase Order Item if exists
             if (item.poItemId) {
               await tx.purchaseOrderItem.update({
                 where: { id: item.poItemId },
@@ -153,13 +148,12 @@ export async function PATCH(
           }
         }
 
-        // 5. Cascade to Purchase Order Header (Status Balancing)
+        // 6. PO Header Sync (Partial vs Full fulfillment)
         if (grn.purchaseOrderId) {
           const allPoItems = await tx.purchaseOrderItem.findMany({ 
             where: { purchaseOrderId: grn.purchaseOrderId } 
           });
           
-          // Math Check: Is the sum of all GRNs meeting the PO requirement?
           const isFullyFulfilled = allPoItems.every(i => 
             new Decimal(i.quantityReceived).gte(new Decimal(i.quantityOrdered))
           );
@@ -174,12 +168,10 @@ export async function PATCH(
         }
       } 
       
-      // 6. Case: REJECTED (Revert/Zero-out logic)
+      // 7. Logic Branch: REJECTED (Zero-out logic)
       else if (newStatus === "REJECTED") {
         for (const item of grn.items) {
           const totalQtyAttempted = (item.quantityAccepted || 0) + (item.quantityRejected || 0);
-
-          // SOP: If the whole GRN is rejected, move all quantities to the 'Rejected' bucket
           await tx.goodsReceiptItem.update({
             where: { id: item.id },
             data: {
@@ -191,53 +183,33 @@ export async function PATCH(
         }
       }
 
-      // 7. Cryptographic Activity Log
-      const lastLog = await tx.activityLog.findFirst({ 
-        where: { organizationId: orgId }, 
-        orderBy: { createdAt: "desc" }, 
-        select: { hash: true } 
-      });
-      
-      const previousHash = lastLog?.hash ?? "0".repeat(64);
-      const actionTitle = newStatus === "RECEIVED" ? "APPROVE_GRN" : "REJECT_GRN";
-      const timestamp = Date.now();
-      
-      const hashPayload = JSON.stringify({ 
-        previousHash, requestId, actorId: user.id, action: actionTitle, 
-        targetId: grn.id, status: newStatus, timestamp 
-      });
-      const hash = crypto.createHash("sha256").update(hashPayload).digest("hex");
-
-      const log = await tx.activityLog.create({
-        data: {
-          organizationId: orgId,
-          branchId: grn.branchId,
-          actorId: user.id,
-          actorType: ActorType.USER,
-          actorRole: user.role,
-          action: actionTitle,
-          targetType: "GRN",
-          targetId: grn.id,
-          severity: newStatus === "RECEIVED" ? Severity.HIGH : Severity.MEDIUM,
-          description: `GRN ${grn.grnNumber} finalized as ${newStatus}. Approved by: ${user.name || 'Manager'}.`,
-          metadata: { 
-            grnNumber: grn.grnNumber, 
-            status: newStatus,
-            itemsCount: grn.items.length 
-          },
-          requestId, ipAddress, deviceInfo, previousHash, hash, critical: true,
-        },
+      // 8. Forensic Audit Integration
+      const auditLog = await createAuditLog(tx, {
+        action: newStatus === "RECEIVED" ? "APPROVE_GRN" : "REJECT_GRN",
+        resource: Resource.PROCUREMENT,
+        resourceId: grn.id,
+        organizationId: orgId,
+        branchId: grn.branchId,
+        actorId: user.id,
+        actorRole: user.role,
+        severity: newStatus === "RECEIVED" ? Severity.HIGH : Severity.MEDIUM,
+        description: `GRN ${grn.grnNumber} finalized as ${newStatus}.`,
+        changes: { from: { status: previousStatus }, to: { status: newStatus } },
+        ipAddress,
+        deviceInfo,
+        requestId,
+        metadata: { grnNumber: grn.grnNumber, itemCount: grn.items.length }
       });
 
-      // 8. System Notification
+      // 9. Notification Delivery
       await tx.notification.create({
         data: {
           organizationId: orgId,
           branchId: grn.branchId,
           type: NotificationType.INFO,
           title: `GRN ${newStatus === "RECEIVED" ? "Approved" : "Rejected"}`,
-          message: `Receipt ${grn.grnNumber} has been ${newStatus.toLowerCase()} and processed into the system.`,
-          activityLogId: log.id,
+          message: `Receipt ${grn.grnNumber} has been ${newStatus.toLowerCase()} and inventory updated.`,
+          activityLogId: auditLog.id,
           recipients: { 
             create: [{ personnelId: grn.receivedById }] 
           },
@@ -247,18 +219,18 @@ export async function PATCH(
       return updatedGrn;
     }, {
       isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
-      timeout: 25000 
+      timeout: 30000 // Extended for heavy stock updates
     });
 
     return NextResponse.json({ 
       success: true, 
       status: result.status,
-      message: `Transaction complete. GRN is now ${result.status}.`
+      message: `GRN ${result.grnNumber} successfully finalized.`
     });
 
   } catch (err: unknown) {
-    console.error("[GRN_PATCH_CRITICAL_FAIL]", err);
+    console.error(`[GRN_PATCH_FAILURE][ID: ${requestId}]`, err);
     const errorMessage = err instanceof Error ? err.message : "A system error occurred during GRN finalization.";
-    return NextResponse.json({ error: errorMessage }, { status: 400 });
+    return NextResponse.json({ error: errorMessage, requestId }, { status: 400 });
   }
 }
