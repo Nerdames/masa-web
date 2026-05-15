@@ -1,115 +1,136 @@
 "use client";
 
-import React, { useState, useMemo } from "react";
+import React, { useState } from "react";
 import {
-  X, Maximize2, Minimize2, Package,
-  Loader2, CheckCircle2, AlertOctagon,
-  XCircle, MapPin, ShieldCheck, 
-  Truck, Barcode, User, Activity,
-  Calendar, Hash, ArrowRightLeft
+  X, Maximize2, Minimize2, Loader2,
+  CheckCircle2, XCircle, MapPin, ShieldCheck, 
+  Truck, Activity, FileText, ClipboardList,
+  User, AlertCircle
 } from "lucide-react";
 import { useSidePanel } from "@/core/components/layout/SidePanelContext";
 import { useAlerts } from "@/core/components/feedback/AlertProvider";
-import { useSession } from "next-auth/react";
+import { usePermission } from "@/core/hooks/usePermission";
+import { PermissionAction, Resource, StockTransferStatus } from "@prisma/client";
 
-/* -------------------------
-Types - Synced with MASA Prisma Schema
-------------------------- */
-type StockTransferStatus = "PENDING" | "APPROVED" | "IN_TRANSIT" | "PARTIALLY_RECEIVED" | "RECEIVED" | "CANCELLED" | "REJECTED" | "COMPLETED";
+/* -------------------------------------------------------------------------- */
+/* TYPES & INTERFACES                                                         */
+/* -------------------------------------------------------------------------- */
 
-interface TransferItem {
+interface ITransferItem {
   id: string;
   productId: string;
   quantity: number;
-  quantityReceived: number;
-  product?: {
+  product: {
     name: string;
     sku: string;
-    uom?: { abbreviation: string }
+    uom?: { abbreviation: string };
   };
 }
 
-interface TransferRecord {
+interface ITransferRecord {
   id: string;
   transferNumber: string;
   organizationId: string;
   fromBranchId: string;
   toBranchId: string;
   status: StockTransferStatus;
-  createdAt: string | Date;
+  createdAt: Date | string;
   notes?: string | null;
   fromBranch?: { name: string };
   toBranch?: { name: string };
   createdBy?: { name: string | null };
   approvedBy?: { name: string | null };
-  items: TransferItem[];
+  items: ITransferItem[];
 }
 
-interface Props {
-  transfer: TransferRecord;
+interface TransferApprovalPanelProps {
+  transfer: ITransferRecord;
   onClose: () => void;
 }
 
-export function TransferApprovalPanel({ transfer, onClose }: Props) {
-  const { data: session } = useSession();
+/* -------------------------------------------------------------------------- */
+/* CONSTANTS & STYLES                                                         */
+/* -------------------------------------------------------------------------- */
+
+const labelClass = "block text-[9px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-wider mb-1";
+const sectionClass = "space-y-4 py-4 border-b border-slate-100 dark:border-slate-800/50 last:border-0";
+const infoBoxClass = "p-3 rounded-md bg-slate-50 dark:bg-slate-950/50 border border-slate-200 dark:border-slate-800 flex flex-col gap-1";
+
+/* -------------------------------------------------------------------------- */
+/* COMPONENT                                                                  */
+/* -------------------------------------------------------------------------- */
+
+export function TransferApprovalPanel({ transfer, onClose }: TransferApprovalPanelProps) {
   const { isFullScreen, toggleFullScreen } = useSidePanel();
   const { dispatch } = useAlerts();
+  const { can, user } = usePermission();
 
   // State Management
   const [isProcessing, setIsProcessing] = useState<string | null>(null);
 
-  // Identity & Permissions
-  const userBranchId = session?.user?.branchId;
+  // Identity & Permissions Alignment
+  const userBranchId = user?.branchId;
   const isFromBranch = userBranchId === transfer.fromBranchId;
   const isToBranch = userBranchId === transfer.toBranchId;
-  const isAdmin = ["ADMIN", "MANAGER"].includes(session?.user?.role || "");
-  const canPerformActions = isAdmin || isFromBranch || isToBranch;
+  
+  // Aligning with Backend: APPROVE uses PermissionAction.APPROVE, others use UPDATE
+  const canApprove = can(PermissionAction.APPROVE, Resource.STOCK);
+  const canUpdate = can(PermissionAction.UPDATE, Resource.STOCK);
+  
+  const isPending = transfer.status === StockTransferStatus.PENDING;
+  const isApproved = transfer.status === StockTransferStatus.APPROVED;
+  const isFinalized = [
+    StockTransferStatus.COMPLETED, 
+    StockTransferStatus.CANCELLED, 
+    StockTransferStatus.REJECTED
+  ].includes(transfer.status);
 
-  // Status Logic
-  const isPending = transfer.status === "PENDING";
-  const isApproved = transfer.status === "APPROVED";
-  const isFinalized = ["RECEIVED", "COMPLETED", "CANCELLED", "REJECTED"].includes(transfer.status);
-
+  /**
+   * Executes the state transition protocol.
+   * Synchronized with UpdateTransferSchema in the API.
+   */
   async function executeProtocol(action: "APPROVE" | "COMPLETE" | "REJECT" | "CANCEL") {
-    const messages = {
-      APPROVE: "Authorize stock exit? Inventory will be deducted from the origin branch.",
-      COMPLETE: "Commit stock intake? Inventory will be added to the destination branch.",
-      REJECT: "Deny this transfer request? No stock will be moved.",
-      CANCEL: "Abort this transfer? Any reserved stock will be rolled back."
+    const confirmationMessages = {
+      APPROVE: "Authorize stock dispatch? Inventory will be committed for exit.",
+      COMPLETE: "Confirm receipt? Inventory will be added to destination branch.",
+      REJECT: "Deny this transfer request? Action will be logged.",
+      CANCEL: "Abort this transfer protocol? Origin stock will be restored if applicable."
     };
 
-    if (!window.confirm(messages[action])) return;
+    if (!window.confirm(confirmationMessages[action])) return;
 
     setIsProcessing(action);
 
     try {
+      // Corrected endpoint to match src/app/api/transfers/route.ts
       const response = await fetch("/api/transfers", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ 
           transferId: transfer.id, 
           action,
-          notes: `Protocol ${action} executed by ${session?.user?.name}` 
+          notes: `Protocol executed via dashboard by ${user?.name || 'Authorized Personnel'}`
         }),
       });
 
       const result = await response.json();
-      if (!response.ok) throw new Error(result.error || "Protocol execution failed");
+      if (!response.ok) throw new Error(result.error || "Logistics protocol failure.");
 
       dispatch?.({ 
         kind: "TOAST", 
         type: "SUCCESS", 
-        title: "Protocol Success", 
-        message: `Transfer ${transfer.transferNumber} updated to ${action}.` 
+        title: "Protocol Executed", 
+        message: `TRF ${transfer.transferNumber} moved to ${action} status.` 
       });
 
-      window.dispatchEvent(new CustomEvent("transfer:updated", { detail: { id: transfer.id } }));
+      // Global refresh event for the data table
+      window.dispatchEvent(new CustomEvent("transfer:refresh"));
       onClose();
     } catch (err: any) {
       dispatch?.({ 
         kind: "TOAST", 
         type: "ERROR", 
-        title: "Protocol Fault", 
+        title: "Authorization/Logic Fault", 
         message: err.message 
       });
     } finally {
@@ -118,202 +139,202 @@ export function TransferApprovalPanel({ transfer, onClose }: Props) {
   }
 
   return (
-    <div className="flex flex-col h-full w-full bg-white dark:bg-slate-900 shadow-xl overflow-hidden" role="dialog">
+    <div className="flex flex-col h-full w-full bg-white dark:bg-slate-900 shadow-2xl" role="dialog">
       
-      {/* Header - Refined Style */}
-      <div className="px-4 py-3 border-b border-slate-200/60 dark:border-slate-800 flex justify-between items-center bg-white/80 dark:bg-slate-900/80 backdrop-blur-md z-20">
+      {/* Header */}
+      <div className="px-4 py-3 border-b border-slate-200 dark:border-slate-800 flex justify-between items-center bg-white dark:bg-slate-900 z-10">
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
-            <h2 className="text-sm font-bold text-slate-800 dark:text-slate-100 truncate">
-              {transfer.transferNumber}
+            <h2 className="text-xs font-bold text-slate-800 dark:text-slate-100 truncate uppercase tracking-tight">
+              Protocol: {transfer.transferNumber}
             </h2>
             <StatusBadge status={transfer.status} />
           </div>
-          <p className="text-[10px] text-slate-500 dark:text-slate-400 mt-0.5 uppercase tracking-tight">
-            Stock Transfer Protocol
-          </p>
+          <p className="text-[9px] text-slate-500 font-medium uppercase mt-0.5 tracking-widest">Stock Movement Authorization</p>
         </div>
-        <div className="flex items-center gap-1 ml-4">
-          <button onClick={toggleFullScreen} className="p-2 text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg transition-colors">
+        <div className="flex items-center gap-1.5">
+          <button onClick={toggleFullScreen} className="p-1.5 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 transition-colors">
             {isFullScreen ? <Minimize2 className="w-4 h-4" /> : <Maximize2 className="w-4 h-4" />}
           </button>
-          <button onClick={onClose} className="p-2 text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg transition-colors">
+          <button onClick={onClose} className="p-1.5 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 transition-colors">
             <X className="w-4 h-4" />
           </button>
         </div>
       </div>
 
-      {/* Scrollable Content */}
-      <div className="flex-1 overflow-y-auto custom-scrollbar">
-        <div className="p-4 space-y-6">
-
-          {/* Logistics Cards */}
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800/40 border border-slate-200/50 dark:border-slate-700/50">
-              <div className="flex items-center gap-2 mb-2 text-slate-400">
-                <MapPin className="w-3.5 h-3.5" />
-                <span className="text-[10px] font-bold uppercase tracking-wider">Route Details</span>
+      {/* Content Area */}
+      <div className="flex-1 overflow-y-auto custom-scrollbar bg-slate-50/30 dark:bg-transparent">
+        <div className="p-4 space-y-0">
+          
+          {/* Section 1: Logistics Path */}
+          <section className={sectionClass}>
+            <div className="flex items-center gap-2 text-slate-400 mb-1">
+              <MapPin className="w-3 h-3" />
+              <span className="text-[10px] font-bold uppercase tracking-tighter">Routing Manifest</span>
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              <div className={infoBoxClass}>
+                <label className={labelClass}>Origin Source</label>
+                <span className="text-xs font-bold text-slate-700 dark:text-slate-200 uppercase">{transfer.fromBranch?.name}</span>
               </div>
-              <div className="space-y-3">
-                <div>
-                  <p className="text-[8px] font-bold text-slate-400 uppercase">From Origin</p>
-                  <p className="text-xs font-bold text-slate-800 dark:text-slate-200 truncate uppercase">{transfer.fromBranch?.name}</p>
-                </div>
-                <div className="flex items-center gap-2">
-                   <div className="h-px flex-1 bg-slate-200 dark:bg-slate-700" />
-                   <ArrowRightLeft className="w-3 h-3 text-indigo-500" />
-                   <div className="h-px flex-1 bg-slate-200 dark:bg-slate-700" />
-                </div>
-                <div>
-                  <p className="text-[8px] font-bold text-slate-400 uppercase">To Destination</p>
-                  <p className="text-xs font-bold text-indigo-600 dark:text-indigo-400 truncate uppercase">{transfer.toBranch?.name}</p>
-                </div>
+              <div className={infoBoxClass}>
+                <label className={labelClass}>Target Destination</label>
+                <span className="text-xs font-bold text-indigo-600 dark:text-indigo-400 uppercase">{transfer.toBranch?.name}</span>
               </div>
             </div>
+          </section>
 
-            <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800/40 border border-slate-200/50 dark:border-slate-700/50">
-              <div className="flex items-center gap-2 mb-2 text-slate-400">
-                <Activity className="w-3.5 h-3.5" />
-                <span className="text-[10px] font-bold uppercase tracking-wider">Audit Trail</span>
+          {/* Section 2: Audit Trail */}
+          <section className={sectionClass}>
+            <div className="flex items-center gap-2 text-slate-400 mb-1">
+              <Activity className="w-3 h-3" />
+              <span className="text-[10px] font-bold uppercase tracking-tighter">Identity & Verification</span>
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+              <div>
+                <label className={labelClass}>Initiated By</label>
+                <div className="flex items-center gap-2 text-xs font-medium text-slate-600 dark:text-slate-300">
+                  <User className="w-3 h-3" /> {transfer.createdBy?.name || "System"}
+                </div>
               </div>
-              <div className="space-y-2">
-                <div className="flex justify-between items-center">
-                  <span className="text-[10px] text-slate-500">Initiated By</span>
-                  <span className="text-[10px] font-medium text-slate-700 dark:text-slate-300">{transfer.createdBy?.name || "System"}</span>
+              <div>
+                <label className={labelClass}>Timestamp</label>
+                <div className="text-xs font-medium text-slate-600 dark:text-slate-300">
+                  {new Date(transfer.createdAt).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })}
                 </div>
-                <div className="flex justify-between items-center">
-                  <span className="text-[10px] text-slate-500">Date Created</span>
-                  <span className="text-[10px] font-medium text-slate-700 dark:text-slate-300">
-                    {new Date(transfer.createdAt).toLocaleDateString(undefined, { dateStyle: 'medium' })}
-                  </span>
-                </div>
-                {transfer.approvedBy && (
-                  <div className="flex justify-between items-center pt-1 border-t border-slate-200 dark:border-slate-700 mt-1">
-                    <span className="text-[10px] text-slate-500">Authorized By</span>
-                    <span className="text-[10px] font-bold text-emerald-600 dark:text-emerald-400">
-                      {transfer.approvedBy?.name}
-                    </span>
+              </div>
+              {transfer.approvedBy && (
+                <div>
+                  <label className={labelClass}>Authorized By</label>
+                  <div className="text-xs font-bold text-emerald-600 dark:text-emerald-400 uppercase">
+                    {transfer.approvedBy.name}
                   </div>
-                )}
-              </div>
+                </div>
+              )}
             </div>
-          </div>
+          </section>
 
-          {/* Items Table - GRN Style */}
-          <div className="space-y-3">
-            <h4 className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Asset Manifest</h4>
-            <div className="border border-slate-200 dark:border-slate-800 rounded-xl overflow-x-auto shadow-sm">
-              <table className="w-full text-left text-xs min-w-[400px]">
-                <thead className="bg-slate-50/50 dark:bg-slate-800/50 border-b border-slate-200 dark:border-slate-800">
+          {/* Section 3: Asset Details */}
+          <section className={sectionClass}>
+            <div className="flex items-center gap-2 text-slate-400 mb-3">
+              <ClipboardList className="w-3 h-3" />
+              <span className="text-[10px] font-bold uppercase tracking-tighter">Inventory Manifest</span>
+            </div>
+            <div className="border border-slate-200 dark:border-slate-800 rounded-md overflow-hidden bg-white dark:bg-slate-950">
+              <table className="w-full text-left border-collapse">
+                <thead className="bg-slate-50 dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800">
                   <tr>
-                    <th className="px-4 py-3 text-[9px] font-bold text-slate-500 uppercase">Product Details</th>
-                    <th className="px-3 py-3 text-[9px] font-bold text-slate-500 uppercase text-center">Transfer Qty</th>
-                    <th className="px-4 py-3 text-[9px] font-bold text-slate-500 uppercase text-right">Unit</th>
+                    <th className="px-3 py-2 text-[9px] font-bold text-slate-500 uppercase whitespace-nowrap">SKU / Product</th>
+                    <th className="px-3 py-2 text-[9px] font-bold text-slate-500 uppercase text-right whitespace-nowrap">Quantity</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100 dark:divide-slate-800/50">
                   {transfer.items.map((item) => (
-                    <tr key={item.id} className="hover:bg-slate-50/30 dark:hover:bg-slate-800/10">
-                      <td className="px-4 py-3">
-                        <p className="font-semibold text-slate-800 dark:text-slate-200 line-clamp-1 uppercase">{item.product?.name}</p>
-                        <span className="text-[9px] text-slate-400 font-mono tracking-tighter">{item.product?.sku}</span>
+                    <tr key={item.id} className="text-xs">
+                      <td className="px-3 py-2.5">
+                        <p className="font-bold text-slate-800 dark:text-slate-200 uppercase leading-none">{item.product.name}</p>
+                        <p className="text-[9px] text-slate-400 font-mono mt-1">{item.product.sku}</p>
                       </td>
-                      <td className="px-3 py-3 text-center">
-                        <span className="text-slate-900 dark:text-white font-bold text-sm">{item.quantity}</span>
-                      </td>
-                      <td className="px-4 py-3 text-right">
-                        <span className="text-[10px] font-bold text-slate-400 uppercase">
-                          {item.product?.uom?.abbreviation || "UNT"}
-                        </span>
+                      <td className="px-3 py-2.5 text-right whitespace-nowrap">
+                        <span className="font-bold text-slate-900 dark:text-white mr-1">{item.quantity}</span>
+                        <span className="text-[9px] font-bold text-slate-400 uppercase">{item.product.uom?.abbreviation || "UNT"}</span>
                       </td>
                     </tr>
                   ))}
                 </tbody>
               </table>
             </div>
-          </div>
+          </section>
 
-          {/* Notes */}
+          {/* Section 4: Notes */}
           {transfer.notes && (
-            <div className="p-3 rounded-lg border border-dashed border-slate-200 dark:border-slate-700 bg-slate-50/30 dark:bg-slate-800/20">
-              <span className="text-[9px] font-bold text-slate-400 uppercase block mb-1">Logistics Notes</span>
-              <p className="text-xs text-slate-600 dark:text-slate-400 leading-relaxed italic">
+            <section className={sectionClass}>
+              <div className="flex items-center gap-2 text-slate-400 mb-1">
+                <FileText className="w-3 h-3" />
+                <span className="text-[10px] font-bold uppercase tracking-tighter">Logistics Remarks</span>
+              </div>
+              <div className="p-3 rounded bg-slate-50 dark:bg-slate-950/50 text-xs text-slate-600 dark:text-slate-400 italic leading-relaxed">
                 &ldquo;{transfer.notes}&rdquo;
-              </p>
-            </div>
+              </div>
+            </section>
           )}
         </div>
       </div>
 
-      {/* Footer Actions - Matching GRN layout */}
-      <div className="p-4 border-t border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 flex justify-between gap-3">
+      {/* Footer Actions - Optimized for Non-Wrap and Anti-Distortion */}
+      <div className="px-4 py-3 border-t border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/50 flex flex-nowrap items-center justify-end gap-3 shrink-0 overflow-x-auto no-scrollbar">
+        <button 
+          type="button" 
+          onClick={onClose} 
+          disabled={isProcessing !== null}
+          className="px-3 py-1.5 text-[9px] font-bold text-slate-500 uppercase tracking-widest hover:text-slate-800 dark:hover:text-slate-300 transition-colors whitespace-nowrap flex-shrink-0"
+        >
+          Close Panel
+        </button>
+
         {isFinalized ? (
-          <div className="w-full py-2.5 bg-emerald-50 dark:bg-emerald-900/10 text-emerald-600 text-[10px] font-bold uppercase tracking-widest rounded-lg flex items-center justify-center gap-2 border border-emerald-100 dark:border-emerald-900/20">
-            <ShieldCheck className="w-4 h-4" /> Protocol Finalized
+          <div className="flex items-center gap-1.5 px-3 py-2 bg-emerald-50 dark:bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 text-[9px] font-bold uppercase tracking-widest rounded border border-emerald-100 dark:border-emerald-500/20 whitespace-nowrap flex-shrink-0">
+            <ShieldCheck className="w-3 h-3" /> Record Finalized
           </div>
         ) : (
-          canPerformActions && (
-            <>
-              {/* Termination / Rejection */}
-              {(isPending || isApproved) && (isAdmin || isFromBranch) && (
-                <button
-                  onClick={() => executeProtocol(isPending ? "REJECT" : "CANCEL")}
-                  disabled={isProcessing !== null}
-                  className="flex-1 py-2.5 text-red-600 hover:bg-red-50 dark:hover:bg-red-900/10 text-[11px] font-bold uppercase tracking-wider rounded-lg transition-all flex justify-center items-center gap-2 disabled:opacity-50"
-                >
-                  {isProcessing === "CANCEL" || isProcessing === "REJECT" ? <Loader2 className="w-4 h-4 animate-spin" /> : <XCircle className="w-4 h-4" />}
-                  {isPending ? "Reject" : "Cancel"}
-                </button>
-              )}
+          <div className="flex flex-nowrap items-center gap-2 flex-shrink-0">
+            {/* Origin Rejection/Cancel */}
+            {isPending && (isFromBranch || canUpdate) && (
+              <button
+                onClick={() => executeProtocol("REJECT")}
+                disabled={isProcessing !== null}
+                className="px-4 py-2 bg-white dark:bg-slate-950 border border-red-200 dark:border-red-900/50 text-red-600 text-[9px] font-bold uppercase tracking-widest rounded-md hover:bg-red-50 transition-all shadow-sm flex items-center gap-2 whitespace-nowrap"
+              >
+                {isProcessing === "REJECT" ? <Loader2 className="w-3 h-3 animate-spin" /> : <XCircle className="w-3 h-3" />}
+                Reject
+              </button>
+            )}
 
-              {/* Approval Action */}
-              {isPending && (isFromBranch || isAdmin) && (
-                <button
-                  onClick={() => executeProtocol("APPROVE")}
-                  disabled={isProcessing !== null}
-                  className="flex-[2] py-2.5 bg-slate-900 dark:bg-indigo-600 text-white hover:bg-slate-800 dark:hover:bg-indigo-500 text-[11px] font-bold uppercase tracking-wider rounded-lg shadow-sm transition-all flex justify-center items-center gap-2 disabled:opacity-50"
-                >
-                  {isProcessing === "APPROVE" ? <Loader2 className="w-4 h-4 animate-spin" /> : <Truck className="w-4 h-4" />}
-                  Authorize Dispatch
-                </button>
-              )}
+            {/* Origin Approval */}
+            {isPending && (isFromBranch || canApprove) && (
+              <button
+                onClick={() => executeProtocol("APPROVE")}
+                disabled={isProcessing !== null}
+                className="flex items-center gap-1.5 px-4 py-2 bg-slate-900 dark:bg-indigo-600 text-white text-[9px] font-bold uppercase tracking-widest rounded-md hover:bg-slate-800 dark:hover:bg-indigo-700 transition-all shadow-lg shadow-indigo-500/20 whitespace-nowrap"
+              >
+                {isProcessing === "APPROVE" ? <Loader2 className="w-3 h-3 animate-spin" /> : <Truck className="w-3 h-3" />}
+                Authorize
+              </button>
+            )}
 
-              {/* Completion Action */}
-              {isApproved && (isToBranch || isAdmin) && (
-                <button
-                  onClick={() => executeProtocol("COMPLETE")}
-                  disabled={isProcessing !== null}
-                  className="flex-[2] py-2.5 bg-emerald-600 text-white hover:bg-emerald-700 text-[11px] font-bold uppercase tracking-wider rounded-lg shadow-sm transition-all flex justify-center items-center gap-2 disabled:opacity-50"
-                >
-                  {isProcessing === "COMPLETE" ? <Loader2 className="w-4 h-4 animate-spin" /> : <CheckCircle2 className="w-4 h-4" />}
-                  Confirm Intake
-                </button>
-              )}
-            </>
-          )
+            {/* Destination Completion */}
+            {isApproved && (isToBranch || canUpdate) && (
+              <button
+                onClick={() => executeProtocol("COMPLETE")}
+                disabled={isProcessing !== null}
+                className="flex items-center gap-1.5 px-4 py-2 bg-emerald-600 text-white text-[9px] font-bold uppercase tracking-widest rounded-md hover:bg-emerald-700 transition-all shadow-lg shadow-emerald-500/20 whitespace-nowrap"
+              >
+                {isProcessing === "COMPLETE" ? <Loader2 className="w-3 h-3 animate-spin" /> : <CheckCircle2 className="w-3 h-3" />}
+                Confirm Intake
+              </button>
+            )}
+          </div>
         )}
       </div>
     </div>
   );
 }
 
-/* -------------------------
-Sub-Components
-------------------------- */
+/* -------------------------------------------------------------------------- */
+/* SUB-COMPONENTS                                                             */
+/* -------------------------------------------------------------------------- */
 
 function StatusBadge({ status }: { status: StockTransferStatus }) {
-  const config: Record<string, string> = {
+  const config: Record<StockTransferStatus, string> = {
     PENDING: "bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400 border-amber-200/50",
     APPROVED: "bg-indigo-100 text-indigo-700 dark:bg-indigo-900/30 dark:text-indigo-400 border-indigo-200/50",
-    IN_TRANSIT: "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400 border-blue-200/50",
+    REJECTED: "bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400 border-red-200/50",
+    CANCELLED: "bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-400 border-slate-200/50",
     COMPLETED: "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400 border-emerald-200/50",
-    RECEIVED: "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400 border-emerald-200/50",
-    CANCELLED: "bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400 border-red-200/50",
-    REJECTED: "bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-400 border-slate-200/50",
   };
 
   return (
-    <span className={`px-1.5 py-0.5 rounded text-[8px] font-bold tracking-wider border uppercase whitespace-nowrap ${config[status] || config.REJECTED}`}>
+    <span className={`px-1.5 py-0.5 rounded text-[8px] font-bold tracking-widest border uppercase whitespace-nowrap ${config[status]}`}>
       {status.replace("_", " ")}
     </span>
   );

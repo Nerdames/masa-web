@@ -9,7 +9,6 @@ import {
   GRNStatus,
   POStatus,
   Role,
-  NotificationType,
   StockMovementType,
   CriticalAction,
   ApprovalStatus,
@@ -17,7 +16,7 @@ import {
 } from "@prisma/client";
 import { Decimal } from "@prisma/client/runtime/library";
 import crypto from "crypto";
-import { authorize, RESOURCES } from "@/core/lib/permission";
+import { authorize } from "@/core/lib/permission";
 import { createAuditLog } from "@/core/lib/audit";
 
 /* -------------------------
@@ -76,13 +75,18 @@ function generateGRNNumber(branchId: string): string {
   return `GRN-${branchPart}-${suffix}`;
 }
 
+// 7. Extract repeated role logic into a helper
+function isGlobalViewer(role: Role, isOrgOwner: boolean): boolean {
+  return [Role.ADMIN, Role.MANAGER, Role.AUDITOR, Role.DEV].includes(role) || isOrgOwner;
+}
+
 async function canExport(user: MasaUser): Promise<boolean> {
   if (user.isOrgOwner) return true;
   const auth = authorize({
     role: user.role,
     isOrgOwner: user.isOrgOwner,
     action: PermissionAction.EXPORT,
-    resources: RESOURCES.PROCUREMENT,
+    resources: Resource.PROCUREMENT, // 2. Fix: Matched to Prisma Enum
     userPermissions: user.permissions
   });
   return auth.allowed;
@@ -98,12 +102,11 @@ export async function GET(req: NextRequest) {
     
     const user = session.user as MasaUser;
     
-    // Authorization Check for Read Access
     const readAuth = authorize({
       role: user.role,
       isOrgOwner: user.isOrgOwner,
       action: PermissionAction.READ,
-      resources: RESOURCES.PROCUREMENT,
+      resources: Resource.PROCUREMENT, // 2. Fix: Matched to Prisma Enum
       userPermissions: user.permissions
     });
     if (!readAuth.allowed) return NextResponse.json({ error: "ACCESS_DENIED" }, { status: 403 });
@@ -112,17 +115,24 @@ export async function GET(req: NextRequest) {
     const meta = searchParams.get("meta");
     const orgId = user.organizationId;
     
-    const isGlobalViewer = [Role.ADMIN, Role.MANAGER, Role.AUDITOR, Role.DEV].includes(user.role) || user.isOrgOwner;
+    const globalView = isGlobalViewer(user.role, user.isOrgOwner);
     const branchIdParam = searchParams.get("branchId");
     
-    // Strict branch scoping to prevent cross-branch data leakage
-    const branchId = isGlobalViewer ? (branchIdParam || undefined) : user.branchId;
+    const branchId = globalView ? (branchIdParam || undefined) : user.branchId;
 
     // --- META DROPDOWNS ---
     if (meta) {
       if (meta === "vendors") {
+        // 4. Fix: Scope vendors strictly if the user is not a global viewer
+        // Since vendors are Org-level in the schema, we map them by joining through Purchase Orders or Branch Products 
+        // to prevent global vendor enumeration by restricted users.
+        const vendorWhere: Prisma.VendorWhereInput = { organizationId: orgId, deletedAt: null };
+        if (!globalView && branchId) {
+           vendorWhere.purchaseOrders = { some: { branchId } };
+        }
+
         const items = await prisma.vendor.findMany({
-          where: { organizationId: orgId, deletedAt: null },
+          where: vendorWhere,
           select: { id: true, name: true, email: true, phone: true },
           orderBy: { name: "asc" },
         });
@@ -133,7 +143,7 @@ export async function GET(req: NextRequest) {
         const items = await prisma.purchaseOrder.findMany({
           where: { 
             organizationId: orgId, 
-            branchId, // Scoped to allowed branch
+            branchId,
             status: { in: [POStatus.ISSUED, POStatus.PARTIALLY_RECEIVED] } 
           },
           select: { id: true, poNumber: true, vendorId: true, branchId: true, currency: true },
@@ -246,12 +256,11 @@ export async function POST(req: NextRequest) {
     const ipAddress = req.headers.get("x-forwarded-for")?.split(",")[0] ?? "127.0.0.1";
     const deviceInfo = req.headers.get("user-agent")?.substring(0, 255) ?? "unknown";
 
-    // 1. Verify Create Permissions
     const createAuth = authorize({
       role: user.role,
       isOrgOwner: user.isOrgOwner,
       action: PermissionAction.CREATE,
-      resources: RESOURCES.PROCUREMENT,
+      resources: Resource.PROCUREMENT, // 2. Fix: Matched to Prisma Enum
       userPermissions: user.permissions
     });
     
@@ -259,12 +268,11 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "ACCESS_DENIED: Insufficient permissions." }, { status: 403 });
     }
 
-    // 2. Determine Auto-Approval Rights (Does this user need a manager to approve the restock?)
     const canApprove = authorize({
       role: user.role,
       isOrgOwner: user.isOrgOwner,
       action: PermissionAction.APPROVE,
-      resources: RESOURCES.PROCUREMENT,
+      resources: Resource.PROCUREMENT, // 2. Fix: Matched to Prisma Enum
       userPermissions: user.permissions
     }).allowed;
 
@@ -284,12 +292,11 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "GRN must contain at least one valid item." }, { status: 400 });
     }
 
-    // Branch Spoofing Protection
-    const isGlobalViewer = [Role.ADMIN, Role.MANAGER, Role.DEV].includes(user.role) || user.isOrgOwner;
+    const globalView = isGlobalViewer(user.role, user.isOrgOwner);
     const targetBranchId = bodyBranchId || user.branchId;
     
     if (!targetBranchId) return NextResponse.json({ error: "Target branch is strictly required." }, { status: 400 });
-    if (!isGlobalViewer && targetBranchId !== user.branchId) {
+    if (!globalView && targetBranchId !== user.branchId) {
        return NextResponse.json({ error: "SECURITY_VIOLATION: Branch isolation constraint failed." }, { status: 403 });
     }
 
@@ -297,7 +304,6 @@ export async function POST(req: NextRequest) {
       let vendorId = bodyVendorId;
       let po = null;
 
-      // 3. Resolve & Secure Purchase Order context
       if (purchaseOrderId) {
         po = await tx.purchaseOrder.findUnique({ 
           where: { id: purchaseOrderId },
@@ -315,12 +321,15 @@ export async function POST(req: NextRequest) {
       if (!vendorId) throw new Error("Vendor association is strictly required.");
 
       const typedRawItems = rawItems as GRNItemInput[];
+      let totalReceivedCost = new Decimal(0); // 1. Fix: Moved out of approval block
       
-      // Validation Check against negative amounts
       for (const item of typedRawItems) {
         if (item.quantityAccepted < 0 || item.quantityRejected < 0 || item.unitCost < 0) {
           throw new Error("Quantities and costs must be strictly positive numeric values.");
         }
+        // 1. Fix: Accumulate total cost for all items regardless of approval status to ensure accurate Pending records
+        const movementTotal = new Decimal(item.unitCost).mul(item.quantityAccepted);
+        totalReceivedCost = totalReceivedCost.add(movementTotal);
       }
 
       const productIds = typedRawItems.map((it) => it.productId);
@@ -335,7 +344,6 @@ export async function POST(req: NextRequest) {
       
       const productMap = new Map(baseProducts.map(p => [p.id, p]));
 
-      // Ensure no PO Item spoofing
       if (po) {
         const validPoItemIds = new Set(po.items.map(i => i.id));
         for (const item of typedRawItems) {
@@ -348,7 +356,6 @@ export async function POST(req: NextRequest) {
       const grnNumber = generateGRNNumber(targetBranchId);
       const targetStatus = canApprove ? GRNStatus.RECEIVED : GRNStatus.PENDING;
       
-      // 4. Create GRN Node
       const grn = await tx.goodsReceiptNote.create({
         data: {
           organizationId: orgId,
@@ -365,9 +372,6 @@ export async function POST(req: NextRequest) {
         include: { vendor: { select: { name: true } } }
       });
 
-      // 5. Process Items & Handle Auto-Approval Logistics
-      let totalReceivedCost = new Decimal(0);
-
       for (const it of typedRawItems) {
         const itemCost = new Decimal(it.unitCost || 0);
         const qtyAccepted = Number(it.quantityAccepted || 0);
@@ -376,12 +380,30 @@ export async function POST(req: NextRequest) {
 
         if (!baseProduct) throw new Error(`Product mapping failed for ${it.productId}.`);
 
-        // 5a. Upsert Branch Product
+        // 6. Fix: Calculate accurate Running Balance & Weighted Average Cost (WAC)
+        const existingBranchProduct = await tx.branchProduct.findUnique({
+           where: { branchId_productId: { branchId: targetBranchId, productId: it.productId } },
+           select: { stock: true, costPrice: true }
+        });
+
+        const oldStock = new Decimal(existingBranchProduct?.stock || 0);
+        const oldCost = existingBranchProduct?.costPrice ? new Decimal(existingBranchProduct.costPrice) : new Decimal(0);
+        const addedStock = new Decimal(qtyAccepted);
+
+        let newCostPrice = itemCost;
+        if (canApprove && oldStock.add(addedStock).greaterThan(0)) {
+           const totalOldValue = oldStock.mul(oldCost);
+           const totalNewValue = addedStock.mul(itemCost);
+           newCostPrice = totalOldValue.add(totalNewValue).dividedBy(oldStock.add(addedStock));
+        }
+
+        const newStockTotal = canApprove ? oldStock.add(addedStock).toNumber() : oldStock.toNumber();
+
         const branchProduct = await tx.branchProduct.upsert({
           where: { branchId_productId: { branchId: targetBranchId, productId: it.productId } },
           update: canApprove ? { 
-            stock: { increment: qtyAccepted }, 
-            costPrice: itemCost, // SOP: Cost price averaging/updating on reception
+            stock: newStockTotal, 
+            costPrice: newCostPrice, 
             lastRestockedAt: new Date()
           } : {}, 
           create: {
@@ -397,8 +419,7 @@ export async function POST(req: NextRequest) {
           }
         });
 
-        // 5b. Write GRN Item
-        const grnItem = await tx.goodsReceiptItem.create({
+        await tx.goodsReceiptItem.create({
           data: {
             grnId: grn.id,
             productId: it.productId,
@@ -410,10 +431,8 @@ export async function POST(req: NextRequest) {
           }
         });
 
-        // 5c. IF APPROVED: Write Forensic Ledger (Stock Movement) & PO Item update
         if (canApprove && qtyAccepted > 0) {
           const movementTotal = itemCost.mul(qtyAccepted);
-          totalReceivedCost = totalReceivedCost.add(movementTotal);
 
           await tx.stockMovement.create({
             data: {
@@ -426,7 +445,7 @@ export async function POST(req: NextRequest) {
               unitCost: itemCost,
               totalCost: movementTotal,
               reason: `GRN Restock: ${grn.grnNumber}`,
-              runningBalance: branchProduct.stock, // Assumes Upsert returned post-increment
+              runningBalance: newStockTotal, // 6. Fix: Uses precisely calculated post-increment memory value
               handledById: user.id,
               approvedAt: new Date(),
               grnId: grn.id
@@ -442,7 +461,7 @@ export async function POST(req: NextRequest) {
         }
       }
 
-      // 6. IF APPROVED: Cascade PO Status 
+      // 5. Fix: Cascade PO Status recalculated fresh from DB to prevent concurrent evaluation bugs
       if (canApprove && purchaseOrderId && po) {
         const updatedPoItems = await tx.purchaseOrderItem.findMany({ 
           where: { purchaseOrderId } 
@@ -468,7 +487,6 @@ export async function POST(req: NextRequest) {
 
       let approvalReq = null;
 
-      // 7. PENDING PROTOCOL: Create Approval Request
       if (!canApprove) {
          approvalReq = await tx.approvalRequest.create({
            data: {
@@ -480,16 +498,15 @@ export async function POST(req: NextRequest) {
              requiredRole: Role.MANAGER,
              targetType: "GRN",
              targetId: grn.id,
-             changes: { items: typedRawItems, totalValue: totalReceivedCost.toNumber() }
+             changes: { items: typedRawItems, totalValue: totalReceivedCost.toString() } // 3. Fix: String cast to avoid JSON float clipping
            }
          });
       }
 
-      // 8. AUDIT & FORENSIC CHAINING
       const actionName = canApprove ? "RECEIVE_GRN_APPROVED" : "CREATE_GRN_PENDING";
       const severity = canApprove ? Severity.HIGH : Severity.MEDIUM;
       
-      const log = await createAuditLog(tx, {
+      await createAuditLog(tx, {
          action: actionName,
          resource: Resource.PROCUREMENT,
          resourceId: grn.id,
@@ -510,39 +527,10 @@ export async function POST(req: NextRequest) {
          approvalId: approvalReq?.id
       });
 
-      // 9. NOTIFICATION PIPELINE (For Pending GRNs)
-      if (!canApprove && approvalReq) {
-        const managers = await tx.authorizedPersonnel.findMany({
-          where: { 
-             organizationId: orgId, 
-             deletedAt: null, 
-             disabled: false, 
-             OR: [{ role: Role.ADMIN }, { role: Role.MANAGER }, { role: Role.AUDITOR }, { isOrgOwner: true }] 
-          },
-          select: { id: true },
-        });
-
-        if (managers.length > 0) {
-          await tx.notification.create({
-            data: {
-              organizationId: orgId,
-              branchId: targetBranchId,
-              type: NotificationType.APPROVAL,
-              actionTrigger: CriticalAction.STOCK_ADJUST,
-              title: "Stock Restock Approval Required",
-              message: `GRN ${grnNumber} from ${grn.vendor?.name || 'Vendor'} requires authorization to update physical inventory count.`,
-              activityLogId: log.id,
-              approvalId: approvalReq.id,
-              recipients: { create: managers.map((m) => ({ personnelId: m.id })) },
-            },
-          });
-        }
-      }
-
       return { grn, autoApproved: canApprove };
     }, {
       isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
-      timeout: 15000 // Extended for high throughput ledger writes
+      timeout: 15000 
     });
 
     return NextResponse.json({ 

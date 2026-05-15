@@ -4,25 +4,50 @@ import { authOptions } from "@/core/lib/auth";
 import prisma from "@/core/lib/prisma";
 import { 
   PermissionAction, 
-  ActorType, 
   Severity, 
   Prisma, 
   GRNStatus, 
   POStatus, 
-  Role, 
   StockMovementType, 
   NotificationType,
   Resource
 } from "@prisma/client";
 import { Decimal } from "@prisma/client/runtime/library";
 import crypto from "crypto";
-import { authorize, RESOURCES } from "@/core/lib/permission";
+import { authorize } from "@/core/lib/permission";
 import { createAuditLog } from "@/core/lib/audit";
 
 /* -------------------------
   ROUTE SEGMENT CONFIG 
 ------------------------- */
 export const dynamic = "force-dynamic";
+
+/* -------------------------
+  UTILITIES
+------------------------- */
+/**
+ * Exponential backoff wrapper for high-isolation Prisma transactions 
+ * to handle P2034 (Deadlock/Write Conflict) errors gracefully.
+ */
+async function executeWithRetry<T>(
+  operation: () => Promise<T>, 
+  maxRetries = 3, 
+  baseDelayMs = 150
+): Promise<T> {
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      return await operation();
+    } catch (error: any) {
+      if (error.code === 'P2034' && attempt < maxRetries) {
+        const delay = baseDelayMs * Math.pow(2, attempt - 1);
+        await new Promise(resolve => setTimeout(resolve, delay));
+        continue;
+      }
+      throw error;
+    }
+  }
+  throw new Error("Transaction failed after maximum retries due to strict isolation constraints.");
+}
 
 /**
  * PATCH /api/inventory/grns/[id]
@@ -54,7 +79,7 @@ export async function PATCH(
       role: user.role,
       isOrgOwner: user.isOrgOwner,
       action: PermissionAction.APPROVE,
-      resources: RESOURCES.PROCUREMENT,
+      resources: Resource.PROCUREMENT, // Fixed: Using Prisma Enum
       userPermissions: user.permissions,
     });
     
@@ -76,7 +101,7 @@ export async function PATCH(
     const newStatus = body.status as "RECEIVED" | "REJECTED";
 
     // 4. Atomic Transaction: Serializable Isolation for Financial/Stock Integrity
-    const result = await prisma.$transaction(async (tx) => {
+    const result = await executeWithRetry(() => prisma.$transaction(async (tx) => {
       // 4a. Fetch and Lock GRN record
       const grn = await tx.goodsReceiptNote.findUnique({
         where: { id: grnId },
@@ -85,6 +110,12 @@ export async function PATCH(
 
       if (!grn) throw new Error("Goods Receipt Note (GRN) record not found.");
       if (grn.organizationId !== orgId) throw new Error("Security Breach: Organization mismatch.");
+      
+      // Fortress Constraint: Strict Branch Locking
+      if (!user.isOrgOwner && user.branchId && grn.branchId !== user.branchId) {
+         throw new Error("Security Violation: Cross-branch approval is strictly prohibited.");
+      }
+
       if (grn.status !== GRNStatus.PENDING) {
         throw new Error(`Integrity Error: GRN is already ${grn.status}. Actions are locked.`);
       }
@@ -107,12 +138,35 @@ export async function PATCH(
           const qtyAccepted = new Decimal(item.quantityAccepted || 0);
           
           if (qtyAccepted.gt(0)) {
-            // Update BranchProduct: Increment physical stock and cost basis
+            // Fortress Fix: Read current stock for WAC calculation
+            const currentBranchProduct = await tx.branchProduct.findUnique({
+              where: { id: item.branchProductId },
+              select: { stock: true, costPrice: true }
+            });
+
+            if (!currentBranchProduct) throw new Error(`Data Integrity Error: Branch product ${item.branchProductId} missing.`);
+
+            const oldStock = new Decimal(currentBranchProduct.stock || 0);
+            const oldCost = currentBranchProduct.costPrice ? new Decimal(currentBranchProduct.costPrice) : new Decimal(0);
+            const addedStockInt = Math.floor(qtyAccepted.toNumber()); // Float Fix: Enforce Integer
+            const addedStock = new Decimal(addedStockInt);
+            const itemCost = new Decimal(item.unitCost);
+
+            // Fortress Fix: Weighted Average Cost (WAC) Logic
+            let newCostPrice = itemCost;
+            if (oldStock.add(addedStock).gt(0)) {
+               const totalOldValue = oldStock.mul(oldCost);
+               const totalNewValue = addedStock.mul(itemCost);
+               newCostPrice = totalOldValue.add(totalNewValue).dividedBy(oldStock.add(addedStock));
+            }
+
+            // Update BranchProduct: Increment physical stock, calculate cost basis, increment version
             const branchProduct = await tx.branchProduct.update({
               where: { id: item.branchProductId },
               data: {
-                stock: { increment: qtyAccepted.toNumber() },
-                costPrice: item.unitCost,
+                stock: { increment: addedStockInt },
+                stockVersion: { increment: 1 }, // Fortress Fix: Stock Versioning
+                costPrice: newCostPrice,
                 lastRestockedAt: new Date()
               }
             });
@@ -125,30 +179,34 @@ export async function PATCH(
                 branchProductId: branchProduct.id,
                 productId: item.productId,
                 type: StockMovementType.IN,
-                quantity: qtyAccepted.toNumber(),
+                quantity: addedStockInt,
                 unitCost: item.unitCost,
-                totalCost: qtyAccepted.mul(new Decimal(item.unitCost)),
-                reason: `GRN Approved: ${grn.grnNumber}`,
-                runningBalance: branchProduct.stock,
+                totalCost: addedStock.mul(itemCost),
+                reason: `GRN Finalized: ${grn.grnNumber}`,
+                runningBalance: branchProduct.stock, // Safe to read post-update balance
                 handledById: user.id,
                 approvedAt: new Date(),
                 grnId: grn.id
               }
             });
 
-            // Update associated Purchase Order Item if exists
+            // Update associated Purchase Order Item
             if (item.poItemId) {
-              await tx.purchaseOrderItem.update({
-                where: { id: item.poItemId },
-                data: { 
-                  quantityReceived: { increment: qtyAccepted.toNumber() } 
-                }
-              });
+              const poItem = await tx.purchaseOrderItem.findUnique({ where: { id: item.poItemId } });
+              
+              if (poItem) {
+                 await tx.purchaseOrderItem.update({
+                   where: { id: item.poItemId },
+                   data: { 
+                     quantityReceived: { increment: addedStockInt } 
+                   }
+                 });
+              }
             }
           }
         }
 
-        // 6. PO Header Sync (Partial vs Full fulfillment)
+        // 6. PO Header Sync
         if (grn.purchaseOrderId) {
           const allPoItems = await tx.purchaseOrderItem.findMany({ 
             where: { purchaseOrderId: grn.purchaseOrderId } 
@@ -168,10 +226,12 @@ export async function PATCH(
         }
       } 
       
-      // 7. Logic Branch: REJECTED (Zero-out logic)
+      // 7. Logic Branch: REJECTED
       else if (newStatus === "REJECTED") {
         for (const item of grn.items) {
           const totalQtyAttempted = (item.quantityAccepted || 0) + (item.quantityRejected || 0);
+          
+          // Reassign all attempted quantities to Rejected. (PO remains untouched since this GRN failed).
           await tx.goodsReceiptItem.update({
             where: { id: item.id },
             data: {
@@ -201,14 +261,14 @@ export async function PATCH(
         metadata: { grnNumber: grn.grnNumber, itemCount: grn.items.length }
       });
 
-      // 9. Notification Delivery
+      // 9. Notification Delivery (Notifies the original receiver)
       await tx.notification.create({
         data: {
           organizationId: orgId,
           branchId: grn.branchId,
           type: NotificationType.INFO,
-          title: `GRN ${newStatus === "RECEIVED" ? "Approved" : "Rejected"}`,
-          message: `Receipt ${grn.grnNumber} has been ${newStatus.toLowerCase()} and inventory updated.`,
+          title: `GRN ${newStatus === "RECEIVED" ? "Received" : "Rejected"}`, // Fortress Fix: Accurate Title
+          message: `Receipt ${grn.grnNumber} has been ${newStatus.toLowerCase()} and inventory ledgers processed.`,
           activityLogId: auditLog.id,
           recipients: { 
             create: [{ personnelId: grn.receivedById }] 
@@ -219,8 +279,8 @@ export async function PATCH(
       return updatedGrn;
     }, {
       isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
-      timeout: 30000 // Extended for heavy stock updates
-    });
+      timeout: 30000 
+    }));
 
     return NextResponse.json({ 
       success: true, 

@@ -16,6 +16,7 @@ import { authorize, RESOURCES } from "@/core/lib/permission";
 import { createAuditLog } from "@/core/lib/audit";
 import { Ratelimit } from "@upstash/ratelimit";
 import { Redis } from "@upstash/redis";
+import { z } from "zod";
 
 /* -------------------------------------------------------------------------- */
 /* SECURITY & RATE LIMITING                                                   */
@@ -31,8 +32,31 @@ interface AuthenticatedUser {
   branchId: string | null;
   role: Role;
   isOrgOwner: boolean;
-  permissions: string[]; // Integrated from auth.ts
+  permissions: string[];
 }
+
+/* -------------------------------------------------------------------------- */
+/* ZOD VALIDATION (PATCH)                                                     */
+/* -------------------------------------------------------------------------- */
+// [FIX] Implemented strict PATCH validation to prevent invalid data injections
+const updatePOSchema = z.object({
+  status: z.nativeEnum(POStatus).optional(),
+  vendorId: z.string().optional(),
+  expectedDate: z.union([z.string(), z.date()]).nullish().transform(val => {
+    if (!val) return undefined;
+    const d = new Date(val);
+    return isNaN(d.getTime()) ? undefined : d;
+  }).optional(),
+  notes: z.string().max(2000).optional(),
+  reason: z.string().max(500).optional(), // Used for VOID action logging
+  items: z.array(
+    z.object({
+      productId: z.string().min(1),
+      quantityOrdered: z.coerce.number().int().positive(),
+      unitCost: z.coerce.number().nonnegative()
+    })
+  ).optional()
+});
 
 /* -------------------------------------------------------------------------- */
 /* GET /api/inventory/procurement/[id]                                        */
@@ -47,7 +71,6 @@ export async function GET(
     if (!session?.user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     const user = session.user as AuthenticatedUser;
 
-    // ALIGNED: using `resources` and passing `userPermissions` memory cache
     const auth = authorize({
       role: user.role,
       isOrgOwner: user.isOrgOwner,
@@ -115,10 +138,17 @@ export async function PATCH(
     if (!session?.user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     const user = session.user as AuthenticatedUser;
 
-    const body = await req.json().catch(() => null);
-    if (!body) return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
+    // [FIX] Validating PATCH body
+    const rawBody = await req.json().catch(() => null);
+    if (!rawBody) return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
 
-    const { status: requestedStatus, items: updatedItems, vendorId, expectedDate, notes, reason } = body;
+    const parsedBody = updatePOSchema.safeParse(rawBody);
+    if (!parsedBody.success) {
+      const errorMessages = parsedBody.error.issues.map(err => `${err.path.join('.')}: ${err.message}`).join(" | ");
+      return NextResponse.json({ error: `Validation Failed - ${errorMessages}` }, { status: 400 });
+    }
+
+    const { status: requestedStatus, items: updatedItems, vendorId, expectedDate, notes, reason } = parsedBody.data;
 
     // 3. Process Transaction
     const result = await prisma.$transaction(async (tx) => {
@@ -152,7 +182,6 @@ export async function PATCH(
           },
         });
 
-        // ALIGNED: Mapped before/after structure directly to changes.from/to for V2.5 Audit Engine
         await createAuditLog(tx, {
           action: "VOID_PURCHASE_ORDER",
           resource: Resource.PROCUREMENT,
@@ -183,21 +212,28 @@ export async function PATCH(
       let finalTotal = new Decimal(existingPO.totalAmount.toString());
       let updateData: Prisma.PurchaseOrderUpdateInput = {
         notes: notes ?? existingPO.notes,
-        expectedDate: expectedDate ? new Date(expectedDate) : existingPO.expectedDate,
+        expectedDate: expectedDate ?? existingPO.expectedDate,
         vendorId: vendorId ?? existingPO.vendorId,
       };
 
-      // Handle Item Updates (Only if in Draft)
-      if (Array.isArray(updatedItems)) {
+      // [FIX] Guarding against Empty Array vulnerability and processing valid items
+      if (updatedItems && Array.isArray(updatedItems)) {
+        if (updatedItems.length === 0) {
+            throw new Error("EMPTY_ITEMS_ARRAY");
+        }
+        
+        // Deleting old items because we have valid new ones to replace them with
         await tx.purchaseOrderItem.deleteMany({ where: { purchaseOrderId: poId } });
         
         let newTotal = new Decimal(0);
         const itemCreates = [];
 
         for (const item of updatedItems) {
-          const unitCost = new Decimal(item.unitCost);
+          // [FIX] Round Decimals correctly to prevent float mismatches
+          const unitCost = new Decimal(item.unitCost).toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
           const qty = new Decimal(item.quantityOrdered);
-          const lineTotal = unitCost.mul(qty);
+          const lineTotal = unitCost.mul(qty).toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
+          
           newTotal = newTotal.add(lineTotal);
 
           itemCreates.push({
@@ -209,14 +245,14 @@ export async function PATCH(
         }
         
         updateData.items = { create: itemCreates };
-        updateData.totalAmount = newTotal;
-        finalTotal = newTotal;
+        updateData.totalAmount = newTotal.toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
+        finalTotal = updateData.totalAmount;
       }
 
       // Handle Transition to ISSUED
       if (requestedStatus === POStatus.ISSUED) {
         updateData.status = POStatus.ISSUED;
-        updateData.approvedById = user.id; // Record who issued/locked the PO
+        updateData.approvedById = user.id;
       }
 
       const updated = await tx.purchaseOrder.update({
@@ -259,6 +295,7 @@ export async function PATCH(
       UNAUTHORIZED_VOID: { m: "Insufficient permissions to void", s: 403 },
       CANNOT_VOID_RECEIVED_GOODS: { m: "Cannot void an order already in the receiving process", s: 400 },
       LOCKED_FOR_EDITING: { m: "This PO is Issued or Fulfilled and cannot be edited. You must Void it or use GRN for receiving.", s: 422 },
+      EMPTY_ITEMS_ARRAY: { m: "You cannot remove all line items. A Purchase Order must have at least one product.", s: 400 }
     };
 
     const info = errorMap[err.message] || { m: err.message || "Internal server error", s: 500 };

@@ -62,8 +62,6 @@ function generatePONumber(branchId?: string | null): string {
 /* ZOD SCHEMAS (RUNTIME VALIDATION)                                           */
 /* -------------------------------------------------------------------------- */
 
-// [FIX] Added z.coerce to safely handle stringified numbers from the frontend
-// [FIX] Changed .optional() to .nullish() to accept null/empty frontend payloads
 const poItemSchema = z.object({
   productId: z.string().min(1, "Product ID is required."),
   quantityOrdered: z.coerce.number().int().positive("Quantity ordered must be at least 1."),
@@ -73,7 +71,6 @@ const poItemSchema = z.object({
 const createPOSchema = z.object({
   vendorId: z.string().min(1, "Vendor selection is required."),
   branchId: z.string().nullish(),
-  // [FIX] Safely transform YYYY-MM-DD or empty strings into valid Date objects or null
   expectedDate: z.union([z.string(), z.date()]).nullish().transform(val => {
     if (!val) return null;
     const d = new Date(val);
@@ -161,9 +158,11 @@ export async function GET(req: NextRequest) {
     const isGlobalViewer = [Role.ADMIN, Role.MANAGER, Role.AUDITOR, Role.DEV].includes(user.role) || user.isOrgOwner;
     const branchIdParam = searchParams.get("branchId");
     
-    let branchId = user.branchId;
-    if (isGlobalViewer && branchIdParam) {
-      branchId = branchIdParam; 
+    // [FIX] Correct Branch Isolation for Global Viewers
+    // If Admin doesn't pass a branchId param, this correctly resolves to undefined, fetching ALL branches.
+    let branchId: string | undefined = user.branchId ?? undefined;
+    if (isGlobalViewer) {
+      branchId = branchIdParam || undefined; 
     }
 
     if (meta) {
@@ -206,7 +205,7 @@ export async function GET(req: NextRequest) {
             productId: p.id,
             costPrice: p.baseCostPrice,
             uomName: p.uom?.name,
-            uomAbbreviation: p.uom?.abbreviation
+            uomAbbreviation: p.uom?.abbreviation // [FIX] Exposing abbreviation explicitly
           })) 
         });
       }
@@ -243,7 +242,9 @@ export async function GET(req: NextRequest) {
       deletedAt: null 
     };
     
+    // Applying the resolved branchId
     if (branchId) where.branchId = branchId;
+
     if (search) {
       where.OR = [
         { poNumber: { contains: search, mode: "insensitive" } },
@@ -341,7 +342,6 @@ export async function POST(req: NextRequest) {
     });
     
     if (!auth.allowed) {
-      // [FIX] Improved clarity on permission denial
       return NextResponse.json({ error: "Access Denied: You do not have permission to create or draft Purchase Orders." }, { status: 403 });
     }
 
@@ -350,7 +350,6 @@ export async function POST(req: NextRequest) {
 
     const parsedBody = createPOSchema.safeParse(rawBody);
     if (!parsedBody.success) {
-      // [FIX] Cleanly formatted, readable validation errors
       const errorMessages = parsedBody.error.issues.map(err => `${err.path.join('.')}: ${err.message}`).join(" | ");
       return NextResponse.json({ error: `Validation Failed - ${errorMessages}` }, { status: 400 });
     }
@@ -382,25 +381,27 @@ export async function POST(req: NextRequest) {
 
     const vendor = await prisma.vendor.findFirst({ where: { id: vendorId, organizationId: orgId, deletedAt: null } });
     if (!vendor) {
-      // [FIX] Made vendor missing error friendlier
       return NextResponse.json({ error: "The selected vendor could not be found or has been deactivated." }, { status: 404 });
     }
 
     const finalStatus = requestedStatus === POStatus.ISSUED ? POStatus.ISSUED : POStatus.DRAFT;
 
-    const productIds = validatedItems.map((it) => it.productId);
+    // [FIX] Strict Product Organization Boundary Check to prevent cross-tenant injection
+    const uniqueProductIds = Array.from(new Set(validatedItems.map((it) => it.productId)));
     const products = await prisma.product.findMany({
-      where: { id: { in: productIds }, organizationId: orgId, deletedAt: null },
+      where: { id: { in: uniqueProductIds }, organizationId: orgId, deletedAt: null },
       select: { id: true, name: true, baseCostPrice: true }
     });
-    const productMap = new Map(products.map(p => [p.id, p]));
+    
+    if (products.length !== uniqueProductIds.length) {
+       return NextResponse.json({ error: "One or more requested products do not exist, are inactive, or belong to another organization." }, { status: 400 });
+    }
 
+    const productMap = new Map(products.map(p => [p.id, p]));
     const itemsForInsert = [];
+
     for (const [idx, it] of validatedItems.entries()) {
-      const product = productMap.get(it.productId);
-      if (!product) {
-        return NextResponse.json({ error: `Product on line ${idx + 1} could not be found or is inactive.` }, { status: 404 });
-      }
+      const product = productMap.get(it.productId)!;
 
       let unitCost: Decimal;
       if (it.unitCost !== undefined && it.unitCost !== null && it.unitCost > 0) {
@@ -408,23 +409,27 @@ export async function POST(req: NextRequest) {
       } else if (product.baseCostPrice && product.baseCostPrice.greaterThan(0)) {
         unitCost = new Decimal(product.baseCostPrice.toString());
       } else {
-        // [FIX] Highly contextualized message indicating exactly what needs fixing based on intention (draft vs issue)
         const actionVerb = finalStatus === POStatus.ISSUED ? "issue" : "save";
         return NextResponse.json({ 
           error: `Unit cost is missing or zero for '${product.name}' (line ${idx + 1}). Please provide a valid cost to ${actionVerb} this Purchase Order.` 
         }, { status: 400 });
       }
 
+      // [FIX] Precision rounding to prevent float mismatches downstream
+      unitCost = unitCost.toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
       const qty = new Decimal(it.quantityOrdered);
+      const totalCost = unitCost.mul(qty).toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
+
       itemsForInsert.push({ 
         productId: it.productId, 
         quantityOrdered: it.quantityOrdered, 
         unitCost, 
-        totalCost: unitCost.mul(qty) 
+        totalCost 
       });
     }
 
-    const totalAmount = itemsForInsert.reduce((sum, it) => sum.add(it.totalCost), new Decimal(0));
+    // [FIX] Final total aggregation rounded correctly
+    const totalAmount = itemsForInsert.reduce((sum, it) => sum.add(it.totalCost), new Decimal(0)).toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
 
     const created = await prisma.$transaction(async (tx) => {
       let poNumber = providedPoNumber?.trim();
@@ -464,6 +469,7 @@ export async function POST(req: NextRequest) {
         },
       });
 
+      // [FIX] Audit Log explicitly supplies a blank `from` object to prevent mapping errors
       const log = await createAuditLog(tx, {
         action: `CREATE_PO_${finalStatus}`,
         resource: Resource.PROCUREMENT,
@@ -474,7 +480,10 @@ export async function POST(req: NextRequest) {
         actorRole: user.role,
         severity: Severity.MEDIUM,
         description: `Created PO ${po.poNumber} (${finalStatus}) for ${po.vendor?.name}`,
-        changes: { to: { poId: po.id, total: totalAmount.toString(), vendor: po.vendor?.name, status: finalStatus, currency: currency ?? "NGN" } },
+        changes: { 
+          from: {}, 
+          to: { poId: po.id, total: totalAmount.toString(), vendor: po.vendor?.name, status: finalStatus, currency: currency ?? "NGN" } 
+        },
         requestId,
         ipAddress,
         deviceInfo,

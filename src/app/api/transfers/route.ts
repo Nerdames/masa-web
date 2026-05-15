@@ -1,26 +1,26 @@
+/**
+ * src/app/api/transfers/route.ts
+ * PRODUCTION-GRADE TRANSFER (STOCK) API
+ * Fortified for Concurrency, Forensic Audit, Float Precision, and RBAC Alignment.
+ */
+
 import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "next-auth/next";
 import { authOptions } from "@/core/lib/auth";
 import prisma from "@/core/lib/prisma";
 import { z } from "zod";
 import {
-  ActorType,
   Severity,
   Prisma,
   StockTransferStatus,
   Role,
-  NotificationType,
   StockMovementType,
   PermissionAction,
+  Resource,
 } from "@prisma/client";
-import { Decimal } from "@prisma/client/runtime/library";
 import crypto from "crypto";
-import { 
-  authorize, 
-  RESOURCES, 
-  ACTION_REQUIREMENTS, 
-  ROLE_WEIGHT 
-} from "@/core/lib/permission";
+import { authorize, RESOURCES } from "@/core/lib/permission";
+import { createAuditLog } from "@/core/lib/audit";
 
 /* -------------------------
   Zod Validation Schemas
@@ -52,6 +52,7 @@ interface SessionUser {
   branchId: string | null;
   role: Role;
   isOrgOwner: boolean;
+  permissions: string[];
 }
 
 const DEFAULT_LIMIT = 25;
@@ -82,106 +83,6 @@ function generateTransferReference(): string {
   return `TRF-${dateStr}-${suffix}`;
 }
 
-/**
- * Forensic Audit Logging Engine
- */
-async function createAuditLog(
-  tx: Prisma.TransactionClient,
-  data: {
-    organizationId: string;
-    branchId?: string | null;
-    actorId: string;
-    actorRole: Role;
-    action: string;
-    resourceId: string;
-    description: string;
-    severity?: Severity;
-    requestId: string;
-    ipAddress: string;
-    deviceInfo: string;
-    metadata?: any;
-    before?: any;
-    after?: any;
-  }
-) {
-  if (!data.organizationId) throw new Error("Log Integrity Violation: Missing Organization ID");
-
-  const { resourceId, ...logData } = data;
-
-  const lastLog = await tx.activityLog.findFirst({
-    where: { organizationId: data.organizationId },
-    orderBy: { createdAt: "desc" },
-    select: { hash: true },
-  });
-
-  const previousHash = lastLog?.hash ?? "0".repeat(64);
-  const hashPayload = JSON.stringify({
-    previousHash,
-    requestId: data.requestId,
-    actorId: data.actorId,
-    action: data.action,
-    targetId: resourceId,
-    timestamp: Date.now(),
-  });
-
-  const hash = crypto.createHash("sha256").update(hashPayload).digest("hex");
-
-  return await tx.activityLog.create({
-    data: {
-      ...logData,
-      actorType: ActorType.USER,
-      targetType: "STOCK_TRANSFER",
-      targetId: resourceId,
-      severity: data.severity ?? Severity.MEDIUM,
-      metadata: data.metadata || Prisma.JsonNull,
-      before: data.before || Prisma.JsonNull,
-      after: data.after || Prisma.JsonNull,
-      previousHash,
-      hash,
-      critical: data.severity === Severity.HIGH || data.severity === Severity.CRITICAL,
-    },
-  });
-}
-
-/**
- * Logistics Stakeholder Notification
- */
-async function notifyStakeholders(
-  tx: Prisma.TransactionClient,
-  orgId: string,
-  title: string,
-  message: string,
-  activityLogId: string,
-  targetBranchIds: string[]
-) {
-  const targets = await tx.authorizedPersonnel.findMany({
-    where: {
-      organizationId: orgId,
-      deletedAt: null,
-      disabled: false,
-      OR: [
-        { role: Role.ADMIN },
-        { isOrgOwner: true },
-        { branchId: { in: targetBranchIds }, role: { in: [Role.MANAGER, Role.INVENTORY] } },
-      ],
-    },
-    select: { id: true },
-  });
-
-  if (targets.length === 0) return;
-
-  await tx.notification.create({
-    data: {
-      organizationId: orgId,
-      type: NotificationType.INVENTORY,
-      title,
-      message,
-      activityLogId,
-      recipients: { create: targets.map((t) => ({ personnelId: t.id })) },
-    },
-  });
-}
-
 /* -------------------------
   GET: List Transfers
 ------------------------- */
@@ -198,7 +99,8 @@ export async function GET(req: NextRequest) {
       role: user.role, 
       isOrgOwner: user.isOrgOwner, 
       action: PermissionAction.READ, 
-      resource: RESOURCES.STOCK 
+      resources: RESOURCES.STOCK,
+      userPermissions: user.permissions 
     });
     
     if (!auth.allowed) {
@@ -307,7 +209,8 @@ export async function POST(req: NextRequest) {
       role: user.role, 
       isOrgOwner: user.isOrgOwner, 
       action: PermissionAction.CREATE, 
-      resource: RESOURCES.STOCK 
+      resources: RESOURCES.STOCK,
+      userPermissions: user.permissions
     });
     
     if (!auth.allowed) {
@@ -342,7 +245,7 @@ export async function POST(req: NextRequest) {
         }
       });
 
-      // 2. Create Transfer Record
+      // 2. Create Transfer Record (Aligned with schema: notes removed from DB payload, mapped to audit)
       const transfer = await tx.stockTransfer.create({
         data: {
           organizationId: user.organizationId,
@@ -350,7 +253,6 @@ export async function POST(req: NextRequest) {
           toBranchId: validated.toBranchId,
           transferNumber: generateTransferReference(),
           status: StockTransferStatus.PENDING,
-          notes: validated.notes,
           createdById: user.id,
           items: {
             create: validated.items.map((it) => ({
@@ -363,27 +265,22 @@ export async function POST(req: NextRequest) {
         include: { toBranch: { select: { name: true } } }
       });
 
-      // 3. Audit & Notify
-      const log = await createAuditLog(tx, {
+      // 3. Fortress Audit Logging
+      await createAuditLog(tx, {
         organizationId: user.organizationId,
         branchId: user.branchId,
         actorId: user.id,
         actorRole: user.role,
         action: "TRANSFER_INITIATED",
+        resource: Resource.STOCK,
         resourceId: transfer.id,
         description: `TRF ${transfer.transferNumber} dispatched to ${transfer.toBranch.name}.`,
-        requestId, ipAddress, deviceInfo,
+        metadata: { requestNotes: validated.notes }, // Appending schema-missing notes to the immutable log
+        requestId, 
+        ipAddress, 
+        deviceInfo,
         after: { status: transfer.status, itemCount: validated.items.length },
       });
-
-      await notifyStakeholders(
-        tx, 
-        user.organizationId, 
-        "Transfer Request", 
-        `New stock transfer ${transfer.transferNumber} requires approval for ${transfer.toBranch.name}.`, 
-        log.id, 
-        [user.branchId!, validated.toBranchId]
-      );
 
       return transfer;
     }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
@@ -410,9 +307,17 @@ export async function PATCH(req: NextRequest) {
     const body = await req.json();
     const { transferId, action, notes: actionNotes } = UpdateTransferSchema.parse(body);
 
-    const canProcess = user.isOrgOwner || ROLE_WEIGHT[user.role] >= ROLE_WEIGHT[ACTION_REQUIREMENTS.STOCK_TRANSFER];
-    if (!canProcess) {
-      return NextResponse.json({ error: "Higher authority required for this action." }, { status: 403 });
+    // Using the centralized RBAC authorize system over manual ROLE_WEIGHT
+    const auth = authorize({ 
+      role: user.role, 
+      isOrgOwner: user.isOrgOwner, 
+      action: action === "APPROVE" ? PermissionAction.APPROVE : PermissionAction.UPDATE, 
+      resources: RESOURCES.STOCK,
+      userPermissions: user.permissions
+    });
+    
+    if (!auth.allowed) {
+      return NextResponse.json({ error: auth.reason || "Higher authority required for this action." }, { status: 403 });
     }
 
     const requestId = crypto.randomUUID();
@@ -439,10 +344,16 @@ export async function PATCH(req: NextRequest) {
         logAction = "TRANSFER_APPROVED";
 
         for (const item of transfer.items) {
+          // Atomic Decrement to prevent concurrency race conditions
           const bp = await tx.branchProduct.update({
             where: { branchId_productId: { branchId: transfer.fromBranchId, productId: item.productId } },
             data: { stock: { decrement: item.quantity } },
           });
+
+          if (bp.stock < 0) throw new Error(`Stock level for ${item.productId} plummeted below zero. Concurrent transaction overlap.`);
+
+          const unitCostDecimal = bp.costPrice || new Prisma.Decimal(0);
+          const quantityDecimal = new Prisma.Decimal(item.quantity);
 
           await tx.stockMovement.create({
             data: {
@@ -452,8 +363,8 @@ export async function PATCH(req: NextRequest) {
               productId: item.productId,
               type: StockMovementType.TRANSFER,
               quantity: -item.quantity,
-              unitCost: bp.costPrice || new Decimal(0),
-              totalCost: new Decimal(bp.costPrice || 0).mul(item.quantity),
+              unitCost: unitCostDecimal,
+              totalCost: unitCostDecimal.mul(quantityDecimal),
               runningBalance: bp.stock,
               reason: `Dispatched via ${transfer.transferNumber}`,
               handledById: user.id,
@@ -466,17 +377,20 @@ export async function PATCH(req: NextRequest) {
       // --- COMPLETION LOGIC (Stock Entry) ---
       else if (action === "COMPLETE") {
         if (transfer.status !== StockTransferStatus.APPROVED) throw new Error("Transfer must be APPROVED first.");
-        // Note: Using 'COMPLETED' cast as StockTransferStatus. Next schema migration will formally add this enum.
-        newStatus = "COMPLETED" as StockTransferStatus; 
+        newStatus = StockTransferStatus.COMPLETED; 
         logAction = "TRANSFER_COMPLETED";
 
         for (const item of transfer.items) {
           const productRef = await tx.product.findUnique({ where: { id: item.productId } });
           if (!productRef) throw new Error(`Product mapping lost for ${item.productId}`);
 
-          const sourceBp = await tx.branchProduct.findUnique({
-            where: { branchId_productId: { branchId: transfer.fromBranchId, productId: item.productId } },
+          // Retrieval of Origin Cost Basis from the approval phase movement to prevent Float variations or missing records.
+          const originMovement = await tx.stockMovement.findFirst({
+            where: { stockTransferItemId: item.id, type: StockMovementType.TRANSFER, quantity: { lt: 0 } },
+            select: { unitCost: true }
           });
+          const capturedCost = originMovement?.unitCost || new Prisma.Decimal(0);
+          const quantityDecimal = new Prisma.Decimal(item.quantity);
 
           const bp = await tx.branchProduct.upsert({
             where: { branchId_productId: { branchId: transfer.toBranchId, productId: item.productId } },
@@ -487,7 +401,7 @@ export async function PATCH(req: NextRequest) {
               productId: item.productId,
               stock: item.quantity,
               uomId: productRef.uomId,
-              costPrice: sourceBp?.costPrice || new Decimal(0), 
+              costPrice: capturedCost, 
             },
           });
 
@@ -499,8 +413,8 @@ export async function PATCH(req: NextRequest) {
               productId: item.productId,
               type: StockMovementType.TRANSFER,
               quantity: item.quantity,
-              unitCost: bp.costPrice || new Decimal(0),
-              totalCost: new Decimal(bp.costPrice || 0).mul(item.quantity),
+              unitCost: capturedCost,
+              totalCost: capturedCost.mul(quantityDecimal),
               runningBalance: bp.stock,
               reason: `Received via ${transfer.transferNumber}`,
               handledById: user.id,
@@ -512,7 +426,7 @@ export async function PATCH(req: NextRequest) {
 
       // --- CANCELLATION/REJECTION LOGIC (Rollback) ---
       else if (action === "CANCEL" || action === "REJECT") {
-        if (["COMPLETED", StockTransferStatus.CANCELLED].includes(transfer.status as string)) {
+        if ([StockTransferStatus.COMPLETED, StockTransferStatus.CANCELLED].includes(transfer.status)) {
           throw new Error("Finalized transfers cannot be modified.");
         }
         newStatus = action === "CANCEL" ? StockTransferStatus.CANCELLED : StockTransferStatus.REJECTED;
@@ -525,6 +439,9 @@ export async function PATCH(req: NextRequest) {
               data: { stock: { increment: item.quantity } },
             });
 
+            const unitCostDecimal = bp.costPrice || new Prisma.Decimal(0);
+            const quantityDecimal = new Prisma.Decimal(item.quantity);
+
             await tx.stockMovement.create({
               data: {
                 organizationId: user.organizationId,
@@ -533,8 +450,8 @@ export async function PATCH(req: NextRequest) {
                 productId: item.productId,
                 type: StockMovementType.ADJUST,
                 quantity: item.quantity,
-                unitCost: bp.costPrice || new Decimal(0),
-                totalCost: new Decimal(bp.costPrice || 0).mul(item.quantity),
+                unitCost: unitCostDecimal,
+                totalCost: unitCostDecimal.mul(quantityDecimal),
                 runningBalance: bp.stock,
                 reason: `Rolled back: ${transfer.transferNumber}`,
                 handledById: user.id,
@@ -548,36 +465,32 @@ export async function PATCH(req: NextRequest) {
         where: { id: transferId },
         data: { 
           status: newStatus, 
-          // FIX: Use connect syntax for relation fields not exposed as scalars
+          // Connect syntax required for relationship fields
           ...(action === "APPROVE" ? { 
-            approvedBy: { connect: { id: user.id } } 
+            approvedBy: { connect: { id: user.id } },
+            approvedAt: new Date()
           } : {}),
-          // notes field removed entirely to resolve the Prisma unknown argument error
         },
       });
 
-      const log = await createAuditLog(tx, {
+      await createAuditLog(tx, {
         organizationId: user.organizationId,
         actorId: user.id,
         actorRole: user.role,
         action: logAction,
+        resource: Resource.STOCK,
         resourceId: updated.id,
-        // Moved the actionNotes logging here so it persists securely
         description: `TRF ${updated.transferNumber} transitioned to ${newStatus}.${actionNotes ? ` [${action}] Notes: ${actionNotes}` : ""}`,
-        requestId, ipAddress, deviceInfo,
+        requestId, 
+        ipAddress, 
+        deviceInfo,
         severity: Severity.HIGH,
-        before: { status: transfer.status },
-        after: { status: newStatus },
+        metadata: actionNotes ? { actionReason: actionNotes } : Prisma.JsonNull,
+        changes: {
+          from: { status: transfer.status },
+          to: { status: newStatus }
+        }
       });
-
-      await notifyStakeholders(
-        tx, 
-        user.organizationId, 
-        "Logistics Alert", 
-        `Transfer ${updated.transferNumber} status updated to ${newStatus}.`, 
-        log.id, 
-        [transfer.fromBranchId, transfer.toBranchId]
-      );
 
       return updated;
     }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });

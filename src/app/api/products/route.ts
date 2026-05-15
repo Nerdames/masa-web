@@ -1,8 +1,7 @@
 /**
  * src/app/api/products/route.ts
  * PRODUCTION-READY PRODUCT MANAGEMENT API (V3.1 - FORTIFIED)
- * Optimized for: Forensic Auditing, Concurrency, and Strict Authorization.
- * Fix: Integration with fixed Forensic Audit Engine to prevent Decimal serialization errors.
+ * Optimized for: Forensic Auditing, Concurrency, Strict Authorization, and Safe Serialization.
  */
 
 import { NextRequest, NextResponse } from "next/server";
@@ -28,6 +27,7 @@ import { createAuditLog } from "@/core/lib/audit";
 const DEFAULT_LIMIT = 25;
 const MAX_LIMIT = 1000;
 
+// FIX 4: Prevent "Hidden Rounding" by strictly enforcing 2-decimal point precision natively
 const productSchema = z.object({
   name: z.string().trim().min(2, "Product name must be at least 2 characters"),
   sku: z.string().trim().min(2, "SKU is required"),
@@ -35,8 +35,13 @@ const productSchema = z.object({
   description: z.string().trim().optional().nullable(),
   categoryId: z.string().cuid().optional().nullable(),
   uomId: z.string().cuid().optional().nullable(),
-  baseCostPrice: z.number().min(0, "Base cost cannot be negative"),
-  costPrice: z.number().optional(),
+  baseCostPrice: z.number()
+    .min(0, "Base cost cannot be negative")
+    .transform((val) => Number(val.toFixed(2))), // Force financial precision
+  costPrice: z.number()
+    .min(0)
+    .optional()
+    .transform((val) => (val !== undefined ? Number(val.toFixed(2)) : undefined)),
   currency: z.string().length(3).default("NGN"),
 });
 
@@ -45,6 +50,12 @@ const productPatchSchema = productSchema.partial();
 /* -------------------------------------------------------------------------- */
 /* INTERNAL HELPERS                                                           */
 /* -------------------------------------------------------------------------- */
+
+// FIX 3: Utility to prevent Prisma Decimal/Date serialization crashes in Postgres JSONB columns
+const sanitizeForAudit = (data: any) => {
+  if (!data) return null;
+  return JSON.parse(JSON.stringify(data)); 
+};
 
 async function triggerProductNotification(
   tx: Prisma.TransactionClient,
@@ -61,11 +72,11 @@ async function triggerProductNotification(
       title: "Product Registry Update",
       message,
       type,
-      // Create the recipient record to link this notification to the user
+      // Verified against Schema: Notification model has `recipients NotificationRecipient[]`
       recipients: {
         create: {
           personnelId: userId,
-          read: false, // Moved here as read status is tracked per user 
+          read: false,
         },
       },
     },
@@ -82,7 +93,7 @@ export async function GET(req: NextRequest) {
     const session = await getServerSession(authOptions);
     if (!session?.user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
-    const user = session.user;
+    const user = session.user as any;
     const { searchParams } = new URL(req.url);
     const id = searchParams.get("id");
     const mode = searchParams.get("mode");
@@ -118,7 +129,13 @@ export async function GET(req: NextRequest) {
         },
       });
       if (!product) return NextResponse.json({ error: "Product not found" }, { status: 404 });
-      return NextResponse.json(product);
+      
+      // FIX 1: Safely parse Decimals for the client UI
+      return NextResponse.json({
+        ...product,
+        baseCostPrice: product.baseCostPrice.toNumber(),
+        costPrice: product.costPrice.toNumber(),
+      });
     }
 
     const page = Math.max(1, parseInt(searchParams.get("page") || "1", 10));
@@ -155,8 +172,15 @@ export async function GET(req: NextRequest) {
       prisma.product.count({ where }),
     ]);
 
+    // FIX 1: Map items to safe numbers to prevent [object Object] serialization crashes
+    const safeItems = items.map(item => ({
+      ...item,
+      baseCostPrice: item.baseCostPrice.toNumber(),
+      costPrice: item.costPrice.toNumber(),
+    }));
+
     return NextResponse.json({
-      items,
+      items: safeItems,
       pagination: { total, page, limit, totalPages: Math.ceil(total / limit) },
       requestId
     });
@@ -177,7 +201,7 @@ export async function POST(req: NextRequest) {
     const session = await getServerSession(authOptions);
     if (!session?.user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
-    const user = session.user;
+    const user = session.user as any;
     const auth = authorize({
       role: user.role,
       isOrgOwner: user.isOrgOwner,
@@ -201,7 +225,6 @@ export async function POST(req: NextRequest) {
     const deviceInfo = req.headers.get("user-agent")?.substring(0, 255) ?? "unknown";
 
     const result = await prisma.$transaction(async (tx) => {
-      // CONFLICT CHECK (SKU/BARCODE)
       const conflict = await tx.product.findFirst({
         where: {
           organizationId: user.organizationId,
@@ -228,8 +251,8 @@ export async function POST(req: NextRequest) {
         },
       });
 
-      // FORENSIC AUDIT INTEGRATION (Now safely handles Decimal types)
-      await createAuditLog(tx, {
+      // FIX 3: Sanitize payload to strip Decimal instances
+      await createAuditLog(tx as any, {
         action: "CREATE_PRODUCT",
         resource: Resource.PRODUCT,
         resourceId: product.id,
@@ -238,7 +261,7 @@ export async function POST(req: NextRequest) {
         actorRole: user.role,
         severity: Severity.MEDIUM,
         description: `Product Registered: ${product.name} [${product.sku}]`,
-        changes: product,
+        changes: sanitizeForAudit(product),
         ipAddress,
         deviceInfo,
         requestId,
@@ -251,7 +274,11 @@ export async function POST(req: NextRequest) {
         type: NotificationType.INVENTORY
       });
 
-      return product;
+      return {
+        ...product,
+        baseCostPrice: product.baseCostPrice.toNumber(),
+        costPrice: product.costPrice.toNumber()
+      };
     }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
 
     return NextResponse.json({ success: true, data: result }, { status: 201 });
@@ -271,7 +298,7 @@ export async function PATCH(req: NextRequest) {
     const session = await getServerSession(authOptions);
     if (!session?.user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
-    const user = session.user;
+    const user = session.user as any;
     const { searchParams } = new URL(req.url);
     const id = searchParams.get("id");
     if (!id) return NextResponse.json({ error: "Missing Product ID" }, { status: 400 });
@@ -309,14 +336,14 @@ export async function PATCH(req: NextRequest) {
         where: { id },
         data: {
           ...updateInput,
-          baseCostPrice: updateInput.baseCostPrice ? new Prisma.Decimal(updateInput.baseCostPrice) : undefined,
-          costPrice: updateInput.costPrice ? new Prisma.Decimal(updateInput.costPrice) : undefined,
+          baseCostPrice: updateInput.baseCostPrice !== undefined ? new Prisma.Decimal(updateInput.baseCostPrice) : undefined,
+          costPrice: updateInput.costPrice !== undefined ? new Prisma.Decimal(updateInput.costPrice) : undefined,
           updatedById: user.id,
         },
       });
 
-      // FORENSIC AUDIT INTEGRATION
-      await createAuditLog(tx, {
+      // FIX 3: Sanitize payload to strip Decimal instances
+      await createAuditLog(tx as any, {
         action: "UPDATE_PRODUCT",
         resource: Resource.PRODUCT,
         resourceId: id,
@@ -325,13 +352,17 @@ export async function PATCH(req: NextRequest) {
         actorRole: user.role,
         severity: Severity.LOW,
         description: `Metadata modified for SKU: ${existing.sku}`,
-        changes: { from: existing, to: updated },
+        changes: sanitizeForAudit({ from: existing, to: updated }),
         ipAddress,
         deviceInfo,
         requestId,
       });
 
-      return updated;
+      return {
+        ...updated,
+        baseCostPrice: updated.baseCostPrice.toNumber(),
+        costPrice: updated.costPrice.toNumber()
+      };
     }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
 
     return NextResponse.json({ success: true, data: result });
@@ -350,7 +381,7 @@ export async function DELETE(req: NextRequest) {
     const session = await getServerSession(authOptions);
     if (!session?.user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
-    const user = session.user;
+    const user = session.user as any;
     const { searchParams } = new URL(req.url);
     const id = searchParams.get("id");
     if (!id) return NextResponse.json({ error: "Product ID required" }, { status: 400 });
@@ -391,8 +422,8 @@ export async function DELETE(req: NextRequest) {
         },
       });
 
-      // FORENSIC AUDIT INTEGRATION
-      await createAuditLog(tx, {
+      // FIX 3: Sanitize payload to stringify JS Dates and Prisma Decimals
+      await createAuditLog(tx as any, {
         action: "DELETE_PRODUCT",
         resource: Resource.PRODUCT,
         resourceId: id,
@@ -401,7 +432,7 @@ export async function DELETE(req: NextRequest) {
         actorRole: user.role,
         severity: Severity.HIGH,
         description: `Soft-delete: ${target.sku} decommissioned.`,
-        changes: { from: target, to: deleted },
+        changes: sanitizeForAudit({ from: target, to: deleted }),
         ipAddress,
         deviceInfo,
         requestId,
@@ -410,7 +441,7 @@ export async function DELETE(req: NextRequest) {
       await triggerProductNotification(tx, {
         organizationId: user.organizationId,
         userId: user.id,
-        message: `Alert: Product ${target.sku} archived by ${user.name}.`,
+        message: `Alert: Product ${target.sku} archived by ${user.name || 'Admin'}.`,
         type: NotificationType.INVENTORY
       });
     }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });

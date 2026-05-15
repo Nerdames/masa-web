@@ -4,17 +4,20 @@ import React, { useState, useMemo } from "react";
 import {
   X, Maximize2, Minimize2, Package,
   Loader2, CheckCircle2, AlertOctagon,
-  Phone, Mail, XCircle, ShieldCheck
+  Phone, Mail, XCircle, ShieldCheck,
+  Calendar, User, Hash, FileText,
+  Truck, ClipboardCheck, ArrowRight,
+  Database, Fingerprint
 } from "lucide-react";
 import { useSidePanel } from "@/core/components/layout/SidePanelContext";
 import { useAlerts } from "@/core/components/feedback/AlertProvider";
-import { useSession } from "next-auth/react";
-import { usePermission } from "@/core/hooks/usePermission"; // Path based on standard project structure
-import { Resource } from "@prisma/client";
+import { usePermission } from "@/core/hooks/usePermission";
+import { Resource, PermissionAction, GRNStatus } from "@prisma/client";
 
-/* -------------------------
-Types - Precisely Aligned with Backend Prisma Include
-------------------------- */
+/* -------------------------------------------------------------------------- */
+/* TYPES                                                                      */
+/* -------------------------------------------------------------------------- */
+
 interface GoodsReceiptItem {
   id: string;
   productId: string;
@@ -36,7 +39,7 @@ interface GoodsReceiptNote {
   grnNumber: string;
   organizationId: string;
   branchId: string;
-  status: "PENDING" | "RECEIVED" | "REJECTED";
+  status: GRNStatus;
   receivedAt: string | Date;
   notes?: string | null;
   vendor?: {
@@ -63,23 +66,29 @@ interface GRNDetailViewProps {
   onClose: () => void;
 }
 
+/* -------------------------------------------------------------------------- */
+/* STYLES (High-Density Enterprise Specs)                                    */
+/* -------------------------------------------------------------------------- */
+
+const labelClass = "text-[8.5px] font-bold text-slate-400 uppercase tracking-[0.15em] block mb-1 whitespace-nowrap";
+const valueClass = "text-[10.5px] font-semibold text-slate-700 dark:text-slate-200 bg-slate-50 dark:bg-slate-800/40 px-2.5 py-1.5 rounded border border-slate-200/60 dark:border-slate-700/40 flex items-center gap-2 whitespace-nowrap tabular-nums";
+const sectionHeader = "flex items-center justify-between pb-2 border-b border-slate-100 dark:border-slate-800 mb-4";
+const sectionTitle = "text-[9px] font-black text-slate-800 dark:text-slate-300 uppercase tracking-[0.2em] flex items-center gap-2";
+
 export default function GRNDetailView({ grn, onClose }: GRNDetailViewProps) {
-  const { data: session } = useSession();
   const { isFullScreen, toggleFullScreen } = useSidePanel();
   const { dispatch } = useAlerts();
-  const { canApprove, canVoid } = usePermission();
   
-  // RBAC: Use granular permissions instead of static role strings
-  const canFinalize = canApprove(Resource.PROCUREMENT);
-  const canReject = canVoid(Resource.PROCUREMENT);
+  const { can } = usePermission();
+  const canFinalize = can(Resource.PROCUREMENT, PermissionAction.APPROVE);
+  const canReject = can(Resource.PROCUREMENT, PermissionAction.VOID);
 
-  // Production Sync: Local status state ensures UI snappiness
-  const [currentStatus, setCurrentStatus] = useState<"PENDING" | "RECEIVED" | "REJECTED">(grn.status);
+  const [currentStatus, setCurrentStatus] = useState<GRNStatus>(grn.status);
   const [isProcessing, setIsProcessing] = useState<"APPROVE" | "REJECT" | null>(null);
 
-  const isPending = currentStatus === "PENDING";
-  const isApproved = currentStatus === "RECEIVED";
-  const isRejected = currentStatus === "REJECTED";
+  const isPending = currentStatus === GRNStatus.PENDING;
+  const isApproved = currentStatus === GRNStatus.RECEIVED;
+  const isRejected = currentStatus === GRNStatus.REJECTED;
   
   const currencySymbol = useMemo(() => {
     const code = grn.purchaseOrder?.currency || "NGN";
@@ -94,247 +103,230 @@ export default function GRNDetailView({ grn, onClose }: GRNDetailViewProps) {
   }, [grn.items]);
 
   async function handleAction(action: "APPROVE" | "REJECT") {
-    const actionLabel = action === "APPROVE" ? "approve" : "reject";
     const targetStatus = action === "APPROVE" ? "RECEIVED" : "REJECTED";
-
-    const confirmMessage = action === "APPROVE" 
-      ? `Finalize GRN ${grn.grnNumber}? This will increment physical stock levels and update the Purchase Order status.` 
-      : `Reject GRN ${grn.grnNumber}? This record will be voided and no stock movements will be recorded.`;
-
-    if (!window.confirm(confirmMessage)) return;
+    if (!window.confirm(`Initiate ${action} protocol? This ledger entry is irreversible.`)) return;
     
     setIsProcessing(action);
-
     try {
       const res = await fetch(`/api/inventory/grns/${grn.id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ status: targetStatus }),
       });
-      
-      const result = await res.json().catch(() => ({}));
+      const result = await res.json();
+      if (!res.ok) throw new Error(result.error || `Protocol failure: ${action}`);
 
-      if (!res.ok) {
-        throw new Error(result.error || `Failed to ${actionLabel} the record.`);
-      }
-
-      setCurrentStatus(targetStatus);
-
+      setCurrentStatus(targetStatus as GRNStatus);
       dispatch?.({ 
         kind: "PUSH", 
         type: action === "APPROVE" ? "SUCCESS" : "WARNING", 
-        title: `GRN ${action === "APPROVE" ? "Processed" : "Rejected"}`, 
-        message: `Successfully updated ${grn.grnNumber} to ${targetStatus.toLowerCase()}.` 
+        title: `Asset ${action === "APPROVE" ? "Reconciled" : "Voided"}`, 
+        message: `Fiscal log ${grn.grnNumber} committed to ledger.` 
       });
 
-      // Notify parent components or lists to refresh
-      window.dispatchEvent(new CustomEvent("grn:updated", { 
-        detail: { id: grn.id, status: targetStatus } 
-      }));
-      
+      window.dispatchEvent(new CustomEvent("grn:updated", { detail: { id: grn.id, status: targetStatus } }));
     } catch (err: any) {
-      dispatch?.({ 
-        kind: "TOAST", 
-        type: "ERROR", 
-        title: "Action Failed", 
-        message: err.message || "An unexpected error occurred." 
-      });
+      dispatch?.({ kind: "TOAST", type: "ERROR", title: "System Fault", message: err.message });
     } finally {
       setIsProcessing(null);
     }
   }
 
   return (
-    <div className="flex flex-col h-full w-full bg-white dark:bg-slate-900 shadow-xl overflow-hidden" role="dialog" aria-labelledby="grn-header">
-      {/* Header */}
-      <div className="px-4 py-3 border-b border-slate-200/60 dark:border-slate-800 flex justify-between items-center bg-white/80 dark:bg-slate-900/80 backdrop-blur-md z-20">
-        <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2">
-            <h2 id="grn-header" className="text-sm font-bold text-slate-800 dark:text-slate-100 truncate">
-              {grn.grnNumber}
-            </h2>
-            {isPending && (
-              <span className="px-1.5 py-0.5 rounded text-[8px] font-bold tracking-wider bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400 uppercase">
-                Awaiting Approval
-              </span>
-            )}
+    <div className="flex flex-col h-full w-full bg-white dark:bg-slate-950 overflow-hidden">
+      
+      {/* HEADER: Forensic Context */}
+      <div className="px-4 py-2.5 border-b border-slate-200 dark:border-slate-800 flex justify-between items-center bg-white dark:bg-slate-950 z-30">
+        <div className="flex items-center gap-3">
+          <div className="p-1.5 bg-slate-900 dark:bg-emerald-500/10 rounded text-white dark:text-emerald-500">
+            <Fingerprint className="w-3.5 h-3.5" />
           </div>
-          <p className="text-[10px] text-slate-500 dark:text-slate-400 mt-0.5">
-            Reference: {grn.purchaseOrder?.poNumber || "Direct Inventory Receipt"}
-          </p>
+          <div>
+            <h2 className="text-[10px] font-black text-slate-900 dark:text-white uppercase tracking-tighter whitespace-nowrap">
+              LOG_REF: {grn.grnNumber}
+            </h2>
+            <div className="flex items-center gap-2">
+              <span className={`text-[7px] font-black px-1 py-0.5 rounded uppercase tracking-widest ${
+                isApproved ? "bg-emerald-500 text-white" :
+                isRejected ? "bg-red-500 text-white" : "bg-amber-500 text-white"
+              }`}>
+                {currentStatus}
+              </span>
+              <span className="text-[8px] text-slate-400 font-bold uppercase whitespace-nowrap">PO_RECON: {grn.purchaseOrder?.poNumber || "DIRECT"}</span>
+            </div>
+          </div>
         </div>
-        <div className="flex items-center gap-1 ml-4">
-          <button 
-            onClick={toggleFullScreen} 
-            className="p-2 text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg transition-colors"
-            title={isFullScreen ? "Minimize" : "Maximize"}
-          >
-            {isFullScreen ? <Minimize2 className="w-4 h-4" /> : <Maximize2 className="w-4 h-4" />}
+
+        <div className="flex items-center gap-1">
+          <button onClick={toggleFullScreen} className="p-2 text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 rounded transition-all">
+            {isFullScreen ? <Minimize2 className="w-3.5 h-3.5" /> : <Maximize2 className="w-3.5 h-3.5" />}
           </button>
-          <button 
-            onClick={onClose} 
-            className="p-2 text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg transition-colors"
-            aria-label="Close panel"
-          >
-            <X className="w-4 h-4" />
+          <button onClick={onClose} className="p-2 text-slate-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 rounded transition-all">
+            <X className="w-3.5 h-3.5" />
           </button>
         </div>
       </div>
 
-      {/* Scrollable Content */}
-      <div className="flex-1 overflow-y-auto custom-scrollbar">
-        <div className="p-4 space-y-6">
+      <div className="flex-1 overflow-y-auto p-4 custom-scrollbar">
+        <div className="max-w-full space-y-6">
           
-          {/* Information Cards */}
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800/40 border border-slate-200/50 dark:border-slate-700/50">
-              <div className="flex items-center gap-2 mb-2 text-slate-400">
-                <Package className="w-3.5 h-3.5" />
-                <span className="text-[10px] font-bold uppercase tracking-wider">Vendor Details</span>
+          {/* METADATA GRID: Dynamic Stacking */}
+          <div className={`grid gap-4 ${isFullScreen ? "grid-cols-2" : "grid-cols-1"}`}>
+            {/* Vendor Origin */}
+            <section className="bg-slate-50/50 dark:bg-slate-900/30 p-3 rounded-lg border border-slate-100 dark:border-slate-800/50">
+              <div className={sectionHeader}>
+                <h3 className={sectionTitle}><Truck className="w-3 h-3 text-emerald-500" /> Fiscal Origin</h3>
               </div>
-              <p className="text-xs font-bold text-slate-800 dark:text-slate-200 truncate">
-                {grn.vendor?.name || "Unspecified Vendor"}
-              </p>
-              <div className="mt-2 space-y-1">
-                <div className="flex items-center gap-2 text-[10px] text-slate-500">
-                  <Mail className="w-3 h-3 flex-shrink-0" />
-                  <span className="truncate">{grn.vendor?.email || "No contact email"}</span>
+              <div className="space-y-3">
+                <div>
+                  <label className={labelClass}>Legal Entity</label>
+                  <div className={valueClass}><Package className="w-3 h-3 opacity-50" /> {grn.vendor?.name}</div>
                 </div>
-                {grn.vendor?.phone && (
-                  <div className="flex items-center gap-2 text-[10px] text-slate-500">
-                    <Phone className="w-3 h-3 flex-shrink-0" />
-                    <span>{grn.vendor.phone}</span>
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <label className={labelClass}>Comms Channel</label>
+                    <div className={valueClass}><Mail className="w-3 h-3 opacity-50" /> {grn.vendor?.email || "N/A"}</div>
                   </div>
-                )}
+                  <div>
+                    <label className={labelClass}>Direct Line</label>
+                    <div className={valueClass}><Phone className="w-3 h-3 opacity-50" /> {grn.vendor?.phone || "N/A"}</div>
+                  </div>
+                </div>
               </div>
-            </div>
+            </section>
 
-            <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800/40 border border-slate-200/50 dark:border-slate-700/50">
-              <div className="flex items-center gap-2 mb-2 text-slate-400">
-                <span className="text-[10px] font-bold uppercase tracking-wider">Audit & Chain</span>
+            {/* Forensic Chain */}
+            <section className="bg-slate-50/50 dark:bg-slate-900/30 p-3 rounded-lg border border-slate-100 dark:border-slate-800/50">
+              <div className={sectionHeader}>
+                <h3 className={sectionTitle}><ShieldCheck className="w-3 h-3 text-blue-500" /> Forensic Chain</h3>
               </div>
-              <div className="space-y-2">
-                <div className="flex justify-between items-center">
-                  <span className="text-[10px] text-slate-500">Received On</span>
-                  <span className="text-[10px] font-medium text-slate-700 dark:text-slate-300">
-                    {new Date(grn.receivedAt).toLocaleDateString(undefined, { dateStyle: 'medium' })}
-                  </span>
-                </div>
-                <div className="flex justify-between items-center">
-                  <span className="text-[10px] text-slate-500">Recorded By</span>
-                  <span className="text-[10px] font-medium text-slate-700 dark:text-slate-300 truncate pl-4">
-                    {grn.receivedBy?.name || "System Account"}
-                  </span>
-                </div>
-                {!isPending && (
-                  <div className="flex justify-between items-center pt-1 border-t border-slate-200 dark:border-slate-700 mt-1">
-                    <span className="text-[10px] text-slate-500">Status Verified By</span>
-                    <span className="text-[10px] font-bold text-emerald-600 dark:text-emerald-400 truncate pl-4">
-                      {grn.approvedBy?.name || "Auth Personnel"}
-                    </span>
+              <div className="space-y-3">
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <label className={labelClass}>Timestamp</label>
+                    <div className={valueClass}><Calendar className="w-3 h-3 opacity-50" /> {new Date(grn.receivedAt).toLocaleDateString()}</div>
                   </div>
-                )}
+                  <div>
+                    <label className={labelClass}>Node ID</label>
+                    <div className={valueClass}><Hash className="w-3 h-3 opacity-50" /> {grn.branchId.slice(-8).toUpperCase()}</div>
+                  </div>
+                </div>
+                <div>
+                  <label className={labelClass}>Authored By</label>
+                  <div className={valueClass}><User className="w-3 h-3 opacity-50" /> {grn.receivedBy?.name || "SYS_AUTO"}</div>
+                </div>
               </div>
-            </div>
+            </section>
           </div>
 
-          {/* Items Table */}
-          <div className="space-y-3">
-            <h4 className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Receipt Manifest</h4>
-            <div className="border border-slate-200 dark:border-slate-800 rounded-xl overflow-x-auto shadow-sm">
-              <table className="w-full text-left text-xs min-w-[500px]">
-                <thead className="bg-slate-50/50 dark:bg-slate-800/50 border-b border-slate-200 dark:border-slate-800">
-                  <tr>
-                    <th className="px-4 py-3 text-[9px] font-bold text-slate-500 uppercase">Product Description</th>
-                    <th className="px-3 py-3 text-[9px] font-bold text-slate-500 uppercase text-center">Accepted</th>
-                    <th className="px-3 py-3 text-[9px] font-bold text-slate-500 uppercase text-center">Rejected</th>
-                    <th className="px-4 py-3 text-[9px] font-bold text-slate-500 uppercase text-right">Subtotal</th>
+          {/* MANIFEST: Reconciliation Table */}
+          <section>
+            <div className={sectionHeader}>
+              <h3 className={sectionTitle}><FileText className="w-3 h-3 text-slate-400" /> Reconciliation Manifest</h3>
+              <span className="text-[8px] font-black bg-slate-100 dark:bg-slate-800 px-2 py-0.5 rounded text-slate-500 uppercase">
+                Line Items: {grn.items.length}
+              </span>
+            </div>
+            
+            <div className="border border-slate-200 dark:border-slate-800 rounded overflow-x-auto shadow-sm">
+              <table className="w-full text-left min-w-[600px]">
+                <thead className="bg-slate-50 dark:bg-slate-900/80 border-b border-slate-200 dark:border-slate-800">
+                  <tr className="text-[8px] font-black text-slate-400 uppercase tracking-widest">
+                    <th className="px-3 py-2">Inventory Resource</th>
+                    <th className="px-3 py-2 text-center">Qty. Committed</th>
+                    <th className="px-3 py-2 text-center text-red-400">Qty. Discrepancy</th>
+                    <th className="px-3 py-2 text-right">Unit Value</th>
+                    <th className="px-3 py-2 text-right">Ext. Total</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100 dark:divide-slate-800/50">
                   {grn.items.map((item) => (
-                    <tr key={item.id} className="hover:bg-slate-50/30 dark:hover:bg-slate-800/10">
-                      <td className="px-4 py-3">
-                        <p className="font-semibold text-slate-800 dark:text-slate-200 line-clamp-1">{item.product?.name}</p>
-                        <span className="text-[9px] text-slate-400 font-mono tracking-tighter">{item.product?.sku}</span>
+                    <tr key={item.id} className="hover:bg-slate-50/50 dark:hover:bg-slate-800/20 whitespace-nowrap">
+                      <td className="px-3 py-2">
+                        <div className="text-[10px] font-bold text-slate-800 dark:text-slate-200">{item.product?.name}</div>
+                        <div className="text-[7px] font-mono text-slate-400 tracking-tighter uppercase">{item.product?.sku}</div>
                       </td>
-                      <td className="px-3 py-3 text-center">
-                        <span className="text-emerald-600 dark:text-emerald-400 font-bold">{item.quantityAccepted}</span>
-                        <span className="ml-1 text-[9px] text-slate-400 uppercase">{item.product?.uom?.abbreviation || "UoM"}</span>
-                      </td>
-                      <td className="px-3 py-3 text-center">
-                        <span className={item.quantityRejected > 0 ? "text-red-500 font-bold" : "text-slate-400"}>
-                          {item.quantityRejected}
+                      <td className="px-3 py-2 text-center">
+                        <span className="text-[10px] font-black text-emerald-600 dark:text-emerald-400 tabular-nums">
+                          {item.quantityAccepted} <span className="text-[7px] opacity-60 uppercase">{item.product?.uom?.abbreviation}</span>
                         </span>
                       </td>
-                      <td className="px-4 py-3 text-right font-semibold text-slate-900 dark:text-white">
-                        {currencySymbol}{(item.quantityAccepted * Number(item.unitCost)).toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                      <td className="px-3 py-2 text-center text-[10px] font-bold text-red-500 tabular-nums">
+                        {item.quantityRejected > 0 ? item.quantityRejected : "0.00"}
+                      </td>
+                      <td className="px-3 py-2 text-right text-[10px] font-medium text-slate-400 tabular-nums">
+                        {Number(item.unitCost).toLocaleString()}
+                      </td>
+                      <td className="px-3 py-2 text-right font-black text-slate-900 dark:text-white tabular-nums text-[10px]">
+                        {currencySymbol}{(item.quantityAccepted * Number(item.unitCost)).toLocaleString()}
                       </td>
                     </tr>
                   ))}
                 </tbody>
-                <tfoot className="bg-slate-50/80 dark:bg-slate-800/80 border-t border-slate-200 dark:border-slate-800">
+                <tfoot className="bg-slate-900 dark:bg-black border-t-2 border-slate-800">
                   <tr>
-                    <td colSpan={3} className="px-4 py-3 text-[10px] font-bold text-slate-500 uppercase text-right">Total Receipt Value</td>
-                    <td className="px-4 py-3 text-right text-sm font-bold text-slate-900 dark:text-white">
+                    <td colSpan={4} className="px-3 py-2 text-[8px] font-black uppercase text-slate-500">Gross Manifest Valuation</td>
+                    <td className="px-3 py-2 text-right text-[11px] font-black text-emerald-400 tabular-nums whitespace-nowrap">
                       {currencySymbol}{totalValue.toLocaleString(undefined, { minimumFractionDigits: 2 })}
                     </td>
                   </tr>
                 </tfoot>
               </table>
             </div>
-          </div>
+          </section>
 
-          {/* Notes */}
+          {/* Logistics Protocol Notes */}
           {grn.notes && (
-            <div className="p-3 rounded-lg border border-dashed border-slate-200 dark:border-slate-700 bg-slate-50/30 dark:bg-slate-800/20">
-              <span className="text-[9px] font-bold text-slate-400 uppercase block mb-1">Inspector Remarks</span>
-              <p className="text-xs text-slate-600 dark:text-slate-400 leading-relaxed italic">
+            <section className="border-l-2 border-amber-500 pl-4 py-1">
+              <label className={labelClass}>Protocol Remarks</label>
+              <div className="text-[10px] text-slate-500 dark:text-slate-400 leading-relaxed italic">
                 &ldquo;{grn.notes}&rdquo;
-              </p>
-            </div>
+              </div>
+            </section>
           )}
         </div>
       </div>
 
-      {/* Footer Actions */}
-      <div className="p-4 border-t border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 flex justify-between gap-3">
-        {isRejected ? (
-          <div className="w-full py-2.5 bg-red-50 dark:bg-red-900/10 text-red-600 text-[10px] font-bold uppercase tracking-widest rounded-lg flex items-center justify-center gap-2 border border-red-100 dark:border-red-900/20">
-            <AlertOctagon className="w-4 h-4" /> Receipt Rejected & Voided
+      {/* FOOTER ACTIONS: Contextual Protocol Controls */}
+      <div className="px-4 py-3 border-t border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-900/50 flex justify-end items-center gap-2 shrink-0">
+        <button onClick={onClose} className="px-3 py-1.5 text-[9px] font-bold text-slate-400 uppercase tracking-widest hover:text-slate-800 dark:hover:text-slate-200 transition-colors">
+          Close Panel
+        </button>
+
+        {isApproved && (
+          <div className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-500 text-white rounded text-[9px] font-black uppercase tracking-widest shadow-sm">
+            <Database className="w-3 h-3" /> Ledger Committed
           </div>
-        ) : isApproved ? (
-          <div className="w-full py-2.5 bg-emerald-50 dark:bg-emerald-900/10 text-emerald-600 text-[10px] font-bold uppercase tracking-widest rounded-lg flex items-center justify-center gap-2 border border-emerald-100 dark:border-emerald-900/20">
-            <ShieldCheck className="w-4 h-4" /> Transaction Finalized & Stock Updated
+        )}
+
+        {isRejected && (
+          <div className="flex items-center gap-1.5 px-3 py-1.5 bg-red-500 text-white rounded text-[9px] font-black uppercase tracking-widest">
+            <XCircle className="w-3 h-3" /> Record Voided
           </div>
-        ) : (
-          <div className="flex w-full gap-3">
+        )}
+
+        {isPending && (
+          <div className="flex gap-2">
             {canReject && (
               <button 
-                onClick={() => handleAction("REJECT")} 
-                disabled={isProcessing !== null} 
-                className="flex-1 py-2.5 text-red-600 hover:bg-red-50 dark:hover:bg-red-900/10 text-[11px] font-bold uppercase tracking-wider rounded-lg transition-all flex justify-center items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+                disabled={isProcessing !== null}
+                onClick={() => handleAction("REJECT")}
+                className="flex items-center gap-2 px-3 py-1.5 text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20 text-[9px] font-black uppercase tracking-widest rounded border border-red-200 dark:border-red-900/30 disabled:opacity-50 transition-all"
               >
-                {isProcessing === "REJECT" ? <Loader2 className="w-4 h-4 animate-spin" /> : <XCircle className="w-4 h-4" />}
-                Reject
-              </button>
-            )}
-            
-            {canFinalize && (
-              <button 
-                onClick={() => handleAction("APPROVE")} 
-                disabled={isProcessing !== null} 
-                className="flex-[2] py-2.5 bg-slate-900 dark:bg-emerald-600 text-white hover:bg-slate-800 dark:hover:bg-emerald-500 text-[11px] font-bold uppercase tracking-wider rounded-lg shadow-sm transition-all flex justify-center items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                {isProcessing === "APPROVE" ? <Loader2 className="w-4 h-4 animate-spin" /> : <CheckCircle2 className="w-4 h-4" />}
-                Approve & Restock
+                {isProcessing === "REJECT" ? <Loader2 className="w-3 h-3 animate-spin" /> : <XCircle className="w-3 h-3" />}
+                Void Receipt
               </button>
             )}
 
-            {!canFinalize && !canReject && (
-              <div className="w-full py-2.5 text-slate-400 text-[10px] text-center italic">
-                You do not have permission to approve or reject this receipt.
-              </div>
+            {canFinalize && (
+              <button 
+                disabled={isProcessing !== null}
+                onClick={() => handleAction("APPROVE")}
+                className="flex items-center gap-2 px-4 py-1.5 bg-emerald-600 text-white text-[9px] font-black uppercase tracking-widest rounded hover:bg-emerald-700 transition-all shadow-md shadow-emerald-500/10 disabled:opacity-50"
+              >
+                {isProcessing === "APPROVE" ? <Loader2 className="w-3 h-3 animate-spin" /> : <ShieldCheck className="w-3 h-3" />}
+                Commit to Ledger
+              </button>
             )}
           </div>
         )}

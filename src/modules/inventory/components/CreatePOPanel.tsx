@@ -1,18 +1,19 @@
 "use client";
 
-import React, { useState, useEffect, useMemo } from "react";
+import React, { useState, useEffect, useMemo, useCallback } from "react";
 import { 
-  X, Maximize2, Minimize2, Plus, Minus,
-  Trash2, Loader2, Save, Check, Send, Info, Lock
+  X, Maximize2, Minimize2, Plus, Minus, 
+  Trash2, Loader2, Save, Send, Info, Lock,
+  Truck, ShoppingCart, CheckCircle2, AlertTriangle
 } from "lucide-react";
 import { useSidePanel } from "@/core/components/layout/SidePanelContext";
 import { useAlerts } from "@/core/components/feedback/AlertProvider";
 import { usePermission } from "@/core/hooks/usePermission";
-import { Resource } from "@prisma/client";
+import { PermissionAction, Resource } from "@prisma/client";
 
-/* -------------------------
-  Types & Interfaces
-------------------------- */
+/* -------------------------------------------------------------------------- */
+/* TYPES & INTERFACES                                                         */
+/* -------------------------------------------------------------------------- */
 
 interface IVendor {
   id: string;
@@ -23,7 +24,8 @@ interface IProduct {
   id: string;
   name: string;
   sku: string;
-  baseCostPrice?: number; 
+  // Prisma Decimal comes over the wire as a string, so we accept both to be safe.
+  baseCostPrice?: number | string; 
 }
 
 interface IPOItem {
@@ -47,9 +49,35 @@ interface CreatePOPanelProps {
   }) => Promise<void>;
 }
 
-/* -------------------------
-  Component
-------------------------- */
+/* -------------------------------------------------------------------------- */
+/* UTILS                                                                      */
+/* -------------------------------------------------------------------------- */
+
+// Helper to safely extract a JS Number from Prisma's serialized Decimal string
+const getNumericPrice = (price: number | string | undefined): number => {
+  if (price === undefined || price === null) return 0;
+  const parsed = typeof price === 'string' ? parseFloat(price) : price;
+  return isNaN(parsed) ? 0 : parsed;
+};
+
+/* -------------------------------------------------------------------------- */
+/* CONSTANTS & STYLES (Synchronized with MASA Design System)                  */
+/* -------------------------------------------------------------------------- */
+
+const inputClass = `
+  w-full border border-slate-200 dark:border-slate-800 rounded-md text-xs p-2.5
+  bg-white dark:bg-slate-950 text-slate-900 dark:text-white
+  focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 outline-none transition-all
+  placeholder:text-slate-400 dark:placeholder:text-slate-600 disabled:opacity-50 disabled:bg-slate-50 dark:disabled:bg-slate-900/50
+`;
+
+const labelClass = "block text-[9px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-widest mb-1.5";
+
+const sectionHeaderClass = "text-[9px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-[0.15em] border-b border-slate-100 dark:border-slate-800 pb-1.5 mb-4";
+
+/* -------------------------------------------------------------------------- */
+/* COMPONENT                                                                  */
+/* -------------------------------------------------------------------------- */
 
 export default function CreatePOPanel({ 
   vendors: initialVendors, 
@@ -62,9 +90,9 @@ export default function CreatePOPanel({
   const { dispatch } = useAlerts();
   
   // Permission Engine Integration
-  const { canCreate, isLoading: isAuthLoading } = usePermission();
+  const { can, canCreate, isLoading: isAuthLoading } = usePermission();
   const canAddVendor = canCreate(Resource.VENDOR);
-  const canCreatePO = canCreate(Resource.PROCUREMENT);
+  const canCreatePO = can(PermissionAction.CREATE, Resource.PROCUREMENT);
   
   // Form State
   const [vendorId, setVendorId] = useState("");
@@ -74,7 +102,7 @@ export default function CreatePOPanel({
     { _uiId: crypto.randomUUID(), productId: "", quantityOrdered: 1, unitCost: "" }
   ]);
   
-  // Local Vendor Management
+  // Local Vendor Management (Inline Creation)
   const [localVendors, setLocalVendors] = useState<IVendor[]>(initialVendors);
   const [isAddingVendor, setIsAddingVendor] = useState(false);
   const [newVendorName, setNewVendorName] = useState("");
@@ -103,8 +131,8 @@ export default function CreatePOPanel({
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Failed to create vendor");
 
-      setLocalVendors(prev => [...prev, data]);
-      setVendorId(data.id);
+      setLocalVendors(prev => [...prev, data.data || data]);
+      setVendorId(data.data?.id || data.id);
       setNewVendorName("");
       setIsAddingVendor(false);
       
@@ -112,7 +140,7 @@ export default function CreatePOPanel({
         kind: "TOAST",
         type: "SUCCESS",
         title: "Vendor Node Linked",
-        message: `Successfully registered ${data.name} to system.`
+        message: `Successfully registered ${data.data?.name || data.name} to system.`
       });
     } catch (err: any) {
       dispatch({
@@ -135,23 +163,26 @@ export default function CreatePOPanel({
     setItems(prev => prev.filter((item) => item._uiId !== idToRemove));
   };
 
-  const updateItem = <K extends keyof IPOItem>(
+  const updateItem = useCallback(<K extends keyof IPOItem>(
     index: number, 
     field: K, 
     value: IPOItem[K]
   ) => {
-    const newItems = [...items];
-    newItems[index] = { ...newItems[index], [field]: value };
-    setItems(newItems);
-  };
+    setItems(prev => {
+      const updated = [...prev];
+      updated[index] = { ...updated[index], [field]: value };
+      return updated;
+    });
+  }, []);
 
   const totalAmount = useMemo(() => {
     return items.reduce((sum, item) => {
       const qty = item.quantityOrdered || 0;
+      const product = products.find(p => p.id === item.productId);
       const cost = item.unitCost !== "" && item.unitCost > 0 
         ? item.unitCost 
-        : (products.find(p => p.id === item.productId)?.baseCostPrice || 0);
-      return sum + (qty * cost);
+        : getNumericPrice(product?.baseCostPrice);
+      return sum + (qty * Number(cost));
     }, 0);
   }, [items, products]);
 
@@ -173,15 +204,18 @@ export default function CreatePOPanel({
     }
 
     try {
-      const cleanItems = items.map(({ _uiId, ...rest }) => ({
-        ...rest,
-        unitCost: rest.unitCost === "" ? (products.find(p => p.id === rest.productId)?.baseCostPrice || 0) : rest.unitCost 
-      }));
+      const cleanItems = items.map(({ _uiId, ...rest }) => {
+        const product = products.find(p => p.id === rest.productId);
+        return {
+          ...rest,
+          unitCost: rest.unitCost === "" ? getNumericPrice(product?.baseCostPrice) : Number(rest.unitCost) 
+        };
+      });
       
       const payload = { 
         vendorId, 
         expectedDate: expectedDate || null, 
-        notes, 
+        notes: notes.trim(), 
         status, 
         items: cleanItems 
       };
@@ -200,196 +234,253 @@ export default function CreatePOPanel({
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : "Failed to initiate purchase order";
       dispatch({ kind: "TOAST", type: "ERROR", title: "System Rejection", message: msg });
-    } finally {
       setIsSubmitting(null);
     }
   };
 
-  const btnTextClass = isFullScreen ? "text-[11px]" : "text-[10px]";
+  const formattedTotalAmount = totalAmount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
   return (
-    <div className="flex flex-col h-full w-full bg-white dark:bg-slate-900 shadow-2xl relative overflow-hidden text-slate-900 dark:text-slate-100">
-      {/* Header Section */}
-      <div className="px-6 py-4 border-b border-slate-200 dark:border-slate-800 flex justify-between items-center bg-slate-50 dark:bg-slate-800/50 shrink-0">
-        <div className="min-w-0">
-          <h2 className="text-lg font-bold truncate">Initiate Purchase Order</h2>
-          <p className="text-[11px] text-slate-800 dark:text-slate-300 uppercase tracking-wide font-semibold truncate">Procurement fulfillment</p>
+    <div className="flex flex-col h-full w-full bg-white dark:bg-slate-900 shadow-2xl relative overflow-hidden">
+      {/* Header */}
+      <div className="px-4 py-3 border-b border-slate-200 dark:border-slate-800 flex justify-between items-center bg-white dark:bg-slate-900 sticky top-0 z-10">
+        <div className="flex items-center gap-3">
+          <div className="w-8 h-8 rounded-lg bg-emerald-500/10 flex items-center justify-center">
+            <ShoppingCart className="w-4 h-4 text-emerald-600" />
+          </div>
+          <div className="min-w-0">
+            <h2 className="text-xs font-bold truncate text-slate-900 dark:text-white uppercase tracking-wider">New Purchase Order</h2>
+            <p className="text-[10px] text-slate-500 font-medium">Procurement Workflow</p>
+          </div>
         </div>
-        <div className="flex items-center gap-2 flex-shrink-0">
-          <button type="button" onClick={toggleFullScreen} className="p-2 hover:bg-slate-200 dark:hover:bg-slate-800 rounded-full transition-colors" title="Toggle Fullscreen">
-            {isFullScreen ? <Minimize2 className="w-4 h-4" /> : <Maximize2 className="w-4 h-4" />}
+        <div className="flex items-center gap-1.5">
+          <button type="button" onClick={toggleFullScreen} className="p-2 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-md transition-colors text-slate-500">
+            {isFullScreen ? <Minimize2 className="w-3.5 h-3.5" /> : <Maximize2 className="w-3.5 h-3.5" />}
           </button>
-          <button type="button" onClick={onClose} className="p-2 hover:bg-slate-200 dark:hover:bg-slate-800 rounded-full transition-colors" title="Close Panel">
-            <X className="w-5 h-5" />
+          <button type="button" onClick={onClose} className="p-2 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-md transition-colors text-slate-500">
+            <X className="w-4 h-4" />
           </button>
         </div>
       </div>
 
-      {/* Main Content Body */}
-      <div className="flex-1 overflow-y-auto p-6 custom-scrollbar">
-        {/* Permission Disclaimer */}
+      {/* Body */}
+      <div className="flex-1 overflow-y-auto p-4 space-y-6 custom-scrollbar">
+        {/* Permission Banner */}
         {!canCreatePO && !isAuthLoading && (
-          <div className="mb-4 p-3 rounded-lg bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800/50 flex gap-3 items-center">
-            <Lock className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0" />
-            <p className="text-[10px] text-amber-800 dark:text-amber-300 font-medium">
-              Access Restricted: Your current account does not have permissions to initiate procurement records.
+          <div className="p-3 rounded-md bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800/50 flex gap-3 items-center">
+            <Lock className="w-4 h-4 text-amber-600 shrink-0" />
+            <p className="text-[10px] text-amber-800 dark:text-amber-300 font-bold uppercase tracking-tight">
+              Access Restricted: Procurement creation requires authorized clearance.
             </p>
           </div>
         )}
 
-        {/* Workflow Information Banner */}
-        <div className="mb-6 p-3 rounded-lg bg-blue-50 dark:bg-blue-900/20 border border-blue-100 dark:border-blue-800/50 flex gap-3 items-start">
-          <Info className="w-4 h-4 text-blue-600 dark:text-blue-400 mt-0.5 shrink-0" />
-          <div>
-            <p className="text-xs font-semibold text-blue-900 dark:text-blue-200">Workflow Information</p>
-            <p className="text-[10px] text-blue-700 dark:text-blue-300 leading-relaxed">
-              Saving as <span className="font-bold underline italic">Draft</span> prepares the document for review without affecting inventory. 
-              Selecting <span className="font-bold underline italic">Confirm Order</span> officially issues the PO to the vendor.
-            </p>
-          </div>
-        </div>
-
         <form id="po-form" className="space-y-6" onSubmit={(e) => e.preventDefault()}>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <div className="space-y-1.5">
-              <div className="flex justify-between items-center">
-                <label className="block text-[11px] font-bold uppercase tracking-wider">Vendor Node</label>
-                {canAddVendor && (
-                  <button 
-                    type="button" 
-                    onClick={() => setIsAddingVendor(!isAddingVendor)}
-                    className={`p-1 rounded border transition-all ${isAddingVendor ? "border-red-200 text-red-600 bg-red-50 dark:border-red-900/30" : "border-indigo-200 text-indigo-700 bg-indigo-50 dark:border-indigo-900/30"}`}
+          
+          {/* Section 1: Logistics */}
+          <section className="space-y-4">
+            <h3 className={sectionHeaderClass}>Procurement Logistics</h3>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="space-y-1">
+                <div className="flex justify-between items-center mb-1">
+                  <label className="text-[9px] font-bold text-slate-500 uppercase tracking-widest">Target Vendor *</label>
+                  {canAddVendor && (
+                    <button 
+                      type="button" 
+                      onClick={() => setIsAddingVendor(!isAddingVendor)}
+                      className="text-[9px] font-bold text-emerald-600 hover:underline uppercase tracking-tighter"
+                    >
+                      {isAddingVendor ? "Cancel" : "+  Add"}
+                    </button>
+                  )}
+                </div>
+                {!isAddingVendor ? (
+                  <select 
+                    value={vendorId} 
+                    onChange={(e) => setVendorId(e.target.value)} 
+                    disabled={!!isSubmitting || !canCreatePO}
+                    className={inputClass}
                   >
-                    {isAddingVendor ? <Minus className="w-3 h-3" /> : <Plus className="w-3 h-3" />}
-                  </button>
+                    <option value="">Select a vendor...</option>
+                    {localVendors.map((v) => <option key={v.id} value={v.id}>{v.name}</option>)}
+                  </select>
+                ) : (
+                  <div className="flex gap-1.5">
+                    <input 
+                      autoFocus 
+                      placeholder="Enter vendor name..." 
+                      value={newVendorName} 
+                      onChange={(e) => setNewVendorName(e.target.value)}
+                      disabled={isVendorSubmitting}
+                      className={inputClass}
+                    />
+                    <button 
+                      type="button" 
+                      onClick={handleQuickAddVendor} 
+                      disabled={isVendorSubmitting || !newVendorName.trim()} 
+                      className="px-3 bg-slate-900 dark:bg-slate-100 text-white dark:text-slate-900 rounded-md flex-shrink-0"
+                    >
+                      {isVendorSubmitting ? <Loader2 className="w-3 h-3 animate-spin" /> : <CheckCircle2 className="w-3.5 h-3.5" />}
+                    </button>
+                  </div>
                 )}
               </div>
-              {!isAddingVendor ? (
-                <select 
-                  value={vendorId} onChange={(e) => setVendorId(e.target.value)} required 
-                  disabled={!!isSubmitting || !canCreatePO}
-                  className="w-full border border-slate-300 dark:border-slate-700 rounded-lg text-sm p-2.5 bg-white dark:bg-slate-950 transition-colors disabled:opacity-50"
-                >
-                  <option value="">Select Vendor...</option>
-                  {localVendors.map((v) => <option key={v.id} value={v.id}>{v.name}</option>)}
-                </select>
-              ) : (
-                <div className="flex gap-2">
-                  <input 
-                    autoFocus placeholder="New vendor name..." value={newVendorName} onChange={(e) => setNewVendorName(e.target.value)}
-                    onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); handleQuickAddVendor(); } }}
-                    disabled={isVendorSubmitting}
-                    className="flex-1 border border-indigo-300 dark:border-indigo-900/50 rounded-lg text-sm p-2.5 bg-indigo-50/30 dark:bg-slate-950 disabled:opacity-50"
-                  />
-                  <button type="button" onClick={handleQuickAddVendor} disabled={isVendorSubmitting || !newVendorName.trim()} className="px-3 bg-indigo-600 text-white rounded-lg transition-colors">
-                    {isVendorSubmitting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />}
-                  </button>
-                </div>
-              )}
-            </div>
-            <div className="space-y-1.5">
-              <label className="block text-[11px] font-bold uppercase tracking-wider">Expected Receipt</label>
-              <input type="date" value={expectedDate} onChange={(e) => setExpectedDate(e.target.value)} disabled={!!isSubmitting || !canCreatePO} className="w-full border border-slate-300 dark:border-slate-700 rounded-lg text-sm p-2.5 bg-white dark:bg-slate-950 disabled:opacity-50" />
-            </div>
-          </div>
 
-          <div className="space-y-4">
-            <div className="flex items-center justify-between border-b border-slate-200 dark:border-slate-800 pb-2">
-              <h3 className="text-[11px] font-bold text-slate-800 dark:text-slate-300 uppercase tracking-widest">Line Items</h3>
+              <div className="space-y-1">
+                <label className={labelClass}>Exp. Delivery Date</label>
+                <input 
+                  type="date" 
+                  value={expectedDate} 
+                  onChange={(e) => setExpectedDate(e.target.value)} 
+                  disabled={!!isSubmitting || !canCreatePO} 
+                  className={inputClass} 
+                />
+              </div>
+            </div>
+          </section>
+
+          {/* Section 2: Items */}
+          <section className="space-y-4">
+            <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-1.5">
+              <h3 className="text-[9px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-[0.15em]">Line Item Manifest</h3>
               <button 
                 type="button" 
                 onClick={addItem} 
                 disabled={!!isSubmitting || !canCreatePO} 
-                className="text-[10px] font-bold text-emerald-800 dark:text-emerald-500 flex items-center gap-1 hover:underline disabled:opacity-50"
+                className="flex items-center gap-1 text-[9px] font-bold text-emerald-600 dark:text-emerald-500 uppercase hover:underline disabled:opacity-50"
               >
-                <Plus className="w-3 h-3" /> Add Product
+                <Plus className="w-2.5 h-2.5" /> Add Row
               </button>
             </div>
 
-            <div className="space-y-3">
+            <div className="space-y-2">
               {items.map((item, idx) => {
                 const product = products.find(p => p.id === item.productId);
                 return (
-                  <div key={item._uiId} className={`w-full rounded-lg border p-3 border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/40 transition-all ${isFullScreen ? "flex flex-row items-end gap-3" : "flex flex-col gap-3"}`}>
-                    <div className={`${isFullScreen ? "flex-1 min-w-0" : "w-full"}`}>
-                      <label className="block text-[10px] uppercase mb-1 font-bold">Product</label>
-                      <select value={item.productId} onChange={(e) => updateItem(idx, "productId", e.target.value)} required disabled={!!isSubmitting || !canCreatePO} className="w-full border border-slate-300 dark:border-slate-700 rounded-md text-sm p-2 bg-white dark:bg-slate-950 disabled:opacity-50 truncate">
-                        <option value="">Select Product...</option>
-                        {products.map((p) => <option key={p.id} value={p.id}>[{p.sku}] {p.name}</option>)}
+                  <div 
+                    key={item._uiId} 
+                    className={`group relative p-3 rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-900/30 transition-all ${isFullScreen ? "flex items-end gap-3" : "space-y-3"}`}
+                  >
+                    <div className="flex-1 min-w-0">
+                      <label className={labelClass}>Product / SKU *</label>
+                      <select 
+                        value={item.productId} 
+                        onChange={(e) => updateItem(idx, "productId", e.target.value)} 
+                        disabled={!!isSubmitting || !canCreatePO} 
+                        className={inputClass}
+                      >
+                        <option value="">Search catalog...</option>
+                        {products.map((p) => (
+                          <option key={p.id} value={p.id}>
+                            [{p.sku}] {p.name}
+                          </option>
+                        ))}
                       </select>
                     </div>
-                    <div className={`flex items-end gap-3 ${isFullScreen ? "shrink-0" : "w-full"}`}>
-                      <div className={isFullScreen ? "w-24" : "flex-1"}>
-                        <label className="block text-[10px] uppercase mb-1 font-bold">Qty</label>
-                        <input type="number" min="1" value={item.quantityOrdered} onChange={(e) => updateItem(idx, "quantityOrdered", Number(e.target.value))} required disabled={!!isSubmitting || !canCreatePO} className="w-full border border-slate-300 dark:border-slate-700 rounded-md text-sm p-2 bg-white dark:bg-slate-950" />
-                      </div>
-                      <div className={isFullScreen ? "w-32" : "flex-1"}>
-                        <label className="block text-[10px] uppercase mb-1 font-bold">Cost ({currencySymbol})</label>
-                        <input
-                          type="number" min="0" step="0.01"
-                          value={item.unitCost}
-                          placeholder={product?.baseCostPrice?.toString() || "0.00"}
-                          onChange={(e) => updateItem(idx, "unitCost", e.target.value === "" ? "" : Number(e.target.value))}
-                          disabled={!!isSubmitting || !canCreatePO}
-                          className="w-full border border-slate-300 dark:border-slate-700 rounded-md text-sm p-2 bg-white dark:bg-slate-950 placeholder:text-slate-400 dark:placeholder:text-slate-600"
+
+                    <div className={`flex items-end gap-2 ${isFullScreen ? "w-auto" : "w-full"}`}>
+                      <div className={isFullScreen ? "w-20" : "flex-1"}>
+                        <label className={labelClass}>Qty</label>
+                        <input 
+                          type="number" 
+                          min="1" 
+                          value={item.quantityOrdered} 
+                          onChange={(e) => updateItem(idx, "quantityOrdered", Number(e.target.value))} 
+                          disabled={!!isSubmitting || !canCreatePO} 
+                          className={`${inputClass} text-center`} 
                         />
                       </div>
-                      <button type="button" onClick={() => removeItem(item._uiId)} disabled={items.length === 1 || !!isSubmitting || !canCreatePO} className="p-2.5 text-slate-600 hover:text-red-700 hover:bg-red-50 dark:hover:bg-red-900/30 rounded-md transition-colors disabled:opacity-30 shrink-0">
-                        <Trash2 className="w-4 h-4" />
+                      <div className={isFullScreen ? "w-32" : "flex-1"}>
+                        <label className={labelClass}>Unit Cost ({currencySymbol})</label>
+                        <input
+                          type="number" 
+                          min="0" 
+                          step="0.01"
+                          value={item.unitCost}
+                          // Safe parsing applied here
+                          placeholder={getNumericPrice(product?.baseCostPrice).toFixed(2)}
+                          onChange={(e) => updateItem(idx, "unitCost", e.target.value === "" ? "" : Number(e.target.value))}
+                          disabled={!!isSubmitting || !canCreatePO}
+                          className={`${inputClass} text-right font-mono`}
+                        />
+                      </div>
+                      <button 
+                        type="button" 
+                        onClick={() => removeItem(item._uiId)} 
+                        disabled={items.length === 1 || !!isSubmitting || !canCreatePO} 
+                        className="p-2.5 text-slate-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-md transition-all disabled:opacity-0 shrink-0"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
                       </button>
                     </div>
                   </div>
                 );
               })}
             </div>
+          </section>
 
-            <div className="bg-slate-100 dark:bg-slate-800/80 px-4 py-3 border border-slate-200 dark:border-slate-700 rounded-lg flex justify-between items-center">
-              <span className="text-[11px] font-bold uppercase tracking-wider">Total Commitment</span>
-              <span className="text-lg font-bold">
-                {currencySymbol}{totalAmount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+          {/* Section 3: Financial Summary (Responsive Fix Applied) */}
+          <section className={`p-4 rounded-lg bg-slate-900 dark:bg-black border border-slate-800 shadow-inner flex ${isFullScreen ? 'flex-row items-center justify-between' : 'flex-col items-start gap-4'} transition-all`}>
+            <div className="min-w-0">
+              <p className="text-[8px] font-bold text-slate-500 uppercase tracking-[0.2em]">Total Financial Commitment</p>
+              <div className="flex items-center gap-2 mt-1">
+                <Truck className="w-3.5 h-3.5 text-emerald-500 shrink-0" />
+                <span className="text-[10px] text-slate-400 font-medium truncate">Verified against base cost prices</span>
+              </div>
+            </div>
+            <div className={`text-left ${isFullScreen ? 'text-right' : 'w-full overflow-hidden'}`}>
+              <span 
+                title={`${currencySymbol}${formattedTotalAmount}`} 
+                className="text-2xl font-black text-white font-mono tracking-tighter truncate block w-full"
+              >
+                {currencySymbol}{formattedTotalAmount}
               </span>
             </div>
-          </div>
+          </section>
 
-          <div className="space-y-1.5">
-            <label className="block text-[11px] font-bold uppercase tracking-wider">Internal Notes</label>
-            <textarea value={notes} onChange={(e) => setNotes(e.target.value)} rows={3} disabled={!!isSubmitting || !canCreatePO} placeholder="Add instructions..." className="w-full border border-slate-300 dark:border-slate-700 rounded-lg text-sm p-2.5 bg-white dark:bg-slate-950 resize-none disabled:opacity-50" />
-          </div>
+          {/* Section 4: Remarks */}
+          <section className="space-y-1">
+            <label className={labelClass}>Internal Notes & Instructions</label>
+            <textarea 
+              value={notes} 
+              onChange={(e) => setNotes(e.target.value)} 
+              rows={3} 
+              disabled={!!isSubmitting || !canCreatePO} 
+              placeholder="Enter special handling instructions, shipping details, or internal memos..." 
+              className={`${inputClass} resize-none`} 
+            />
+          </section>
         </form>
       </div>
 
-      {/* Footer Action Bar */}
-      <div className="px-6 py-4 border-t border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/50 flex justify-end items-center gap-3 shrink-0">
+      {/* Footer */}
+      <div className="px-4 py-3 border-t border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/50 flex justify-end items-center gap-2 shrink-0">
         <button 
           type="button" 
           onClick={onClose} 
           disabled={!!isSubmitting} 
-          className={`px-4 py-2 font-bold uppercase tracking-wider disabled:opacity-50 transition-colors hover:text-red-600 ${btnTextClass}`}
+          className="px-3 py-1.5 text-[9px] font-bold text-slate-500 uppercase tracking-widest hover:text-slate-800 dark:hover:text-slate-300 transition-colors"
         >
           Discard
         </button>
-        
-        {/* Save as Draft Button */}
+
         <button 
           type="button" 
           onClick={() => handleSubmit("DRAFT")} 
           disabled={!!isSubmitting || isAddingVendor || !canCreatePO} 
-          className={`h-9 px-4 bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-100 font-bold uppercase tracking-wider rounded-lg hover:bg-slate-300 dark:hover:bg-slate-600 transition-all flex items-center gap-2 disabled:opacity-50 ${btnTextClass}`}
-          title={canCreatePO ? "Save as an internal draft" : "Insufficient permissions"}
+          className="flex items-center gap-1.5 px-4 py-2 bg-white dark:bg-slate-950 border border-slate-200 dark:border-slate-800 text-slate-700 dark:text-slate-300 text-[9px] font-bold uppercase tracking-widest rounded-md hover:bg-slate-50 dark:hover:bg-slate-900 transition-all disabled:opacity-50"
         >
-          {isSubmitting === "DRAFT" ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />}
+          {isSubmitting === "DRAFT" ? <Loader2 className="w-3 h-3 animate-spin" /> : <Save className="w-3 h-3" />}
           Save Draft
         </button>
 
-        {/* Issue PO Button */}
         <button 
           type="button" 
           onClick={() => handleSubmit("ISSUED")} 
           disabled={!!isSubmitting || isAddingVendor || !canCreatePO} 
-          className={`h-9 px-6 bg-emerald-600 text-white font-bold uppercase tracking-wider rounded-lg hover:bg-emerald-700 transition-all shadow-md flex items-center gap-2 disabled:opacity-50 ${btnTextClass}`}
-          title={canCreatePO ? "Issue this PO to the vendor" : "Insufficient permissions"}
+          className="flex items-center gap-1.5 px-6 py-2 bg-emerald-600 text-white text-[9px] font-bold uppercase tracking-widest rounded-md hover:bg-emerald-700 transition-all shadow-lg shadow-emerald-500/20 disabled:opacity-50"
         >
-          {isSubmitting === "ISSUED" ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Send className="w-3.5 h-3.5" />}
+          {isSubmitting === "ISSUED" ? <Loader2 className="w-3 h-3 animate-spin" /> : <Send className="w-3 h-3" />}
           Issue PO
         </button>
       </div>

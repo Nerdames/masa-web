@@ -2,18 +2,20 @@
 
 import React, { useState, useMemo } from "react";
 import {
-  X, Maximize2, Minimize2, Loader2, CheckCircle2, 
-  Archive, XCircle, MapPin, ChevronDown, 
+  X, Maximize2, Minimize2, Loader2, CheckCircle2,
+  Archive, XCircle, MapPin, ChevronDown,
   ArrowRightLeft, User, Calendar, Activity, ShieldCheck,
-  AlertCircle
+  AlertCircle, History, PackageSearch, ClipboardList
 } from "lucide-react";
-import { StockTransferStatus } from "@prisma/client";
+import { StockTransferStatus, PermissionAction, Resource } from "@prisma/client";
 import { useSidePanel } from "@/core/components/layout/SidePanelContext";
 import { useAlerts } from "@/core/components/feedback/AlertProvider";
+import { usePermission } from "@/core/hooks/usePermission";
 
-/* -------------------------
-Types - Synchronized with MASA API & Schema
-------------------------- */
+/* -------------------------------------------------------------------------- */
+/* TYPES & INTERFACES                                                         */
+/* -------------------------------------------------------------------------- */
+
 interface TransferItem {
   id: string;
   productId: string;
@@ -42,44 +44,59 @@ interface Transfer {
 interface TransferDetailViewProps {
   transfer: Transfer;
   onClose: () => void;
-  currentUserBranchId: string; // Critical for intelligent footer logic
+  currentUserBranchId: string;
 }
+
+/* -------------------------------------------------------------------------- */
+/* CONSTANTS & STYLES (Synchronized with RegisterProductPanel)               */
+/* -------------------------------------------------------------------------- */
+
+const inputClass = `
+  w-full border border-slate-200 dark:border-slate-700 rounded-md text-xs p-2
+  bg-white dark:bg-slate-950 text-slate-900 dark:text-white
+  focus:ring-1 focus:ring-indigo-500 outline-none transition-all
+  placeholder:text-slate-400 disabled:opacity-50 disabled:bg-slate-50
+`;
+
+const labelClass = "block text-[9px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-wider mb-1";
+
+/* -------------------------------------------------------------------------- */
+/* COMPONENT                                                                  */
+/* -------------------------------------------------------------------------- */
 
 export function TransferDetailView({ transfer, onClose, currentUserBranchId }: TransferDetailViewProps) {
   const { isFullScreen, toggleFullScreen } = useSidePanel();
   const { dispatch } = useAlerts();
-  
+  const { canApprove, canVoid } = usePermission();
+
   const [isProcessing, setIsProcessing] = useState(false);
   const [actionNotes, setActionNotes] = useState("");
 
-  // Role Detection
+  // Role & Permission Logic
   const isOrigin = currentUserBranchId === transfer.fromBranchId;
   const isDestination = currentUserBranchId === transfer.toBranchId;
 
-  /**
-   * Intelligent State Mapping
-   * Prevents UI from allowing illegal transitions already blocked by the API
-   */
+  const permissions = useMemo(() => ({
+    canHandleApproval: canApprove(Resource.STOCK),
+    canHandleVoid: canVoid(Resource.STOCK),
+  }), [canApprove, canVoid]);
+
   const meta = useMemo(() => {
-    const status = transfer.status;
-    const isPending = status === "PENDING";
-    const isApproved = status === "APPROVED";
-    const isCompleted = status === "COMPLETED";
-    const isFinalized = ["COMPLETED", "CANCELLED", "REJECTED"].includes(status);
+    const s = transfer.status;
+    const isPending = s === "PENDING";
+    const isApproved = s === "APPROVED";
+    const isFinalized = ["COMPLETED", "CANCELLED", "REJECTED"].includes(s);
 
     return {
       isPending,
       isApproved,
-      isCompleted,
       isFinalized,
-      // Source can only Void/Approve if Pending
-      canOriginAction: isOrigin && isPending,
-      // Destination can only Receive if Approved (In Transit)
-      canDestinationReceive: isDestination && isApproved,
-      // Labels
-      statusColor: isCompleted ? "text-emerald-500" : isFinalized ? "text-red-500" : "text-indigo-500"
+      canOriginAction: isOrigin && isPending && (permissions.canHandleApproval || permissions.canHandleVoid),
+      canDestinationReceive: isDestination && isApproved && permissions.canHandleApproval,
+      statusColor: s === "COMPLETED" ? "text-emerald-500" : isFinalized ? "text-red-500" : "text-indigo-500",
+      statusBg: s === "COMPLETED" ? "bg-emerald-50 dark:bg-emerald-500/10" : isFinalized ? "bg-red-50 dark:bg-red-500/10" : "bg-indigo-50 dark:bg-indigo-500/10"
     };
-  }, [transfer.status, isOrigin, isDestination]);
+  }, [transfer.status, isOrigin, isDestination, permissions]);
 
   async function handleAction(action: "APPROVE" | "COMPLETE" | "REJECT" | "CANCEL") {
     setIsProcessing(true);
@@ -87,11 +104,7 @@ export function TransferDetailView({ transfer, onClose, currentUserBranchId }: T
       const res = await fetch(`/api/inventory/transfers`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ 
-          transferId: transfer.id, 
-          action, 
-          notes: actionNotes 
-        }),
+        body: JSON.stringify({ transferId: transfer.id, action, notes: actionNotes }),
       });
 
       const data = await res.json();
@@ -100,8 +113,8 @@ export function TransferDetailView({ transfer, onClose, currentUserBranchId }: T
       dispatch?.({ 
         kind: "PUSH", 
         type: "SUCCESS", 
-        title: "Success", 
-        message: `Transfer ${action.toLowerCase()}ed successfully.` 
+        title: "Transfer Updated", 
+        message: `Stock transfer has been ${action.toLowerCase()}ed.` 
       });
       
       window.dispatchEvent(new CustomEvent("transfer:updated", { detail: { id: transfer.id, action } }));
@@ -116,96 +129,108 @@ export function TransferDetailView({ transfer, onClose, currentUserBranchId }: T
   return (
     <div className="flex flex-col h-full w-full bg-white dark:bg-slate-900 shadow-xl relative overflow-hidden">
       {/* HEADER */}
-      <div className="px-5 py-4 border-b border-slate-200/60 dark:border-slate-800 flex justify-between items-center bg-white dark:bg-slate-900 z-30">
-        <div className="flex items-center gap-3 overflow-hidden">
-          <div className="p-2 bg-indigo-50 dark:bg-indigo-900/30 rounded-lg">
-            <ArrowRightLeft className="w-4 h-4 text-indigo-600" />
+      <div className="px-4 py-3 border-b border-slate-200 dark:border-slate-800 flex justify-between items-center bg-white dark:bg-slate-900 z-30">
+        <div className="flex items-center gap-3">
+          <div className="p-2 bg-slate-100 dark:bg-slate-800 rounded-lg">
+            <ArrowRightLeft className="w-4 h-4 text-indigo-500" />
           </div>
-          <div className="overflow-hidden">
-            <h2 className="text-xs font-black text-slate-900 dark:text-slate-100 uppercase tracking-tighter truncate">
+          <div>
+            <h2 className="text-[11px] font-black text-slate-900 dark:text-white uppercase tracking-tighter">
               {transfer.transferNumber}
             </h2>
-            <p className="text-[10px] text-slate-500 font-medium truncate uppercase tracking-tight">
-              {isOrigin ? "Outbound Transfer" : "Inbound Receipt"}
+            <p className="text-[9px] text-slate-500 font-bold uppercase">
+              {isOrigin ? "Outbound Dispatch" : "Inbound Receipt"}
             </p>
           </div>
         </div>
         <div className="flex items-center gap-1">
-          <button onClick={toggleFullScreen} className="p-2 text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-md">
+          <button onClick={toggleFullScreen} className="p-2 text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-md transition-colors">
             {isFullScreen ? <Minimize2 className="w-4 h-4" /> : <Maximize2 className="w-4 h-4" />}
           </button>
-          <button onClick={onClose} className="p-2 text-slate-400 hover:text-red-500 rounded-md">
+          <button onClick={onClose} className="p-2 text-slate-400 hover:text-red-500 transition-colors">
             <X className="w-5 h-5" />
           </button>
         </div>
       </div>
 
+      {/* BODY */}
       <div className="flex-1 overflow-y-auto custom-scrollbar">
-        <div className="p-5 space-y-6">
+        <form id="transfer-form" className="p-5 space-y-8">
           
-          {/* LOGISTICS PATH */}
-          <section className="bg-slate-50 dark:bg-slate-950/40 border border-slate-200/60 dark:border-slate-800/60 rounded-2xl p-4 space-y-4">
-            <div className="flex items-start gap-3">
-              <div className="mt-1 flex flex-col items-center gap-1">
-                <div className={`w-2.5 h-2.5 rounded-full ${isOrigin ? 'bg-indigo-500' : 'bg-slate-300'}`} />
-                <div className="w-0.5 h-8 border-l-2 border-dashed border-slate-200 dark:border-slate-800" />
-              </div>
-              <div>
-                <span className="text-[9px] font-bold text-slate-400 uppercase block">From (Source)</span>
-                <p className="text-sm font-bold text-slate-700 dark:text-slate-300">{transfer.fromBranch?.name}</p>
-              </div>
+          {/* SECTION 1: Logistics Path */}
+          <section>
+            <div className="flex items-center gap-2 mb-4">
+              <MapPin className="w-3.5 h-3.5 text-indigo-500" />
+              <h3 className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Logistics Chain</h3>
             </div>
-            <div className="flex items-start gap-3">
-              <MapPin className={`w-3 h-3 mt-0.5 ${isDestination ? 'text-indigo-500' : 'text-slate-400'}`} />
-              <div>
-                <span className="text-[9px] font-bold text-slate-400 uppercase block">To (Destination)</span>
-                <p className="text-sm font-bold text-slate-900 dark:text-slate-100">{transfer.toBranch?.name}</p>
+            <div className={`grid gap-6 ${isFullScreen ? "grid-cols-2" : "grid-cols-1"}`}>
+              <div className="space-y-1">
+                <label className={labelClass}>Source Branch</label>
+                <div className={inputClass}>{transfer.fromBranch?.name}</div>
+              </div>
+              <div className="space-y-1">
+                <label className={labelClass}>Destination Branch</label>
+                <div className={inputClass}>{transfer.toBranch?.name}</div>
               </div>
             </div>
           </section>
 
-          {/* METADATA */}
-          <section className="space-y-2">
-            <div className="flex items-center justify-between p-3 bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800 rounded-xl">
-              <div className="flex items-center gap-2">
-                <Activity className="w-3.5 h-3.5 text-slate-400" />
-                <span className="text-[10px] font-bold text-slate-400 uppercase">Status</span>
+          {/* SECTION 2: Transfer Context */}
+          <section className="bg-slate-50/50 dark:bg-slate-800/20 p-4 rounded-xl border border-slate-100 dark:border-slate-800/50">
+            <div className={`grid gap-6 ${isFullScreen ? "grid-cols-3" : "grid-cols-1"}`}>
+              <div className="space-y-1">
+                <label className={labelClass}>Current Status</label>
+                <div className={`flex items-center gap-2 px-3 py-2 rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950`}>
+                  <Activity className={`w-3 h-3 ${meta.statusColor}`} />
+                  <span className={`text-[10px] font-black uppercase ${meta.statusColor}`}>{transfer.status}</span>
+                </div>
               </div>
-              <span className={`text-[10px] font-black uppercase ${meta.statusColor}`}>
-                {transfer.status}
-              </span>
-            </div>
-            <div className="flex items-center justify-between p-3 bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800 rounded-xl">
-              <div className="flex items-center gap-2">
-                <User className="w-3.5 h-3.5 text-slate-400" />
-                <span className="text-[10px] font-bold text-slate-400 uppercase">Originator</span>
+              <div className="space-y-1">
+                <label className={labelClass}>Authorized By</label>
+                <div className="flex items-center gap-2 text-xs text-slate-600 dark:text-slate-400 px-1 py-2">
+                  <User className="w-3 h-3" />
+                  <span>{transfer.createdBy?.name || "System"}</span>
+                </div>
               </div>
-              <span className="text-[10px] font-bold text-slate-600 dark:text-slate-400 uppercase">
-                {transfer.createdBy?.name || "System"}
-              </span>
+              <div className="space-y-1">
+                <label className={labelClass}>Initiated Date</label>
+                <div className="flex items-center gap-2 text-xs text-slate-600 dark:text-slate-400 px-1 py-2">
+                  <Calendar className="w-3 h-3" />
+                  <span>{new Date(transfer.createdAt).toLocaleDateString()}</span>
+                </div>
+              </div>
             </div>
           </section>
 
-          {/* ITEM MANIFEST */}
-          <section className="space-y-3">
-            <h4 className="text-[10px] font-bold text-slate-400 uppercase tracking-widest px-1">Manifest</h4>
-            <div className="border border-slate-200 dark:border-slate-800 rounded-2xl overflow-hidden shadow-sm">
-              <table className="w-full text-left text-xs">
+          {/* SECTION 3: Item Manifest */}
+          <section>
+            <div className="flex items-center justify-between mb-3 px-1">
+              <div className="flex items-center gap-2">
+                <PackageSearch className="w-3.5 h-3.5 text-slate-400" />
+                <h3 className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Stock Manifest</h3>
+              </div>
+              <span className="text-[9px] font-bold text-slate-500 bg-slate-100 dark:bg-slate-800 px-2 py-0.5 rounded">
+                {transfer.items.length} Items
+              </span>
+            </div>
+            <div className="border border-slate-200 dark:border-slate-800 rounded-lg overflow-hidden">
+              <table className="w-full text-left text-[11px]">
                 <thead>
-                  <tr className="bg-slate-50 dark:bg-slate-800/50 border-b border-slate-100 dark:border-slate-800">
-                    <th className="px-4 py-3 font-bold text-slate-500 uppercase">Product</th>
-                    <th className="px-4 py-3 font-bold text-slate-500 uppercase text-center">Qty</th>
+                  <tr className="bg-slate-50 dark:bg-slate-800/50 border-b border-slate-200 dark:border-slate-800">
+                    <th className="px-4 py-2.5 font-bold text-slate-500 uppercase tracking-tighter">Product SKU & Name</th>
+                    <th className="px-4 py-2.5 font-bold text-slate-500 uppercase tracking-tighter text-right">Quantity</th>
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-slate-50 dark:divide-slate-800/50">
+                <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
                   {transfer.items.map((item) => (
-                    <tr key={item.id}>
+                    <tr key={item.id} className="hover:bg-slate-50/50 dark:hover:bg-slate-800/30 transition-colors">
                       <td className="px-4 py-3">
-                        <p className="font-bold text-slate-800 dark:text-slate-200 uppercase">{item.product?.name}</p>
-                        <p className="text-[9px] font-mono text-slate-400 tracking-tighter">{item.product?.sku}</p>
+                        <span className="block font-black text-slate-800 dark:text-slate-200 uppercase">{item.product?.name}</span>
+                        <span className="text-[9px] font-mono text-slate-400">{item.product?.sku}</span>
                       </td>
-                      <td className="px-4 py-3 text-center font-mono font-bold text-slate-900 dark:text-slate-100">
-                        {item.quantity} <span className="text-[9px] text-slate-400">{item.product?.uom?.abbreviation}</span>
+                      <td className="px-4 py-3 text-right">
+                        <span className="font-mono font-bold text-slate-900 dark:text-white">{item.quantity}</span>
+                        <span className="ml-1 text-[9px] text-slate-400 uppercase">{item.product?.uom?.abbreviation}</span>
                       </td>
                     </tr>
                   ))}
@@ -214,82 +239,84 @@ export function TransferDetailView({ transfer, onClose, currentUserBranchId }: T
             </div>
           </section>
 
-          {/* ACTION NOTES */}
+          {/* SECTION 4: Annotations */}
           {!meta.isFinalized && (
-            <section className="space-y-2">
-              <h4 className="text-[10px] font-bold text-slate-400 uppercase tracking-widest px-1">Log Annotation</h4>
+            <section className="space-y-1">
+              <div className="flex items-center gap-2 mb-2">
+                <History className="w-3.5 h-3.5 text-slate-400" />
+                <label className={labelClass + " mb-0"}>Audit Log Annotation</label>
+              </div>
               <textarea 
                 value={actionNotes}
                 onChange={(e) => setActionNotes(e.target.value)}
-                placeholder="Entry for forensic audit trail..."
-                className="w-full h-20 p-3 text-xs bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500/20 transition-all resize-none"
+                placeholder="Briefly state the reason for this action (Approved, Voided, or Received)..."
+                className={`${inputClass} h-24 resize-none`}
               />
             </section>
           )}
-        </div>
+        </form>
       </div>
 
-      {/* INTELLIGENT FOOTER */}
-      <div className="p-4 border-t border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900">
+      {/* FOOTER */}
+      <div className="px-4 py-3 border-t border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/50 flex justify-end items-center gap-3 shrink-0">
+        <button 
+          type="button" 
+          onClick={onClose} 
+          disabled={isProcessing} 
+          className="px-3 py-1.5 text-[9px] font-bold text-slate-500 uppercase tracking-widest hover:text-slate-800 dark:hover:text-slate-300 transition-colors"
+        >
+          Discard
+        </button>
+
         {meta.isFinalized ? (
-          <div className={`w-full py-3 text-[10px] font-black uppercase rounded-xl flex items-center justify-center gap-2 border ${
-            meta.isCompleted ? 'bg-emerald-50 text-emerald-500 border-emerald-100' : 'bg-red-50 text-red-500 border-red-100'
-          }`}>
-            {meta.isCompleted ? <Archive className="w-4 h-4" /> : <XCircle className="w-4 h-4" />}
-            {meta.isCompleted ? "Transfer Fully Completed" : "Transfer Voided / Rejected"}
+          <div className={`flex items-center gap-2 px-4 py-2 rounded-md ${meta.statusBg} ${meta.statusColor} border border-current/10 text-[9px] font-black uppercase tracking-widest`}>
+            {transfer.status === "COMPLETED" ? <Archive className="w-3 h-3" /> : <XCircle className="w-3 h-3" />}
+            {transfer.status === "COMPLETED" ? "Transfer Finalized" : "Transfer Closed"}
           </div>
         ) : (
-          <div className="flex gap-3">
-            {/* SOURCE BRANCH CONTROLS */}
-            {isOrigin && (
-              <>
-                <button 
-                  onClick={() => handleAction("CANCEL")} 
-                  disabled={isProcessing || !meta.isPending} 
-                  className="flex-1 py-3 text-slate-400 hover:text-red-500 text-[10px] font-bold uppercase rounded-xl border border-slate-200 dark:border-slate-800 transition-all disabled:opacity-30"
-                >
-                  {isProcessing ? <Loader2 className="w-4 h-4 animate-spin mx-auto" /> : "Void"}
-                </button>
-                {meta.isPending && (
-                  <button 
-                    onClick={() => handleAction("APPROVE")} 
-                    disabled={isProcessing}
-                    className="flex-[2] py-3 bg-indigo-600 text-white text-[10px] font-black uppercase rounded-xl shadow-lg flex items-center justify-center gap-2 active:scale-95 transition-transform"
-                  >
-                    {isProcessing ? <Loader2 className="w-4 h-4 animate-spin" /> : <ShieldCheck className="w-3.5 h-3.5" />}
-                    Approve Dispatch
-                  </button>
-                )}
-                {meta.isApproved && (
-                  <div className="flex-[2] py-3 bg-slate-100 dark:bg-slate-800 text-slate-400 text-[10px] font-bold uppercase rounded-xl flex items-center justify-center gap-2">
-                    <Activity className="w-3.5 h-3.5 animate-pulse" />
-                    In Transit
-                  </div>
-                )}
-              </>
+          <div className="flex items-center gap-2">
+            {/* VOID / REJECT BUTTON */}
+            {((isOrigin && meta.isPending) || (isDestination && meta.isApproved)) && (
+              <button
+                type="button"
+                onClick={() => handleAction(isOrigin ? "CANCEL" : "REJECT")}
+                disabled={isProcessing}
+                className="px-4 py-2 text-red-500 hover:bg-red-50 dark:hover:bg-red-500/10 text-[9px] font-bold uppercase tracking-widest rounded-md transition-all border border-red-200 dark:border-red-900/50"
+              >
+                {isProcessing ? <Loader2 className="w-3 h-3 animate-spin" /> : isOrigin ? "Void Transfer" : "Reject Shipment"}
+              </button>
             )}
 
-            {/* DESTINATION BRANCH CONTROLS */}
-            {isDestination && (
-              <button 
-                onClick={() => handleAction("COMPLETE")} 
-                disabled={isProcessing || !meta.isApproved}
-                className={`w-full py-3 text-white text-[10px] font-black uppercase rounded-xl shadow-lg flex items-center justify-center gap-2 transition-all ${
-                  meta.isApproved 
-                  ? "bg-slate-900 dark:bg-indigo-600 active:scale-95" 
-                  : "bg-slate-100 text-slate-400 dark:bg-slate-800 cursor-not-allowed shadow-none"
-                }`}
+            {/* PRIMARY ACTION BUTTON */}
+            {(meta.canOriginAction || meta.canDestinationReceive) && (
+              <button
+                type="button"
+                onClick={() => handleAction(isOrigin ? "APPROVE" : "COMPLETE")}
+                disabled={isProcessing}
+                className="flex items-center gap-1.5 px-6 py-2 bg-indigo-600 text-white text-[9px] font-black uppercase tracking-widest rounded-md hover:bg-indigo-700 transition-all shadow-lg shadow-indigo-500/20 disabled:opacity-50"
               >
                 {isProcessing ? (
-                  <Loader2 className="w-4 h-4 animate-spin" />
-                ) : meta.isApproved ? (
-                  <CheckCircle2 className="w-3.5 h-3.5" />
+                  <Loader2 className="w-3 h-3 animate-spin" />
+                ) : isOrigin ? (
+                  <>
+                    <ShieldCheck className="w-3 h-3" />
+                    Approve Dispatch
+                  </>
                 ) : (
-                  <AlertCircle className="w-3.5 h-3.5" />
+                  <>
+                    <CheckCircle2 className="w-3 h-3" />
+                    Confirm Receipt
+                  </>
                 )}
-                {meta.isApproved ? "Confirm Stock Receipt" : "Awaiting Dispatch"}
-                {meta.isApproved && <ChevronDown className="w-3.5 h-3.5" />}
               </button>
+            )}
+
+            {/* IN-TRANSIT PLACEHOLDER */}
+            {isOrigin && meta.isApproved && (
+              <div className="flex items-center gap-1.5 px-4 py-2 bg-slate-200 dark:bg-slate-700 text-slate-500 text-[9px] font-bold uppercase tracking-widest rounded-md">
+                <Activity className="w-3 h-3 animate-pulse" />
+                In Transit
+              </div>
             )}
           </div>
         )}
