@@ -27,7 +27,7 @@ import { createAuditLog } from "@/core/lib/audit";
 const DEFAULT_LIMIT = 25;
 const MAX_LIMIT = 1000;
 
-// FIX 4: Prevent "Hidden Rounding" by strictly enforcing 2-decimal point precision natively
+// Enforces financial precision natively at the validation layer
 const productSchema = z.object({
   name: z.string().trim().min(2, "Product name must be at least 2 characters"),
   sku: z.string().trim().min(2, "SKU is required"),
@@ -37,7 +37,7 @@ const productSchema = z.object({
   uomId: z.string().cuid().optional().nullable(),
   baseCostPrice: z.number()
     .min(0, "Base cost cannot be negative")
-    .transform((val) => Number(val.toFixed(2))), // Force financial precision
+    .transform((val) => Number(val.toFixed(2))), 
   costPrice: z.number()
     .min(0)
     .optional()
@@ -51,7 +51,9 @@ const productPatchSchema = productSchema.partial();
 /* INTERNAL HELPERS                                                           */
 /* -------------------------------------------------------------------------- */
 
-// FIX 3: Utility to prevent Prisma Decimal/Date serialization crashes in Postgres JSONB columns
+/**
+ * Prevents Prisma Decimal/Date serialization crashes in Postgres JSONB columns.
+ */
 const sanitizeForAudit = (data: any) => {
   if (!data) return null;
   return JSON.parse(JSON.stringify(data)); 
@@ -72,7 +74,6 @@ async function triggerProductNotification(
       title: "Product Registry Update",
       message,
       type,
-      // Verified against Schema: Notification model has `recipients NotificationRecipient[]`
       recipients: {
         create: {
           personnelId: userId,
@@ -93,7 +94,7 @@ export async function GET(req: NextRequest) {
     const session = await getServerSession(authOptions);
     if (!session?.user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
-    const user = session.user as any;
+    const user = session.user;
     const { searchParams } = new URL(req.url);
     const id = searchParams.get("id");
     const mode = searchParams.get("mode");
@@ -103,6 +104,7 @@ export async function GET(req: NextRequest) {
       isOrgOwner: user.isOrgOwner,
       action: PermissionAction.READ,
       resources: Resource.PRODUCT,
+      userPermissions: user.permissions, // Injected from auth.ts
     });
 
     if (!auth.allowed) {
@@ -130,7 +132,6 @@ export async function GET(req: NextRequest) {
       });
       if (!product) return NextResponse.json({ error: "Product not found" }, { status: 404 });
       
-      // FIX 1: Safely parse Decimals for the client UI
       return NextResponse.json({
         ...product,
         baseCostPrice: product.baseCostPrice.toNumber(),
@@ -172,7 +173,7 @@ export async function GET(req: NextRequest) {
       prisma.product.count({ where }),
     ]);
 
-    // FIX 1: Map items to safe numbers to prevent [object Object] serialization crashes
+    // Map items to safe numbers to prevent serialization crashes on Decimals
     const safeItems = items.map(item => ({
       ...item,
       baseCostPrice: item.baseCostPrice.toNumber(),
@@ -201,22 +202,17 @@ export async function POST(req: NextRequest) {
     const session = await getServerSession(authOptions);
     if (!session?.user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
-    const user = session.user as any;
+    const user = session.user;
     const auth = authorize({
       role: user.role,
       isOrgOwner: user.isOrgOwner,
       action: PermissionAction.CREATE,
       resources: Resource.PRODUCT,
+      userPermissions: user.permissions,
     });
     if (!auth.allowed) return NextResponse.json({ error: auth.reason }, { status: 403 });
 
-    let body;
-    try {
-      body = await req.json();
-    } catch (e) {
-      return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
-    }
-
+    const body = await req.json();
     const parsed = productSchema.safeParse(body);
     if (!parsed.success) return NextResponse.json({ error: parsed.error.format() }, { status: 400 });
 
@@ -251,7 +247,6 @@ export async function POST(req: NextRequest) {
         },
       });
 
-      // FIX 3: Sanitize payload to strip Decimal instances
       await createAuditLog(tx as any, {
         action: "CREATE_PRODUCT",
         resource: Resource.PRODUCT,
@@ -298,7 +293,7 @@ export async function PATCH(req: NextRequest) {
     const session = await getServerSession(authOptions);
     if (!session?.user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
-    const user = session.user as any;
+    const user = session.user;
     const { searchParams } = new URL(req.url);
     const id = searchParams.get("id");
     if (!id) return NextResponse.json({ error: "Missing Product ID" }, { status: 400 });
@@ -308,6 +303,7 @@ export async function PATCH(req: NextRequest) {
       isOrgOwner: user.isOrgOwner,
       action: PermissionAction.UPDATE,
       resources: Resource.PRODUCT,
+      userPermissions: user.permissions,
     });
     if (!auth.allowed) return NextResponse.json({ error: auth.reason }, { status: 403 });
 
@@ -342,7 +338,6 @@ export async function PATCH(req: NextRequest) {
         },
       });
 
-      // FIX 3: Sanitize payload to strip Decimal instances
       await createAuditLog(tx as any, {
         action: "UPDATE_PRODUCT",
         resource: Resource.PRODUCT,
@@ -381,7 +376,7 @@ export async function DELETE(req: NextRequest) {
     const session = await getServerSession(authOptions);
     if (!session?.user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
-    const user = session.user as any;
+    const user = session.user;
     const { searchParams } = new URL(req.url);
     const id = searchParams.get("id");
     if (!id) return NextResponse.json({ error: "Product ID required" }, { status: 400 });
@@ -391,6 +386,7 @@ export async function DELETE(req: NextRequest) {
       isOrgOwner: user.isOrgOwner,
       action: PermissionAction.DELETE,
       resources: Resource.PRODUCT,
+      userPermissions: user.permissions,
     });
     if (!auth.allowed) return NextResponse.json({ error: auth.reason }, { status: 403 });
 
@@ -422,7 +418,6 @@ export async function DELETE(req: NextRequest) {
         },
       });
 
-      // FIX 3: Sanitize payload to stringify JS Dates and Prisma Decimals
       await createAuditLog(tx as any, {
         action: "DELETE_PRODUCT",
         resource: Resource.PRODUCT,

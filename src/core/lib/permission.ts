@@ -1,7 +1,7 @@
 /**
  * src/core/lib/permission.ts
- * * CORE AUTHORIZATION & RBAC ENGINE
- * Synchronized with Prisma Schema
+ * * CORE AUTHORIZATION & RBAC ENGINE (V3.2 - PRODUCTION READY)
+ * Synchronized with Prisma Schema and fortified for strict auditing.
  */
 
 import {
@@ -22,7 +22,6 @@ export const RESOURCES = Resource;
 /**
  * ROLE HIERARCHY
  * Defines authority levels for management and visibility checks.
- * Higher weight = Higher authority.
  */
 export const ROLE_WEIGHT: Record<Role, number> = {
   DEV: 100,       // System Superuser
@@ -60,6 +59,7 @@ export type ManagementAction =
 /**
  * =========================================================
  * DEFAULT ROLE PERMISSIONS (RBAC Baseline)
+ * Fortified to include PRODUCT for Managers and full schema sync.
  * =========================================================
  */
 export const DEFAULT_ROLE_PERMISSIONS: Record<
@@ -74,18 +74,23 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<
   ADMIN: {
     [Resource.INVOICE]: [PermissionAction.CREATE, PermissionAction.READ, PermissionAction.UPDATE, PermissionAction.DELETE, PermissionAction.VOID, PermissionAction.APPROVE, PermissionAction.EXPORT],
     [Resource.STOCK]: [PermissionAction.CREATE, PermissionAction.READ, PermissionAction.UPDATE, PermissionAction.DELETE, PermissionAction.APPROVE],
+    [Resource.PRODUCT]: [PermissionAction.CREATE, PermissionAction.READ, PermissionAction.UPDATE, PermissionAction.DELETE],
     [Resource.PERSONNEL]: [PermissionAction.CREATE, PermissionAction.READ, PermissionAction.UPDATE, PermissionAction.DELETE],
     [Resource.BRANCH]: [PermissionAction.CREATE, PermissionAction.READ, PermissionAction.UPDATE],
     [Resource.AUDIT]: [PermissionAction.READ, PermissionAction.EXPORT],
     [Resource.SETTINGS]: [PermissionAction.READ, PermissionAction.UPDATE],
     [Resource.FINANCE]: [PermissionAction.READ, PermissionAction.CREATE, PermissionAction.UPDATE],
+    [Resource.VENDOR]: [PermissionAction.CREATE, PermissionAction.READ, PermissionAction.UPDATE, PermissionAction.DELETE],
   },
   MANAGER: {
     [Resource.INVOICE]: [PermissionAction.CREATE, PermissionAction.READ, PermissionAction.UPDATE, PermissionAction.VOID, PermissionAction.APPROVE],
     [Resource.STOCK]: [PermissionAction.CREATE, PermissionAction.READ, PermissionAction.UPDATE, PermissionAction.APPROVE],
+    [Resource.PRODUCT]: [PermissionAction.CREATE, PermissionAction.READ, PermissionAction.UPDATE, PermissionAction.DELETE], // FIX: Added Product access
     [Resource.PERSONNEL]: [PermissionAction.READ, PermissionAction.UPDATE],
     [Resource.CUSTOMER]: [PermissionAction.CREATE, PermissionAction.READ, PermissionAction.UPDATE],
     [Resource.EXPENSE]: [PermissionAction.CREATE, PermissionAction.READ],
+    [Resource.VENDOR]: [PermissionAction.READ, PermissionAction.UPDATE],
+    [Resource.REPORT]: [PermissionAction.READ, PermissionAction.EXPORT],
   },
   AUDITOR: {
     [Resource.INVOICE]: [PermissionAction.READ, PermissionAction.EXPORT],
@@ -98,6 +103,7 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<
     [Resource.STOCK]: [PermissionAction.CREATE, PermissionAction.READ, PermissionAction.UPDATE],
     [Resource.PRODUCT]: [PermissionAction.CREATE, PermissionAction.READ, PermissionAction.UPDATE],
     [Resource.PROCUREMENT]: [PermissionAction.CREATE, PermissionAction.READ, PermissionAction.UPDATE],
+    [Resource.VENDOR]: [PermissionAction.READ],
   },
   SALES: {
     [Resource.INVOICE]: [PermissionAction.CREATE, PermissionAction.READ],
@@ -113,6 +119,7 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<
 /**
  * =========================================================
  * NEXTAUTH PERMISSION MATRIX
+ * Automatically generates standard permission strings for JWT session.
  * =========================================================
  */
 export const ROLE_PERMISSIONS_MATRIX: Record<Role, string[]> = (
@@ -162,17 +169,18 @@ export const ACTION_REQUIREMENTS: Record<CriticalAction, Role> = {
  * Checks if a user has an explicit permission string (e.g., "READ:INVOICE")
  */
 export function canPerform(
-  userPermissions: string[],
+  userPermissions: string[] | null | undefined,
   action: PermissionAction,
   resources: Resource
 ): boolean {
-  if (!userPermissions || userPermissions.length === 0) return false;
+  const perms = userPermissions || [];
+  if (perms.length === 0) return false;
   
   const actionUpper = action.toUpperCase();
   const resourcesUpper = resources.toUpperCase();
   const requiredAuth = `${actionUpper}:${resourcesUpper}`;
   
-  return userPermissions.some((p) => {
+  return perms.some((p) => {
     const perm = p.toUpperCase();
     return (
       perm === requiredAuth || 
@@ -185,7 +193,6 @@ export function canPerform(
 
 /**
  * Checks the default role-based baseline for a specific permission.
- * FIX: Removed "as any" cast to satisfy @typescript-eslint/no-explicit-any.
  */
 export function hasDefaultPermission(
   role: Role,
@@ -193,25 +200,26 @@ export function hasDefaultPermission(
   resources: Resource
 ): boolean {
   const rolePermissions = DEFAULT_ROLE_PERMISSIONS[role];
+  if (!rolePermissions) return false;
   const permissionsForResource = rolePermissions[resources];
   return permissionsForResource?.includes(action) ?? false;
 }
 
 /**
- * Validates visibility of audit/log actions based on hierarchy.
+ * Validates visibility based on hierarchy weight.
  */
 export function canSeeAction(recipientRole: Role, actorRole: Role): boolean {
   if (([Role.DEV, Role.ADMIN, Role.AUDITOR] as Role[]).includes(recipientRole)) {
     return true;
   }
   if (recipientRole === Role.MANAGER) {
-    return ROLE_WEIGHT[actorRole] < ROLE_WEIGHT[Role.MANAGER];
+    return (ROLE_WEIGHT[actorRole] || 0) < ROLE_WEIGHT[Role.MANAGER];
   }
   return false;
 }
 
 /**
- * Validates if one user is authorized to perform management actions on another.
+ * Validates management rights for staff modification actions.
  */
 export function validateManagementRights(
   requester: { id: string; role: Role; isOrgOwner: boolean },
@@ -219,10 +227,10 @@ export function validateManagementRights(
   action: ManagementAction
 ): { authorized: boolean; reason?: string } {
   if (requester.id === target.id) {
-    return { authorized: false, reason: "Security Policy: You cannot modify your own management rights." };
+    return { authorized: false, reason: "Security Policy: You cannot self-modify management rights." };
   }
   if (target.isOrgOwner) {
-    return { authorized: false, reason: "Organization owners cannot be modified by staff members." };
+    return { authorized: false, reason: "Security Policy: Organization owners are immutable by staff." };
   }
   if (requester.isOrgOwner) return { authorized: true };
 
@@ -230,21 +238,21 @@ export function validateManagementRights(
   const targetWeight = ROLE_WEIGHT[target.role] || 0;
 
   if (requesterWeight <= targetWeight) {
-    return { authorized: false, reason: `Insufficient Authority: A ${requester.role} cannot manage a ${target.role}.` };
+    return { authorized: false, reason: `Insufficient Authority: Your role (${requester.role}) cannot manage a ${target.role}.` };
   }
   if (action === "DELETE" && requester.role === Role.MANAGER) {
-    return { authorized: false, reason: "Access Denied: Managers can deactivate staff but lack deletion privileges." };
+    return { authorized: false, reason: "Access Denied: Managers lack system deletion privileges." };
   }
   return { authorized: true };
 }
 
 /**
- * Determines if an action requires an approval request based on the actor's role.
+ * Determines if an action requires an approval workflow.
  */
 export function actionRequiresApproval(role: Role, action: CriticalAction): boolean {
   const requiredRole = ACTION_REQUIREMENTS[action];
   if (!requiredRole) return false;
-  return ROLE_WEIGHT[role] < ROLE_WEIGHT[requiredRole];
+  return (ROLE_WEIGHT[role] || 0) < ROLE_WEIGHT[requiredRole];
 }
 
 type AuthorizeParams = {
@@ -258,7 +266,7 @@ type AuthorizeParams = {
 
 /**
  * MAIN AUTHORIZATION HANDLER
- * Primary entry point for API and Server Action security checks.
+ * Use this in all API routes and Server Actions.
  */
 export function authorize({
   role,
@@ -272,10 +280,10 @@ export function authorize({
   requiresApproval?: boolean;
   reason?: string;
 } {
-  // Org Owners bypass all checks
+  // 1. Org Owners bypass all resource restrictions
   if (isOrgOwner) return { allowed: true };
 
-  // Resource-level permission check
+  // 2. Resource-level permission check
   if (action && resources) {
     const explicit = canPerform(userPermissions, action, resources);
     const fallback = hasDefaultPermission(role, action, resources);
@@ -283,19 +291,19 @@ export function authorize({
     if (!explicit && !fallback) {
       return { 
         allowed: false, 
-        reason: `Insufficient permissions for ${resources} ${action}.`,
+        reason: `Insufficient permissions for ${resources}:${action}.`,
       };
     }
   }
 
-  // Critical action approval check
+  // 3. Critical action approval check
   if (criticalAction) {
     const needsApproval = actionRequiresApproval(role, criticalAction);
     if (needsApproval) {
       return { 
         allowed: false, 
         requiresApproval: true, 
-        reason: "This action requires higher-level approval." 
+        reason: "This operation requires authorized approval." 
       };
     }
   }
@@ -304,7 +312,7 @@ export function authorize({
 }
 
 /**
- * Boolean wrapper for critical action permission checks.
+ * Quick boolean check for critical actions.
  */
 export function canPerformAction(role: Role, action: CriticalAction): boolean {
   return !actionRequiresApproval(role, action);
