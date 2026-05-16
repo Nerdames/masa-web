@@ -14,13 +14,15 @@ import { authOptions } from "@/core/lib/auth";
 import prisma from "@/core/lib/prisma";
 import { pusherServer } from "@/core/lib/pusher";
 import { createAuditLog } from "@/core/lib/audit";
-import { ROLE_WEIGHT } from "@/core/lib/permission";
+import { ROLE_WEIGHT, canPerform } from "@/core/lib/permission";
 import { 
   Role, 
   NotificationType, 
   CriticalAction, 
   Severity, 
-  Resource} from "@prisma/client";
+  Resource,
+  PermissionAction
+} from "@prisma/client";
 import { z } from "zod";
 
 /* -------------------------------------------------------------------------- */
@@ -174,21 +176,21 @@ export async function POST(req: NextRequest) {
     const session = await getServerSession(authOptions);
     if (!session?.user?.id) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
-    // 1. RBAC Validation: Only Managers and above can execute manual global broadcasts
-    const userWeight = ROLE_WEIGHT[session.user.role as Role] || 0;
-    const managerWeight = ROLE_WEIGHT[Role.MANAGER];
-    
-    if (userWeight < managerWeight && !session.user.isOrgOwner) {
-      return NextResponse.json({ error: "Insufficient privileges to broadcast notifications" }, { status: 403 });
-    }
-
     const body = await req.json();
     const parsed = postSchema.safeParse(body);
     if (!parsed.success) return NextResponse.json({ error: "Invalid payload", details: parsed.error.format() }, { status: 400 });
 
     const { type, title, message, branchId, actionTrigger, activityLogId, approvalId, kind } = parsed.data;
-    const { organizationId, id: actorId, role: actorRole } = session.user;
+    const { organizationId, id: actorId, role: actorRole, isOrgOwner, permissions } = session.user;
     const { ipAddress, deviceInfo } = getRequestMetadata(req);
+
+    // 1. RBAC Validation: Prioritize auth.ts specific permissions array, fallback to permission.ts role weights
+    const hasExplicitPermission = canPerform(permissions || [], PermissionAction.UPDATE, Resource.SETTINGS);
+    const hasFallbackRoleWeight = ROLE_WEIGHT[actorRole as Role] >= ROLE_WEIGHT[Role.MANAGER];
+
+    if (!isOrgOwner && !hasExplicitPermission && !hasFallbackRoleWeight) {
+      return NextResponse.json({ error: "Insufficient privileges to broadcast notifications" }, { status: 403 });
+    }
 
     // 2. Identify Targets
     const recipients = await prisma.authorizedPersonnel.findMany({

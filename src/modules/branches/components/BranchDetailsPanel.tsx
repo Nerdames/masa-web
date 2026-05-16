@@ -1,16 +1,21 @@
-// File: @/modules/branches/components/BranchDetailsPanel.tsx
 "use client";
 
 import React, { useState, useEffect, useMemo, useCallback } from "react";
-import { Branch, UpdateBranchPayload } from "../types";
+import { 
+  X, Maximize2, Minimize2, Save, Loader2, 
+  Building2, MapPin, Activity, Users, RefreshCcw, 
+  History, Trash2, ShieldAlert, CheckCircle2, AlertCircle,
+  Network
+} from "lucide-react";
 import { useSidePanel } from "@/core/components/layout/SidePanelContext";
-import { PersonnelDetailsPanel } from "@/modules/personnel/components/PersonnelDetailsPanel";
-import { getInitials } from "@/core/utils";
 import { useAlerts } from "@/core/components/feedback/AlertProvider";
+import { usePermission } from "@/core/hooks/usePermission";
+import { PermissionAction, Resource } from "@prisma/client";
+import { getInitials } from "@/core/utils";
 
-/* ==========================================================================
-   TYPES & UTILS
-   ========================================================================== */
+/* -------------------------------------------------------------------------- */
+/* TYPES & INTERFACES (Synchronized with MASA Schema)                         */
+/* -------------------------------------------------------------------------- */
 
 type ActivityLogDTO = {
   id: string;
@@ -22,63 +27,111 @@ type ActivityLogDTO = {
   personnel?: { name?: string; email?: string } | null;
 };
 
-
-// Inline Property Row to match PersonnelDetailsPanel styling
-const PropertyRow = ({ icon, label, value }: { icon: string; label: string; value: React.ReactNode }) => (
-  <div className="flex items-center justify-between py-1.5 min-w-0">
-    <div className="flex items-center gap-2.5 shrink-0 pr-4">
-      <div className="w-6 h-6 rounded-md bg-slate-50 flex items-center justify-center border border-black/[0.03]">
-        <i className={`${icon} text-slate-400 text-xs`} />
-      </div>
-      <span className="text-[10px] font-black text-slate-500 uppercase tracking-widest">{label}</span>
-    </div>
-    <div className="min-w-0 truncate text-right">{value}</div>
-  </div>
-);
-
-/* ==========================================================================
-   MAIN COMPONENT
-   ========================================================================== */
+// Fortified DTO aligned with new API return types
+interface BranchDTO {
+  id: string;
+  name: string;
+  location: string | null;
+  active: boolean;
+  deletedAt: string | null;
+  salesTotal: string;
+  expensesTotal: string;
+  operationalStatus: {
+    hasOpenPOS: boolean;
+    activeStaffCount: number;
+  };
+  branchAssignments: Array<{
+    id: string;
+    role: string;
+    isPrimary: boolean;
+    personnelId: string;
+    personnel: {
+      id: string;
+      name: string | null;
+      email: string;
+      role: string;
+    };
+  }>;
+  recentLogs?: ActivityLogDTO[];
+}
 
 interface BranchDetailsPanelProps {
   branchId: string;
   onRefresh: () => Promise<void>;
-  dispatch: (action: any) => void;
+  onClose?: () => void; 
 }
 
-export function BranchDetailsPanel({ branchId, onRefresh }: BranchDetailsPanelProps) {
+/* -------------------------------------------------------------------------- */
+/* CONSTANTS & STYLES (Enterprise Visibility Fix)                             */
+/* -------------------------------------------------------------------------- */
+
+const inputClass = `
+  w-full border border-slate-200 dark:border-slate-700 rounded-md text-xs p-2 
+  bg-white dark:bg-slate-950 text-slate-900 dark:text-white 
+  focus:ring-1 focus:ring-blue-500 outline-none transition-all 
+  placeholder:text-slate-400 disabled:opacity-50 disabled:bg-slate-50
+`;
+
+const labelClass = "block text-[9px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-wider mb-1";
+
+/* -------------------------------------------------------------------------- */
+/* COMPONENT                                                                  */
+/* -------------------------------------------------------------------------- */
+
+export function BranchDetailsPanel({ branchId, onRefresh, onClose }: BranchDetailsPanelProps) {
+  const { isFullScreen, toggleFullScreen, closePanel } = useSidePanel();
+  const handleClose = onClose || closePanel;
+  
   const { dispatch } = useAlerts();
-  const { closePanel, openPanel } = useSidePanel();
-  const [branch, setBranch] = useState<Branch | null>(null);
+  const { canEdit, canDelete } = usePermission();
+
+  // Permission Logic [cite: 693]
+  const canUpdateBranch = canEdit(Resource.BRANCH);
+  const canDeleteBranch = canDelete(Resource.BRANCH);
+
+  // State Management
+  const [branch, setBranch] = useState<BranchDTO | null>(null);
   const [isLoading, setIsLoading] = useState(true);
-  const [isEditing, setIsEditing] = useState(false);
-  const [isSaving, setIsSaving] = useState(false);
-  const [form, setForm] = useState({ name: "", location: "" });
+  const [isSubmitting, setIsSubmitting] = useState(false);
   const [logs, setLogs] = useState<ActivityLogDTO[]>([]);
 
-  // --- Transference Protocol State ---
+  // Form State
+  const [formData, setFormData] = useState({
+    name: "",
+    location: "",
+    active: true,
+  });
+
+  // Transference Protocol State
   const [isReassigning, setIsReassigning] = useState(false);
   const [selectedPersonnel, setSelectedPersonnel] = useState<string[]>([]);
   const [targetBranchId, setTargetBranchId] = useState("");
   const [availableBranches, setAvailableBranches] = useState<{ id: string; name: string }[]>([]);
 
+  /* --- Data Hydration --- */
   const loadBranchData = useCallback(async (mounted = true) => {
     setIsLoading(true);
     try {
       const res = await fetch(`/api/branches/${branchId}`);
-      if (!res.ok) throw new Error();
+      if (!res.ok) throw new Error("Telemetry unreachable.");
       const data = await res.json();
+      
       if (!mounted) return;
+      
       setBranch(data);
-      setForm({ name: data.name || "", location: data.location || "" });
+      setFormData({ 
+        name: data.name || "", 
+        location: data.location || "",
+        active: data.active
+      });
       setLogs(data.recentLogs || []);
-    } catch (err) {
-      dispatch({ kind: "TOAST", type: "ERROR", title: "Sync Failed", message: "Telemetry unreachable." });
-      closePanel();
+    } catch (err: any) {
+      dispatch({ kind: "TOAST", type: "ERROR", title: "Sync Failed", message: err.message });
+      handleClose();
     } finally {
       if (mounted) setIsLoading(false);
     }
-  }, [branchId, dispatch, closePanel]);
+  }, [branchId, dispatch, handleClose]);
 
   useEffect(() => {
     let mounted = true;
@@ -86,7 +139,6 @@ export function BranchDetailsPanel({ branchId, onRefresh }: BranchDetailsPanelPr
     return () => { mounted = false; };
   }, [loadBranchData]);
 
-  // Fetch available branches when entering reassign mode
   useEffect(() => {
     if (isReassigning) {
       fetch("/api/branches")
@@ -102,38 +154,47 @@ export function BranchDetailsPanel({ branchId, onRefresh }: BranchDetailsPanelPr
     }
   }, [isReassigning, branchId]);
 
-  const handleUpdate = useCallback(async (payload: Partial<UpdateBranchPayload>) => {
-    setIsSaving(true);
+  /* --- Handlers --- */
+  const handleUpdate = async (e?: React.FormEvent, overridePayload?: any) => {
+    if (e) e.preventDefault();
+    if (!canUpdateBranch) {
+      dispatch({ kind: "TOAST", type: "WARNING", title: "Access Denied", message: "Insufficient permissions." });
+      return;
+    }
+
+    setIsSubmitting(true);
     try {
+      const payload = overridePayload || {
+        id: branchId,
+        name: formData.name.trim(),
+        location: formData.location.trim(),
+        active: formData.active,
+      };
+
       const res = await fetch("/api/branches", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ id: branchId, ...payload }),
+        body: JSON.stringify(payload),
       });
-      if (!res.ok) throw new Error();
-      const updated = await res.json();
-      setBranch((prev) => (prev ? { ...prev, ...updated } : prev));
-      dispatch({ kind: "TOAST", type: "SUCCESS", title: "Registry Updated", message: "Node parameters synchronized." });
-      setIsEditing(false);
-      await onRefresh();
-    } catch (err) {
-      dispatch({ kind: "TOAST", type: "ERROR", title: "Update Error", message: "Barrier detected." });
-    } finally {
-      setIsSaving(false);
-    }
-  }, [branchId, dispatch, onRefresh]);
 
-  const toggleSelection = (id: string) => {
-    setSelectedPersonnel((prev) =>
-      prev.includes(id) ? prev.filter((p) => p !== id) : [...prev, id]
-    );
+      const result = await res.json();
+      
+      if (!res.ok) throw new Error(result.error || "Update failed.");
+
+      dispatch({ kind: "TOAST", type: "SUCCESS", title: "Infrastructure Updated", message: "Node parameters synchronized." });
+      await loadBranchData();
+      await onRefresh();
+    } catch (err: any) {
+      dispatch({ kind: "TOAST", type: "ERROR", title: "Update Blocked", message: err.message });
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
-// 2. Use the 'dispatch' function inside your handler
   const handleBulkReassign = async () => {
     if (!targetBranchId || selectedPersonnel.length === 0) return;
     
-    setIsSaving(true);
+    setIsSubmitting(true);
     try {
       const res = await fetch(`/api/branches/${branchId}/reassign`, {
         method: "POST",
@@ -141,414 +202,394 @@ export function BranchDetailsPanel({ branchId, onRefresh }: BranchDetailsPanelPr
         body: JSON.stringify({ personnelIds: selectedPersonnel, newBranchId: targetBranchId }),
       });
       
-      if (!res.ok) throw new Error();
+      const result = await res.json();
+      if (!res.ok) throw new Error(result.error || "Protocol handshake rejected.");
       
-      // ✅ WORKS: Using the dispatch we initialized at the top
-      dispatch({ 
-        kind: "TOAST", 
-        type: "SUCCESS", 
-        title: "Transference Complete", 
-        message: `Migrated ${selectedPersonnel.length} personnel to destination node.` 
-      });
+      dispatch({ kind: "TOAST", type: "SUCCESS", title: "Transference Complete", message: `Migrated ${selectedPersonnel.length} personnel to destination node.` });
       
       setIsReassigning(false);
       await loadBranchData();
       await onRefresh();
-    } catch (err) {
-      // ✅ WORKS
-      dispatch({ 
-        kind: "TOAST", 
-        type: "WARNING", // Note: Ensure 'WARNING' or 'SECURITY' matches your TYPE_CONFIG
-        title: "Transfer Failed", 
-        message: "Protocol handshake rejected." 
-      });
+    } catch (err: any) {
+      dispatch({ kind: "TOAST", type: "WARNING", title: "Transfer Failed", message: err.message });
     } finally {
-      setIsSaving(false);
+      setIsSubmitting(false);
     }
   };
 
-  const handlePersonnelClick = useCallback((personnel: any) => {
-    openPanel(
-      <PersonnelDetailsPanel
-        personnel={personnel}
-        onClose={() => openPanel(
-          <BranchDetailsPanel branchId={branchId} onRefresh={onRefresh} dispatch={dispatch} />
-        )}
-        onUpdate={async (id, payload) => {
-          const res = await fetch(`/api/personnel`, {
-            method: "PATCH",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ id, ...payload }),
-          });
-          if (!res.ok) throw new Error();
-          await onRefresh();
-        }}
-        onDelete={async (id) => {
-          const res = await fetch(`/api/personnel/${id}`, { method: "DELETE" });
-          if (!res.ok) throw new Error();
-          await onRefresh();
-          openPanel(<BranchDetailsPanel branchId={branchId} onRefresh={onRefresh} dispatch={dispatch} />);
-        }}
-        dispatch={dispatch}
-      />
+  const handlePurge = async () => {
+    if (!canDeleteBranch) return;
+    if (!confirm(`CRITICAL: Are you sure you want to completely decommission ${branch?.name}? This action is permanent.`)) return;
+    
+    setIsSubmitting(true);
+    try {
+      const res = await fetch("/api/branches", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: branchId, deletedAt: new Date().toISOString() })
+      });
+      
+      const result = await res.json();
+      if (!res.ok) throw new Error(result.error || "Security override active.");
+
+      dispatch({ kind: "TOAST", type: "SUCCESS", title: "Node Decommissioned", message: "Branch record destroyed." });
+      await onRefresh();
+      handleClose();
+    } catch (err: any) {
+      dispatch({ kind: "TOAST", type: "ERROR", title: "Purge Failed", message: err.message });
+      setIsSubmitting(false);
+    }
+  };
+
+  const toggleSelection = (id: string) => {
+    setSelectedPersonnel((prev) =>
+      prev.includes(id) ? prev.filter((p) => p !== id) : [...prev, id]
     );
-  }, [openPanel, branchId, onRefresh, dispatch]);
+  };
 
   const displayLogs = useMemo(() => {
     return [...logs].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
   }, [logs]);
 
+  /* --- Loading State --- */
   if (isLoading || !branch) {
     return (
-      <div className="fixed inset-y-0 right-0 h-screen flex flex-col w-[340px] items-center justify-center p-12 bg-white shadow-[-10px_0_40px_rgba(0,0,0,0.04)] border-l border-slate-100 z-50">
-        {/* Content Wrapper */}
-        <div className="flex flex-col items-center justify-center">
-          {/* Spinner Stack */}
-          <div className="relative mb-10 flex items-center justify-center">
-            {/* Static base ring */}
-            <div className="h-10 w-10 border-[1px] border-slate-100 rounded-full" />
-            {/* Animated active ring */}
-            <div className="absolute top-0 h-10 w-10 border-t-[1px] border-blue-600 rounded-full animate-spin" />
-          </div>
-
-          {/* Text with optical center adjustment */}
-          <h3 className="text-[10px] font-bold uppercase tracking-[0.8em] text-slate-900 ml-[0.8em] text-center whitespace-nowrap">
-            Synchronizing
-          </h3>
+      <div className="flex flex-col h-full w-full bg-white dark:bg-slate-900 shadow-2xl relative items-center justify-center">
+        <div className="relative mb-6 flex items-center justify-center">
+          <div className="h-10 w-10 border border-slate-200 dark:border-slate-800 rounded-full" />
+          <div className="absolute top-0 h-10 w-10 border-t border-blue-600 rounded-full animate-spin" />
         </div>
+        <h3 className="text-[10px] font-bold uppercase tracking-[0.4em] text-slate-500">Synchronizing...</h3>
       </div>
     );
   }
 
   const isArchived = !!branch.deletedAt;
-  const isActive = branch.active && !isArchived;
 
   return (
-    <div className="h-full flex flex-col w-[340px] bg-white relative font-sans shadow-[-10px_0_40px_rgba(0,0,0,0.04)] border-l border-slate-100">
+    <div className="flex flex-col h-full w-full bg-white dark:bg-slate-900 shadow-2xl relative overflow-hidden">
       
-      {/* --- Inspector Header (Sticky) --- */}
-      <div className="p-4 border-b border-black/[0.04] flex justify-between items-center bg-white/80 backdrop-blur-md shrink-0 sticky top-0 z-20">
-        <div className="flex items-center gap-2 px-1 text-[10px] font-black text-slate-400 uppercase tracking-[0.2em]">
-          <i className="bx bx-buildings text-sm text-indigo-500" /> Branch Inspector
+      {/* --- Header --- */}
+      <div className="px-4 py-3 border-b border-slate-200 dark:border-slate-800 flex justify-between items-center bg-slate-50 dark:bg-slate-800/50 shrink-0">
+        <div className="flex items-center gap-2">
+          <div className={`p-1.5 rounded-lg ${isArchived ? "bg-red-100 text-red-600 dark:bg-red-900/30 dark:text-red-400" : "bg-blue-100 text-blue-600 dark:bg-blue-900/30 dark:text-blue-400"}`}>
+            <Network className="w-4 h-4" />
+          </div>
+          <div>
+            <h2 className="text-sm font-bold text-slate-900 dark:text-white">
+              Branch Inspector
+            </h2>
+            <p className="text-[8px] text-slate-500 dark:text-slate-400 uppercase tracking-widest font-bold">
+              {isArchived ? "Decommissioned Node" : "Infrastructure Management"}
+            </p>
+          </div>
         </div>
-
-        <div className="flex gap-1">
-          {!isEditing && !isArchived && (
-            <button
-              onClick={() => setIsEditing(true)}
-              className="w-8 h-8 rounded-lg hover:bg-slate-100 flex items-center justify-center text-slate-500 transition-all active:scale-90"
-              title="Edit Node Profile"
-            >
-              <i className="bx bx-edit-alt text-base" />
-            </button>
-          )}
-
-          <button
-            onClick={closePanel}
-            className="w-8 h-8 rounded-lg hover:bg-red-50 hover:text-red-500 flex items-center justify-center text-slate-500 transition-all active:scale-90"
-          >
-            <i className="bx bx-x text-xl" />
+        <div className="flex items-center gap-1">
+          <button type="button" onClick={toggleFullScreen} className="p-1.5 text-slate-400 hover:text-slate-600 dark:hover:text-white transition-colors">
+            {isFullScreen ? <Minimize2 className="w-3.5 h-3.5" /> : <Maximize2 className="w-3.5 h-3.5" />}
+          </button>
+          <button type="button" onClick={handleClose} className="p-1.5 text-slate-400 hover:text-red-500 transition-colors">
+            <X className="w-4 h-4" />
           </button>
         </div>
       </div>
 
-      {/* --- Scrollable Body --- */}
-      <div className="flex-1 overflow-y-auto p-6 space-y-8 custom-scrollbar pb-12">
+      {/* --- Body --- */}
+      <div className="flex-1 overflow-y-auto p-4 custom-scrollbar space-y-6">
         
-        {/* --- Identity Block --- */}
-        <div className="flex items-center gap-5">
-          <div className="relative group shrink-0">
-            <div className={`w-16 h-16 rounded-[1.25rem] text-white flex items-center justify-center text-2xl font-black shadow-lg shadow-slate-200 ${
-              isArchived ? "bg-red-600" : "bg-gradient-to-br from-slate-800 to-slate-950"
-            }`}>
-              {getInitials(branch.name)}
-            </div>
-            {isArchived && (
-              <div className="absolute -top-1 -right-1 w-6 h-6 bg-red-100 border-2 border-white rounded-full flex items-center justify-center text-red-600 shadow-sm">
-                <i className="bx bx-archive text-[10px]" />
-              </div>
-            )}
-          </div>
-
-          <div className="min-w-0 flex-1">
-            {isEditing ? (
-              <div className="space-y-2">
-                <input
-                  autoFocus
-                  value={form.name}
-                  onChange={(e) => setForm({ ...form, name: e.target.value })}
-                  placeholder="Branch Name"
-                  className="w-full text-lg font-bold text-slate-900 bg-slate-50 px-2 py-1 rounded-md outline-none border border-indigo-600/20 focus:border-indigo-600 transition-all"
-                />
-                <input
-                  value={form.location}
-                  onChange={(e) => setForm({ ...form, location: e.target.value })}
-                  placeholder="Physical Address"
-                  className="w-full text-[12px] font-medium text-slate-600 bg-slate-50 px-2 py-1 rounded-md outline-none border border-indigo-600/20 focus:border-indigo-600 transition-all"
-                />
-              </div>
-            ) : (
-              <>
-                <h3 className="text-xl font-black text-slate-900 leading-tight truncate tracking-tight">{branch.name}</h3>
-                <div className="flex items-center gap-1.5 mt-0.5">
-                  <p className="text-[12px] font-medium text-slate-400 truncate">{branch.location || "Unmapped Infrastructure"}</p>
-                </div>
-              </>
-            )}
-          </div>
-        </div>
-
-        {/* --- Primary Details --- */}
-        <div className="space-y-4 border-t border-black/[0.03] pt-6">
-          <PropertyRow
-            icon="bx bx-pulse"
-            label="Integrity State"
-            value={
-              <div className={`flex items-center justify-end gap-2 px-2 py-1 rounded-md border text-[10px] font-black uppercase w-fit ml-auto ${
-                isArchived ? "bg-red-50 text-red-600 border-red-100" :
-                isActive ? "bg-emerald-50 text-emerald-600 border-emerald-100" : "bg-amber-50 text-amber-600 border-amber-100"
-              }`}
-              >
-                <span className={`w-1.5 h-1.5 rounded-full ${isActive ? "bg-emerald-500 animate-pulse" : isArchived ? "bg-red-500" : "bg-amber-500"}`} />
-                {isArchived ? "Archived" : isActive ? "Clear & Active" : "Suspended"}
-              </div>
-            }
-          />
-
-          <PropertyRow
-            icon="bx bx-hash"
-            label="Registry ID"
-            value={
-              <span className="font-mono text-[11px] font-bold bg-slate-100 text-slate-700 px-2 py-1 rounded border border-black/[0.03]">
-                {branch.id.slice(-8).toUpperCase()}
-              </span>
-            }
-          />
-        </div>
-
-        {/* --- Action Suite (Edit Mode) --- */}
-        {isEditing && (
-          <div className="pt-6 border-t border-black/[0.03]">
-            <div className="flex gap-2">
-              <button
-                onClick={() => handleUpdate({ name: form.name, location: form.location })}
-                disabled={isSaving}
-                className="flex-1 py-3 bg-slate-900 text-white text-[11px] font-black uppercase tracking-widest rounded-xl hover:bg-slate-800 shadow-lg shadow-slate-200 transition-all active:scale-[0.98] disabled:opacity-50"
-              >
-                {isSaving ? "Syncing..." : "Commit Context"}
-              </button>
-              <button
-                onClick={() => {
-                  setIsEditing(false);
-                  setForm({ name: branch.name || "", location: branch.location || "" });
-                }}
-                className="flex-1 py-3 bg-white text-slate-500 text-[11px] font-black uppercase tracking-widest rounded-xl border border-slate-200 hover:bg-slate-50 transition-all"
-              >
-                Discard
-              </button>
-            </div>
+        {!canUpdateBranch && (
+          <div className="p-2 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-lg flex items-center gap-2">
+            <ShieldAlert className="w-4 h-4 text-amber-600 shrink-0" />
+            <p className="text-[9px] font-medium text-amber-800 dark:text-amber-400">
+              <span className="font-bold uppercase">View Only:</span> Insufficient permissions to modify branch infrastructure.
+            </p>
           </div>
         )}
 
-        {/* --- Operational Logic --- */}
-        {!isEditing && !isArchived && (
-          <div className="pt-6 border-t border-black/[0.03]">
-            <div className="space-y-3">
-              <h4 className="text-[9px] font-black text-slate-400 uppercase tracking-[0.2em]">Operational Logic</h4>
-              <div className="grid grid-cols-2 gap-2">
-                <button
-                  onClick={() => handleUpdate({ active: !branch.active })}
-                  disabled={isSaving}
-                  className={`flex items-center justify-center gap-2 px-3 py-3 text-[11px] font-bold border rounded-xl transition-all active:scale-95 ${
-                    branch.active 
-                    ? "bg-amber-50 text-amber-600 border-amber-100 hover:bg-amber-100" 
-                    : "bg-emerald-50 text-emerald-600 border-emerald-100 hover:bg-emerald-100"
-                  }`}
-                >
-                  <i className={`bx ${branch.active ? "bx-pause-circle" : "bx-play-circle"} text-base`} />
-                  {branch.active ? "Suspend Node" : "Resume Node"}
-                </button>
-
-                <button
-                  onClick={() => handleUpdate({ deletedAt: new Date().toISOString() })}
-                  disabled={isSaving}
-                  className="flex items-center justify-center gap-2 px-3 py-3 text-[11px] font-bold border rounded-xl transition-all active:scale-95 bg-slate-900 text-white border-slate-900 shadow-lg shadow-slate-200 hover:bg-slate-800"
-                >
-                  <i className="bx bx-archive-in text-base" />
-                  Archive Node
-                </button>
-              </div>
-            </div>
+        {isArchived && (
+          <div className="p-2 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg flex items-center gap-2">
+            <AlertCircle className="w-4 h-4 text-red-600 shrink-0" />
+            <p className="text-[9px] font-medium text-red-800 dark:text-red-400">
+              <span className="font-bold uppercase">Decommissioned:</span> This node is archived and removed from active routing.
+            </p>
           </div>
         )}
 
-        {/* --- Deployed Workforce --- */}
-        {!isEditing && (
-          <div className="pt-6 border-t border-black/[0.03]">
-            <div className="flex items-center justify-between mb-4 px-1">
-              <h4 className="text-[9px] font-black uppercase tracking-[0.2em] text-slate-400">Deployed Workforce</h4>
-              
-              {!isArchived && branch.branchAssignments && branch.branchAssignments.length > 0 && (
-                <button 
-                  onClick={() => setIsReassigning(!isReassigning)}
-                  className={`text-[9px] font-black px-3 py-1 rounded-md transition-all ${
-                    isReassigning 
-                    ? "bg-blue-600 text-white shadow-md shadow-blue-500/20" 
-                    : "bg-slate-100 text-slate-500 hover:bg-slate-200"
-                  }`}
-                >
-                  {isReassigning ? "Cancel Migration" : "Migrate Members"}
-                </button>
-              )}
-            </div>
-
-            {/* Transference Protocol Form */}
-            {isReassigning && (
-              <div className="mb-4 p-3 bg-blue-50 border border-blue-100 rounded-xl space-y-3 animate-in fade-in slide-in-from-top-2">
-                <div className="flex flex-col gap-1.5">
-                  <label className="text-[9px] font-black uppercase tracking-widest text-blue-600">Destination Node</label>
-                  <select
-                    value={targetBranchId}
-                    onChange={(e) => setTargetBranchId(e.target.value)}
-                    className="w-full bg-white border border-blue-200 rounded-lg px-3 py-2 text-[12px] font-bold text-slate-700 outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
-                  >
-                    <option value="">Select Target Branch...</option>
-                    {availableBranches.map((b) => (
-                      <option key={b.id} value={b.id}>{b.name}</option>
-                    ))}
-                  </select>
-                </div>
-                <button
-                  onClick={handleBulkReassign}
-                  disabled={isSaving || selectedPersonnel.length === 0 || !targetBranchId}
-                  className="w-full bg-blue-600 text-white text-[10px] font-black py-2.5 rounded-lg uppercase tracking-[0.2em] disabled:opacity-40 hover:bg-blue-700 transition-all shadow-sm active:scale-[0.98]"
-                >
-                  {isSaving ? "Executing..." : `Execute Migration (${selectedPersonnel.length})`}
-                </button>
-              </div>
-            )}
-
-            {/* Personnel List */}
-            <div className="flex flex-col gap-2">
-              {branch.branchAssignments?.map((ba) => (
-                <button 
-                  key={ba.id} 
-                  onClick={() => isReassigning ? toggleSelection(ba.personnelId) : handlePersonnelClick(ba.personnel)}
-                  className={`w-full flex items-center justify-between bg-white border p-3 rounded-xl transition-all group text-left ${
-                    isReassigning && selectedPersonnel.includes(ba.personnelId)
-                      ? "border-blue-500 bg-blue-50/50 shadow-sm"
-                      : "border-black/[0.04] hover:border-blue-500/30 hover:shadow-sm"
-                  }`}
-                >
-                  <div className="flex items-center gap-3 min-w-0">
-                    {isReassigning && (
-                      <div className={`w-4 h-4 rounded border flex items-center justify-center shrink-0 transition-colors ${
-                        selectedPersonnel.includes(ba.personnelId) ? "bg-blue-600 border-blue-600" : "bg-white border-slate-300"
-                      }`}>
-                        {selectedPersonnel.includes(ba.personnelId) && <i className="bx bx-check text-white text-[12px]" />}
-                      </div>
-                    )}
-                    
-                    <div className="w-8 h-8 shrink-0 rounded-lg flex items-center justify-center text-[10px] font-black bg-slate-50 text-slate-500 border border-black/5">
-                      {ba.personnel.name?.charAt(0)}
-                    </div>
-
-                    <div className="min-w-0">
-                      <div className="text-[12px] font-bold text-slate-900 truncate">{ba.personnel.name}</div>
-                      <div className="text-[9px] font-black text-slate-400 uppercase tracking-widest truncate">{ba.role.replace(/_/g, " ")}</div>
-                    </div>
+        <form id="branch-form" onSubmit={handleUpdate} className="space-y-6">
+          
+          {/* Section 1: Core Identity */}
+          <section className="space-y-3">
+            <h3 className="text-[9px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest border-b border-slate-100 dark:border-slate-800 pb-1">
+              Core Identity
+            </h3>
+            <div className="flex items-center gap-4 mb-4">
+               <div className={`w-14 h-14 rounded-2xl flex items-center justify-center text-xl font-black shadow-lg ${
+                 isArchived ? "bg-red-600 text-white" : "bg-gradient-to-br from-slate-800 to-slate-950 text-white"
+               }`}>
+                 {getInitials(branch.name)}
+               </div>
+               <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2 mb-1">
+                    <span className="font-mono text-[10px] font-bold bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 px-1.5 py-0.5 rounded border border-slate-200 dark:border-slate-700">
+                      ID: {branch.id.slice(-8).toUpperCase()}
+                    </span>
+                    <span className={`text-[9px] font-black uppercase tracking-widest px-1.5 py-0.5 rounded border ${
+                      isArchived ? "bg-red-50 text-red-600 border-red-200" :
+                      branch.active ? "bg-emerald-50 text-emerald-600 border-emerald-200" : "bg-amber-50 text-amber-600 border-amber-200"
+                    }`}>
+                      {isArchived ? "Archived" : branch.active ? "Active" : "Suspended"}
+                    </span>
                   </div>
-                  
-                  <div className="flex items-center gap-2 shrink-0 pl-2">
-                    {ba.isPrimary && (
-                      <div className="px-1.5 py-0.5 rounded bg-emerald-50 text-emerald-600 text-[8px] font-black uppercase tracking-widest border border-emerald-100">Primary</div>
-                    )}
-                    {!isReassigning && <i className="bx bx-chevron-right text-slate-300 group-hover:text-blue-500 transition-colors" />}
-                  </div>
-                </button>
-              )) || (
-                <div className="p-6 border border-dashed border-black/[0.05] rounded-xl text-center bg-slate-50/50">
-                  <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">No Personnel Deployed</p>
+               </div>
+            </div>
+
+            <div className={`grid gap-3 ${isFullScreen ? "grid-cols-1 md:grid-cols-2" : "grid-cols-1"}`}>
+              <div className="space-y-1">
+                <label className={labelClass}>Branch Name *</label>
+                <div className="relative">
+                  <Building2 className="absolute left-2 top-2.5 w-3.5 h-3.5 text-slate-400" />
+                  <input 
+                    disabled={!canUpdateBranch || isArchived} 
+                    type="text" 
+                    required 
+                    value={formData.name} 
+                    onChange={e => setFormData({...formData, name: e.target.value})} 
+                    className={`${inputClass} pl-8 font-bold`} 
+                  />
                 </div>
-              )}
+              </div>
+              <div className="space-y-1">
+                <label className={labelClass}>Location</label>
+                <div className="relative">
+                  <MapPin className="absolute left-2 top-2.5 w-3.5 h-3.5 text-slate-400" />
+                  <input 
+                    disabled={!canUpdateBranch || isArchived} 
+                    type="text" 
+                    value={formData.location} 
+                    onChange={e => setFormData({...formData, location: e.target.value})} 
+                    className={`${inputClass} pl-8`} 
+                    placeholder="Physical address or coordinates"
+                  />
+                </div>
+              </div>
             </div>
+          </section>
+
+          {/* Section 2: Operational Analytics */}
+          <section className="space-y-3">
+            <h3 className="text-[9px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest border-b border-slate-100 dark:border-slate-800 pb-1">
+              Live Telemetry & Financials
+            </h3>
+            <div className={`grid gap-3 ${isFullScreen ? "grid-cols-1 md:grid-cols-4" : "grid-cols-2"}`}>
+              <div className="bg-slate-50 dark:bg-slate-800/50 p-3 rounded-lg border border-slate-100 dark:border-slate-800">
+                <p className="text-[9px] font-bold text-slate-500 uppercase tracking-widest mb-1">Total Volume</p>
+                <p className="text-sm font-black text-slate-900 dark:text-white truncate">
+                  ₦ {parseFloat(branch.salesTotal).toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                </p>
+              </div>
+              <div className="bg-slate-50 dark:bg-slate-800/50 p-3 rounded-lg border border-slate-100 dark:border-slate-800">
+                <p className="text-[9px] font-bold text-slate-500 uppercase tracking-widest mb-1">Total OPEX</p>
+                <p className="text-sm font-black text-slate-900 dark:text-white truncate">
+                  ₦ {parseFloat(branch.expensesTotal).toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                </p>
+              </div>
+              <div className="bg-slate-50 dark:bg-slate-800/50 p-3 rounded-lg border border-slate-100 dark:border-slate-800 flex items-center justify-between">
+                <div>
+                  <p className="text-[9px] font-bold text-slate-500 uppercase tracking-widest mb-1">POS Status</p>
+                  <p className="text-xs font-black text-slate-900 dark:text-white">
+                    {branch.operationalStatus?.hasOpenPOS ? "Active Sessions" : "All Closed"}
+                  </p>
+                </div>
+                <Activity className={`w-4 h-4 ${branch.operationalStatus?.hasOpenPOS ? "text-emerald-500" : "text-slate-400"}`} />
+              </div>
+              <div className="bg-slate-50 dark:bg-slate-800/50 p-3 rounded-lg border border-slate-100 dark:border-slate-800 flex items-center justify-between">
+                <div>
+                  <p className="text-[9px] font-bold text-slate-500 uppercase tracking-widest mb-1">Workforce</p>
+                  <p className="text-xs font-black text-slate-900 dark:text-white">
+                    {branch.operationalStatus?.activeStaffCount || 0} Deployed
+                  </p>
+                </div>
+                <Users className="w-4 h-4 text-blue-500" />
+              </div>
+            </div>
+          </section>
+        </form>
+
+        {/* Section 3: Transference Protocol */}
+        <section className="space-y-3 pt-2">
+          <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-1">
+            <h3 className="text-[9px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest">
+              Deployed Workforce
+            </h3>
+            {!isArchived && canUpdateBranch && branch.branchAssignments.length > 0 && (
+              <button 
+                type="button"
+                onClick={() => setIsReassigning(!isReassigning)}
+                className={`text-[8px] font-bold uppercase tracking-widest flex items-center gap-1 px-2 py-0.5 rounded transition-all ${
+                  isReassigning ? "bg-blue-600 text-white" : "bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-200"
+                }`}
+              >
+                <RefreshCcw className="w-2.5 h-2.5" />
+                {isReassigning ? "Cancel Migration" : "Migrate"}
+              </button>
+            )}
           </div>
-        )}
 
-        {/* --- Historical Telemetry --- */}
-        {!isEditing && (
-          <div className="pt-6 border-t border-black/[0.03]">
-            <div className="flex items-center justify-between mb-5 px-1">
-              <h4 className="text-[9px] font-black uppercase tracking-[0.2em] text-slate-400">Historical Telemetry</h4>
-              <span className="text-[10px] font-bold text-slate-300 font-mono">{displayLogs.length} Events</span>
+          {isReassigning && (
+            <div className="p-3 bg-blue-50 dark:bg-blue-900/10 border border-blue-100 dark:border-blue-900/30 rounded-lg space-y-3">
+              <div className="space-y-1">
+                <label className="text-[9px] font-bold uppercase tracking-widest text-blue-700 dark:text-blue-400">Destination Node</label>
+                <select
+                  value={targetBranchId}
+                  onChange={(e) => setTargetBranchId(e.target.value)}
+                  className="w-full bg-white dark:bg-slate-950 border border-blue-200 dark:border-blue-800 rounded-md px-2 py-1.5 text-xs text-slate-700 dark:text-slate-300 outline-none focus:ring-1 focus:ring-blue-500"
+                >
+                  <option value="">Select Target Branch...</option>
+                  {availableBranches.map((b) => (
+                    <option key={b.id} value={b.id}>{b.name}</option>
+                  ))}
+                </select>
+              </div>
+              <button
+                type="button"
+                onClick={handleBulkReassign}
+                disabled={isSubmitting || selectedPersonnel.length === 0 || !targetBranchId}
+                className="w-full bg-blue-600 text-white text-[9px] font-bold py-2 rounded uppercase tracking-widest disabled:opacity-50 hover:bg-blue-700 transition-all flex justify-center items-center gap-1.5"
+              >
+                {isSubmitting ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RefreshCcw className="w-3.5 h-3.5" />}
+                Execute Migration ({selectedPersonnel.length})
+              </button>
             </div>
-            
-            <div className="px-2">
-              <div className="border-l-2 border-slate-100 pl-4 space-y-5">
-                {displayLogs.length > 0 ? displayLogs.map((log) => {
-                  const action = log.action.toUpperCase();
-                  const isRed = /DELETE|PURGE|ARCHIVE/.test(action);
-                  const dotColor = isRed ? "bg-red-400 ring-red-100" : "bg-slate-300 ring-slate-100";
+          )}
 
-                  return (
-                    <div key={log.id} className="relative group">
-                      <span className={`absolute -left-[21px] top-1.5 w-2 h-2 rounded-full border-2 border-white ring-2 ${dotColor}`} />
-                      <div className="flex flex-col min-w-0 bg-white border border-slate-100 rounded-lg p-3 hover:shadow-sm transition-all">
-                        <div className="flex justify-between items-start gap-2 mb-1.5">
-                          <div className="flex flex-col min-w-0">
-                            <span className="text-[10px] font-black text-slate-800 uppercase tracking-tight truncate">
-                              {log.personnel?.name || log.performedBy || "System Event"}
-                            </span>
-                            <span className="text-[8px] font-bold uppercase mt-0.5 px-1.5 py-0.5 rounded w-fit tracking-wider bg-slate-50 text-slate-500">
-                              {log.action.replace(/_/g, " ")}
-                            </span>
-                          </div>
-                          <span className="text-[9px] font-medium text-slate-400 whitespace-nowrap shrink-0">
-                            {new Date(log.createdAt).toLocaleDateString()}
-                          </span>
-                        </div>
-                        <p className="text-[11px] font-medium text-slate-600 leading-snug break-words">
-                          {log.details || "Registry modification event recorded."}
-                        </p>
-                      </div>
+          <div className={`grid gap-2 ${isFullScreen ? "grid-cols-1 md:grid-cols-2 lg:grid-cols-3" : "grid-cols-1"}`}>
+            {branch.branchAssignments.length > 0 ? branch.branchAssignments.map((ba) => (
+              <div 
+                key={ba.id} 
+                onClick={() => isReassigning && toggleSelection(ba.personnel.id)}
+                className={`flex items-center justify-between p-2 rounded-lg border transition-all ${
+                  isReassigning ? "cursor-pointer hover:border-blue-300" : ""
+                } ${
+                  isReassigning && selectedPersonnel.includes(ba.personnel.id)
+                    ? "border-blue-500 bg-blue-50 dark:bg-blue-900/20"
+                    : "border-slate-100 dark:border-slate-800 bg-white dark:bg-slate-900"
+                }`}
+              >
+                <div className="flex items-center gap-2 min-w-0">
+                  {isReassigning && (
+                    <div className={`w-3.5 h-3.5 rounded border flex items-center justify-center shrink-0 ${
+                      selectedPersonnel.includes(ba.personnel.id) ? "bg-blue-600 border-blue-600" : "bg-white border-slate-300"
+                    }`}>
+                      {selectedPersonnel.includes(ba.personnel.id) && <CheckCircle2 className="w-2.5 h-2.5 text-white" />}
                     </div>
-                  );
-                }) : (
-                  <div className="text-[10px] text-slate-400 font-medium italic py-2">No historical telemetry found.</div>
+                  )}
+                  <div className="w-6 h-6 shrink-0 rounded bg-slate-100 dark:bg-slate-800 flex items-center justify-center text-[9px] font-black text-slate-500 border border-slate-200 dark:border-slate-700">
+                    {ba.personnel.name?.charAt(0) || "@"}
+                  </div>
+                  <div className="min-w-0">
+                    <p className="text-[11px] font-bold text-slate-900 dark:text-white truncate">{ba.personnel.name || ba.personnel.email}</p>
+                    <p className="text-[8px] font-black text-slate-400 uppercase tracking-widest truncate">{ba.role.replace(/_/g, " ")}</p>
+                  </div>
+                </div>
+                {ba.isPrimary && (
+                  <span className="shrink-0 px-1.5 py-0.5 rounded bg-emerald-50 dark:bg-emerald-900/30 text-emerald-600 dark:text-emerald-400 text-[8px] font-black uppercase tracking-widest border border-emerald-100 dark:border-emerald-800">
+                    Primary
+                  </span>
                 )}
               </div>
-            </div>
+            )) : (
+              <div className="col-span-full p-4 border border-dashed border-slate-200 dark:border-slate-800 rounded-lg text-center bg-slate-50/50 dark:bg-slate-900/50">
+                <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">No Personnel Deployed</p>
+              </div>
+            )}
           </div>
-        )}
+        </section>
 
-        {/* --- Danger Zone --- */}
-        {!isEditing && (
-          <div className="pt-8 border-t border-red-50 mt-8">
-            <button
-              onClick={async () => {
-                if (!confirm(`CRITICAL: Purge ${branch.name}? This action is permanent.`)) return;
-                try {
-                  const res = await fetch(`/api/branches/${branchId}/purge`, { method: "DELETE" });
-                  if (res.ok) {
-                    dispatch({ kind: "TOAST", type: "SUCCESS", title: "Data Purged", message: "Node record destroyed." });
-                    closePanel();
-                    await onRefresh();
-                  }
-                } catch (err) {
-                  dispatch({ kind: "TOAST", type: "ERROR", title: "Purge Failed", message: "Security override active." });
-                }
-              }}
-              className="w-full flex items-center justify-center gap-2 px-3 py-4 text-[10px] font-black uppercase tracking-[0.2em] border rounded-2xl transition-all group border-red-100 text-red-500 bg-red-50/50 hover:bg-red-500 hover:text-white"
-            >
-              <i className="bx bx-trash text-lg group-hover:animate-bounce" /> 
-              Purge Account Data
-            </button>
+        {/* Section 4: Historical Telemetry */}
+        <section className="space-y-3 pt-2">
+          <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-1">
+            <h3 className="text-[9px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest flex items-center gap-1.5">
+              <History className="w-3 h-3" /> Event Telemetry
+            </h3>
+            <span className="text-[9px] font-bold text-slate-400 font-mono">{displayLogs.length} Records</span>
           </div>
-        )}
+          <div className="space-y-2 border-l-2 border-slate-100 dark:border-slate-800 pl-3 ml-1">
+            {displayLogs.length > 0 ? displayLogs.map((log) => (
+              <div key={log.id} className="relative">
+                <span className="absolute -left-[17px] top-1.5 w-2 h-2 rounded-full border-2 border-white dark:border-slate-900 bg-slate-300 dark:bg-slate-600" />
+                <div className="bg-slate-50 dark:bg-slate-800/40 border border-slate-100 dark:border-slate-800 rounded p-2">
+                  <div className="flex justify-between items-start gap-2 mb-1">
+                    <span className="text-[9px] font-bold uppercase tracking-wider text-slate-700 dark:text-slate-300">
+                      {log.action.replace(/_/g, " ")}
+                    </span>
+                    <span className="text-[8px] font-medium text-slate-400 whitespace-nowrap">
+                      {new Date(log.createdAt).toLocaleDateString()}
+                    </span>
+                  </div>
+                  <p className="text-[10px] text-slate-600 dark:text-slate-400 leading-snug">
+                    {log.details || log.description || "System registry modification."}
+                  </p>
+                  <p className="text-[8px] font-medium text-slate-400 mt-1 uppercase">
+                    Actor: {log.personnel?.name || log.performedBy || "System"}
+                  </p>
+                </div>
+              </div>
+            )) : (
+              <p className="text-[9px] text-slate-400 italic">No telemetry recorded.</p>
+            )}
+          </div>
+        </section>
 
       </div>
+
+      {/* --- Footer / Actions --- */}
+      <div className="px-4 py-3 border-t border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/50 flex justify-between items-center shrink-0">
+        <div className="flex gap-2">
+          {canDeleteBranch && !isArchived && (
+            <button 
+              type="button" 
+              onClick={handlePurge}
+              disabled={isSubmitting} 
+              className="p-2 text-red-500 hover:bg-red-50 dark:hover:bg-red-900/30 rounded transition-colors disabled:opacity-50 group"
+              title="Decommission Branch"
+            >
+              <Trash2 className="w-4 h-4 group-hover:animate-pulse" />
+            </button>
+          )}
+          {canUpdateBranch && !isArchived && (
+             <button
+              type="button"
+              onClick={() => handleUpdate(undefined, { id: branchId, active: !formData.active })}
+              disabled={isSubmitting}
+              className={`px-3 py-1.5 text-[9px] font-bold uppercase tracking-widest rounded transition-all disabled:opacity-50 ${
+                formData.active 
+                  ? "text-amber-600 bg-amber-50 hover:bg-amber-100 border border-amber-200"
+                  : "text-emerald-600 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200"
+              }`}
+             >
+               {formData.active ? "Suspend" : "Resume"}
+             </button>
+          )}
+        </div>
+        
+        <div className="flex gap-2">
+          <button type="button" onClick={handleClose} disabled={isSubmitting} className="px-3 py-1.5 text-[9px] font-bold text-slate-500 uppercase tracking-widest hover:text-slate-800 dark:hover:text-slate-300 transition-colors">
+            CLose
+          </button>
+          {canUpdateBranch && !isArchived && (
+            <button 
+              type="submit" 
+              form="branch-form" 
+              disabled={isSubmitting} 
+              className="flex items-center gap-1.5 px-4 py-2 bg-blue-600 text-white text-[9px] font-bold uppercase tracking-widest rounded-md hover:bg-blue-700 transition-all shadow-lg shadow-blue-500/20 disabled:opacity-50"
+            >
+              {isSubmitting ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />}
+              Commit Changes
+            </button>
+          )}
+        </div>
+      </div>
+      
     </div>
   );
 }
-
-export default BranchDetailsPanel;

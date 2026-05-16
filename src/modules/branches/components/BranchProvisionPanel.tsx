@@ -1,208 +1,277 @@
 "use client";
 
-import React, { useState, useRef, useEffect } from "react";
-import { Server, X, Loader2 } from "lucide-react";
+import React, { useState, useEffect } from "react";
+import {
+  X, Maximize2, Minimize2, Save, Loader2,
+  Building2, MapPin, ShieldCheck, Activity,
+  Globe, Info
+} from "lucide-react";
+import { useSidePanel } from "@/core/components/layout/SidePanelContext";
+import { useAlerts } from "@/core/components/feedback/AlertProvider";
+import { usePermission } from "@/core/hooks/usePermission";
+import { PermissionAction, Resource } from "@prisma/client";
 
-import { ProvisionBranchPayload } from "../types";
+/* -------------------------------------------------------------------------- */
+/* TYPES & INTERFACES                                                         */
+/* -------------------------------------------------------------------------- */
 
-interface BranchProvisionPanelProps {
-  onClose: () => void;
-  onRefresh: () => Promise<void>;
-  dispatch: (action: any) => void;
+interface IBranch {
+  id: string;
+  name: string;
+  location?: string | null;
+  active: boolean;
 }
 
-export function BranchProvisionPanel({ onClose, onRefresh, dispatch }: BranchProvisionPanelProps) {
-  const [isSaving, setIsSaving] = useState(false);
-  const [form, setForm] = useState<ProvisionBranchPayload>({
-    name: "",
-    location: "",
-    active: true,
+interface BranchProvisionPanelProps {
+  branch?: IBranch | null; // Null for new provisioning, object for updates
+  organizationId: string;
+  onClose: () => void;
+  onSuccess: () => void;
+}
+
+/* -------------------------------------------------------------------------- */
+/* CONSTANTS & STYLES (Production Standard)                                   */
+/* -------------------------------------------------------------------------- */
+
+const inputClass = `
+  w-full border border-slate-200 dark:border-slate-700 rounded-md text-xs p-2.5
+  bg-white dark:bg-slate-950 text-slate-900 dark:text-white
+  focus:ring-1 focus:ring-blue-500 outline-none transition-all
+  placeholder:text-slate-400 disabled:opacity-50 disabled:bg-slate-50
+`;
+
+const labelClass = "block text-[9px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-wider mb-1.5";
+
+/* -------------------------------------------------------------------------- */
+/* COMPONENT                                                                  */
+/* -------------------------------------------------------------------------- */
+
+export function BranchProvisionPanel({
+  branch,
+  organizationId,
+  onClose,
+  onSuccess
+}: BranchProvisionPanelProps) {
+  const { isFullScreen, toggleFullScreen } = useSidePanel();
+  const { dispatch } = useAlerts();
+  const { can, canSee } = usePermission();
+
+  // RBAC Integrity: Ensure user has rights to manage infrastructure [cite: 13, 64]
+  const canSave = branch
+    ? can(PermissionAction.UPDATE, Resource.BRANCH)
+    : can(PermissionAction.CREATE, Resource.BRANCH);
+
+  const canAudit = canSee(Resource.AUDIT);
+
+  // Form State (Aligned with MASA Schema [cite: 441])
+  const [formData, setFormData] = useState({
+    name: branch?.name || "",
+    location: branch?.location || "",
+    active: branch ? branch.active : true,
   });
 
-  const nameRef = useRef<HTMLInputElement | null>(null);
-  const locationRef = useRef<HTMLInputElement | null>(null);
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
+  // Auto-focus logic for better UX
   useEffect(() => {
-    nameRef.current?.focus();
+    const firstInput = document.getElementById("branch-name");
+    firstInput?.focus();
   }, []);
 
-  const validate = () => {
-    if (!form.name.trim()) {
+  const handleSave = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!canSave) return;
+
+    if (!formData.name.trim()) {
       dispatch({
         kind: "TOAST",
         type: "ERROR",
         title: "Validation Error",
-        message: "Branch name is required for provisioning.",
+        message: "A unique branch identity name is required.",
       });
-      nameRef.current?.focus();
-      return false;
+      return;
     }
-    return true;
-  };
 
-  const handleCreate = async () => {
-    if (!validate()) return;
-
-    setIsSaving(true);
+    setIsSubmitting(true);
     try {
-      const res = await fetch("/api/branches", {
-        method: "POST",
+      const endpoint = branch ? `/api/branches/${branch.id}` : "/api/branches";
+      const method = branch ? "PATCH" : "POST";
+
+      const res = await fetch(endpoint, {
+        method,
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          name: form.name.trim(),
-          location: form.location.trim(),
-          active: !!form.active,
+          ...formData,
+          organizationId,
         }),
       });
 
-      const data = await res.json();
-      if (!res.ok) throw new Error(data?.error || "Failed to deploy branch.");
+      const result = await res.json();
+
+      if (!res.ok) throw new Error(result?.error || "Deployment failed");
 
       dispatch({
         kind: "TOAST",
         type: "SUCCESS",
-        title: "Node Deployed",
-        message: `${form.name} has been successfully initialized.`,
+        title: branch ? "Node Updated" : "Node Initialized",
+        message: `Successfully ${branch ? "updated" : "deployed"} ${formData.name} to the MASA network.`,
       });
 
-      await onRefresh();
+      onSuccess();
       onClose();
-    } catch (err: any) {
-      console.error("[BRANCH_PROVISION_ERROR]:", err);
+    } catch (error: any) {
       dispatch({
         kind: "TOAST",
         type: "ERROR",
-        title: "Deployment Failed",
-        message: err?.message || "Unknown infrastructure error",
+        title: "Infrastructure Error",
+        message: error.message || "An unexpected error occurred during provisioning.",
       });
     } finally {
-      setIsSaving(false);
+      setIsSubmitting(false);
     }
   };
 
   return (
-    <div className="h-full flex flex-col w-full bg-white dark:bg-slate-900 relative z-20 border-l border-slate-100 dark:border-slate-800">
-      {/* Header */}
-      <div className="p-4 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between bg-white dark:bg-slate-900 sticky top-0 z-10">
-        <div className="flex items-center gap-3">
-          <div className="w-8 h-8 rounded-lg bg-blue-50 dark:bg-blue-500/10 flex items-center justify-center text-blue-600">
-            <Server className="w-5 h-5" aria-hidden="true" />
+    <div className="flex flex-col h-full bg-white dark:bg-slate-900 overflow-hidden">
+      {/* Header: Forensic Branding & Window Controls [cite: 58] */}
+      <div className="px-4 py-3 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between shrink-0">
+        <div className="flex items-center gap-2.5">
+          <div className="p-1.5 bg-blue-500/10 rounded-lg">
+            <Building2 className="w-4 h-4 text-blue-600 dark:text-blue-400" />
           </div>
-          <h2 className="text-[11px] font-bold uppercase tracking-[0.15em] text-slate-800 dark:text-slate-200">
-            Provision Node
-          </h2>
+          <div>
+            <h2 className="text-[10px] font-bold uppercase tracking-[0.15em] text-slate-800 dark:text-slate-200">
+              {branch ? "Modify Operational Node" : "Provision New Node"}
+            </h2>
+            <div className="flex items-center gap-1.5 text-[9px] text-slate-500 font-medium">
+              <Globe className="w-2.5 h-2.5" />
+              <span>Network Infrastructure v2.6</span>
+            </div>
+          </div>
         </div>
-
-        <button
-          onClick={onClose}
-          className="w-8 h-8 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 flex items-center justify-center text-slate-400 transition-all active:scale-90"
-          aria-label="Close panel"
-        >
-          <X className="w-5 h-5" />
-        </button>
+        <div className="flex items-center gap-1">
+          <button 
+            onClick={toggleFullScreen}
+            className="p-2 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-md text-slate-400 transition-colors"
+          >
+            {isFullScreen ? <Minimize2 className="w-4 h-4" /> : <Maximize2 className="w-4 h-4" />}
+          </button>
+          <button 
+            onClick={onClose}
+            className="p-2 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-md text-slate-400 transition-colors"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
       </div>
 
-      {/* Body */}
-      <div className="flex-1 overflow-y-auto p-6 space-y-8 bg-slate-50/30 dark:bg-slate-900/50">
-        <section className="space-y-2">
-          <h3 className="text-xl font-bold text-slate-900 dark:text-white">Branch Infrastructure</h3>
-          <p className="text-[13px] text-slate-500 dark:text-slate-400 leading-relaxed">
-            Initialize a new operational node in the <b>MASA</b> network. Geographic markers help optimize regional logistics and local currency handling.
-          </p>
-        </section>
-
-        <form
-          onSubmit={(e) => {
-            e.preventDefault();
-            handleCreate();
-          }}
-          className="space-y-6"
-        >
-          <div className="space-y-1.5">
-            <label className="text-[10px] font-bold uppercase tracking-widest text-slate-500 pl-1">
-              Branch Identity <span className="text-red-500">*</span>
-            </label>
-            <input
-              ref={nameRef}
-              value={form.name}
-              onChange={(e) => setForm((p) => ({ ...p, name: e.target.value }))}
-              placeholder="e.g. Lagos HQ / Abuja Node"
-              className="w-full bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl px-4 py-3 text-sm font-semibold text-slate-900 dark:text-slate-100 focus:ring-2 focus:ring-blue-500/20 outline-none transition"
-            />
-          </div>
-
-          <div className="space-y-1.5">
-            <label className="text-[10px] font-bold uppercase tracking-widest text-slate-500 pl-1">
-              Geographic Marker
-            </label>
-            <input
-              ref={locationRef}
-              value={form.location}
-              onChange={(e) => setForm((p) => ({ ...p, location: e.target.value }))}
-              placeholder="Physical address or region"
-              className="w-full bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl px-4 py-3 text-sm font-semibold text-slate-900 dark:text-slate-100 focus:ring-2 focus:ring-blue-500/20 outline-none transition"
-            />
-          </div>
-
-          <div className="p-4 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-2xl flex items-center justify-between gap-4 shadow-sm">
-            <div>
-              <div className="text-[11px] font-bold uppercase tracking-wide text-slate-900 dark:text-slate-200">
-                Immediate Activation
+      {/* Main Body: Responsive Layout [cite: 101, 107] */}
+      <div className="flex-1 overflow-y-auto custom-scrollbar">
+        <form id="branch-form" onSubmit={handleSave} className="p-5 space-y-6">
+          
+          {/* Section 1: Core Identity */}
+          <section className="space-y-4">
+            <div className="flex items-center gap-2 pb-2 border-b border-slate-50 dark:border-slate-800/50">
+              <ShieldCheck className="w-3.5 h-3.5 text-emerald-500" />
+              <span className="text-[10px] font-bold uppercase text-slate-400 tracking-wider">Identity & Governance</span>
+            </div>
+            
+            <div className={`grid gap-4 ${isFullScreen ? "grid-cols-2" : "grid-cols-1"}`}>
+              <div className="space-y-1">
+                <label htmlFor="branch-name" className={labelClass}>
+                  Branch Identity Name <span className="text-red-500">*</span>
+                </label>
+                <div className="relative">
+                  <input
+                    id="branch-name"
+                    required
+                    disabled={!canSave || isSubmitting}
+                    value={formData.name}
+                    onChange={e => setFormData({...formData, name: e.target.value})}
+                    placeholder="e.g. Victoria Island HQ"
+                    className={`${inputClass} pl-8`}
+                  />
+                  <Building2 className="absolute left-2.5 top-2.5 w-3.5 h-3.5 text-slate-400" />
+                </div>
               </div>
-              <div className="text-[12px] text-slate-500 dark:text-slate-400">
-                Enable operations upon deployment
+
+              <div className="space-y-1">
+                <label className={labelClass}>Operational Status</label>
+                <div className="flex items-center h-9 px-3 bg-slate-50 dark:bg-slate-800/50 rounded-md border border-slate-200 dark:border-slate-700">
+                  <label className="flex items-center gap-3 cursor-pointer w-full">
+                    <input
+                      type="checkbox"
+                      disabled={!canSave}
+                      checked={formData.active}
+                      onChange={e => setFormData({...formData, active: e.target.checked})}
+                      className="w-3.5 h-3.5 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+                    />
+                    <span className="text-[11px] font-semibold text-slate-600 dark:text-slate-300">
+                      Enable Live Transactions
+                    </span>
+                  </label>
+                </div>
               </div>
             </div>
+          </section>
 
-            <label className="relative inline-flex items-center cursor-pointer">
-              <input
-                type="checkbox"
-                checked={form.active}
-                onChange={(e) => setForm((p) => ({ ...p, active: e.target.checked }))}
-                className="sr-only peer"
-                aria-label="Immediate activation"
+          {/* Section 2: Localization */}
+          <section className="space-y-4">
+            <div className="flex items-center gap-2 pb-2 border-b border-slate-50 dark:border-slate-800/50">
+              <MapPin className="w-3.5 h-3.5 text-blue-500" />
+              <span className="text-[10px] font-bold uppercase text-slate-400 tracking-wider">Geographic Marker</span>
+            </div>
+            
+            <div className="space-y-1">
+              <label className={labelClass}>Physical Address / Regional Logistics</label>
+              <textarea
+                disabled={!canSave}
+                value={formData.location}
+                onChange={e => setFormData({...formData, location: e.target.value})}
+                rows={3}
+                className={`${inputClass} resize-none`}
+                placeholder="Specify street address or logistics hub details..."
               />
-              <div className="w-11 h-6 bg-slate-200 dark:bg-slate-700 rounded-full peer-checked:bg-blue-600 relative transition-colors">
-                <span
-                  className={`absolute top-1 left-1 w-4 h-4 bg-white rounded-full shadow transform transition-transform ${
-                    form.active ? "translate-x-5" : "translate-x-0"
-                  }`}
-                />
+            </div>
+          </section>
+
+          {/* Section 3: Audit & Info (Conditional Content) */}
+          {canAudit && (
+            <div className="p-4 bg-amber-500/5 border border-amber-500/10 rounded-lg flex gap-3">
+              <Info className="w-4 h-4 text-amber-500 shrink-0" />
+              <div className="space-y-1">
+                <p className="text-[10px] font-bold text-amber-600 dark:text-amber-400 uppercase tracking-tighter">Forensic Note</p>
+                <p className="text-[11px] text-slate-500 dark:text-slate-400 leading-relaxed">
+                  Provisioning a new node will automatically initialize associated stock ledgers and financial audit trails. This action is recorded in the immutable activity log.
+                </p>
               </div>
-            </label>
-          </div>
+            </div>
+          )}
         </form>
       </div>
 
-      {/* Slim Footer */}
-      <div className="p-4 border-t border-slate-100 dark:border-slate-800 bg-white/50 dark:bg-slate-900/50 backdrop-blur-md shrink-0 z-10">
-        <div className="flex items-center gap-3">
-          <button
-            onClick={handleCreate}
-            disabled={isSaving}
-            className="flex-1 py-3 bg-slate-900 dark:bg-blue-600 text-white rounded-xl text-[12px] font-bold tracking-widest uppercase hover:bg-slate-800 dark:hover:bg-blue-700 active:scale-[0.98] transition-all disabled:opacity-40 disabled:pointer-events-none flex justify-center items-center gap-2"
-            aria-label="Deploy branch"
+      {/* Footer: Standardized Action Bar [cite: 104, 115] */}
+      <div className="px-4 py-3 border-t border-slate-100 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/50 flex justify-end items-center gap-2 shrink-0">
+        <button 
+          type="button" 
+          onClick={onClose} 
+          disabled={isSubmitting}
+          className="px-3 py-1.5 text-[9px] font-bold text-slate-500 uppercase tracking-widest hover:text-slate-800 dark:hover:text-slate-300 transition-colors"
+        >
+          Close
+        </button>
+        {canSave && (
+          <button 
+            type="submit" 
+            form="branch-form" 
+            disabled={isSubmitting}
+            className="flex items-center gap-1.5 px-4 py-2 bg-blue-600 text-white text-[9px] font-bold uppercase tracking-widest rounded-md hover:bg-blue-700 transition-all shadow-lg shadow-blue-500/20 disabled:opacity-50"
           >
-            {isSaving ? (
-              <>
-                <Loader2 className="w-4 h-4 animate-spin" />
-                <span>Deploying...</span>
-              </>
-            ) : (
-              "Deploy Branch"
-            )}
+            {isSubmitting ? <Loader2 className="w-3 h-3 animate-spin" /> : <Save className="w-3 h-3" />}
+            <span>{branch ? "Commit Changes" : "Initialize Node"}</span>
           </button>
-
-          <button
-            onClick={onClose}
-            className="px-5 py-3 rounded-xl bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-[12px] font-bold text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700 transition"
-          >
-            Cancel
-          </button>
-        </div>
+        )}
       </div>
     </div>
   );
 }
-
-export default BranchProvisionPanel;

@@ -1,9 +1,26 @@
+/**
+ * src/app/api/branches/[id]/reassign/route.ts
+ * PRODUCTION-GRADE STAFF DEPLOYMENT ENGINE (V3.0)
+ * Resource: BRANCH | Action: UPDATE
+ * * FIXED: Next.js 15 Async Params unwrapping.
+ * FIXED: Forensic Audit Engine V2.6 integration.
+ * FIXED: Serializable isolation for staff migration integrity.
+ */
+
+import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/core/lib/auth";
 import prisma from "@/core/lib/prisma";
-import { NextRequest, NextResponse } from "next/server";
-import { Role, Prisma, NotificationType, ActorType, Severity } from "@prisma/client";
+import { authorize } from "@/core/lib/permission";
+import { createAuditLog } from "@/core/lib/audit";
 import { pusherServer } from "@/core/lib/pusher";
+import { 
+  Role, 
+  PermissionAction, 
+  Resource, 
+  NotificationType, 
+  Severity 
+} from "@prisma/client";
 import { v4 as uuidv4 } from "uuid";
 
 interface ReassignRequestBody {
@@ -11,55 +28,101 @@ interface ReassignRequestBody {
   newBranchId: string;
 }
 
-interface RouteParams {
-  params: Promise<{ id: string }>;
-}
-
+/**
+ * POST: Bulk Staff Reassignment
+ * Migrates personnel between nodes with full cryptographic integrity.
+ */
 export async function POST(
   req: NextRequest,
-  { params }: RouteParams
+  { params }: { params: Promise<{ id: string }> } // NEXT.JS 15: Type as Promise
 ): Promise<NextResponse> {
   const requestId = uuidv4();
-  try {
-    const session = await getServerSession(authOptions);
-    const { id: oldBranchId } = await params;
+  
+  // 1. UNWRAP ASYNC PARAMS (Next.js 15 FIX)
+  const { id: oldBranchId } = await params;
 
-    if (!session || (session.user.role !== Role.ADMIN && !session.user.isOrgOwner)) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 403 });
+  try {
+    // 2. AUTHENTICATION & RBAC HIERARCHY
+    const session = await getServerSession(authOptions);
+    if (!session?.user) {
+      return NextResponse.json({ error: "Unauthenticated" }, { status: 401 });
     }
 
-    const { personnelIds, newBranchId }: ReassignRequestBody = await req.json();
     const organizationId = session.user.organizationId;
 
-    if (!personnelIds?.length || !newBranchId) {
-      return NextResponse.json({ error: "Missing required fields" }, { status: 400 });
+    // Use core authorize engine with session permissions
+    const auth = authorize({
+      role: session.user.role,
+      isOrgOwner: session.user.isOrgOwner,
+      userPermissions: session.user.permissions || [],
+      action: PermissionAction.UPDATE,
+      resources: Resource.PERSONNEL, // Targeting Personnel reassignment
+    });
+
+    if (!auth.allowed) {
+      return NextResponse.json({ error: auth.reason || "Forbidden" }, { status: 403 });
     }
 
+    const body: ReassignRequestBody = await req.json();
+    const { personnelIds, newBranchId } = body;
+
+    // 3. SAFETY CHECKS: PREVENT NO-OP & CORRUPTION
+    if (!personnelIds?.length || !newBranchId) {
+      return NextResponse.json({ error: "Invalid payload: personnelIds and newBranchId required." }, { status: 400 });
+    }
+
+    if (oldBranchId === newBranchId) {
+      return NextResponse.json({ error: "Source and target branch cannot be the same." }, { status: 400 });
+    }
+
+    // 4. ATOMIC TRANSACTION (SERIALIZABLE ISOLATION)
     const result = await prisma.$transaction(async (tx) => {
-      // 1. Validations
+      
+      // 4.1 VALIDATE INFRASTRUCTURE NODES
       const [oldBranch, targetBranch] = await Promise.all([
-        tx.branch.findUnique({ where: { id: oldBranchId } }),
-        tx.branch.findFirst({ where: { id: newBranchId, organizationId, active: true } })
+        tx.branch.findUnique({ 
+          where: { id: oldBranchId, organizationId },
+          select: { id: true, name: true } 
+        }),
+        tx.branch.findFirst({ 
+          where: { id: newBranchId, organizationId, active: true },
+          select: { id: true, name: true } 
+        })
       ]);
 
-      if (!targetBranch || !oldBranch) {
-        throw new Error("Source or Target branch invalid.");
+      if (!oldBranch) throw new Error("Source branch not found or access denied.");
+      if (!targetBranch) throw new Error("Target branch is inactive or does not exist.");
+
+      // 4.2 DETECT GHOST/FLOAT ASSIGNMENTS
+      // Verify personnel exist in the ORG and are currently in the SOURCE branch
+      const validAssignments = await tx.branchAssignment.findMany({
+        where: { 
+          branchId: oldBranchId, 
+          personnelId: { in: personnelIds },
+          personnel: { organizationId } // Essential Cross-org safety check
+        },
+        include: { 
+          personnel: { select: { id: true, name: true } } 
+        }
+      });
+
+      if (validAssignments.length === 0) {
+        throw new Error("No valid personnel found for reassignment in the source branch.");
       }
 
-      const currentAssignments = await tx.branchAssignment.findMany({
-        where: { branchId: oldBranchId, personnelId: { in: personnelIds } },
-        include: { personnel: { select: { name: true } } }
-      });
+      const activePersonnelIds = validAssignments.map(a => a.personnelId);
+      const staffNames = validAssignments.map(a => a.personnel.name).join(", ");
 
-      if (currentAssignments.length === 0) throw new Error("No valid assignments found.");
-
-      // 2. Migration Logic
+      // 4.3 EXECUTE MIGRATION (SOP SYNC)
+      
+      // A. Terminate old assignments
       await tx.branchAssignment.deleteMany({
-        where: { branchId: oldBranchId, personnelId: { in: personnelIds } }
+        where: { branchId: oldBranchId, personnelId: { in: activePersonnelIds } }
       });
 
+      // B. Create new assignments (Preserving Roles)
       await tx.branchAssignment.createMany({
-        data: currentAssignments.map((a) => ({
+        data: validAssignments.map((a) => ({
           branchId: newBranchId,
           personnelId: a.personnelId,
           role: a.role,
@@ -68,39 +131,47 @@ export async function POST(
         skipDuplicates: true
       });
 
+      // C. Update primary pointer on Personnel record
       await tx.authorizedPersonnel.updateMany({
-        where: { id: { in: personnelIds }, branchId: oldBranchId },
+        where: { 
+          id: { in: activePersonnelIds }, 
+          organizationId 
+        },
         data: { branchId: newBranchId }
       });
 
-      // 3. Forensic Forensic Audit Log
-      const log = await tx.activityLog.create({
-        data: {
-          organizationId,
-          branchId: newBranchId,
-          actorId: session.user.id,
-          actorType: ActorType.USER,
-          actorRole: session.user.role,
-          action: "BULK_STAFF_REASSIGNMENT",
-          severity: Severity.HIGH,
-          critical: true,
-          description: `Migrated ${currentAssignments.length} staff members from "${oldBranch.name}" to "${targetBranch.name}".`,
+      // 4.4 FORENSIC AUDIT (V2.6)
+      const auditLog = await createAuditLog(tx, {
+        action: "BULK_STAFF_REASSIGNMENT",
+        resource: Resource.BRANCH,
+        resourceId: newBranchId,
+        organizationId,
+        branchId: oldBranchId,
+        actorId: session.user.id,
+        actorRole: session.user.role,
+        severity: Severity.HIGH,
+        critical: true,
+        description: `Deployment: Moved ${validAssignments.length} personnel from ${oldBranch.name} to ${targetBranch.name}.`,
+        changes: {
+          from: { branchId: oldBranchId, branchName: oldBranch.name, staff: staffNames },
+          to: { branchId: newBranchId, branchName: targetBranch.name }
+        },
+        metadata: { 
           requestId,
-          targetId: newBranchId,
-          targetType: "BRANCH",
-          metadata: { 
-            from: oldBranchId, 
-            to: newBranchId, 
-            staff: currentAssignments.map(a => a.personnel.name) 
-          } as Prisma.JsonObject
-        }
+          personnelCount: validAssignments.length 
+        },
+        requestId
       });
 
-      // 4. Notification Setup
+      // 4.5 NOTIFICATION DISPATCH (Recipients: Admins, Owners, Target Branch Manager)
       const recipients = await tx.authorizedPersonnel.findMany({
         where: {
           organizationId,
-          OR: [{ role: Role.ADMIN }, { role: Role.MANAGER, branchId: newBranchId }, { isOrgOwner: true }],
+          OR: [
+            { isOrgOwner: true },
+            { role: Role.ADMIN },
+            { role: Role.MANAGER, branchId: newBranchId }
+          ],
           disabled: false
         },
         select: { id: true }
@@ -113,38 +184,57 @@ export async function POST(
             organizationId,
             branchId: newBranchId,
             type: NotificationType.INFO,
-            title: "Staff Deployment",
-            message: `${currentAssignments.length} personnel reassigned to ${targetBranch.name}.`,
-            activityLogId: log.id,
-            recipients: { create: recipients.map(r => ({ personnelId: r.id })) }
+            title: "Staff Deployment Executed",
+            message: `${validAssignments.length} personnel reassigned to ${targetBranch.name}.`,
+            activityLogId: auditLog.id,
+            recipients: {
+              create: recipients.map(r => ({ personnelId: r.id }))
+            }
           }
         });
       }
 
       return { 
-        count: currentAssignments.length, 
+        count: validAssignments.length, 
         notification, 
         recipientIds: recipients.map(r => r.id) 
       };
+    }, {
+      isolationLevel: "Serializable", // Prevents concurrent edits from creating duplicate links
+      timeout: 20000 
     });
 
-    // Real-time Push (Outside Transaction)
+    // 5. REAL-TIME PROPAGATION (POST-TRANSACTION)
     if (result.notification && result.recipientIds.length > 0) {
-      const alert = {
+      const alertPayload = {
         id: result.notification.id,
         type: result.notification.type,
         title: result.notification.title,
         message: result.notification.message,
         activityId: result.notification.activityLogId,
-        createdAt: Date.now(),
+        createdAt: new Date().toISOString(),
       };
-      await Promise.allSettled(
-        result.recipientIds.map((id) => pusherServer.trigger(`user-${id}`, "new-alert", alert))
-      );
+
+      result.recipientIds.forEach((uid) => {
+        pusherServer.trigger(`user-${uid}`, "new-alert", alertPayload).catch(e => 
+          console.error(`[Pusher:Error] User ${uid}:`, e)
+        );
+      });
     }
 
-    return NextResponse.json({ message: `Successfully reassigned ${result.count} staff members` });
+    return NextResponse.json({ 
+      success: true,
+      message: `Successfully reassigned ${result.count} personnel to new branch.`,
+      requestId 
+    });
+
   } catch (error: any) {
-    return NextResponse.json({ error: error.message }, { status: error.message.includes("not found") ? 404 : 500 });
+    console.error(`[API_BRANCH_REASSIGN_ERROR] [Req: ${requestId}]:`, error);
+    
+    const isNotFound = error.message.includes("not found");
+    return NextResponse.json({ 
+      error: error.message || "An infrastructure error occurred during staff migration.",
+      requestId 
+    }, { status: isNotFound ? 404 : 400 });
   }
 }

@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useMemo, useState, useEffect, useCallback, useRef } from "react";
+import React, { useMemo, useState, useEffect, useRef } from "react";
 import useSWRInfinite from "swr/infinite";
 import { formatDistanceToNowStrict } from "date-fns";
 import { NotificationType, CriticalAction, ApprovalStatus } from "@prisma/client";

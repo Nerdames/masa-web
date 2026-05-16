@@ -8,7 +8,8 @@ import { useAlerts } from "@/core/components/feedback/AlertProvider";
 import { 
   Building2, Plus, RefreshCw, Search, 
   CheckCircle2, Loader2, Landmark, 
-  ShieldAlert, Globe} from "lucide-react";
+  ShieldAlert, Globe
+} from "lucide-react";
 
 import { Branch, BranchSummary, BranchListResponse } from "@/modules/branches/types";
 import { BranchDetailsPanel } from "@/modules/branches/components/BranchDetailsPanel";
@@ -137,17 +138,29 @@ export default function BranchManagementPage(): JSX.Element {
 
     setIsLoading(true);
     try {
+      // Direct correlation to NextRequest query resolution mapping
       const res = await fetch(`/api/branches?search=${encodeURIComponent(searchTerm)}&status=${filterStatus}`, {
         signal: abortControllerRef.current.signal,
       });
-      if (!res.ok) throw new Error("Branch Sync Failed");
+
+      if (!res.ok) {
+        const errorData = await res.json().catch(() => ({}));
+        throw new Error(errorData.error || "Branch Sync Failed");
+      }
 
       const json: BranchListResponse = await res.json();
       setBranches(json.data || []);
       setSummary(json.summary || { total: 0, active: 0, inactive: 0, deleted: 0 });
     } catch (err: unknown) {
       if (err instanceof Error && err.name === "AbortError") return;
-      dispatch({ kind: "TOAST", type: "ERROR", title: "Sync Failed", message: "Unable to load infrastructure data." });
+      
+      const message = err instanceof Error ? err.message : "Unable to load infrastructure data.";
+      dispatch({ 
+        kind: "TOAST", 
+        type: "ERROR", 
+        title: "Sync Failed", 
+        message 
+      });
     } finally {
       setIsLoading(false);
     }
@@ -168,7 +181,7 @@ export default function BranchManagementPage(): JSX.Element {
         branchId={branch.id}
         onClose={handleClosePanel}
         onRefresh={fetchBranches}
-        dispatch={useAlerts}
+        dispatch={dispatch}
       />
     );
   };
@@ -177,7 +190,11 @@ export default function BranchManagementPage(): JSX.Element {
     if (!hasFullClearance) return;
     setSelectedBranchId(null);
     openPanel(
-      <BranchProvisionPanel onClose={handleClosePanel} onRefresh={fetchBranches} dispatch={useAlerts} />
+      <BranchProvisionPanel 
+        onClose={handleClosePanel} 
+        onRefresh={fetchBranches} 
+        dispatch={dispatch} 
+      />
     );
   };
 
@@ -192,54 +209,54 @@ export default function BranchManagementPage(): JSX.Element {
       )}
 
       {/* Header */}
-<header className="w-full flex flex-col bg-white dark:bg-slate-900 border-b border-black/[0.04] dark:border-slate-800 shrink-0 sticky top-0 z-[30] transition-colors">
-  <div className="w-full flex items-center justify-between px-4 py-2 h-14">
-    {/* Branding Section */}
-    <div className="flex items-center gap-3">
-      <div className="p-1.5 bg-gradient-to-br from-blue-600 to-cyan-500 rounded-lg shadow-sm">
-        <Building2 className="w-4 h-4 text-white" />
-      </div>
-      <h1 className="text-[16px] font-bold tracking-tight text-slate-900 dark:text-white">
-        Branches Operations
-      </h1>
-    </div>
+      <header className="w-full flex flex-col bg-white dark:bg-slate-900 border-b border-black/[0.04] dark:border-slate-800 shrink-0 sticky top-0 z-[30] transition-colors">
+        <div className="w-full flex items-center justify-between px-4 py-2 h-14">
+          {/* Branding Section */}
+          <div className="flex items-center gap-3">
+            <div className="p-1.5 bg-gradient-to-br from-blue-600 to-cyan-500 rounded-lg shadow-sm">
+              <Building2 className="w-4 h-4 text-white" />
+            </div>
+            <h1 className="text-[16px] font-bold tracking-tight text-slate-900 dark:text-white">
+              Branches Operations
+            </h1>
+          </div>
 
-    {/* Actions Section */}
-    <div className="flex items-center gap-2 sm:gap-3">
-      {/* Search Input */}
-      <div className="relative hidden sm:block">
-        <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400 w-3.5 h-3.5" />
-        <input
-          type="text"
-          value={searchTerm}
-          onChange={(e) => setSearchTerm(e.target.value)}
-          placeholder="REGISTRY_SEARCH..."
-          className="bg-slate-100/80 dark:bg-slate-800/80 border-none py-1.5 pl-8 pr-4 text-[11px] font-medium w-48 lg:w-64 rounded-md focus:ring-1 focus:ring-blue-500 outline-none dark:text-white transition-colors"
-        />
-      </div>
+          {/* Actions Section */}
+          <div className="flex items-center gap-2 sm:gap-3">
+            {/* Search Input */}
+            <div className="relative hidden sm:block">
+              <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400 w-3.5 h-3.5" />
+              <input
+                type="text"
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+                placeholder="REGISTRY_SEARCH..."
+                className="bg-slate-100/80 dark:bg-slate-800/80 border-none py-1.5 pl-8 pr-4 text-[11px] font-medium w-48 lg:w-64 rounded-md focus:ring-1 focus:ring-blue-500 outline-none dark:text-white transition-colors"
+              />
+            </div>
 
-      {/* Refresh Button */}
-      <button
-        onClick={() => fetchBranches()}
-        disabled={isLoading}
-        className="p-1.5 text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-slate-800 rounded-md transition-colors disabled:opacity-50"
-      >
-        <RefreshCw className={`w-4 h-4 ${isLoading ? "animate-spin text-blue-500" : ""}`} />
-      </button>
+            {/* Refresh Button */}
+            <button
+              onClick={() => fetchBranches()}
+              disabled={isLoading}
+              className="p-1.5 text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-slate-800 rounded-md transition-colors disabled:opacity-50"
+            >
+              <RefreshCw className={`w-4 h-4 ${isLoading ? "animate-spin text-blue-500" : ""}`} />
+            </button>
 
-      {/* Primary Action */}
-      {hasFullClearance && (
-        <button
-          onClick={handleOpenProvision}
-          className="flex h-8 px-3 bg-slate-900 dark:bg-blue-600 text-white text-[11px] font-bold uppercase tracking-wider rounded-md hover:opacity-90 transition-all items-center gap-1.5 shadow-sm"
-        >
-          <Plus className="w-3.5 h-3.5" />
-          <span className="hidden sm:inline">Deploy Branch</span>
-        </button>
-      )}
-    </div>
-  </div>
-</header>
+            {/* Primary Action */}
+            {hasFullClearance && (
+              <button
+                onClick={handleOpenProvision}
+                className="flex h-8 px-3 bg-slate-900 dark:bg-blue-600 text-white text-[11px] font-bold uppercase tracking-wider rounded-md hover:opacity-90 transition-all items-center gap-1.5 shadow-sm"
+              >
+                <Plus className="w-3.5 h-3.5" />
+                <span className="hidden sm:inline">Deploy Branch</span>
+              </button>
+            )}
+          </div>
+        </div>
+      </header>
 
       <div className="flex-1 overflow-y-auto scrollbar-hide pb-12">
         {/* Statistics Grid */}
@@ -256,7 +273,7 @@ export default function BranchManagementPage(): JSX.Element {
             
             {/* Toolbar / Filters */}
             <div className="flex flex-col md:flex-row md:items-center justify-between px-5 py-3 border-b border-slate-100 dark:border-slate-800 gap-4">
-               <StatusFilters 
+              <StatusFilters 
                 summary={summary} 
                 filterStatus={filterStatus} 
                 setFilterStatus={setFilterStatus} 

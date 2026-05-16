@@ -1,28 +1,31 @@
-"use server";
+/**
+ * app/api/vendors/[id]/route.ts
+ * PRODUCTION-GRADE DYNAMIC VENDORS API
+ * Fortified for Next.js 16 (Async Params), MASA Schema, Core RBAC, and Forensic Audit V2.6.
+ */
 
 import { NextRequest, NextResponse } from "next/server";
-import { getServerSession, type Session } from "next-auth";
-import { authOptions } from "@/src/core/lib/auth";
-import prisma from "@/src/core/lib/prisma";
-import type { Role } from "@prisma/client";
+import { getServerSession } from "next-auth/next";
+import { authOptions } from "@/core/lib/auth";
+import prisma from "@/core/lib/prisma";
+import { createAuditLog } from "@/core/lib/audit";
+import { authorize } from "@/core/lib/permission";
+import {
+  PermissionAction,
+  Severity,
+  Resource,
+  Role,
+  NotificationType,
+} from "@prisma/client";
 
-/* ===================================================== */
-/* ===================== Types ========================= */
-/* ===================================================== */
-
-interface SessionUser {
-  id: string;
-  organizationId: string;
-  role: Role;
-  isOrgOwner: boolean;
-  disabled?: boolean;
-  deletedAt?: Date | null;
-}
+/* -------------------------------------------------------------------------- */
+/* TYPES & CONFIGURATIONS                                                     */
+/* -------------------------------------------------------------------------- */
 
 interface RouteContext {
-  params: {
+  params: Promise<{
     id: string;
-  };
+  }>;
 }
 
 interface VendorUpdateInput {
@@ -32,18 +35,9 @@ interface VendorUpdateInput {
   address?: string;
 }
 
-class ApiError extends Error {
-  status: number;
-
-  constructor(status: number, message: string) {
-    super(message);
-    this.status = status;
-  }
-}
-
-/* ===================================================== */
-/* ===================== Helpers ======================= */
-/* ===================================================== */
+/* -------------------------------------------------------------------------- */
+/* UTILITY HELPERS                                                            */
+/* -------------------------------------------------------------------------- */
 
 function sanitizeString(value: unknown): string | undefined {
   if (typeof value !== "string") return undefined;
@@ -51,85 +45,120 @@ function sanitizeString(value: unknown): string | undefined {
   return trimmed.length > 0 ? trimmed : undefined;
 }
 
-function assertSessionUser(session: Session | null): SessionUser {
-  if (!session?.user) {
-    throw new ApiError(401, "Unauthorized");
-  }
-
-  const user = session.user as unknown;
-
-  if (
-    typeof user !== "object" ||
-    user === null ||
-    !("organizationId" in user) ||
-    !("role" in user)
-  ) {
-    throw new ApiError(401, "Invalid session");
-  }
-
-  const typedUser = user as SessionUser;
-
-  if (!typedUser.organizationId || !typedUser.role) {
-    throw new ApiError(401, "Unauthorized");
-  }
-
-  if (typedUser.disabled || typedUser.deletedAt) {
-    throw new ApiError(403, "Account disabled");
-  }
-
-  if (typedUser.role !== "ADMIN" && !typedUser.isOrgOwner) {
-    throw new ApiError(403, "Forbidden");
-  }
-
-  return typedUser;
+function extractClientInfo(req: NextRequest) {
+  const forwardedFor = req.headers.get("x-forwarded-for");
+  return {
+    ipAddress: forwardedFor ? forwardedFor.split(",")[0].trim() : "127.0.0.1",
+    deviceInfo: req.headers.get("user-agent") || "system",
+  };
 }
 
-/* ===================================================== */
-/* ======================= PATCH ======================= */
-/* ===================================================== */
+/**
+ * Validates session context and coordinates authorization with the central RBAC matrix.
+ */
+async function validateAccess(action: PermissionAction) {
+  const session = await getServerSession(authOptions);
 
-export async function PATCH(
-  req: NextRequest,
-  context: RouteContext
+  if (!session?.user?.organizationId) {
+    throw { status: 401, message: "Unauthorized: Missing organization context." };
+  }
+
+  if (session.user.disabled || session.user.locked) {
+    throw { status: 403, message: "Forbidden: Account is deactivated or locked." };
+  }
+
+  const { allowed, reason } = authorize({
+    role: session.user.role,
+    isOrgOwner: session.user.isOrgOwner,
+    action,
+    resources: Resource.VENDOR,
+    userPermissions: session.user.permissions || [],
+  });
+
+  if (!allowed) {
+    throw { status: 403, message: reason || "Forbidden: Insufficient Permissions." };
+  }
+
+  return session.user;
+}
+
+/**
+ * Dispatches notifications to managerial personnel within the active transaction.
+ */
+async function notifyManagement(
+  tx: any,
+  organizationId: string,
+  title: string,
+  message: string,
+  activityLogId: string,
+  branchId?: string | null
 ) {
-  try {
-    const session = await getServerSession(authOptions);
-    const user = assertSessionUser(session);
+  const targets = await tx.authorizedPersonnel.findMany({
+    where: {
+      organizationId,
+      deletedAt: null,
+      disabled: false,
+      OR: [{ role: Role.ADMIN }, { role: Role.MANAGER }, { isOrgOwner: true }],
+    },
+    select: { id: true },
+  });
 
-    const { id } = context.params;
+  if (targets.length === 0) return;
+
+  await tx.notification.create({
+    data: {
+      organizationId,
+      branchId: branchId ?? undefined,
+      type: NotificationType.INFO,
+      title,
+      message,
+      activityLogId,
+      recipients: {
+        create: targets.map((t: { id: string }) => ({ personnelId: t.id })),
+      },
+    },
+  });
+}
+
+/* -------------------------------------------------------------------------- */
+/* ROUTE HANDLERS                                                             */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * PATCH /api/vendors/[id]
+ * Updates specific vendor profile fields with delta capturing and duplicate protection.
+ */
+export async function PATCH(req: NextRequest, context: RouteContext) {
+  try {
+    const user = await validateAccess(PermissionAction.UPDATE);
+    const { id } = await context.params;
+    const { ipAddress, deviceInfo } = extractClientInfo(req);
 
     if (!id) {
-      throw new ApiError(400, "Vendor ID is required");
+      return NextResponse.json({ error: "Vendor ID is required" }, { status: 400 });
     }
 
     const body: unknown = await req.json();
-
     if (typeof body !== "object" || body === null) {
-      throw new ApiError(400, "Invalid request body");
+      return NextResponse.json({ error: "Invalid request body" }, { status: 400 });
     }
 
     const input = body as VendorUpdateInput;
-
     const name = sanitizeString(input.name);
     const email = sanitizeString(input.email);
     const phone = sanitizeString(input.phone);
     const address = sanitizeString(input.address);
 
-    const existingVendor = await prisma.vendor.findFirst({
-      where: {
-        id,
-        organizationId: user.organizationId,
-        deletedAt: null,
-      },
+    const vendorBefore = await prisma.vendor.findFirst({
+      where: { id, organizationId: user.organizationId, deletedAt: null },
     });
 
-    if (!existingVendor) {
-      throw new ApiError(404, "Vendor not found");
+    if (!vendorBefore) {
+      return NextResponse.json({ error: "Vendor not found" }, { status: 404 });
     }
 
-    /* ---------- Duplicate Name Protection ---------- */
-
-    if (name && name !== existingVendor.name) {
+    /* ---------- Duplicate Name Verification ---------- */
+    if (name && name !== vendorBefore.name) {
       const duplicate = await prisma.vendor.findFirst({
         where: {
           organizationId: user.organizationId,
@@ -140,76 +169,80 @@ export async function PATCH(
       });
 
       if (duplicate) {
-        throw new ApiError(
-          409,
-          "Vendor with this name already exists"
-        );
+        return NextResponse.json({ error: "Vendor with this name already exists" }, { status: 409 });
       }
     }
 
-    /* ---------- Build Safe Update Payload ---------- */
-
-    const updateData: {
-      name?: string;
-      email?: string | null;
-      phone?: string | null;
-      address?: string | null;
-    } = {};
-
+    /* ---------- Build Verified Payload ---------- */
+    const updateData: Prisma.VendorUpdateInput = {};
     if (name !== undefined) updateData.name = name;
     if (email !== undefined) updateData.email = email;
     if (phone !== undefined) updateData.phone = phone;
     if (address !== undefined) updateData.address = address;
 
     if (Object.keys(updateData).length === 0) {
-      throw new ApiError(400, "No valid fields provided");
+      return NextResponse.json({ error: "No valid fields provided for update" }, { status: 400 });
     }
 
-    const updatedVendor = await prisma.vendor.update({
-      where: { id },
-      data: updateData,
+    updateData.updatedById = user.id;
+
+    const result = await prisma.$transaction(async (tx) => {
+      const vendorAfter = await tx.vendor.update({
+        where: { id },
+        data: updateData,
+      });
+
+      const log = await createAuditLog(tx, {
+        action: "UPDATE_VENDOR_PROFILE",
+        resource: Resource.VENDOR,
+        resourceId: id,
+        organizationId: user.organizationId,
+        branchId: user.branchId ?? null,
+        actorId: user.id,
+        actorRole: user.role,
+        severity: Severity.LOW,
+        description: `Modified layout metrics for vendor entity: ${vendorAfter.name}`,
+        changes: { from: vendorBefore, to: vendorAfter },
+        ipAddress,
+        deviceInfo,
+      });
+
+      await notifyManagement(
+        tx,
+        user.organizationId,
+        "Vendor Profile Modified",
+        `Vendor parameters for ${vendorAfter.name} altered by ${user.name || user.id}.`,
+        log.id,
+        user.branchId ?? null
+      );
+
+      return vendorAfter;
     });
 
-    return NextResponse.json({ vendor: updatedVendor });
-  } catch (error: unknown) {
-    if (error instanceof ApiError) {
-      return NextResponse.json(
-        { error: error.message },
-        { status: error.status }
-      );
-    }
-
-    return NextResponse.json(
-      { error: "Failed to update vendor" },
-      { status: 500 }
-    );
+    return NextResponse.json({ vendor: result });
+  } catch (err: any) {
+    return NextResponse.json({ error: err.message || "Failed to update vendor" }, { status: err.status || 500 });
   }
 }
 
-/* ===================================================== */
-/* ======================= DELETE ====================== */
-/* ===================================================== */
-
-export async function DELETE(
-  _req: NextRequest,
-  context: RouteContext
-) {
+/**
+ * DELETE /api/vendors/[id]
+ * Archives vendor entities using a soft-delete pattern. Supports safe detachment.
+ */
+export async function DELETE(req: NextRequest, context: RouteContext) {
   try {
-    const session = await getServerSession(authOptions);
-    const user = assertSessionUser(session);
-
-    const { id } = context.params;
+    const user = await validateAccess(PermissionAction.DELETE);
+    const { id } = await context.params;
+    const { ipAddress, deviceInfo } = extractClientInfo(req);
+    
+    const force = req.nextUrl.searchParams.get("force") === "true";
 
     if (!id) {
-      throw new ApiError(400, "Vendor ID is required");
+      return NextResponse.json({ error: "Vendor ID is required" }, { status: 400 });
     }
 
     const vendor = await prisma.vendor.findFirst({
-      where: {
-        id,
-        organizationId: user.organizationId,
-        deletedAt: null,
-      },
+      where: { id, organizationId: user.organizationId, deletedAt: null },
       include: {
         branchProducts: {
           where: { deletedAt: null },
@@ -219,33 +252,66 @@ export async function DELETE(
     });
 
     if (!vendor) {
-      throw new ApiError(404, "Vendor not found");
+      return NextResponse.json({ error: "Vendor not found" }, { status: 404 });
     }
 
-    if (vendor.branchProducts.length > 0) {
-      throw new ApiError(
-        400,
-        "Cannot delete vendor. Vendor is linked to active branch products."
+    /* ---------- Linked Constraints Enforcement ---------- */
+    if (vendor.branchProducts.length > 0 && !force) {
+      return NextResponse.json(
+        {
+          error: "Cannot delete vendor. Active branch product relationships exist. Append ?force=true to override and clear references.",
+        },
+        { status: 400 }
       );
     }
 
-    await prisma.vendor.update({
-      where: { id },
-      data: { deletedAt: new Date() },
+    await prisma.$transaction(async (tx) => {
+      let detachedCount = 0;
+
+      if (vendor.branchProducts.length > 0 && force) {
+        const structuralUpdate = await tx.branchProduct.updateMany({
+          where: { vendorId: id, deletedAt: null },
+          data: { vendorId: null },
+        });
+        detachedCount = structuralUpdate.count;
+      }
+
+      const archivedVendor = await tx.vendor.update({
+        where: { id },
+        data: { 
+          deletedAt: new Date(),
+          updatedById: user.id 
+        },
+      });
+
+      const log = await createAuditLog(tx, {
+        action: "ARCHIVE_VENDOR_NODE",
+        resource: Resource.VENDOR,
+        resourceId: id,
+        organizationId: user.organizationId,
+        branchId: user.branchId ?? null,
+        actorId: user.id,
+        actorRole: user.role,
+        severity: Severity.HIGH, // Triggers elevated visibility indicators inside the forensic tracker
+        description: `Soft-deleted vendor node: ${vendor.name}.${detachedCount ? ` Unlinked ${detachedCount} inventory associations.` : ""}`,
+        changes: { from: vendor, to: archivedVendor },
+        ipAddress,
+        deviceInfo,
+        metadata: { forcedSeverance: force, disconnectedNodesCount: detachedCount },
+      });
+
+      await notifyManagement(
+        tx,
+        user.organizationId,
+        "Vendor Purged From Workspace",
+        `Vendor ledger reference for "${vendor.name}" set to archived state by ${user.name || user.id}.`,
+        log.id,
+        user.branchId ?? null
+      );
     });
 
     return NextResponse.json({ success: true });
-  } catch (error: unknown) {
-    if (error instanceof ApiError) {
-      return NextResponse.json(
-        { error: error.message },
-        { status: error.status }
-      );
-    }
-
-    return NextResponse.json(
-      { error: "Failed to delete vendor" },
-      { status: 500 }
-    );
+  } catch (err: any) {
+    return NextResponse.json({ error: err.message || "Failed to terminate vendor reference" }, { status: err.status || 500 });
   }
 }

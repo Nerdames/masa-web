@@ -1,8 +1,8 @@
 /**
  * src/core/lib/audit.ts
  * PRODUCTION-GRADE FORENSIC AUDIT ENGINE (V2.6 - FORTIFIED)
- * * Optimized for: Performance, Cryptographic Integrity, and Data Persistence.
- * * Fix: Resolved Decimal serialization and Function-proxy leaks.
+ * Optimized for: Performance, Cryptographic Integrity, and Data Persistence.
+ * Fix: Bulletproofed Decimal serialization and object prototype evaluation.
  */
 
 import prisma from "@/core/lib/prisma";
@@ -57,7 +57,7 @@ export interface AuditLogOptions {
 
 /**
  * Recursively redacts sensitive keys and ensures JSON compatibility.
- * Specifically handles Prisma.Decimal to prevent "constructor" serialization errors.
+ * Bulletproof check for Prisma.Decimal to prevent "constructor" serialization and [object Function] leaks.
  */
 export function scrub(obj: any): any {
   if (obj === null || obj === undefined) return obj;
@@ -65,9 +65,14 @@ export function scrub(obj: any): any {
   // 1. Handle Dates
   if (obj instanceof Date) return obj.toISOString();
 
-  // 2. Handle Prisma Decimals (Crucial Fix for [object Function] error)
-  // We check the constructor name to avoid strict 'instanceof' issues across different environments
-  if (typeof obj === 'object' && (obj instanceof Prisma.Decimal || obj.constructor?.name === 'Decimal')) {
+  // 2. Handle Prisma Decimals (Crucial Fix for bundle boundary prototype loss)
+  // Checks instanceof, constructor name, or duck-typing for standard decimal shapes
+  if (
+    typeof obj === 'object' && 
+    (obj instanceof Prisma.Decimal || 
+     obj.constructor?.name === 'Decimal' || 
+     typeof obj.toNumber === 'function')
+  ) {
     return obj.toString();
   }
 
@@ -76,7 +81,7 @@ export function scrub(obj: any): any {
     return obj.map(item => scrub(item));
   }
 
-  // 4. Handle Objects
+  // 4. Handle Objects safely
   if (typeof obj === "object") {
     const scrubbed: Record<string, any> = {};
     // Iterate only own enumerable properties to avoid prototype/constructor leaks
@@ -100,10 +105,12 @@ export function scrub(obj: any): any {
  */
 export function deterministicStringify(obj: any): string {
   if (obj === null || typeof obj !== "object") return JSON.stringify(obj);
-  
-  // Handle objects that should be treated as values
+
+  // Handle primitives wrapped as objects
   if (obj instanceof Date) return JSON.stringify(obj.toISOString());
-  if (obj.constructor?.name === 'Decimal') return JSON.stringify(obj.toString());
+  if (obj.constructor?.name === 'Decimal' || typeof obj.toNumber === 'function') {
+    return JSON.stringify(obj.toString());
+  }
 
   const keys = Object.keys(obj).sort();
   return "{" + keys.map(k => `${JSON.stringify(k)}:${deterministicStringify(obj[k])}`).join(",") + "}";
@@ -186,7 +193,7 @@ export async function createAuditLog(
     .digest("hex");
 
   // 4. PERSISTENCE
-  // We cast to any for the dynamic activityLog call to support various transaction clients
+  // Extracted generic query client to preserve transaction context safely across dynamic lookups
   const log = await (tx as any).activityLog.create({
     data: {
       organizationId,

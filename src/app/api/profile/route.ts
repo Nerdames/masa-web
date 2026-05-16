@@ -3,27 +3,22 @@ import { getServerSession } from "next-auth";
 import bcrypt from "bcryptjs";
 import prisma from "@/core/lib/prisma";
 import { authOptions } from "@/core/lib/auth";
+import { createAuditLog } from "@/core/lib/audit";
+import { authorize } from "@/core/lib/permission";
 
 import {
   Role,
   Prisma,
   ActorType,
   Severity,
+  Resource,
+  CriticalAction,
+  PermissionAction,
 } from "@prisma/client";
 
 ////////////////////////////////////////////////////////////
 // TYPES
 ////////////////////////////////////////////////////////////
-
-interface SessionUser {
-  id: string;
-  email: string;
-  name?: string | null;
-}
-
-interface AuthSession {
-  user?: SessionUser;
-}
 
 interface UpdateProfileBody {
   name?: string;
@@ -34,8 +29,10 @@ interface UpdateProfileBody {
 
 interface AuditLogAction {
   action: string;
+  description: string;
   severity: Severity;
   critical: boolean;
+  actionTrigger?: CriticalAction;
   before?: Record<string, any>;
   after?: Record<string, any>;
 }
@@ -57,17 +54,19 @@ type PersonnelWithRelations = Prisma.AuthorizedPersonnelGetPayload<{
 // HELPERS
 ////////////////////////////////////////////////////////////
 
-async function requirePersonnel(): Promise<PersonnelWithRelations | null> {
-  const session = (await getServerSession(authOptions)) as AuthSession | null;
-
-  if (!session?.user?.id) return null;
-
+async function requirePersonnel(userId: string): Promise<PersonnelWithRelations | null> {
   return prisma.authorizedPersonnel.findUnique({
-    where: { id: session.user.id },
+    where: { 
+      id: userId,
+      deletedAt: null 
+    },
     include: {
       organization: true,
       branch: true,
-      branchAssignments: { include: { branch: true } },
+      branchAssignments: { 
+        where: { branch: { active: true, deletedAt: null } },
+        include: { branch: true } 
+      },
       preferences: true,
       activityLogs: {
         take: 50,
@@ -80,7 +79,6 @@ async function requirePersonnel(): Promise<PersonnelWithRelations | null> {
 function safeParseJSON(meta: unknown) {
   if (!meta) return null;
   if (typeof meta === "object") return meta;
-
   if (typeof meta === "string") {
     try {
       return JSON.parse(meta);
@@ -88,7 +86,6 @@ function safeParseJSON(meta: unknown) {
       return meta;
     }
   }
-
   return null;
 }
 
@@ -97,7 +94,6 @@ function safeParseJSON(meta: unknown) {
 ////////////////////////////////////////////////////////////
 
 function mapProfileDTO(personnel: PersonnelWithRelations) {
-  // Fallback to the personnel's base role, overriding hardcoded cashiers
   let primaryRole: Role = personnel.role;
 
   if (personnel.isOrgOwner) {
@@ -111,11 +107,10 @@ function mapProfileDTO(personnel: PersonnelWithRelations) {
   }
 
   const now = new Date();
-  const isTemporarilyLocked =
-    personnel.lockoutUntil && personnel.lockoutUntil > now;
+  const isTemporarilyLocked = personnel.lockoutUntil && personnel.lockoutUntil > now;
 
   const lockReason = personnel.isLocked
-    ? "Administrative Lock"
+    ? personnel.lockReason || "Administrative Lock"
     : isTemporarilyLocked
     ? "Temporary Security Lockout"
     : null;
@@ -132,13 +127,11 @@ function mapProfileDTO(personnel: PersonnelWithRelations) {
     lockReason,
     lockoutUntil: personnel.lockoutUntil?.toISOString() ?? null,
 
-    // Expose mandatory change flag to the frontend
     requiresPasswordChange: personnel.requiresPasswordChange || false,
 
     lastLogin: personnel.lastLogin?.toISOString() ?? null,
     lastActivityAt: personnel.lastActivityAt?.toISOString() ?? null,
 
-    // Schema typed fields mapped directly without 'any' casting
     lastLoginIp: personnel.lastLoginIp ?? "0.0.0.0",
     lastLoginDevice: personnel.lastLoginDevice ?? "System Interface",
 
@@ -176,7 +169,12 @@ function mapProfileDTO(personnel: PersonnelWithRelations) {
 
 export async function GET(): Promise<NextResponse> {
   try {
-    const personnel = await requirePersonnel();
+    const session = await getServerSession(authOptions);
+    if (!session?.user?.id) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+
+    const personnel = await requirePersonnel(session.user.id);
 
     if (!personnel || personnel.disabled) {
       return NextResponse.json(
@@ -193,7 +191,6 @@ export async function GET(): Promise<NextResponse> {
     });
   } catch (error) {
     console.error("GET_PROFILE_ERROR", error);
-
     return NextResponse.json(
       { error: "Failed to fetch profile" },
       { status: 500 }
@@ -207,42 +204,87 @@ export async function GET(): Promise<NextResponse> {
 
 export async function PATCH(request: NextRequest): Promise<NextResponse> {
   try {
-    const personnel = await requirePersonnel();
-
-    // Context for forensic logging
-    const ipAddress = (request.headers.get("x-forwarded-for")?.split(",")[0]) || "127.0.0.1";
-    const deviceInfo = request.headers.get("user-agent") || "System Interface";
-
-    if (!personnel || personnel.disabled) {
+    const session = await getServerSession(authOptions);
+    if (!session?.user?.id) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    // LOCKOUT CHECK: If the account is locked, block the "Rotation" (update)
+    const personnel = await requirePersonnel(session.user.id);
+
+    // Network context for forensic logging
+    const ipAddress = (request.headers.get("x-forwarded-for")?.split(",")[0]?.trim()) || "127.0.0.1";
+    const deviceInfo = request.headers.get("user-agent") || "System Interface";
+
+    if (!personnel || personnel.disabled) {
+      return NextResponse.json({ error: "Unauthorized or disabled account" }, { status: 401 });
+    }
+
+    // LOCKOUT CHECK: Stop processing immediately if under administrative or temporary lock
     const isTemporarilyLocked = personnel.lockoutUntil && personnel.lockoutUntil > new Date();
+    
     if (personnel.isLocked || isTemporarilyLocked) {
       return NextResponse.json(
-        { 
-          error: "ROTATION_BLOCKED", 
-          message: personnel.isLocked 
-            ? "Account is administratively locked." 
-            : `Security lockout active. Try again after ${personnel.lockoutUntil?.toLocaleTimeString()}`
+        {
+          error: "ROTATION_BLOCKED",
+          message: personnel.isLocked
+            ? "Account is administratively locked."
+            : `Security lockout active. Try again after ${personnel.lockoutUntil?.toLocaleTimeString()}`,
         },
         { status: 403 }
       );
     }
 
     const body: UpdateProfileBody = await request.json();
-
     const updateData: Prisma.AuthorizedPersonnelUpdateInput = {};
     const logActions: AuditLogAction[] = [];
 
     const isEmailChange = !!(body.email && body.email !== personnel.email);
     const isPasswordChange = !!body.newPassword;
 
-    // Derived primary role for audit tracking
-    const actorRole = personnel.isOrgOwner
-      ? Role.ADMIN
-      : personnel.branchAssignments.find((a) => a.isPrimary)?.role || personnel.role;
+    const actorRole = session.user.role;
+    const userPermissions = session.user.permissions || [];
+    const isOrgOwner = session.user.isOrgOwner;
+
+    ////////////////////////////////////////////////////////////
+    // RBAC PERMISSION ENFORCEMENT
+    ////////////////////////////////////////////////////////////
+
+    if (isEmailChange) {
+      const emailAuthCheck = authorize({
+        role: actorRole,
+        isOrgOwner,
+        action: PermissionAction.UPDATE,
+        resources: Resource.PERSONNEL,
+        userPermissions,
+        criticalAction: CriticalAction.EMAIL_CHANGE,
+      });
+
+      if (!emailAuthCheck.allowed && emailAuthCheck.requiresApproval) {
+        return NextResponse.json(
+          { error: "Email change requires administrative approval per organizational policy." },
+          { status: 403 }
+        );
+      }
+    }
+
+    if (isPasswordChange && !personnel.requiresPasswordChange) {
+      // If it's an optional self-service rotation, check if their role has the weight to do it
+      const passAuthCheck = authorize({
+        role: actorRole,
+        isOrgOwner,
+        action: PermissionAction.UPDATE,
+        resources: Resource.PERSONNEL,
+        userPermissions,
+        criticalAction: CriticalAction.PASSWORD_CHANGE,
+      });
+
+      if (!passAuthCheck.allowed && passAuthCheck.requiresApproval) {
+        return NextResponse.json(
+          { error: "Password rotation requires administrative approval per organizational policy." },
+          { status: 403 }
+        );
+      }
+    }
 
     ////////////////////////////////////////////////////////////
     // PASSWORD VALIDATION (SECURITY CHALLENGE)
@@ -251,15 +293,12 @@ export async function PATCH(request: NextRequest): Promise<NextResponse> {
     if (isEmailChange || isPasswordChange) {
       if (!body.currentPassword) {
         return NextResponse.json(
-          { error: "Current password is required for security changes" },
+          { error: "Current password is required for security changes." },
           { status: 400 }
         );
       }
 
-      const isValid = await bcrypt.compare(
-        body.currentPassword,
-        personnel.password
-      );
+      const isValid = await bcrypt.compare(body.currentPassword, personnel.password);
 
       if (!isValid) {
         const newFailCount = (personnel.failedLoginAttempts || 0) + 1;
@@ -271,49 +310,52 @@ export async function PATCH(request: NextRequest): Promise<NextResponse> {
           data: {
             failedLoginAttempts: newFailCount,
             lockoutUntil: lockoutTime,
+            isLocked: isNowLocked ? true : personnel.isLocked,
+            lockReason: isNowLocked ? "Exceeded maximum failed security challenges" : personnel.lockReason,
           },
         });
 
-        // Log failed attempt with forensic details
-        await prisma.activityLog.create({
-          data: {
-            organizationId: personnel.organizationId,
-            branchId: personnel.branchId,
-            actorId: personnel.id,
-            actorType: ActorType.USER,
-            actorRole,
-            action: "FAILED_SECURITY_CHALLENGE",
-            severity: Severity.HIGH,
-            critical: true,
-            ipAddress,
-            deviceInfo,
-            description: `Failed security challenge. Attempt ${newFailCount}/5.`,
-            metadata: { lockedOut: !!lockoutTime },
-          },
+        // Trigger Critical Action Logging if account just got locked
+        await createAuditLog(prisma, {
+          action: "FAILED_SECURITY_CHALLENGE",
+          resource: Resource.PERSONNEL,
+          resourceId: personnel.id,
+          organizationId: personnel.organizationId,
+          branchId: personnel.branchId,
+          actorId: personnel.id,
+          actorRole,
+          severity: Severity.HIGH,
+          critical: true,
+          actionTrigger: isNowLocked ? CriticalAction.USER_LOCK_UNLOCK : undefined,
+          ipAddress,
+          deviceInfo,
+          description: `Failed security challenge. Attempt ${newFailCount}/5.`,
+          metadata: { lockedOut: isNowLocked, tempLockout: !!lockoutTime },
         });
 
         return NextResponse.json(
-          { 
+          {
             error: isNowLocked ? "ROTATION_BLOCKED" : "Invalid security credentials.",
-            strikes: newFailCount 
+            strikes: newFailCount,
           },
           { status: isNowLocked ? 403 : 400 }
         );
       }
 
-      // Reset strikes upon successful challenge
+      // Reset strikes upon successful validation
       updateData.failedLoginAttempts = 0;
       updateData.lockoutUntil = null;
     }
 
     ////////////////////////////////////////////////////////////
-    // NAME CHANGE
+    // DATA MUTATIONS & ACTION LOGGING
     ////////////////////////////////////////////////////////////
 
     if (body.name && body.name !== personnel.name) {
       updateData.name = body.name;
       logActions.push({
         action: "PROFILE_IDENTITY_UPDATED",
+        description: "User updated their display name.",
         severity: Severity.LOW,
         critical: false,
         before: { name: personnel.name },
@@ -321,13 +363,9 @@ export async function PATCH(request: NextRequest): Promise<NextResponse> {
       });
     }
 
-    ////////////////////////////////////////////////////////////
-    // EMAIL CHANGE (SELF-SERVICE)
-    ////////////////////////////////////////////////////////////
-
     if (isEmailChange && body.email) {
       const normalizedEmail = body.email.toLowerCase().trim();
-      
+
       const existing = await prisma.authorizedPersonnel.findFirst({
         where: {
           organizationId: personnel.organizationId,
@@ -339,7 +377,7 @@ export async function PATCH(request: NextRequest): Promise<NextResponse> {
 
       if (existing) {
         return NextResponse.json(
-          { error: "This email is already in use by another personnel record" },
+          { error: "This email is already in use by another personnel record." },
           { status: 400 }
         );
       }
@@ -347,51 +385,51 @@ export async function PATCH(request: NextRequest): Promise<NextResponse> {
       updateData.email = normalizedEmail;
       logActions.push({
         action: "EMAIL_UPDATED_DIRECTLY",
+        description: "User successfully changed their account email address.",
         severity: Severity.HIGH,
         critical: true,
+        actionTrigger: CriticalAction.EMAIL_CHANGE,
         before: { email: personnel.email },
         after: { email: normalizedEmail },
       });
     }
 
-    ////////////////////////////////////////////////////////////
-    // PASSWORD CHANGE (SELF-SERVICE)
-    ////////////////////////////////////////////////////////////
-
     if (isPasswordChange && body.newPassword) {
       const hashedPass = await bcrypt.hash(body.newPassword, 12);
-      
       updateData.password = hashedPass;
 
       if (personnel.requiresPasswordChange) {
-        updateData.requiresPasswordChange = false; 
+        updateData.requiresPasswordChange = false;
         logActions.push({
           action: "MANDATORY_PASSWORD_RESET_COMPLETED",
+          description: "User completed their mandatory password rotation.",
           severity: Severity.HIGH,
           critical: true,
+          actionTrigger: CriticalAction.PASSWORD_CHANGE,
         });
       } else {
         logActions.push({
           action: "PASSWORD_UPDATED_DIRECTLY",
+          description: "User successfully rotated their password.",
           severity: Severity.HIGH,
           critical: true,
+          actionTrigger: CriticalAction.PASSWORD_CHANGE,
         });
       }
     }
 
     if (Object.keys(updateData).length === 0) {
       return NextResponse.json(
-        { error: "No changes detected or submitted" },
+        { error: "No changes detected or submitted." },
         { status: 400 }
       );
     }
 
     ////////////////////////////////////////////////////////////
-    // TRANSACTION
+    // TRANSACTION: DATABASE & LEDGER COMMIT
     ////////////////////////////////////////////////////////////
 
     const result = await prisma.$transaction(async (tx) => {
-      // 1. Commit Direct Profile Changes
       const updatedUser = await tx.authorizedPersonnel.update({
         where: { id: personnel.id },
         data: updateData,
@@ -407,26 +445,26 @@ export async function PATCH(request: NextRequest): Promise<NextResponse> {
         },
       });
 
-      // 2. Commit Forensic Action Logs
+      // Commit to the cryptographic audit ledger
       for (const log of logActions) {
-        await tx.activityLog.create({
-          data: {
-            organizationId: personnel.organizationId,
-            branchId: personnel.branchId,
-            actorId: personnel.id,
-            actorType: ActorType.USER,
-            actorRole,
-            action: log.action,
-            severity: log.severity,
-            critical: log.critical,
-            ipAddress,
-            deviceInfo,
-            before: log.before ? (log.before as Prisma.InputJsonValue) : Prisma.DbNull,
-            after: log.after ? (log.after as Prisma.InputJsonValue) : Prisma.DbNull,
-            metadata: { 
-              directCommit: true, 
-              selfService: true 
-            } as Prisma.InputJsonValue,
+        await createAuditLog(tx, {
+          action: log.action,
+          resource: Resource.PERSONNEL,
+          resourceId: personnel.id,
+          organizationId: personnel.organizationId,
+          branchId: personnel.branchId,
+          actorId: personnel.id,
+          actorRole,
+          severity: log.severity,
+          critical: log.critical,
+          description: log.description,
+          actionTrigger: log.actionTrigger,
+          changes: { from: log.before, to: log.after },
+          ipAddress,
+          deviceInfo,
+          metadata: {
+            selfService: true,
+            directCommit: true,
           },
         });
       }
@@ -443,9 +481,8 @@ export async function PATCH(request: NextRequest): Promise<NextResponse> {
     });
   } catch (error) {
     console.error("PATCH_PROFILE_ERROR", error);
-
     return NextResponse.json(
-      { error: "Internal server error during profile update" },
+      { error: "Internal server error during profile update." },
       { status: 500 }
     );
   }

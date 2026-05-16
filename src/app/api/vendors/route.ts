@@ -1,25 +1,30 @@
-// File: app/api/vendors/route.ts
-// Production-ready vendors API aligned to MASA schema and RBAC/forensic requirements.
+/**
+ * app/api/vendors/route.ts
+ * PRODUCTION-GRADE VENDORS API
+ * Aligned with MASA Schema, strict RBAC permissions, and Forensic Audit V2.6.
+ */
 
 import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "next-auth/next";
 import { authOptions } from "@/core/lib/auth";
 import prisma from "@/core/lib/prisma";
+import { createAuditLog } from "@/core/lib/audit";
+import { authorize } from "@/core/lib/permission";
 import {
   SaleStatus,
   Prisma,
   PermissionAction,
   Severity,
-  ActorType,
   Role,
   NotificationType,
+  Resource,
 } from "@prisma/client";
 import { Decimal } from "@prisma/client/runtime/library";
 import dayjs from "dayjs";
-import { authorize, RESOURCES } from "@/core/lib/permission";
-import crypto from "crypto";
 
-/* -------------------- Helpers -------------------- */
+/* -------------------------------------------------------------------------- */
+/* REQUEST HELPERS                                                            */
+/* -------------------------------------------------------------------------- */
 
 const toNumber = (value: number | Decimal | null | undefined): number =>
   value instanceof Decimal ? value.toNumber() : Number(value ?? 0);
@@ -36,89 +41,40 @@ const sanitizePageLimit = (page: number, limit: number) => {
   return { safePage, safeLimit };
 };
 
+const extractClientInfo = (req: NextRequest) => {
+  const forwardedFor = req.headers.get("x-forwarded-for");
+  return {
+    ipAddress: forwardedFor ? forwardedFor.split(",")[0].trim() : "127.0.0.1",
+    deviceInfo: req.headers.get("user-agent") || "system",
+  };
+};
+
 /**
- * Validates session and RBAC permissions
+ * Validates session, extracts explicit JWT permissions, and delegates to the RBAC engine.
  */
 async function validateAccess(action: PermissionAction) {
   const session = await getServerSession(authOptions);
 
   if (!session?.user?.organizationId) {
-    throw { status: 401, message: "Unauthorized: Missing organization context" };
+    throw { status: 401, message: "Unauthorized: Missing organization context." };
   }
 
   const { allowed, reason } = authorize({
     role: session.user.role,
     isOrgOwner: session.user.isOrgOwner,
     action,
-    resource: RESOURCES.VENDOR,
+    resources: Resource.VENDOR,
+    userPermissions: session.user.permissions || [],
   });
 
-  if (!allowed) throw { status: 403, message: reason || "Forbidden: Insufficient Permissions" };
+  if (!allowed) {
+    throw { status: 403, message: reason || "Forbidden: Insufficient Permissions." };
+  }
   return session.user;
 }
 
 /**
- * Create cryptographic chained audit log inside provided transaction.
- */
-async function createAuditLog(
-  tx: Prisma.TransactionClient,
-  data: {
-    organizationId: string;
-    branchId: string | null;
-    actorId: string;
-    action: string;
-    resourceId: string | null; // will map to targetId
-    severity: Severity;
-    description: string;
-    metadata?: Prisma.JsonValue;
-  }
-) {
-  // Read last log for this organization to chain hashes
-  const lastLog = await tx.activityLog.findFirst({
-    where: { organizationId: data.organizationId },
-    orderBy: { createdAt: "desc" },
-    select: { hash: true, requestId: true },
-  });
-
-  const previousHash = lastLog?.hash ?? "0".repeat(64);
-  const requestId = crypto.randomUUID();
-
-  // Build canonical payload for hashing (stringified deterministic)
-  const hashPayload = JSON.stringify({
-    previousHash,
-    requestId,
-    actorId: data.actorId,
-    action: data.action,
-    targetId: data.resourceId ?? null,
-    timestamp: Date.now(),
-  });
-
-  const hash = crypto.createHash("sha256").update(hashPayload).digest("hex");
-
-  // IMPORTANT: use targetId and targetType fields (schema-aligned)
-  const created = await tx.activityLog.create({
-    data: {
-      organizationId: data.organizationId,
-      branchId: data.branchId ?? undefined,
-      actorId: data.actorId,
-      actorType: ActorType.USER,
-      action: data.action,
-      targetType: RESOURCES.VENDOR,
-      targetId: data.resourceId ?? undefined,
-      severity: data.severity,
-      description: data.description,
-      metadata: data.metadata ?? Prisma.JsonNull,
-      requestId,
-      previousHash,
-      hash,
-    },
-  });
-
-  return created;
-}
-
-/**
- * Notify management recipients inside same transaction.
+ * Notify management targets inside the same database transaction.
  */
 async function notifyManagement(
   tx: Prisma.TransactionClient,
@@ -156,8 +112,7 @@ async function notifyManagement(
 }
 
 /**
- * Detach vendor reference from branchProducts (safe detach).
- * Returns number of updated branchProducts.
+ * Detach vendor reference from active branchProducts (safe guard utility).
  */
 async function detachVendorFromBranchProducts(tx: Prisma.TransactionClient, vendorId: string) {
   const updated = await tx.branchProduct.updateMany({
@@ -167,12 +122,13 @@ async function detachVendorFromBranchProducts(tx: Prisma.TransactionClient, vend
   return updated.count;
 }
 
-/* -------------------- Handlers -------------------- */
+/* -------------------------------------------------------------------------- */
+/* API ROUTE HANDLERS                                                         */
+/* -------------------------------------------------------------------------- */
 
 /**
  * GET /api/vendors
- * - Supports pagination, search, sort, date filters (for sales metrics)
- * - Returns vendors with computed metrics, _count fields, and recent PO history
+ * Retrieves paginated vendors with computed performance metrics and order history.
  */
 export async function GET(req: NextRequest) {
   try {
@@ -194,21 +150,18 @@ export async function GET(req: NextRequest) {
       ? { createdAt: { gte: fromDate, lte: toDate } }
       : {};
 
-    // Vendor base filter
     const vendorWhere: Prisma.VendorWhereInput = {
       organizationId,
       deletedAt: null,
       ...(search ? { name: { contains: search, mode: "insensitive" } } : {}),
     };
 
-    // Count and fetch vendors with required includes
     const [totalVendors, vendorsRaw] = await Promise.all([
       prisma.vendor.count({ where: vendorWhere }),
       prisma.vendor.findMany({
         where: vendorWhere,
         include: {
           _count: { select: { purchaseOrders: true, grns: true } },
-          // NEW: Fetch recent purchase orders for the VendorDetailPanel table
           purchaseOrders: {
             orderBy: { createdAt: "desc" },
             take: 10,
@@ -218,7 +171,7 @@ export async function GET(req: NextRequest) {
               status: true,
               totalAmount: true,
               createdAt: true,
-            }
+            },
           },
           branchProducts: {
             where: {
@@ -241,7 +194,6 @@ export async function GET(req: NextRequest) {
       }),
     ]);
 
-    // Compute metrics per vendor
     const vendors = vendorsRaw.map((vendor) => {
       let totalRevenue = 0;
       let totalQuantitySold = 0;
@@ -277,7 +229,6 @@ export async function GET(req: NextRequest) {
       };
     });
 
-    // Normalize scoring
     const maxRevenue = Math.max(...vendors.map((v) => v.totalRevenue), 1);
     const maxVelocity = Math.max(...vendors.map((v) => v.salesVelocity), 1);
     const maxDiversity = Math.max(...vendors.map((v) => v.productsSupplied), 1);
@@ -290,7 +241,6 @@ export async function GET(req: NextRequest) {
       v.performanceScore = Math.round(revenueScore + velocityScore + diversityScore + stockScore);
     });
 
-    // Sorting
     const sortedVendors = [...vendors].sort((a, b) => {
       if (sort === "newest") return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
       if (sort === "oldest") return new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime();
@@ -318,20 +268,25 @@ export async function GET(req: NextRequest) {
 
 /**
  * POST /api/vendors
- * - Create vendor
- * - Audit log + notify management
+ * Create a new vendor and log securely to the Forensic Audit Engine.
  */
 export async function POST(req: NextRequest) {
   try {
     const user = await validateAccess(PermissionAction.CREATE);
     const body = await req.json();
+    const { ipAddress, deviceInfo } = extractClientInfo(req);
 
-    if (!body.name?.trim()) return NextResponse.json({ error: "Name is required" }, { status: 400 });
+    if (!body.name?.trim()) {
+      return NextResponse.json({ error: "Name is required" }, { status: 400 });
+    }
 
     const existing = await prisma.vendor.findFirst({
       where: { organizationId: user.organizationId, name: body.name.trim(), deletedAt: null },
     });
-    if (existing) return NextResponse.json({ error: "Vendor already exists" }, { status: 409 });
+
+    if (existing) {
+      return NextResponse.json({ error: "Vendor already exists" }, { status: 409 });
+    }
 
     const result = await prisma.$transaction(async (tx) => {
       const vendor = await tx.vendor.create({
@@ -347,14 +302,18 @@ export async function POST(req: NextRequest) {
       });
 
       const log = await createAuditLog(tx, {
+        action: "CREATE_VENDOR",
+        resource: Resource.VENDOR,
+        resourceId: vendor.id,
         organizationId: user.organizationId,
         branchId: user.branchId ?? null,
         actorId: user.id,
-        action: "CREATE_VENDOR",
-        resourceId: vendor.id,
+        actorRole: user.role,
         severity: Severity.MEDIUM,
         description: `Registered new vendor node: ${vendor.name}`,
-        metadata: { vendorName: vendor.name },
+        changes: { to: vendor },
+        ipAddress,
+        deviceInfo,
       });
 
       await notifyManagement(
@@ -377,55 +336,63 @@ export async function POST(req: NextRequest) {
 
 /**
  * PATCH /api/vendors
- * - Update vendor profile
- * - Audit log + notify management
+ * Update vendor details, compute differences, and log to the Forensic Audit Engine.
  */
 export async function PATCH(req: NextRequest) {
   try {
     const user = await validateAccess(PermissionAction.UPDATE);
     const body = await req.json();
+    const { ipAddress, deviceInfo } = extractClientInfo(req);
 
-    if (!body.id) return NextResponse.json({ error: "Vendor ID is required" }, { status: 400 });
+    if (!body.id) {
+      return NextResponse.json({ error: "Vendor ID is required" }, { status: 400 });
+    }
 
-    const vendor = await prisma.vendor.findFirst({
+    const vendorBefore = await prisma.vendor.findFirst({
       where: { id: body.id, organizationId: user.organizationId, deletedAt: null },
     });
 
-    if (!vendor) return NextResponse.json({ error: "Vendor not found" }, { status: 404 });
+    if (!vendorBefore) {
+      return NextResponse.json({ error: "Vendor not found" }, { status: 404 });
+    }
 
     const result = await prisma.$transaction(async (tx) => {
-      const updated = await tx.vendor.update({
+      const vendorAfter = await tx.vendor.update({
         where: { id: body.id },
         data: {
-          name: body.name?.trim() ?? vendor.name,
-          email: body.email?.trim() ?? vendor.email,
-          phone: body.phone?.trim() ?? vendor.phone,
-          address: body.address?.trim() ?? vendor.address,
+          name: body.name?.trim() ?? vendorBefore.name,
+          email: body.email?.trim() ?? vendorBefore.email,
+          phone: body.phone?.trim() ?? vendorBefore.phone,
+          address: body.address?.trim() ?? vendorBefore.address,
           updatedById: user.id,
         },
       });
 
       const log = await createAuditLog(tx, {
+        action: "UPDATE_VENDOR",
+        resource: Resource.VENDOR,
+        resourceId: vendorAfter.id,
         organizationId: user.organizationId,
         branchId: user.branchId ?? null,
         actorId: user.id,
-        action: "UPDATE_VENDOR",
-        resourceId: updated.id,
+        actorRole: user.role,
         severity: Severity.LOW,
-        description: `Updated profile details for vendor: ${updated.name}`,
-        metadata: { changes: { name: body.name, email: body.email, phone: body.phone } },
+        description: `Updated profile details for vendor: ${vendorAfter.name}`,
+        changes: { from: vendorBefore, to: vendorAfter },
+        ipAddress,
+        deviceInfo,
       });
 
       await notifyManagement(
         tx,
         user.organizationId,
         "Vendor Profile Updated",
-        `Vendor ${updated.name} modified.`,
+        `Vendor ${vendorAfter.name} modified.`,
         log.id,
         user.branchId ?? null
       );
 
-      return updated;
+      return vendorAfter;
     });
 
     return NextResponse.json(result);
@@ -437,29 +404,31 @@ export async function PATCH(req: NextRequest) {
 /**
  * DELETE /api/vendors?id=...&force=true
  *
- * Behavior:
- * - Default: Prevent archive if vendor has active branchProducts (safe guard).
- * - If query param force=true and user has DELETE permission, the API will:
- * 1) Detach vendorId from active branchProducts (set vendorId = null) inside same transaction,
- * 2) Soft-delete (deletedAt) the vendor,
- * 3) Create audit log and notify management.
+ * Soft-delete process:
+ * 1) Blocks archive if vendor has active mapped products, unless 'force=true'.
+ * 2) Detaches branchProducts references if forced.
+ * 3) Marks the vendor as deleted and captures the final state in the audit log.
  */
 export async function DELETE(req: NextRequest) {
   try {
     const user = await validateAccess(PermissionAction.DELETE);
     const id = req.nextUrl.searchParams.get("id");
     const force = (req.nextUrl.searchParams.get("force") || "false").toLowerCase() === "true";
+    const { ipAddress, deviceInfo } = extractClientInfo(req);
 
-    if (!id) return NextResponse.json({ error: "Vendor ID required" }, { status: 400 });
+    if (!id) {
+      return NextResponse.json({ error: "Vendor ID required" }, { status: 400 });
+    }
 
     const vendor = await prisma.vendor.findFirst({
       where: { id, organizationId: user.organizationId, deletedAt: null },
       include: { branchProducts: { where: { deletedAt: null } } },
     });
 
-    if (!vendor) return NextResponse.json({ error: "Vendor not found" }, { status: 404 });
+    if (!vendor) {
+      return NextResponse.json({ error: "Vendor not found" }, { status: 404 });
+    }
 
-    // If there are active branchProducts and force is not provided, block with clear guidance.
     if (vendor.branchProducts.length > 0 && !force) {
       return NextResponse.json(
         {
@@ -470,27 +439,33 @@ export async function DELETE(req: NextRequest) {
       );
     }
 
-    // Proceed with transaction: optionally detach branchProducts, then archive vendor, create log, notify.
     await prisma.$transaction(async (tx) => {
       let detachedCount = 0;
       if (vendor.branchProducts.length > 0 && force) {
         detachedCount = await detachVendorFromBranchProducts(tx, id);
       }
 
-      await tx.vendor.update({
+      const archivedVendor = await tx.vendor.update({
         where: { id },
         data: { deletedAt: new Date(), updatedById: user.id },
       });
 
       const log = await createAuditLog(tx, {
+        action: "ARCHIVE_VENDOR",
+        resource: Resource.VENDOR,
+        resourceId: id,
         organizationId: user.organizationId,
         branchId: user.branchId ?? null,
         actorId: user.id,
-        action: "ARCHIVE_VENDOR",
-        resourceId: id,
-        severity: Severity.HIGH,
-        description: `Archived vendor node: ${vendor.name}${detachedCount ? ` (detached ${detachedCount} products)` : ""}`,
-        metadata: { archivedBy: user.id, detachedProducts: detachedCount },
+        actorRole: user.role,
+        severity: Severity.HIGH, // Implicitly escalates due to soft-delete
+        description: `Archived vendor node: ${vendor.name}${
+          detachedCount ? ` (detached ${detachedCount} products)` : ""
+        }`,
+        changes: { from: vendor, to: archivedVendor },
+        ipAddress,
+        deviceInfo,
+        metadata: { detachedProducts: detachedCount },
       });
 
       await notifyManagement(
