@@ -157,11 +157,21 @@ enum NotificationType {
 enum CriticalAction {
   EMAIL_CHANGE
   PASSWORD_CHANGE
+  USER_LOCK_UNLOCK
   PRICE_UPDATE
   STOCK_ADJUST
   STOCK_TRANSFER
   VOID_INVOICE
-  USER_LOCK_UNLOCK
+  AUTHORIZATION_APPROVED
+  AUTHORIZATION_REJECTED
+  SUSPICIOUS_LOGIN
+  FAILED_LOGIN_LOCKOUT
+  APPROVAL_REQUESTED
+  APPROVAL_GRANTED
+  APPROVAL_DENIED
+  EXPENSE_VOIDING
+  REFUND_PROCESS
+  STOCK_TAKE_ADJUST
 }
 
 enum ApprovalStatus {
@@ -1524,6 +1534,7 @@ model Notification {
   @@index([type])
   @@index([activityLogId])
   @@index([createdAt])
+  @@index([actionTrigger])
 }
 
 model NotificationRecipient {

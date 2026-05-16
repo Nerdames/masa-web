@@ -1,6 +1,6 @@
 /**
  * src/core/lib/permission.ts
- * * CORE AUTHORIZATION & RBAC ENGINE (V3.2 - PRODUCTION READY)
+ * CORE AUTHORIZATION & RBAC ENGINE (V3.2 - PRODUCTION READY)
  * Synchronized with Prisma Schema and fortified for strict auditing.
  */
 
@@ -21,16 +21,16 @@ export const RESOURCES = Resource;
 
 /**
  * ROLE HIERARCHY
- * Defines authority levels for management and visibility checks.
+ * Defines authority levels for management and visibility checks. [cite: 1513]
  */
 export const ROLE_WEIGHT: Record<Role, number> = {
-  DEV: 100,       // System Superuser
-  ADMIN: 50,      // Organization Admin
-  MANAGER: 40,    // Branch/Department Manager
-  AUDITOR: 35,    // Compliance/Finance oversight
-  INVENTORY: 30,  // Warehouse/Stock control
-  SALES: 20,      // Front-end sales
-  CASHIER: 10,    // Point of Sale operations
+  DEV: 100,       // System Superuser [cite: 1513]
+  ADMIN: 50,      // Organization Admin [cite: 1513]
+  MANAGER: 40,    // Branch/Department Manager [cite: 1513]
+  AUDITOR: 35,    // Compliance/Finance oversight [cite: 1513]
+  INVENTORY: 30,  // Warehouse/Stock control [cite: 1513]
+  SALES: 20,      // Front-end sales [cite: 1513]
+  CASHIER: 10,    // Point of Sale operations [cite: 1513]
 } as const;
 
 /**
@@ -59,7 +59,8 @@ export type ManagementAction =
 /**
  * =========================================================
  * DEFAULT ROLE PERMISSIONS (RBAC Baseline)
- * Fortified to include PRODUCT for Managers and full schema sync.
+ * Fortified with full Resource enum synchronization and 
+ * mandatory Product access for Managers. [cite: 1513]
  * =========================================================
  */
 export const DEFAULT_ROLE_PERMISSIONS: Record<
@@ -85,7 +86,7 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<
   MANAGER: {
     [Resource.INVOICE]: [PermissionAction.CREATE, PermissionAction.READ, PermissionAction.UPDATE, PermissionAction.VOID, PermissionAction.APPROVE],
     [Resource.STOCK]: [PermissionAction.CREATE, PermissionAction.READ, PermissionAction.UPDATE, PermissionAction.APPROVE],
-    [Resource.PRODUCT]: [PermissionAction.CREATE, PermissionAction.READ, PermissionAction.UPDATE, PermissionAction.DELETE], // FIX: Added Product access
+    [Resource.PRODUCT]: [PermissionAction.CREATE, PermissionAction.READ, PermissionAction.UPDATE, PermissionAction.DELETE],
     [Resource.PERSONNEL]: [PermissionAction.READ, PermissionAction.UPDATE],
     [Resource.CUSTOMER]: [PermissionAction.CREATE, PermissionAction.READ, PermissionAction.UPDATE],
     [Resource.EXPENSE]: [PermissionAction.CREATE, PermissionAction.READ],
@@ -147,16 +148,34 @@ export const ROLE_PERMISSIONS_MATRIX: Record<Role, string[]> = (
 /**
  * =========================================================
  * CRITICAL ACTION REQUIREMENTS 
+ * Updated to include all items in the CriticalAction Enum. [cite: 1515]
  * =========================================================
  */
 export const ACTION_REQUIREMENTS: Record<CriticalAction, Role> = {
-  USER_LOCK_UNLOCK: Role.MANAGER,
+  // Account & Security (Admin Level)
   EMAIL_CHANGE: Role.ADMIN,
   PASSWORD_CHANGE: Role.ADMIN,
+  AUTHORIZATION_APPROVED: Role.ADMIN,
+  AUTHORIZATION_REJECTED: Role.ADMIN,
+  SUSPICIOUS_LOGIN: Role.ADMIN,
+  FAILED_LOGIN_LOCKOUT: Role.ADMIN,
+
+  // Personnel & Access (Manager Level)
+  USER_LOCK_UNLOCK: Role.MANAGER,
+  
+  // Finance & Inventory Operations (Manager Level)
   PRICE_UPDATE: Role.MANAGER,
   STOCK_ADJUST: Role.MANAGER,
   STOCK_TRANSFER: Role.MANAGER,
   VOID_INVOICE: Role.MANAGER,
+  EXPENSE_VOIDING: Role.MANAGER,
+  REFUND_PROCESS: Role.MANAGER,
+  STOCK_TAKE_ADJUST: Role.MANAGER,
+
+  // Approval Workflow Management (Manager Level)
+  APPROVAL_REQUESTED: Role.MANAGER,
+  APPROVAL_GRANTED: Role.MANAGER,
+  APPROVAL_DENIED: Role.MANAGER,
 };
 
 /**
@@ -280,7 +299,7 @@ export function authorize({
   requiresApproval?: boolean;
   reason?: string;
 } {
-  // 1. Org Owners bypass all resource restrictions
+  // 1. Org Owners bypass all resource restrictions [cite: 1522]
   if (isOrgOwner) return { allowed: true };
 
   // 2. Resource-level permission check
@@ -296,7 +315,7 @@ export function authorize({
     }
   }
 
-  // 3. Critical action approval check
+  // 3. Critical action approval check [cite: 1528]
   if (criticalAction) {
     const needsApproval = actionRequiresApproval(role, criticalAction);
     if (needsApproval) {

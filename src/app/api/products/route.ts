@@ -249,6 +249,8 @@ export async function POST(req: NextRequest) {
 
       await createAuditLog(tx as any, {
         action: "CREATE_PRODUCT",
+        targetType: "PRODUCT",
+        targetId: product.id,
         resource: Resource.PRODUCT,
         resourceId: product.id,
         organizationId: user.organizationId,
@@ -256,7 +258,7 @@ export async function POST(req: NextRequest) {
         actorRole: user.role,
         severity: Severity.MEDIUM,
         description: `Product Registered: ${product.name} [${product.sku}]`,
-        changes: sanitizeForAudit(product),
+        after: sanitizeForAudit(product),
         ipAddress,
         deviceInfo,
         requestId,
@@ -340,6 +342,8 @@ export async function PATCH(req: NextRequest) {
 
       await createAuditLog(tx as any, {
         action: "UPDATE_PRODUCT",
+        targetType: "PRODUCT",
+        targetId: id,
         resource: Resource.PRODUCT,
         resourceId: id,
         organizationId: user.organizationId,
@@ -347,7 +351,8 @@ export async function PATCH(req: NextRequest) {
         actorRole: user.role,
         severity: Severity.LOW,
         description: `Metadata modified for SKU: ${existing.sku}`,
-        changes: sanitizeForAudit({ from: existing, to: updated }),
+        before: sanitizeForAudit(existing),
+        after: sanitizeForAudit(updated),
         ipAddress,
         deviceInfo,
         requestId,
@@ -420,6 +425,8 @@ export async function DELETE(req: NextRequest) {
 
       await createAuditLog(tx as any, {
         action: "DELETE_PRODUCT",
+        targetType: "PRODUCT",
+        targetId: id,
         resource: Resource.PRODUCT,
         resourceId: id,
         organizationId: user.organizationId,
@@ -427,7 +434,8 @@ export async function DELETE(req: NextRequest) {
         actorRole: user.role,
         severity: Severity.HIGH,
         description: `Soft-delete: ${target.sku} decommissioned.`,
-        changes: sanitizeForAudit({ from: target, to: deleted }),
+        before: sanitizeForAudit(target),
+        after: sanitizeForAudit(deleted),
         ipAddress,
         deviceInfo,
         requestId,

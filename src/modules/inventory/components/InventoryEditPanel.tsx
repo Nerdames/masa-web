@@ -93,7 +93,7 @@ function ComparisonField({
       <div className="flex items-center gap-2">
         <div className="flex-1 bg-slate-50 dark:bg-slate-800/50 px-2 py-1.5 rounded border border-slate-100 dark:border-slate-800 flex flex-col justify-center">
           <span className="text-[10px] text-slate-400 uppercase font-medium">Current</span>
-          <span className="text-xs font-semibold text-slate-600 dark:text-slate-300 truncate">
+          <span className="text-xs font-bold text-black dark:text-white truncate">
             {oldValue} <span className="text-[10px] opacity-70">{unit}</span>
           </span>
         </div>
@@ -296,13 +296,13 @@ export function InventoryEditPanel({
               isModified={mods.price}
             >
               <div className="relative">
-                <span className="absolute left-2 top-1/2 -translate-y-1/2 text-[10px] text-slate-400">₦</span>
+                <span className="absolute left-2 top-1/2 -translate-y-1/2 text-[10px] text-black dark:text-white font-bold">₦</span>
                 <input
                   type="number" 
                   step="0.01"
                   value={formData.sellingPrice}
                   onChange={(e) => setFormData({ ...formData, sellingPrice: Number(e.target.value) })}
-                  className="block w-full pl-5 pr-2 py-1.5 bg-white dark:bg-slate-950 border border-slate-300 dark:border-slate-700 rounded text-xs focus:ring-1 focus:ring-indigo-500 outline-none"
+                  className="block w-full pl-5 pr-2 py-1.5 bg-white dark:bg-slate-950 border border-slate-300 dark:border-slate-700 rounded text-xs focus:ring-1 focus:ring-indigo-500 outline-none text-black dark:text-white font-bold"
                   disabled={isLocked}
                 />
               </div>
@@ -321,7 +321,7 @@ export function InventoryEditPanel({
                   type="number"
                   value={formData.reorderLevel}
                   onChange={(e) => setFormData({ ...formData, reorderLevel: Number(e.target.value) })}
-                  className="block w-full px-2 py-1.5 bg-white dark:bg-slate-950 border border-slate-300 dark:border-slate-700 rounded text-xs focus:ring-1 focus:ring-indigo-500 outline-none"
+                  className="block w-full px-2 py-1.5 bg-white dark:bg-slate-950 border border-slate-300 dark:border-slate-700 rounded text-xs focus:ring-1 focus:ring-indigo-500 outline-none text-black dark:text-white font-bold"
                   disabled={isLocked}
                 />
               </ComparisonField>
@@ -338,7 +338,7 @@ export function InventoryEditPanel({
                   type="number"
                   value={formData.safetyStock}
                   onChange={(e) => setFormData({ ...formData, safetyStock: Number(e.target.value) })}
-                  className="block w-full px-2 py-1.5 bg-white dark:bg-slate-950 border border-slate-300 dark:border-slate-700 rounded text-xs focus:ring-1 focus:ring-indigo-500 outline-none"
+                  className="block w-full px-2 py-1.5 bg-white dark:bg-slate-950 border border-slate-300 dark:border-slate-700 rounded text-xs focus:ring-1 focus:ring-indigo-500 outline-none text-black dark:text-white font-bold"
                   disabled={isLocked}
                 />
               </ComparisonField>
@@ -355,7 +355,7 @@ export function InventoryEditPanel({
                   value={formData.reason}
                   onChange={(e) => setFormData({ ...formData, reason: e.target.value })}
                   placeholder="Explain why the selling price is being adjusted..."
-                  className="block w-full px-3 py-2 bg-white dark:bg-slate-950 border border-indigo-200 dark:border-indigo-900/50 rounded text-xs focus:ring-1 focus:ring-indigo-500 outline-none min-h-[60px] resize-none"
+                  className="block w-full px-3 py-2 bg-white dark:bg-slate-950 border border-indigo-200 dark:border-indigo-900/50 rounded text-xs focus:ring-1 focus:ring-indigo-500 outline-none min-h-[60px] resize-none text-black dark:text-white font-bold"
                   required
                 />
               </div>

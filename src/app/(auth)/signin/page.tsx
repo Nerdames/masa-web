@@ -1,20 +1,19 @@
 "use client";
 
-import React, { useState, FormEvent, Suspense, useEffect } from "react";
+import React, { useState, FormEvent, Suspense, useEffect, useRef } from "react";
 import { signIn, getSession } from "next-auth/react";
 import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { motion, useAnimation } from "framer-motion";
 import { useAlerts } from "@/core/components/feedback/AlertProvider";
-import { 
-  Role, 
-  CriticalAction,
-  NotificationType 
-} from "@prisma/client";
+import { DEFAULT_TERMINALS } from "@/core/lib/permission";
+import { Role, NotificationType } from "@prisma/client";
 
 /**
+ * C:\Users\chibu\Projects\Next\masa\src\app\signin\page.tsx
  * MASA - Unified Sign In
- * Optimized for production with relatable terminology.
+ * Optimized for production. RBAC definitions and route fallbacks 
+ * are cleanly delegated to the core permission engine.
  */
 
 interface AuthErrorConfig {
@@ -48,9 +47,13 @@ const SignInForm = () => {
 
   const callbackUrl = searchParams.get("callbackUrl") || "/";
   const urlError = searchParams.get("error");
+  
+  // Guard against React strict-mode double dispatch loops
+  const handledErrorRef = useRef<string | null>(null);
 
   useEffect(() => {
-    if (urlError && ERROR_MAP[urlError]) {
+    if (urlError && ERROR_MAP[urlError] && handledErrorRef.current !== urlError) {
+      handledErrorRef.current = urlError;
       const config = ERROR_MAP[urlError];
       dispatch({ kind: config.kind, type: config.type, title: config.title, message: config.message, notificationId: "" });
       controls.start({ x: [-8, 8, -8, 8, 0], transition: { duration: 0.4 } });
@@ -60,13 +63,19 @@ const SignInForm = () => {
   const handleSignIn = async (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     if (loading) return;
+
+    const trimmedIdentifier = identifier.trim();
+    const trimmedPassword = password.trim();
+
+    if (!trimmedIdentifier || !trimmedPassword) return;
+
     setLoading(true);
 
     try {
       const result = await signIn("credentials", {
         redirect: false,
-        identifier: identifier.trim(),
-        password: password.trim(),
+        identifier: trimmedIdentifier,
+        password: trimmedPassword,
         callbackUrl,
       });
 
@@ -90,7 +99,11 @@ const SignInForm = () => {
           if (user?.requiresPasswordChange) {
             router.replace("/reset-password");
           } else {
-            router.replace("/");
+            const userRole = user?.role as Role;
+            const defaultRoute = (userRole && DEFAULT_TERMINALS[userRole]) ? DEFAULT_TERMINALS[userRole] : "/";
+            const targetRoute = callbackUrl !== "/" ? callbackUrl : defaultRoute;
+            
+            router.replace(targetRoute);
           }
           router.refresh(); 
         }, 800);
@@ -126,6 +139,7 @@ const SignInForm = () => {
                 onChange={(e) => setIdentifier(e.target.value)}
                 className="w-full pl-12 pr-4 py-3.5 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:bg-white focus:border-blue-500 outline-none transition-all"
                 required
+                disabled={loading}
               />
             </div>
           </div>
@@ -141,11 +155,13 @@ const SignInForm = () => {
                 onChange={(e) => setPassword(e.target.value)}
                 className="w-full pl-12 pr-12 py-3.5 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:bg-white focus:border-blue-500 outline-none transition-all"
                 required
+                disabled={loading}
               />
               <button 
                 type="button" 
                 onClick={() => setShowPassword(!showPassword)}
                 className="absolute right-4 text-slate-400 hover:text-blue-600 transition-colors"
+                disabled={loading}
               >
                 <i className={showPassword ? "bx bx-hide" : "bx bx-show"} />
               </button>
@@ -226,100 +242,4 @@ export default function SignInPage() {
       </main>
     </div>
   );
-}
-
-/**
- * =========================================================
- * ROLE HIERARCHY & UTILITIES
- * =========================================================
- */
-export const ROLE_WEIGHT: Record<Role, number> = {
-  DEV: 100,
-  ADMIN: 50,
-  MANAGER: 40,
-  AUDITOR: 35,
-  INVENTORY: 30,
-  SALES: 20,
-  CASHIER: 10,
-} as const;
-
-export const DEFAULT_TERMINALS: Record<Role, string> = {
-  DEV: "/db-inspector",
-  ADMIN: "/",
-  MANAGER: "/",
-  AUDITOR: "/audit",
-  INVENTORY: "/inventory",
-  SALES: "/pos",
-  CASHIER: "/pos",
-} as const;
-
-export const RESOURCES = {
-  INVOICE: "INVOICE",
-  STOCK: "STOCK",
-  PRODUCT: "PRODUCT",
-  CUSTOMER: "CUSTOMER",
-  EXPENSE: "EXPENSE",
-  PROCUREMENT: "PROCUREMENT",
-  VENDOR: "VENDOR",
-  REPORT: "REPORT",
-  AUDIT: "AUDIT",
-  SETTINGS: "SETTINGS",
-  BRANCH: "BRANCH",
-  PERSONNEL: "PERSONNEL",
-  FINANCE: "FINANCE",
-} as const;
-
-export type ResourceType = (typeof RESOURCES)[keyof typeof RESOURCES];
-
-export type ManagementAction = 
-  | "UPDATE_ROLE" 
-  | "UPDATE_STATUS" 
-  | "DELETE" 
-  | "RESET_PASSWORD" 
-  | "TRANSFER_BRANCH";
-
-export const ACTION_REQUIREMENTS: Record<CriticalAction, Role> = {
-  USER_LOCK_UNLOCK: Role.MANAGER,
-  EMAIL_CHANGE: Role.ADMIN,
-  PASSWORD_CHANGE: Role.ADMIN,
-  PRICE_UPDATE: Role.MANAGER,
-  STOCK_ADJUST: Role.MANAGER,
-  STOCK_TRANSFER: Role.MANAGER,
-  VOID_INVOICE: Role.MANAGER,
-};
-
-export function getFallbackRoute(
-  role?: Role, 
-  state?: 'VALID' | 'LOCKED' | 'DISABLED' | 'EXPIRED' | 'PASSWORD_RESET'
-): string {
-  if (state === 'PASSWORD_RESET') return '/reset-password';
-  if (!role || state === 'LOCKED' || state === 'DISABLED' || state === 'EXPIRED') {
-    return `/signin${state ? `?error=ACCOUNT_${state}` : ''}`;
-  }
-  return DEFAULT_TERMINALS[role] || "/";
-}
-
-export function authorize({
-  role,
-  isOrgOwner = false,
-  criticalAction,
-}: {
-  role: Role;
-  isOrgOwner?: boolean;
-  criticalAction?: CriticalAction;
-}): { allowed: boolean; requiresApproval?: boolean; reason?: string } {
-  if (isOrgOwner) return { allowed: true };
-
-  if (criticalAction) {
-    const requiredRole = ACTION_REQUIREMENTS[criticalAction];
-    if (ROLE_WEIGHT[role] < ROLE_WEIGHT[requiredRole]) {
-      return {
-        allowed: false,
-        requiresApproval: true,
-        reason: "This action requires higher-level approval.",
-      };
-    }
-  }
-
-  return { allowed: true };
 }

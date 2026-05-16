@@ -75,7 +75,7 @@ function generateGRNNumber(branchId: string): string {
   return `GRN-${branchPart}-${suffix}`;
 }
 
-// 7. Extract repeated role logic into a helper
+// Extract repeated role logic into a helper
 function isGlobalViewer(role: Role, isOrgOwner: boolean): boolean {
   return [Role.ADMIN, Role.MANAGER, Role.AUDITOR, Role.DEV].includes(role) || isOrgOwner;
 }
@@ -86,7 +86,7 @@ async function canExport(user: MasaUser): Promise<boolean> {
     role: user.role,
     isOrgOwner: user.isOrgOwner,
     action: PermissionAction.EXPORT,
-    resources: Resource.PROCUREMENT, // 2. Fix: Matched to Prisma Enum
+    resources: Resource.PROCUREMENT,
     userPermissions: user.permissions
   });
   return auth.allowed;
@@ -106,7 +106,7 @@ export async function GET(req: NextRequest) {
       role: user.role,
       isOrgOwner: user.isOrgOwner,
       action: PermissionAction.READ,
-      resources: Resource.PROCUREMENT, // 2. Fix: Matched to Prisma Enum
+      resources: Resource.PROCUREMENT,
       userPermissions: user.permissions
     });
     if (!readAuth.allowed) return NextResponse.json({ error: "ACCESS_DENIED" }, { status: 403 });
@@ -123,9 +123,7 @@ export async function GET(req: NextRequest) {
     // --- META DROPDOWNS ---
     if (meta) {
       if (meta === "vendors") {
-        // 4. Fix: Scope vendors strictly if the user is not a global viewer
-        // Since vendors are Org-level in the schema, we map them by joining through Purchase Orders or Branch Products 
-        // to prevent global vendor enumeration by restricted users.
+        // Scope vendors strictly if the user is not a global viewer
         const vendorWhere: Prisma.VendorWhereInput = { organizationId: orgId, deletedAt: null };
         if (!globalView && branchId) {
            vendorWhere.purchaseOrders = { some: { branchId } };
@@ -260,7 +258,7 @@ export async function POST(req: NextRequest) {
       role: user.role,
       isOrgOwner: user.isOrgOwner,
       action: PermissionAction.CREATE,
-      resources: Resource.PROCUREMENT, // 2. Fix: Matched to Prisma Enum
+      resources: Resource.PROCUREMENT,
       userPermissions: user.permissions
     });
     
@@ -272,7 +270,7 @@ export async function POST(req: NextRequest) {
       role: user.role,
       isOrgOwner: user.isOrgOwner,
       action: PermissionAction.APPROVE,
-      resources: Resource.PROCUREMENT, // 2. Fix: Matched to Prisma Enum
+      resources: Resource.PROCUREMENT,
       userPermissions: user.permissions
     }).allowed;
 
@@ -321,13 +319,12 @@ export async function POST(req: NextRequest) {
       if (!vendorId) throw new Error("Vendor association is strictly required.");
 
       const typedRawItems = rawItems as GRNItemInput[];
-      let totalReceivedCost = new Decimal(0); // 1. Fix: Moved out of approval block
+      let totalReceivedCost = new Decimal(0);
       
       for (const item of typedRawItems) {
         if (item.quantityAccepted < 0 || item.quantityRejected < 0 || item.unitCost < 0) {
           throw new Error("Quantities and costs must be strictly positive numeric values.");
         }
-        // 1. Fix: Accumulate total cost for all items regardless of approval status to ensure accurate Pending records
         const movementTotal = new Decimal(item.unitCost).mul(item.quantityAccepted);
         totalReceivedCost = totalReceivedCost.add(movementTotal);
       }
@@ -380,7 +377,6 @@ export async function POST(req: NextRequest) {
 
         if (!baseProduct) throw new Error(`Product mapping failed for ${it.productId}.`);
 
-        // 6. Fix: Calculate accurate Running Balance & Weighted Average Cost (WAC)
         const existingBranchProduct = await tx.branchProduct.findUnique({
            where: { branchId_productId: { branchId: targetBranchId, productId: it.productId } },
            select: { stock: true, costPrice: true }
@@ -445,7 +441,7 @@ export async function POST(req: NextRequest) {
               unitCost: itemCost,
               totalCost: movementTotal,
               reason: `GRN Restock: ${grn.grnNumber}`,
-              runningBalance: newStockTotal, // 6. Fix: Uses precisely calculated post-increment memory value
+              runningBalance: newStockTotal,
               handledById: user.id,
               approvedAt: new Date(),
               grnId: grn.id
@@ -461,7 +457,6 @@ export async function POST(req: NextRequest) {
         }
       }
 
-      // 5. Fix: Cascade PO Status recalculated fresh from DB to prevent concurrent evaluation bugs
       if (canApprove && purchaseOrderId && po) {
         const updatedPoItems = await tx.purchaseOrderItem.findMany({ 
           where: { purchaseOrderId } 
@@ -493,17 +488,17 @@ export async function POST(req: NextRequest) {
              organizationId: orgId,
              branchId: targetBranchId,
              requesterId: user.id,
-             actionType: CriticalAction.STOCK_ADJUST,
+             actionType: CriticalAction.APPROVAL_REQUESTED,
              status: ApprovalStatus.PENDING,
              requiredRole: Role.MANAGER,
-             targetType: "GRN",
+             targetType: "GoodsReceiptNote",
              targetId: grn.id,
-             changes: { items: typedRawItems, totalValue: totalReceivedCost.toString() } // 3. Fix: String cast to avoid JSON float clipping
+             changes: { items: typedRawItems, totalValue: totalReceivedCost.toString() }
            }
          });
       }
 
-      const actionName = canApprove ? "RECEIVE_GRN_APPROVED" : "CREATE_GRN_PENDING";
+      const actionName = canApprove ? CriticalAction.APPROVAL_GRANTED : CriticalAction.APPROVAL_REQUESTED;
       const severity = canApprove ? Severity.HIGH : Severity.MEDIUM;
       
       await createAuditLog(tx, {
@@ -523,7 +518,7 @@ export async function POST(req: NextRequest) {
          ipAddress,
          deviceInfo,
          requestId,
-         actionTrigger: canApprove ? CriticalAction.STOCK_ADJUST : undefined,
+         actionTrigger: canApprove ? CriticalAction.STOCK_TAKE_ADJUST : undefined,
          approvalId: approvalReq?.id
       });
 

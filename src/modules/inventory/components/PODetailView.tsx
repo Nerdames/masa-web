@@ -546,7 +546,7 @@ export default function PODetailView({ po, onClose }: PODetailViewProps) {
                     disabled={isVoiding || isSaving || isIssuing} 
                     className="px-3 py-1.5 text-[9px] font-bold text-red-500 uppercase tracking-widest hover:text-red-700 dark:hover:text-red-400 transition-colors"
                   >
-                    {isVoiding ? "Voiding..." : isEditing ? "Cancel" : "Discard"}
+                    {isVoiding ? "Voiding..." : isEditing ? "Cancel" : "Void"}
                   </button>
 
                   {isEditing ? (

@@ -12,21 +12,31 @@ import {
 
 /**
  * PRODUCTION-READY PERMISSION HOOK
- * Centralized client-side authorization utility synchronized with the core RBAC engine.
+ * Centralized client-side authorization utility synchronized with the core RBAC engine (V3.2).
+ * * Features:
+ * - O(1) Performance via memoized check functions.
+ * - OrgOwner bypass logic (Superuser access).
+ * - Full alignment with Prisma Enums (Resource, CriticalAction, PermissionAction). [cite: 156, 165, 268]
+ * - Semantic helpers for common UI triggers.
  */
 export function usePermission() {
   const { data: session, status } = useSession();
 
   const permissions = useMemo(() => {
+    // Note: session.user is expected to contain 'role', 'isOrgOwner', and 'permissions' array.
+    // Ensure these are injected via the NextAuth session callback.
     const user = session?.user;
     const isLoading = status === "loading";
     const isAuthenticated = status === "authenticated";
 
-    // Shared internal check to maintain O(1) performance in components
+    /**
+     * Internal check wrapper to interface with the core authorization engine.
+     * Maps user session data to the RBAC authorize function.
+     */
     const check = (action: PermissionAction, resource: Resource): boolean => {
       if (!user) return false;
       return authorize({
-        role: user.role,
+        role: user.role as Role,
         isOrgOwner: user.isOrgOwner,
         userPermissions: user.permissions, // Injected via session at login 
         action,
@@ -40,19 +50,19 @@ export function usePermission() {
       user,
       
       /**
-       * Core check for buttons or specific logic.
+       * Core check for generic logic or dynamic permission requirements.
        * Usage: can(PermissionAction.CREATE, Resource.INVOICE)
        */
       can: (action: PermissionAction, resource: Resource) => check(action, resource),
       
       /**
-       * Semantic alias for 'can' for better readability in action handlers.
+       * Semantic alias for 'can' for better readability in event handlers.
        */
       canPerform: (action: PermissionAction, resource: Resource) => check(action, resource),
 
       /**
        * Visibility check for UI elements like "Details" sections or Sidebars.
-       * Maps to PermissionAction.READ. 
+       * Automatically maps to PermissionAction.READ. [cite: 158]
        */
       canSee: (resource: Resource) => check(PermissionAction.READ, resource),
 
@@ -65,12 +75,13 @@ export function usePermission() {
       canExport:  (resource: Resource) => check(PermissionAction.EXPORT, resource),
 
       /**
-       * Validates critical actions (e.g., price updates) that may require approvals. [cite: 2, 3]
+       * Validates critical actions (e.g., PRICE_UPDATE) that may require approvals. [cite: 272]
+       * Returns: { allowed: boolean, requiresApproval: boolean, reason?: string }
        */
       checkCritical: (criticalAction: CriticalAction) => {
         if (!user) return { allowed: false, requiresApproval: false, reason: "Unauthenticated" };
         return authorize({
-          role: user.role,
+          role: user.role as Role,
           isOrgOwner: user.isOrgOwner,
           userPermissions: user.permissions,
           criticalAction,
@@ -78,17 +89,20 @@ export function usePermission() {
       },
 
       /**
-       * Checks if the user's role meets a hierarchy threshold. 
+       * Hierarchy-based check: determines if user's role meets a weight threshold.
        * Useful for high-level UI sections like "Admin Panel".
        */
       isAtLeast: (targetRole: Role) => {
         if (!user) return false;
         if (user.isOrgOwner) return true;
-        return ROLE_WEIGHT[user.role] >= ROLE_WEIGHT[targetRole];
+        const userWeight = ROLE_WEIGHT[user.role as Role] || 0;
+        const targetWeight = ROLE_WEIGHT[targetRole] || 0;
+        return userWeight >= targetWeight;
       },
 
       /**
        * Exact role check for specific system-level features.
+       * Automatically grants access to Organization Owners. [cite: 431]
        */
       isRole: (role: Role) => user?.role === role || user?.isOrgOwner,
     };

@@ -18,7 +18,7 @@ export type EventPayloads = {
     approvalId: string;
     requesterId: string;
     actionType: CriticalAction;
-    requiredRole: Role; // Fixed: Now included for authority filtering
+    requiredRole: Role;
     title: string;
     message: string;
     severity?: Severity;
@@ -39,16 +39,17 @@ export type EventPayloads = {
     organizationId: string;
     branchId?: string | null;
     activityLogId: string;
-    actionTrigger: CriticalAction;
+    actionTrigger: CriticalAction; // Guaranteed alignment to Prisma schema
     title: string;
     message: string;
     severity: Severity;
   };
   "inventory.alert": {
     organizationId: string;
-    branchId: string; // Branch required for inventory context
+    branchId: string; 
     productId: string;
     branchProductId: string;
+    actionTrigger: CriticalAction; // Added to prevent fallback string drops
     title: string;
     message: string;
     severity: Severity;

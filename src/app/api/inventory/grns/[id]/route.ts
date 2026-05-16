@@ -10,7 +10,8 @@ import {
   POStatus, 
   StockMovementType, 
   NotificationType,
-  Resource
+  Resource,
+  CriticalAction // Added from Schema
 } from "@prisma/client";
 import { Decimal } from "@prisma/client/runtime/library";
 import crypto from "crypto";
@@ -79,7 +80,7 @@ export async function PATCH(
       role: user.role,
       isOrgOwner: user.isOrgOwner,
       action: PermissionAction.APPROVE,
-      resources: Resource.PROCUREMENT, // Fixed: Using Prisma Enum
+      resources: Resource.PROCUREMENT,
       userPermissions: user.permissions,
     });
     
@@ -90,15 +91,15 @@ export async function PATCH(
       );
     }
 
-    // 3. Request Validation
+    // 3. Request Validation (Corrected: Mapping REJECTED to CANCELLED per schema)
     const body = await req.json().catch(() => null);
-    if (!body || !["RECEIVED", "REJECTED"].includes(body.status)) {
+    if (!body || !["RECEIVED", "CANCELLED"].includes(body.status)) {
       return NextResponse.json(
-        { error: "Invalid status selection. Status must be RECEIVED or REJECTED." }, 
+        { error: "Invalid status selection. Status must be RECEIVED or CANCELLED." }, 
         { status: 400 }
       );
     }
-    const newStatus = body.status as "RECEIVED" | "REJECTED";
+    const newStatus = body.status as GRNStatus;
 
     // 4. Atomic Transaction: Serializable Isolation for Financial/Stock Integrity
     const result = await executeWithRetry(() => prisma.$transaction(async (tx) => {
@@ -126,14 +127,14 @@ export async function PATCH(
       const updatedGrn = await tx.goodsReceiptNote.update({
         where: { id: grnId },
         data: {
-          status: newStatus as GRNStatus,
+          status: newStatus,
           approvedById: user.id,
           updatedAt: new Date()
         }
       });
 
       // 5. Logic Branch: RECEIVED (Stock Injection)
-      if (newStatus === "RECEIVED") {
+      if (newStatus === GRNStatus.RECEIVED) {
         for (const item of grn.items) {
           const qtyAccepted = new Decimal(item.quantityAccepted || 0);
           
@@ -226,8 +227,8 @@ export async function PATCH(
         }
       } 
       
-      // 7. Logic Branch: REJECTED
-      else if (newStatus === "REJECTED") {
+      // 7. Logic Branch: CANCELLED (Corrected from REJECTED)
+      else if (newStatus === GRNStatus.CANCELLED) {
         for (const item of grn.items) {
           const totalQtyAttempted = (item.quantityAccepted || 0) + (item.quantityRejected || 0);
           
@@ -243,16 +244,16 @@ export async function PATCH(
         }
       }
 
-      // 8. Forensic Audit Integration
+      // 8. Forensic Audit Integration (Corrected: Using CriticalAction Enums)
       const auditLog = await createAuditLog(tx, {
-        action: newStatus === "RECEIVED" ? "APPROVE_GRN" : "REJECT_GRN",
+        action: newStatus === GRNStatus.RECEIVED ? CriticalAction.APPROVAL_GRANTED : CriticalAction.APPROVAL_DENIED,
         resource: Resource.PROCUREMENT,
         resourceId: grn.id,
         organizationId: orgId,
         branchId: grn.branchId,
         actorId: user.id,
         actorRole: user.role,
-        severity: newStatus === "RECEIVED" ? Severity.HIGH : Severity.MEDIUM,
+        severity: newStatus === GRNStatus.RECEIVED ? Severity.HIGH : Severity.MEDIUM,
         description: `GRN ${grn.grnNumber} finalized as ${newStatus}.`,
         changes: { from: { status: previousStatus }, to: { status: newStatus } },
         ipAddress,
@@ -267,7 +268,7 @@ export async function PATCH(
           organizationId: orgId,
           branchId: grn.branchId,
           type: NotificationType.INFO,
-          title: `GRN ${newStatus === "RECEIVED" ? "Received" : "Rejected"}`, // Fortress Fix: Accurate Title
+          title: `GRN ${newStatus === GRNStatus.RECEIVED ? "Received" : "Cancelled"}`, 
           message: `Receipt ${grn.grnNumber} has been ${newStatus.toLowerCase()} and inventory ledgers processed.`,
           activityLogId: auditLog.id,
           recipients: { 

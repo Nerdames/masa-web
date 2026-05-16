@@ -386,7 +386,7 @@ export async function POST(req: NextRequest) {
 
     const finalStatus = requestedStatus === POStatus.ISSUED ? POStatus.ISSUED : POStatus.DRAFT;
 
-    // [FIX] Strict Product Organization Boundary Check to prevent cross-tenant injection
+    // Strict Product Organization Boundary Check to prevent cross-tenant injection
     const uniqueProductIds = Array.from(new Set(validatedItems.map((it) => it.productId)));
     const products = await prisma.product.findMany({
       where: { id: { in: uniqueProductIds }, organizationId: orgId, deletedAt: null },
@@ -415,7 +415,7 @@ export async function POST(req: NextRequest) {
         }, { status: 400 });
       }
 
-      // [FIX] Precision rounding to prevent float mismatches downstream
+      // Precision rounding to prevent float mismatches downstream
       unitCost = unitCost.toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
       const qty = new Decimal(it.quantityOrdered);
       const totalCost = unitCost.mul(qty).toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
@@ -428,7 +428,7 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    // [FIX] Final total aggregation rounded correctly
+    // Final total aggregation rounded correctly
     const totalAmount = itemsForInsert.reduce((sum, it) => sum.add(it.totalCost), new Decimal(0)).toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
 
     const created = await prisma.$transaction(async (tx) => {
@@ -469,7 +469,7 @@ export async function POST(req: NextRequest) {
         },
       });
 
-      // [FIX] Audit Log explicitly supplies a blank `from` object to prevent mapping errors
+      // Audit Log explicitly supplies a blank `from` object to prevent mapping errors
       const log = await createAuditLog(tx, {
         action: `CREATE_PO_${finalStatus}`,
         resource: Resource.PROCUREMENT,

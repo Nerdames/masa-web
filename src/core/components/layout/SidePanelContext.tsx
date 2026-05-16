@@ -47,6 +47,17 @@ const DEFAULT_CONFIG: PanelConfig = {
   width: 340,
 };
 
+/* Unified internal state representation for stack architecture */
+interface PanelSnapshot {
+  content: ReactNode | null;
+  title: string;
+  config: PanelConfig;
+}
+
+interface SidePanelState extends PanelSnapshot {
+  history: Array<PanelSnapshot>;
+}
+
 const SidePanelContext = createContext<SidePanelContextType | undefined>(
   undefined
 );
@@ -58,17 +69,24 @@ const SidePanelContext = createContext<SidePanelContextType | undefined>(
 export function SidePanelProvider({ children }: { children: ReactNode }) {
   /* ---------------- State ---------------- */
 
-  const [content, setContent] = useState<ReactNode | null>(null);
-  const [title, setTitle] = useState("Workspace Schedule");
-  const [config, setConfig] = useState<PanelConfig>(DEFAULT_CONFIG);
+  const [state, setState] = useState<SidePanelState>({
+    content: null,
+    title: "Workspace Schedule",
+    config: DEFAULT_CONFIG,
+    history: [],
+  });
 
   /* --------------------------------------------- */
   /* Actions */
   /* --------------------------------------------- */
 
   const resetToDefault = useCallback(() => {
-    setContent(null);
-    setTitle("Workspace Schedule");
+    setState((prev) => ({
+      ...prev,
+      content: null,
+      title: "Workspace Schedule",
+      history: [],
+    }));
   }, []);
 
   const openPanel = useCallback((node: ReactNode, newTitle?: string) => {
@@ -78,22 +96,38 @@ export function SidePanelProvider({ children }: { children: ReactNode }) {
       window.scrollTo(0, 0);
     }
 
-    setContent(node);
-    if (newTitle) setTitle(newTitle);
+    setState((prev) => {
+      const nextHistory = [...prev.history];
+      
+      // If a panel is currently open with content, preserve it in the history stack
+      if (prev.config.isOpen && prev.content) {
+        nextHistory.push({
+          content: prev.content,
+          title: prev.title,
+          config: prev.config,
+        });
+      }
 
-    setConfig((prev) => ({
-      ...prev,
-      isOpen: true,
-      // Force full screen on desktop open, otherwise maintain previous/default state
-      isFullScreen: isDesktop ? true : prev.isFullScreen,
-    }));
+      return {
+        ...prev,
+        content: node,
+        title: newTitle ?? prev.title,
+        history: nextHistory,
+        config: {
+          ...prev.config,
+          isOpen: true,
+          // Force full screen on desktop open, otherwise maintain previous/default state
+          isFullScreen: isDesktop ? true : prev.config.isFullScreen,
+        },
+      };
+    });
   }, []);
 
   const openProvision = useCallback((data: ProvisioningData) => {
     const isDesktop = typeof window !== "undefined" && window.innerWidth >= 768;
 
-    setTitle("Infrastructure Provisioning");
-    setContent(
+    const provisionTitle = "Infrastructure Provisioning";
+    const provisionContent = (
       <div className="p-6">
         <div className="flex items-center gap-2 mb-4">
           <div className="h-2 w-2 rounded-full bg-blue-500 animate-pulse" />
@@ -108,35 +142,88 @@ export function SidePanelProvider({ children }: { children: ReactNode }) {
       </div>
     );
 
-    setConfig((prev) => ({
-      ...prev,
-      isOpen: true,
-      isFullScreen: isDesktop ? true : prev.isFullScreen,
-    }));
+    setState((prev) => {
+      const nextHistory = [...prev.history];
+      
+      // Save current active state to historical layer before displaying presentation layer
+      if (prev.config.isOpen && prev.content) {
+        nextHistory.push({
+          content: prev.content,
+          title: prev.title,
+          config: prev.config,
+        });
+      }
+
+      return {
+        ...prev,
+        content: provisionContent,
+        title: provisionTitle,
+        history: nextHistory,
+        config: {
+          ...prev.config,
+          isOpen: true,
+          isFullScreen: isDesktop ? true : prev.config.isFullScreen,
+        },
+      };
+    });
   }, []);
 
   const closePanel = useCallback(() => {
-    setConfig((prev) => ({ ...prev, isOpen: false, isFullScreen: false }));
+    let shouldTriggerCloseAnimation = false;
 
-    setTimeout(() => {
-      startTransition(() => {
-        resetToDefault();
-      });
-    }, 300);
+    setState((prev) => {
+      // Overlay Logic: If there's an underlying panel in historical stack, revert to it
+      if (prev.history.length > 0) {
+        const nextHistory = [...prev.history];
+        const previousPanel = nextHistory.pop()!;
+
+        return {
+          ...prev,
+          content: previousPanel.content,
+          title: previousPanel.title,
+          config: previousPanel.config,
+          history: nextHistory,
+        };
+      }
+
+      // Base Case: If history is empty, close the viewport panel completely
+      shouldTriggerCloseAnimation = true;
+      return {
+        ...prev,
+        config: { ...prev.config, isOpen: false, isFullScreen: false },
+      };
+    });
+
+    // Clean execution of side-effects deferred outside the synchronous React state cycle
+    if (shouldTriggerCloseAnimation) {
+      setTimeout(() => {
+        startTransition(() => {
+          resetToDefault();
+        });
+      }, 300);
+    }
   }, [resetToDefault]);
 
   const toggleLayout = useCallback(() => {
-    setConfig((prev) => ({ ...prev, isOpen: !prev.isOpen }));
+    setState((prev) => ({
+      ...prev,
+      config: { ...prev.config, isOpen: !prev.config.isOpen },
+    }));
   }, []);
 
   const toggleFullScreen = useCallback(() => {
-    setConfig((prev) => ({ ...prev, isFullScreen: !prev.isFullScreen }));
+    setState((prev) => ({
+      ...prev,
+      config: { ...prev.config, isFullScreen: !prev.config.isFullScreen },
+    }));
   }, []);
 
   const updateWidth = useCallback((width: number) => {
     const clamped = Math.min(Math.max(width, MIN_WIDTH), MAX_WIDTH);
-    setConfig((prev) =>
-      prev.width === clamped ? prev : { ...prev, width: clamped }
+    setState((prev) =>
+      prev.config.width === clamped
+        ? prev
+        : { ...prev, config: { ...prev.config, width: clamped } }
     );
   }, []);
 
@@ -146,9 +233,9 @@ export function SidePanelProvider({ children }: { children: ReactNode }) {
 
   const value = useMemo(
     () => ({
-      ...config,
-      content,
-      title,
+      ...state.config,
+      content: state.content,
+      title: state.title,
       openPanel,
       openProvision,
       resetToDefault,
@@ -158,9 +245,9 @@ export function SidePanelProvider({ children }: { children: ReactNode }) {
       updateWidth,
     }),
     [
-      config,
-      content,
-      title,
+      state.config,
+      state.content,
+      state.title,
       openPanel,
       openProvision,
       resetToDefault,

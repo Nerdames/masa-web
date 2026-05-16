@@ -1,5 +1,5 @@
 /**
- * src/core/lib/auth.ts
+ * C:\Users\chibu\Projects\Next\masa\src\core\lib\auth.ts
  * * PRODUCTION-READY NEXTAUTH CONFIGURATION
  * Fortified for performance, strict typing, and cookie size optimization.
  * Integrated with Forensic Audit Engine V2.6 for cryptographic integrity.
@@ -17,6 +17,7 @@ import {
   Role,
   Severity,
   Resource,
+  CriticalAction 
 } from "@prisma/client";
 
 // ============================================================================
@@ -216,6 +217,7 @@ export const authOptions: NextAuthOptions = {
               actorId: personnel.id,
               actorRole: personnel.role,
               action: "LOGIN_ATTEMPT_ON_BLOCKED_ACCOUNT",
+              actionTrigger: CriticalAction.SUSPICIOUS_LOGIN, // Strictly linked to enum
               resource: Resource.PERSONNEL,
               resourceId: personnel.id,
               description: `Blocked login attempt: ${reason}`,
@@ -243,6 +245,24 @@ export const authOptions: NextAuthOptions = {
                 isLocked: shouldLock ? true : personnel.isLocked,
                 lockoutUntil: shouldLock ? new Date(now.getTime() + LOCKOUT_DURATION_MS) : null,
               },
+            });
+
+            // Enforce forensic tracking for password failures via enum bindings
+            await createAuditLog(tx, {
+              organizationId: personnel.organizationId,
+              branchId: personnel.branchId,
+              actorId: personnel.id,
+              actorRole: personnel.role,
+              action: shouldLock ? "MAX_FAILED_ATTEMPTS_REACHED" : "INVALID_PASSWORD_ATTEMPT",
+              actionTrigger: shouldLock ? CriticalAction.FAILED_LOGIN_LOCKOUT : CriticalAction.SUSPICIOUS_LOGIN,
+              resource: Resource.PERSONNEL,
+              resourceId: personnel.id,
+              description: `Failed login attempt ${attempts}/${MAX_FAILED_ATTEMPTS}. ${shouldLock ? 'Account systematically locked.' : ''}`,
+              severity: shouldLock ? Severity.CRITICAL : Severity.MEDIUM,
+              critical: shouldLock,
+              ipAddress,
+              deviceInfo,
+              metadata: { attemptCount: attempts }
             });
           });
           throw new Error(shouldLock ? "EXCESSIVE_FAILED_ATTEMPTS" : "INVALID_CREDENTIALS");

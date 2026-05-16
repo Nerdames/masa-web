@@ -265,20 +265,6 @@ export async function GET(req: NextRequest) {
     }
 
     // FIX 2: Prisma Field-to-Field Comparison (The status Filter)
-    // To handle field-to-field comparisons natively in Prisma without raw queries, 
-    // we must fetch the data and filter in memory if the specific db engine/prisma version doesn't support it,
-    // OR we use the preview feature. Assuming standard safe implementation:
-    // We will pull the data and filter if status is provided, but to keep pagination accurate,
-    // we use a raw query fallback or rely on the application layer if needed.
-    // For this Fortified version, we will assume standard filtering is possible via schema 
-    // or we skip field-to-field in the `where` and filter post-fetch if necessary.
-    // However, for pure performance, we will implement a safe, generic fallback or leave it to standard where if supported.
-    // *If your Prisma version does NOT support `fields`, this block must be removed and filtered in memory.*
-    
-    // Safest approach without preview features: We do NOT use field-to-field in the Prisma `where` clause directly.
-    // Since we need pagination, we'll keep the standard approach but wrap it in a try-catch in case of Prisma version issues,
-    // or ideally, we'd use raw queries. For this snippet, we will keep the standard implementation but flag it.
-    
     if (status === "critical") {
       // Note: Requires previewFeatures = ["fieldReference"] in schema.prisma if < 5.x
       where.stock = { lte: prisma.branchProduct.fields.safetyStock };
@@ -598,9 +584,10 @@ export async function PATCH(req: NextRequest) {
 
       // 3. PURE FORENSIC AUDIT CHRONICLE
       if (commercialDirectlyUpdated || newReorder !== undefined || newSafety !== undefined) {
-        const auditActionType = commercialDirectlyUpdated && (newReorder !== undefined || newSafety !== undefined) 
-          ? "COMMERCIAL_AND_LOGISTICAL_UPDATE" 
-          : commercialDirectlyUpdated ? "COMMERCIAL_UPDATE" : "LOGISTICAL_UPDATE";
+        // Mismatch Fixed: Trigger aligned properly with CriticalAction to prevent EventBus validation failure.
+        const auditActionType = commercialDirectlyUpdated 
+          ? CriticalAction.PRICE_UPDATE 
+          : "STOCK_ADJUST";
 
         const log = await createAuditLog(tx as any, {
           organizationId: orgId,
@@ -654,7 +641,8 @@ export async function PATCH(req: NextRequest) {
           branchId: existing.branchId,
           actorId: user.id,
           actorRole: user.role,
-          action: activeApproval ? "UPDATE_COMMERCIAL_REQUEST" : "REQUEST_COMMERCIAL_UPDATE",
+          // Mismatch Fixed: Trigger aligned properly with CriticalAction
+          action: CriticalAction.APPROVAL_REQUESTED,
           resource: Resource.STOCK,
           resourceId: existing.id,
           severity: Severity.MEDIUM,
