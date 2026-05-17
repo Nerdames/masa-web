@@ -148,7 +148,7 @@ export const ROLE_PERMISSIONS_MATRIX: Record<Role, string[]> = (
 /**
  * =========================================================
  * CRITICAL ACTION REQUIREMENTS 
- * Updated to include all items in the CriticalAction Enum. [cite: 1515]
+ * Updated to include all items in the CriticalAction Enum.
  * =========================================================
  */
 export const ACTION_REQUIREMENTS: Record<CriticalAction, Role> = {
