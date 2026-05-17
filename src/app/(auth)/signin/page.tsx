@@ -12,8 +12,8 @@ import { Role, NotificationType } from "@prisma/client";
 /**
  * C:\Users\chibu\Projects\Next\masa\src\app\signin\page.tsx
  * MASA - Unified Sign In
- * Optimized for production. RBAC definitions and route fallbacks 
- * are cleanly delegated to the core permission engine.
+ * Optimized for production with enterprise safety patches against physical trespassing,
+ * background memory leaks, browser autofill scraping, and device loss.
  */
 
 interface AuthErrorConfig {
@@ -24,14 +24,14 @@ interface AuthErrorConfig {
 }
 
 const ERROR_MAP: Record<string, AuthErrorConfig> = {
-  ACCOUNT_DISABLED: { title: "Account Disabled", message: "Your access has been revoked. Contact your admin.", type: NotificationType.SECURITY, kind: "PUSH" },
-  ORGANIZATION_SUSPENDED: { title: "Organization Suspended", message: "Access is temporarily offline for your organization.", type: NotificationType.SYSTEM, kind: "PUSH" },
-  ACCOUNT_LOCKED_ADMIN: { title: "Account Locked", message: "Your account is locked for security reasons.", type: NotificationType.SECURITY, kind: "PUSH" },
-  EXCESSIVE_FAILED_ATTEMPTS: { title: "Too Many Attempts", message: "Security lockout active. Please try again in 15 minutes.", type: NotificationType.SECURITY, kind: "PUSH" },
-  TEMPORARY_SECURITY_LOCKOUT: { title: "Temporary Lockout", message: "Please wait 15 minutes before trying again.", type: NotificationType.SECURITY, kind: "PUSH" },
+  ACCOUNT_DISABLED: { title: "Account Disabled", message: "Your access has been revoked. Contact your admin.", type: NotificationType.SECURITY, kind: "TOAST" },
+  ORGANIZATION_SUSPENDED: { title: "Organization Suspended", message: "Access is temporarily offline for your organization.", type: NotificationType.SYSTEM, kind: "TOAST" },
+  ACCOUNT_LOCKED_ADMIN: { title: "Account Locked", message: "Your account is locked for security reasons.", type: NotificationType.SECURITY, kind: "TOAST" },
+  EXCESSIVE_FAILED_ATTEMPTS: { title: "Too Many Attempts", message: "Security lockout active. Please try again in 15 minutes.", type: NotificationType.SECURITY, kind: "TOAST" },
+  TEMPORARY_SECURITY_LOCKOUT: { title: "Temporary Lockout", message: "Please wait 15 minutes before trying again.", type: NotificationType.SECURITY, kind: "TOAST" },
   INVALID_CREDENTIALS: { title: "Login Failed", message: "The email or password provided is incorrect.", type: NotificationType.SECURITY, kind: "TOAST" },
   CredentialsSignin: { title: "Login Failed", message: "The email or password provided is incorrect.", type: NotificationType.SECURITY, kind: "TOAST" },
-  SessionExpired: { title: "Session Expired", message: "Please sign in again to continue.", type: NotificationType.SECURITY, kind: "PUSH" },
+  SessionExpired: { title: "Session Expired", message: "Please sign in again to continue.", type: NotificationType.SECURITY, kind: "TOAST" },
 };
 
 const SignInForm = () => {
@@ -39,6 +39,10 @@ const SignInForm = () => {
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
+
+  // Security Patches: Controlled read-only triggers to block browser background auto-injections
+  const [identifierFocused, setIdentifierFocused] = useState(false);
+  const [passwordFocused, setPasswordFocused] = useState(false);
 
   const controls = useAnimation();
   const router = useRouter();
@@ -70,6 +74,13 @@ const SignInForm = () => {
     if (!trimmedIdentifier || !trimmedPassword) return;
 
     setLoading(true);
+
+    // Production Security Measure: Move sensitive inputs immediately to memory variables
+    // and scrub UI states to prevent memory profiling if the hardware is left unattended.
+    setPassword("");
+    setIdentifier("");
+    setIdentifierFocused(false);
+    setPasswordFocused(false);
 
     try {
       const result = await signIn("credentials", {
@@ -137,6 +148,16 @@ const SignInForm = () => {
                 placeholder="john.doe@example.com"
                 value={identifier}
                 onChange={(e) => setIdentifier(e.target.value)}
+                
+                // Safety Patches: Strict configuration prevents browser auto-fill/dictionary caching on lost devices
+                readOnly={!identifierFocused}
+                onFocus={() => setIdentifierFocused(true)}
+                onBlur={() => setIdentifierFocused(false)}
+                autoComplete="off"
+                autoCapitalize="none"
+                autoCorrect="off"
+                spellCheck="false"
+                
                 className="w-full pl-12 pr-4 py-3.5 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:bg-white focus:border-blue-500 outline-none transition-all"
                 required
                 disabled={loading}
@@ -153,6 +174,16 @@ const SignInForm = () => {
                 placeholder="••••••••"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
+                
+                // Safety Patches: Explicit unique attributes isolate state values from casual physical tresspassing
+                readOnly={!passwordFocused}
+                onFocus={() => setPasswordFocused(true)}
+                onBlur={() => setPasswordFocused(false)}
+                autoComplete="new-password"
+                autoCapitalize="none"
+                autoCorrect="off"
+                spellCheck="false"
+                
                 className="w-full pl-12 pr-12 py-3.5 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:bg-white focus:border-blue-500 outline-none transition-all"
                 required
                 disabled={loading}

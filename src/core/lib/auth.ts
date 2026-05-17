@@ -207,8 +207,8 @@ export const authOptions: NextAuthOptions = {
           const reason = personnel.disabled 
             ? "ACCOUNT_DISABLED" 
             : personnel.isLocked 
-              ? personnel.lockReason || "ACCOUNT_LOCKED_ADMIN" 
-              : "TEMPORARY_SECURITY_LOCKOUT";
+              ? personnel.lockReason || "ACCOUNT_LOCKED_BY_ADMIN" 
+              : "TEMPORARY_SECURITY_LOCKOUT_BY";
 
           await prisma.$transaction(async (tx) => {
             await createAuditLog(tx, {
