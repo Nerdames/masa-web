@@ -6,6 +6,7 @@
  * 2. Hierarchical Role Validations (via permission.ts)
  * 3. Cryptographic Forensic Auditing (via audit.ts)
  * 4. ACID-Compliant Transactions & Strict Payload Validation
+ * 5. Infrastructure Resilience (Handling P1001 DB Outages)
  */
 
 import { NextRequest, NextResponse } from "next/server";
@@ -16,6 +17,7 @@ import { pusherServer } from "@/core/lib/pusher";
 import { createAuditLog } from "@/core/lib/audit";
 import { ROLE_WEIGHT, canPerform } from "@/core/lib/permission";
 import { 
+  Prisma,
   Role, 
   NotificationType, 
   CriticalAction, 
@@ -164,6 +166,15 @@ export async function GET(req: NextRequest) {
     });
   } catch (error) {
     console.error("[GET_NOTIFICATIONS_ERROR]:", error);
+    
+    // Explicitly handle DB reachability errors (P1001)
+    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P1001') {
+      return NextResponse.json(
+        { error: "Database service is currently unreachable. Please check if your PostgreSQL server is running on port 5432." }, 
+        { status: 503 }
+      );
+    }
+    
     return NextResponse.json({ error: "Failed to fetch notifications" }, { status: 500 });
   }
 }
@@ -266,6 +277,14 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ success: true, notificationId: notification.id, dispatchedTo: recipients.length });
   } catch (error) {
     console.error("[POST_NOTIFICATION_ERROR]:", error);
+
+    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P1001') {
+      return NextResponse.json(
+        { error: "Database service is currently unreachable." }, 
+        { status: 503 }
+      );
+    }
+
     return NextResponse.json({ error: "Broadcast failed" }, { status: 500 });
   }
 }
@@ -338,6 +357,14 @@ export async function PATCH(req: NextRequest) {
 
   } catch (error) {
     console.error("[PATCH_NOTIFICATION_ERROR]:", error);
+    
+    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P1001') {
+      return NextResponse.json(
+        { error: "Database service is currently unreachable." }, 
+        { status: 503 }
+      );
+    }
+
     return NextResponse.json({ error: "Update failed" }, { status: 500 });
   }
 }
