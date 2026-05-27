@@ -52,7 +52,6 @@
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
     "@types/file-saver": "^2.0.7",
-    "@types/next-auth": "^3.13.0",
     "@types/node": "^20",
     "@types/pdfkit": "^0.17.4",
     "@types/react": "^19",

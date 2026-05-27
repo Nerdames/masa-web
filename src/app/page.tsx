@@ -1,7 +1,8 @@
 import { getServerSession } from "next-auth";
 import { redirect } from "next/navigation";
 import { authOptions } from "@/core/lib/auth";
-import OperationsHub from "@/core/components/layout/OperationsHub";
+import AdminOverview from "@/core/components/layout/AdminOverview";
+import Sidebar from "@/core/components/layout/Sidebar";
 import { Role } from "@prisma/client";
 
 /**
@@ -35,6 +36,13 @@ export default async function RootPage() {
 
     // LEADERSHIP PORTAL (Admin, Manager, Dev, etc.)
     default:
-      return <OperationsHub />;
+      return (
+        <div className="flex h-full">
+          <Sidebar />
+          <main className="flex-1 p-6">
+            <AdminOverview />
+          </main>
+        </div>
+      );
   }
 }

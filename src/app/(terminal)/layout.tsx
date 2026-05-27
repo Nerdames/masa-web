@@ -3,6 +3,7 @@
 import { ReactNode, useEffect, useState } from "react";
 import { useSession } from "next-auth/react";
 import TopBar from "@/core/components/layout/TopBar";
+import Sidebar from "@/core/components/layout/Sidebar"; // Adjust path as needed
 import { SidePanelProvider, useSidePanel } from "@/core/components/layout/SidePanelContext";
 import { motion, AnimatePresence } from "framer-motion";
 
@@ -14,7 +15,7 @@ export default function DashboardRootLayout({ children }: DashboardRootLayoutPro
   const { status } = useSession({ required: true });
   const [isDark, setIsDark] = useState(false);
 
-  // Auto-Theme Logic (Fortress standard: 7pm - 7am is Dark Mode)
+  // Auto-Theme Logic
   useEffect(() => {
     const handleTheme = () => {
       const hour = new Date().getHours();
@@ -56,6 +57,9 @@ export default function DashboardRootLayout({ children }: DashboardRootLayoutPro
 
         {/* Workspace Canvas */}
         <div className="flex flex-1 min-h-0 overflow-hidden relative z-10">
+          {/* Sidebar - Remains persistent on the left */}
+          <Sidebar />
+
           <div className="flex flex-1 min-w-0 min-h-0 overflow-hidden relative">
             <main className={`flex-1 flex flex-col min-w-0 min-h-0 transition-opacity duration-300 ${status === "loading" ? "opacity-0" : "opacity-100"}`}>
                 {children}
@@ -77,13 +81,13 @@ export default function DashboardRootLayout({ children }: DashboardRootLayoutPro
           .animate-progress-slide {
             animation: progress-slide 1.5s infinite linear;
           }
-          .scrollbar-hide::-webkit-scrollbar { display: none; }
-          .scrollbar-hide { -ms-overflow-style: none; scrollbar-width: none; }
         `}</style>
       </div>
     </SidePanelProvider>
   );
 }
+
+// ... DynamicSidePanel component remains as is ...
 
 function DynamicSidePanel({ isDark }: { isDark: boolean }) {
   const { isOpen, content, width, isFullScreen, closePanel } = useSidePanel();
