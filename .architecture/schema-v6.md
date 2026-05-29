@@ -1,79 +1,144 @@
-masa/
-├── .architecture/             # RFCs, ADRs, and Schema v6 docs
-├── prisma/                    # Database Configuration
-│   ├── schema.prisma          # ✅ Schema v6 (Final)
-│   └── seed.ts                # NGN-specific seed data (Currencies, Roles)
-├── public/                    # Minimal static assets (SVG only)
-├── src/                       # All source code moved here for a clean root
-│   ├── app/                   # NEXT.JS APP ROUTER (Role-Isolation Layer)
-│   │   ├── (auth)/            # Auth Group
-│   │   │   ├── sign-in/
+C:\Users\chibu\Projects\Next\masa\
+├── .architecture/
+│   └── schema-v6.md
+├── prisma/
+│   └── schema.prisma
+├── public/
+├── src/
+│   ├── app/                                  # Presentation, Layout Routing & Security Entrypoints Only
+│   │   ├── (auth)/                           # Public Authentication App Group
+│   │   │   ├── error/
+│   │   │   │   └── page.tsx
+│   │   │   ├── register/
+│   │   │   │   └── page.tsx
+│   │   │   ├── reset-password/
+│   │   │   │   └── page.tsx
+│   │   │   ├── signin/
+│   │   │   │   └── page.tsx
+│   │   │   ├── support/
+│   │   │   │   └── page.tsx
+│   │   │   └── welcome/
+│   │   │       └── page.tsx
+│   │   ├── (dashboard)/                      # Authenticated Internal Management App Shell
+│   │   │   ├── admin/
+│   │   │   │   └── page.tsx
+│   │   │   ├── audit/
+│   │   │   │   └── page.tsx
+│   │   │   ├── feedback/                     # Relocated: Flattened into dashboard layout context
+│   │   │   │   └── page.tsx
+│   │   │   ├── notifications/                # Relocated: Flattened into dashboard layout context
+│   │   │   │   └── page.tsx
+│   │   │   ├── settings/                     # Relocated: Consolidated nested configurations
+│   │   │   │   ├── notifications/
+│   │   │   │   │   └── page.tsx
+│   │   │   │   ├── preferences/
+│   │   │   │   │   └── page.tsx
+│   │   │   │   ├── profile/
+│   │   │   │   │   └── page.tsx
+│   │   │   │   ├── layout.tsx
+│   │   │   │   └── page.tsx
 │   │   │   └── layout.tsx
-│   │   ├── (dashboard)/       # MANAGEMENT INTERFACES (Sidebar Layout)
-│   │   │   ├── admin/         # Org/Branch management
-│   │   │   ├── inventory/     # Stock/Products
-│   │   │   ├── sales/         # Analytics/Reports
-│   │   │   ├── audit/         # Read-only ledger views
-│   │   │   └── layout.tsx     # The "Dashboard" Layout (Sidebar + TopBar)
-│   │   ├── (pos)/             # TASK-ORIENTED WORKSPACE (No Sidebar)
-│   │   │   ├── checkout/
-│   │   │   └── layout.tsx     # Full-screen "Operational" Layout
-│   │   ├── api/               # Essential Webhooks/Third-party integrations
-│   │   └── layout.tsx         # Root Layout (Providers, Toast, Fonts)
+│   │   ├── (terminal)/                       # Ultra-lightweight Isolated Point-of-Sale Shell
+│   │   │   ├── inventory/
+│   │   │   │   └── page.tsx
+│   │   │   ├── pos/
+│   │   │   │   └── page.tsx
+│   │   │   └── layout.tsx
+│   │   ├── api/                              # Stateless HTTP Transport Controllers
+│   │   │   ├── approvals/ route.ts
+│   │   │   ├── audit/ route.ts
+│   │   │   ├── auth/ route.ts
+│   │   │   ├── branches/ route.ts
+│   │   │   ├── calendar/ route.ts
+│   │   │   ├── categories/ route.ts
+│   │   │   ├── customers/ route.ts
+│   │   │   ├── inventory/ route.ts
+│   │   │   ├── invoices/ route.ts
+│   │   │   ├── logs/ route.ts
+│   │   │   ├── myorg/ route.ts
+│   │   │   ├── notifications/ route.ts
+│   │   │   ├── orders/ route.ts
+│   │   │   ├── organizations/
+│   │   │   │   └── route.ts
+│   │   │   ├── overview/ route.ts
+│   │   │   ├── payments/ route.ts
+│   │   │   ├── personnels/ route.ts
+│   │   │   ├── preferences/ route.ts
+│   │   │   ├── products/ route.ts
+│   │   │   ├── profile/ route.ts
+│   │   │   ├── refunds/ route.ts
+│   │   │   ├── register/
+│   │   │   │   └── route.ts
+│   │   │   ├── sales/ route.ts
+│   │   │   ├── stats/ route.ts
+│   │   │   ├── support/ route.ts
+│   │   │   ├── transfers/ route.ts
+│   │   │   ├── uoms/ route.ts
+│   │   │   └── vendors/ route.ts
+│   │   ├── globals.css
+│   │   ├── layout.tsx
+│   │   └── page.tsx
 │   │
-│   ├── modules/               # DOMAIN LAYER (The Engine)
-│   │   ├── sales/             # Each module is self-contained:
-│   │   │   ├── actions.ts     # Server Actions (Mutations)
-│   │   │   ├── components/    # Domain-specific UI (SaleCard, etc.)
-│   │   │   ├── services/      # Business Logic & Math (Tax/NGN calcs)
-│   │   │   ├── repository.ts  # Prisma database queries
-│   │   │   ├── schema.ts      # Zod validation schemas
-│   │   │   └── types.ts       # Domain-specific TypeScript interfaces
-│   │   ├── inventory/         # [Same internal structure]
-│   │   ├── accounting/        # [Same internal structure]
-│   │   ├── personnel/         # [Same internal structure]
-│   │   └── audit/             # Logic for immutable ActivityLogs
+│   ├── infrastructure/                       # External Stateful Gateway Allocations (Pure I/O Client Init)
+│   │   ├── auth/
+│   │   ├── cache/
+│   │   ├── prisma/
+│   │   │   └── client.ts                     # Migrated out of src/core/lib/prisma.ts
+│   │   ├── pusher/
+│   │   │   └── client.ts                     # Migrated out of src/core/lib/pusher.ts
+│   │   ├── redis/
+│   │   │   └── client.ts                     # Migrated out of src/core/lib/redis.ts
+│   │   └── queue/
 │   │
-│   ├── core/                  # INFRASTRUCTURE LAYER (Shared Primitives)
-│   │   ├── components/        # UI primitives (DataTables, Inputs, Buttons)
-        ├── events/
-│   │   ├── lib/               # Singleton instances (Prisma, AuthOptions)
-│   │   ├── guards/            # RBAC utilities (checkPermission, requireRole)
-│   │   ├── hooks/             # Utility hooks (useDebounce, useMediaQuery)
-│   │   ├── utils/             # Formatters (NGN Currency, Date formatting)
-│   │   └── providers/         # Global Contexts (Auth, Theme)
+│   ├── modules/                              # Self-Contained Business Domain Modules (Portable & Isolated)
+│   │   ├── auth/
+│   │   │   ├── components/                   # AccessDenied, EmailChangeModal, PasswordChangeModal
+│   │   │   └── index.ts
+│   │   ├── audit/
+│   │   ├── branches/
+│   │   ├── feedback/                         # Extracted domain boundaries
+│   │   ├── inventory/
+│   │   ├── myorg/
+│   │   ├── notifications/                    # Components, Hooks (usePusherNotifications), Services
+│   │   ├── personnel/
+│   │   │   ├── components/                   # PersonnelDetailsPanel, PersonnelRow, PropertyRow, etc.
+│   │   │   ├── server/
+│   │   │   │   ├── personnel.service.ts
+│   │   │   │   └── personnel.repository.ts
+│   │   │   ├── types/
+│   │   │   ├── utils/
+│   │   │   └── index.ts                      # Strict Domain Entrypoint Module Contract
+│   │   ├── sales/
+│   │   └── settings/
 │   │
-│   └── types/                 # Global/Shared Types (next-auth.d.ts, etc.)
-├── tests/                     # Unit, Integration, and Playwright E2E
-├── .env                       # Environment Secrets
-├── next.config.ts             # Performance tweaks (Asset prefixes, etc.)
-└── package.json
-
-
-
-
-
-      <section className="px-6 pt-6 pb-2">
-        <div className="flex items-center gap-2 mb-4 px-2">
-          <h2 className="text-[11px] font-bold text-slate-500 uppercase tracking-widest">Operations Hub</h2>
-          <div className="h-px bg-slate-200 flex-1"></div>
-        </div>
-        <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-3">
-          {authorizedModules.map((mod) => {
-            const Icon = mod.icon;
-            return (
-              <a 
-                key={mod.id} 
-                href={mod.href}
-                className="group flex flex-col items-start p-3 bg-white rounded-xl border border-slate-200/60 hover:border-blue-200 hover:shadow-md transition-all cursor-pointer"
-              >
-                <div className={`w-8 h-8 rounded-lg bg-gradient-to-br ${mod.color} text-white flex items-center justify-center mb-2 shadow-sm group-hover:scale-105 transition-transform`}>
-                  <Icon className="w-4 h-4" />
-                </div>
-                <h3 className="text-[12px] font-bold text-slate-900 leading-tight">{mod.title}</h3>
-                <p className="text-[10px] text-slate-500 mt-0.5 leading-snug">{mod.descriptionSm}</p>
-              </a>
-            );
-          })}
-        </div>
-      </section>
+│   ├── server/                               # Pure, Isolated Server Runtime Engines
+│   │   ├── events/                           # Central Application Event Aggregation Core
+│   │   │   ├── bus.ts
+│   │   │   ├── handlers.ts
+│   │   │   ├── register.ts
+│   │   │   └── types.ts
+│   │   ├── permissions/                      # Mandatory Access Control Engine
+│   │   │   ├── cache.ts                      # Migrated out of src/core/lib/permissionCache.ts
+│   │   │   └── enforcer.ts                   # Migrated out of src/core/lib/permission.ts
+│   │   ├── security/                         # Inflexible Structural Route Guarding
+│   │   │   └── guards.ts                     # Migrated out of src/core/lib/actions.ts
+│   │   ├── repositories/
+│   │   └── services/
+│   │
+│   ├── shared/                               # Global Shared Domain-Agnostic Utilities & Primitives
+│   │   ├── components/
+│   │   │   ├── calendar/                     # MasaCalendar.tsx
+│   │   │   ├── layout/                       # AdminOverview, Sidebar, TopBar, SidePanelContext
+│   │   │   └── modals/                       # ConfirmModal, ResetModal, SummarySettingsModal, ExportModal
+│   │   ├── hooks/                            # useDebounce.ts, useDataTablePreference.ts
+│   │   ├── types/                            # Global System Types & API Response Definitions
+│   │   ├── ui/                               # Atomic primitives (Buttons, Inputs, Tooltips)
+│   │   └── utils/                            # Pure function tool belts
+│   │
+│   ├── middleware.ts                         # Edge Network Request Router Matrix
+│   └── proxy.ts
+├── env
+├── eslint.config.mjs
+├── next.config.ts
+├── package.json
+└── tsconfig.json

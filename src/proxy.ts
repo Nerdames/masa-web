@@ -4,19 +4,26 @@ import { getToken } from "next-auth/jwt";
 import type { Role } from "@prisma/client";
 
 /**
- * Minimal Token interface for core authentication
+ * Enhanced Token interface synchronized with src/core/lib/auth.ts token schema
  */
 interface MasaToken {
   id: string;
   role: Role;
   organizationId: string;
+  requiresPasswordChange: boolean;
+  disabled?: boolean;
+  locked?: boolean;
+  expired?: boolean;
 }
 
 /* -------------------------------------------------- */
 /* CONFIGURATION                                      */
 /* -------------------------------------------------- */
 
-const AUTH_ROUTES = ["/signin", "/register", "/reset-password", "/welcome"];
+// STRATEGY A: Removed "/reset-password" so active sessions can execute password rotation.
+const AUTH_ROUTES = ["/signin", "/register", "/welcome"];
+// FIXED: Removed non-existent "/status" route to keep public matching strict.
+const PUBLIC_ROUTES = ["/error", "/support"];
 const STATIC_PREFIXES = ["/_next", "/favicon.ico", "/images", "/assets", "/public"];
 // FORTIFIED: Ensure exact API routes are matched to prevent trailing slash bypass
 const PUBLIC_API_ROUTES = ["/api/auth", "/api/logs", "/api/webhooks", "/api/register"];
@@ -25,9 +32,14 @@ const PUBLIC_API_ROUTES = ["/api/auth", "/api/logs", "/api/webhooks", "/api/regi
 /* UTILITIES                                          */
 /* -------------------------------------------------- */
 
-const isAuthRoute = (path: string) => AUTH_ROUTES.some((r) => path.startsWith(r));
+// FORTIFIED: Use exact matching or explicit path segment checks to block substring bypass bugs
+const matchRoute = (path: string, routes: string[]) => 
+  routes.some((r) => path === r || path.startsWith(r + "/"));
+
+const isAuthRoute = (path: string) => matchRoute(path, AUTH_ROUTES);
+const isPublicRoute = (path: string) => matchRoute(path, PUBLIC_ROUTES);
 const isStatic = (path: string) => STATIC_PREFIXES.some((p) => path.startsWith(p));
-const isPublicApi = (path: string) => PUBLIC_API_ROUTES.some((p) => path.startsWith(p));
+const isPublicApi = (path: string) => matchRoute(path, PUBLIC_API_ROUTES);
 
 function isDataRequest(req: NextRequest) {
   const pathname = req.nextUrl.pathname;
@@ -40,17 +52,35 @@ function isDataRequest(req: NextRequest) {
   );
 }
 
+/**
+ * PROXY-SAFE REDIRECTS:
+ * Reconstructs origin using reverse-proxy/load-balancer upstream headers
+ * to prevent circular loops caused by internal protocol/port mismatches.
+ */
 function safeRedirect(req: NextRequest, destination: string, error?: string) {
-  const { pathname, origin } = req.nextUrl;
-  const url = new URL(destination, origin);
+  const { pathname } = req.nextUrl;
+  
+  // Extract external host/protocol from standard reverse proxy headers
+  const forwardedHost = req.headers.get("x-forwarded-host") || req.nextUrl.host;
+  const forwardedProto = req.headers.get("x-forwarded-proto") || req.nextUrl.protocol.replace(":", "");
+  
+  const proxyOrigin = `${forwardedProto}://${forwardedHost}`;
+  const url = new URL(destination, proxyOrigin);
 
-  if (pathname === url.pathname) return NextResponse.next();
+  // Hard stop against identity redirect loops on identical endpoints
+  if (pathname === url.pathname) {
+    return NextResponse.next();
+  }
 
-  if (url.pathname === "/signin" && pathname !== "/" && !isAuthRoute(pathname)) {
+  // Preserve callback URLs for non-auth requests dropping to signin
+  if (url.pathname === "/signin" && pathname !== "/" && !isAuthRoute(pathname) && !isPublicRoute(pathname)) {
     url.searchParams.set("callbackUrl", pathname);
   }
 
-  if (error) url.searchParams.set("error", error);
+  if (error) {
+    url.searchParams.set("error", error);
+  }
+
   return NextResponse.redirect(url);
 }
 
@@ -75,42 +105,47 @@ export default async function middleware(req: NextRequest, ev: NextFetchEvent) {
   const { pathname } = req.nextUrl;
 
   try {
-    // FIX 2: Allow CORS Preflight requests to pass immediately. 
-    // If we don't do this, cross-origin POSTs die silently in the browser.
+    // 1. CORS Preflight Bypass
     if (req.method === "OPTIONS") {
       return NextResponse.next();
     }
 
-    // 1. BYPASS: Allow statics, public APIs, and internal system calls
+    // 2. SYSTEM & STATIC WHITING BEYOND TOKEN GATEWAY
     if (
       (process.env.INTERNAL_API_KEY && req.headers.get("x-masa-internal-key") === process.env.INTERNAL_API_KEY) || 
       isStatic(pathname) || 
-      isPublicApi(pathname)
+      isPublicApi(pathname) ||
+      isPublicRoute(pathname) // Prevents /error and /support from intercepting themselves
     ) {
       return NextResponse.next();
     }
 
-    // 2. TOKEN EXTRACTION
+    // 3. TOKEN EXTRACTION
     const token = (await getToken({ req, secret: process.env.NEXTAUTH_SECRET })) as unknown as MasaToken;
     const authPage = isAuthRoute(pathname);
 
-    // 3. AUTHENTICATION CHECK
-    if (!token) {
-      return authPage ? NextResponse.next() : handleAuthResponse(req, "/signin", 401, "Unauthenticated");
+    // 4. UNATHENTICATED / EXPIRED ROUTE ACCESS CONTROL
+    // SEAMLESS SYNC: If token exists but has been flagged 'expired' by the auth.ts security heartbeat,
+    // treat it as unauthenticated so it doesn't fall into an active session bypass loop.
+    if (!token || token.expired) {
+      if (authPage) return NextResponse.next();
+      
+      const errCode = token?.disabled ? "AccountLocked" : "Unauthenticated";
+      return handleAuthResponse(req, "/signin", 401, errCode);
     }
 
-    // 4. AUTHENTICATED USERS ON AUTH PAGES
+    // 5. REDIRECT ACTIVE VALID SESSIONS FROM GUEST-ONLY PATHS
     if (authPage) {
       return safeRedirect(req, "/"); 
     }
 
-    // 5. GLOBAL ACCESS
+    // 6. GLOBAL GATE PASS
     return NextResponse.next();
 
   } catch (err) {
-    // Console log will help us catch if NextAuth crashes the edge environment
-    console.error("[MIDDLEWARE_ERROR] Route:", pathname, "Error:", err);
-    return handleAuthResponse(req, "/signin", 401, "ServerError");
+    // Catches system structural failures safely
+    console.error("[MIDDLEWARE_CRITICAL_FAULT] Route:", pathname, "Error Details:", err);
+    return handleAuthResponse(req, "/error", 401, "Configuration");
   }
 }
 

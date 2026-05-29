@@ -1,5 +1,5 @@
 /**
- * C:\Users\chibu\Projects\Next\masa\src\core\lib\auth.ts
+ * src/core/lib/auth.ts
  * * PRODUCTION-READY NEXTAUTH CONFIGURATION
  * Fortified for performance, strict typing, and cookie size optimization.
  * Integrated with Forensic Audit Engine V2.6 and B2B Google SSO.
@@ -10,14 +10,13 @@ import GoogleProvider from "next-auth/providers/google";
 import type { NextAuthOptions, DefaultSession, DefaultUser } from "next-auth";
 import type { JWT } from "next-auth/jwt";
 import bcrypt from "bcryptjs";
-import prisma from "@/core/lib/prisma";
+import prisma from "@/core/lib/prisma"; // Ensure this exports a singleton pattern instance
 import { ROLE_PERMISSIONS_MATRIX } from "@/core/lib/permission";
 import { getCachedPermissions, setCachedPermissions } from "@/core/lib/permissionCache";
 import { createAuditLog } from "@/core/lib/audit";
 import {
   Role,
   Severity,
-  CriticalAction,
   ActorType
 } from "@prisma/client";
 
@@ -110,6 +109,11 @@ const LOCKOUT_DURATION_MS = 15 * 60 * 1000;   // 15 mins temporary lockout
  */
 async function loadOrgPermissionsFromDb(orgId: string, role: Role): Promise<string[]> {
   try {
+    // Structural guard against hot-reload singleton drops
+    if (typeof prisma === "undefined") {
+      throw new Error("Prisma client is not initialized in the current context.");
+    }
+
     const rows = await prisma.permission.findMany({
       where: { organizationId: orgId, role },
       select: { resource: true, action: true }
@@ -180,6 +184,7 @@ export const authOptions: NextAuthOptions = {
       async authorize(credentials, req) {
         if (!credentials?.identifier || !credentials?.password) return null;
 
+        // FIXED: Robust proxy IP extraction mapping to ActivityLog bounds
         const forwardedFor = req?.headers?.["x-forwarded-for"] as string | undefined;
         const ipAddress = forwardedFor ? forwardedFor.split(",")[0].trim() : "127.0.0.1";
         const deviceInfo = (req?.headers?.["user-agent"] as string) || "Unknown Device";
@@ -352,7 +357,7 @@ export const authOptions: NextAuthOptions = {
   ],
 
   callbacks: {
-    async signIn({ user, account, profile }) {
+    async signIn({ user, account }) {
       // STRICT B2B CONTROL: Prevent arbitrary Google signups. 
       // The email MUST already exist in the database, created by an admin.
       if (account?.provider === "google") {
@@ -469,21 +474,32 @@ export const authOptions: NextAuthOptions = {
         }
       }
 
-      // 2. Handle Dynamic Branch Switching
-      if (trigger === "update" && session?.action === "SWITCH_BRANCH") {
-        const targetId = session.targetBranchId;
-        const target = token.allowedBranches.find(b => b.id === targetId);
-
-        if (target || token.isOrgOwner) {
-          const effectiveRole = target?.role || (token.isOrgOwner ? Role.ADMIN : token.role);
-          
-          return {
-            ...token,
-            branchId: targetId,
-            branchName: target?.name || "Main",
-            role: effectiveRole,
-          };
+      // 2. FIXED: Universal Token Mutation Guard (Password Resets & Branch Switches)
+      if (trigger === "update" && session) {
+        // Handle Password Reset Mutator
+        if (typeof session.requiresPasswordChange !== "undefined") {
+          token.requiresPasswordChange = session.requiresPasswordChange;
         }
+
+        // Handle Standard Field Mutators
+        if (session.branchId) {
+          token.branchId = session.branchId;
+          token.branchName = session.branchName || token.branchName;
+        }
+
+        // Handle Explicit Branch Switch Mutator
+        if (session.action === "SWITCH_BRANCH" && session.targetBranchId) {
+          const target = token.allowedBranches.find(b => b.id === session.targetBranchId);
+          if (target || token.isOrgOwner) {
+            token.branchId = session.targetBranchId;
+            token.branchName = target?.name || "Main";
+            token.role = target?.role || (token.isOrgOwner ? Role.ADMIN : token.role);
+          }
+        }
+
+        // Ensure token registers activity pulse on update
+        token.lastActivityAt = now;
+        return token;
       }
 
       // 3. Security Heartbeat & DB Sync Throttling
@@ -498,22 +514,27 @@ export const authOptions: NextAuthOptions = {
           try {
             const dbState = await prisma.authorizedPersonnel.findUnique({
               where: { id: token.id },
-              select: { disabled: true, isLocked: true, deletedAt: true },
+              select: { disabled: true, isLocked: true, requiresPasswordChange: true, deletedAt: true },
             });
 
             if (!dbState || dbState.disabled || dbState.isLocked || dbState.deletedAt) {
               return { ...token, expired: true, disabled: true } as JWT;
             }
 
+            // Sync dynamic security requirements into the JWT memory
+            token.requiresPasswordChange = dbState.requiresPasswordChange;
+
             await prisma.authorizedPersonnel.update({
               where: { id: token.id },
               data: { lastActivityAt: new Date(now) },
             });
-            token.lastActivityAt = now;
           } catch (error) {
             console.error("[Auth:Heartbeat] DB Check Failed", error);
           }
         }
+
+        // Slide the validation window forward on active requests
+        token.lastActivityAt = now;
       }
 
       return token;
@@ -521,6 +542,15 @@ export const authOptions: NextAuthOptions = {
 
     async session({ session, token }) {
       if (token?.id) {
+        // FIXED: Clear cookie communication channel for expired sessions
+        if (token.expired) {
+          session.user = {
+            ...session.user,
+            expired: true,
+          };
+          return session;
+        }
+
         // DYNAMIC INJECTION: Resolve permissions here via O(1) Cache to prevent cookie explosion
         const finalPermissions = await resolvePermissionsUnion(token.organizationId, token.role);
 

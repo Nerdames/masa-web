@@ -8,11 +8,10 @@ import { Role } from "@prisma/client";
 
 // Import core UI and hooks
 import { Tooltip } from "@/core/components/feedback/Tooltip";
-import { usePermission } from "@/core/hooks/usePermission"; // Adjust import path as needed
+import { usePermission } from "@/core/hooks/usePermission";
 
 // Lucide React Icons
 import {
-  LayoutDashboard,
   Building2,
   MapPin,
   Users,
@@ -40,7 +39,8 @@ import {
   Boxes,
   Store,
   ShieldCheck,
-  Settings
+  Settings,
+  LayoutDashboard
 } from "lucide-react";
 
 /* --------------------------------------------- */
@@ -97,7 +97,7 @@ const AUDIT_ITEMS: SidebarItem[] = [
   { key: "aud-app", name: "Approval Queue", href: "/audit/approvals", icon: Scale, roles: [Role.AUDITOR, Role.ADMIN, Role.MANAGER] },
   { key: "aud-stk", name: "Stock Audit", href: "/audit/stock-takes", icon: FileSearch, roles: [Role.AUDITOR, Role.ADMIN, Role.INVENTORY] },
   { key: "aud-rec", name: "Reconciliation", href: "/audit/reconciliation", icon: RefreshCcw, roles: [Role.AUDITOR, Role.ADMIN] },
-  { key: "aud-ref", name: "Refund Monitor", href: "/terminal/refunds", icon: History, roles: [Role.AUDITOR, Role.ADMIN, Role.MANAGER] },
+  { key: "aud-ref", name: "Refund Monitor", href: "/audit/refunds", icon: History, roles: [Role.AUDITOR, Role.ADMIN, Role.MANAGER] }, // 🛡️ Typo Fixed: Siloed to /audit/refunds
   { key: "aud-node", name: "Node Integrity", href: "/audit/nodes", icon: Landmark, roles: [Role.AUDITOR, Role.DEV] },
 ];
 
@@ -108,7 +108,7 @@ const SETTINGS_ITEMS: SidebarItem[] = [
 ];
 
 /* --------------------------------------------- */
-/* Sidebar Item */
+/* Sidebar Item Component */
 /* --------------------------------------------- */
 
 interface ItemProps {
@@ -142,77 +142,98 @@ const SidebarItemLink = React.memo(function SidebarItemLink({ item, active, coll
 });
 
 /* --------------------------------------------- */
-/* Sidebar Section Header */
+/* Sidebar Section Header Component */
 /* --------------------------------------------- */
 
-const SectionHeader = ({ label, icon: Icon, collapsed }: { label: string; icon: React.ElementType; collapsed: boolean }) => (
-  <div className={`flex items-center text-gray-400 px-3 py-2 transition-all duration-200 ${collapsed ? "justify-center" : "gap-2"}`}>
-    <Icon className="w-4 h-4 flex-shrink-0" />
-    {!collapsed && (
-      <span className="text-[11px] font-bold uppercase tracking-wider truncate">
-        {label}
-      </span>
-    )}
-  </div>
-);
+const SectionHeader = React.memo(function SectionHeader({ label, icon: Icon, collapsed }: { label: string; icon: React.ElementType; collapsed: boolean }) {
+  return (
+    <div className={`flex items-center text-gray-400 px-3 py-2 transition-all duration-200 ${collapsed ? "justify-center" : "gap-2"}`}>
+      <Icon className="w-4 h-4 flex-shrink-0" />
+      {!collapsed && (
+        <span className="text-[11px] font-bold uppercase tracking-wider truncate">
+          {label}
+        </span>
+      )}
+    </div>
+  );
+});
 
 /* --------------------------------------------- */
-/* Sidebar */
+/* Main Sidebar Shell Component */
 /* --------------------------------------------- */
 
 function Sidebar() {
   const pathname = usePathname() ?? "/";
   const { user } = usePermission();
 
-  // Load instantly from localStorage before first paint to prevent layout jump
-  const [collapsed, setCollapsed] = useState<boolean>(() => {
-    if (typeof window !== "undefined") {
-      return localStorage.getItem("sidebar-collapsed") === "true";
-    }
-    return false; // Server-side default
-  });
+  // 1. Uniform Environment Initialization to secure perfect server-client HTML matching
+  const [collapsed, setCollapsed] = useState<boolean>(false);
+  const [mounted, setMounted] = useState<boolean>(false);
 
-  const [mounted, setMounted] = useState(false);
+  // 2. Generate a stable primitive hash token for session profiling tracking
+  const userKey = user?.id && user?.organizationId && user?.branchId 
+    ? `${user.id}-${user.organizationId}-${user.branchId}` 
+    : null;
 
-  // 1. Sync Preference transparently with the backend
+  // 3. Hydrate state instantly on mount from local storage to prevent layout flashes
   useEffect(() => {
     setMounted(true);
-    
+    if (typeof window !== "undefined") {
+      const localState = localStorage.getItem("sidebar-collapsed");
+      if (localState !== null) {
+        setCollapsed(localState === "true");
+      }
+    }
+  }, []);
+
+  // 4. Sync State with Database Preference Table safely
+  useEffect(() => {
+    if (!userKey || !user) return;
+
+    let isCurrentFetch = true;
+
     const fetchPreference = async () => {
-      if (!user?.organizationId || !user?.branchId || !user?.id) return;
       try {
         const params = new URLSearchParams({
-          organizationId: user.organizationId,
-          branchId: user.branchId,
-          personnelId: user.id,
+          organizationId: user.organizationId!,
+          branchId: user.branchId!,
+          personnelId: user.id!,
           category: "LAYOUT",
           key: "sidebar-collapsed",
           target: "",
         });
 
         const res = await fetch(`/api/preferences?${params.toString()}`);
+        if (!res.ok) return;
+        
         const data = await res.json();
 
-        if (data.success && data.preference !== undefined) {
+        if (isCurrentFetch && data.success && data.preference !== undefined) {
           const backendState = Boolean(data.preference);
-          if (backendState !== collapsed) {
+          
+          // Verify if the local state has shifted away from remote storage before triggering updates
+          if (backendState !== (localStorage.getItem("sidebar-collapsed") === "true")) {
             setCollapsed(backendState);
             localStorage.setItem("sidebar-collapsed", String(backendState));
           }
         }
       } catch (err) {
-        console.error("Failed to fetch sidebar preference", err);
+        console.error("Failed to fetch sidebar layout configurations:", err);
       }
     };
 
     fetchPreference();
-  }, [user]); // Only fetch when the user session resolves
 
-  // 2. Toggle & Save Preference
+    return () => {
+      isCurrentFetch = false;
+    };
+  }, [userKey, user]);
+
+  // 5. Toggle State Action Guard
   const toggleCollapsed = async () => {
-    const next = !collapsed;
-    setCollapsed(next);
-    localStorage.setItem("sidebar-collapsed", String(next));
+    const nextState = !collapsed;
+    setCollapsed(nextState);
+    localStorage.setItem("sidebar-collapsed", String(nextState));
 
     if (!user?.organizationId || !user?.branchId || !user?.id) return;
 
@@ -227,20 +248,20 @@ function Sidebar() {
           scope: "USER",
           category: "LAYOUT",
           key: "sidebar-collapsed",
-          value: next,
+          value: nextState,
           target: "",
         }),
       });
     } catch (err) {
-      console.error("Failed to save sidebar preference", err);
+      console.error("Failed to persist sidebar runtime preferences:", err);
     }
   };
 
-  // 3. RBAC Filtering logic
+  // 6. Native Role-Based Access Control Filtering Engine
   const hasAccess = useCallback((roles?: Role[]) => {
     if (!roles || roles.length === 0) return true;
     if (!user) return false;
-    if (user.isOrgOwner) return true; // Superuser bypass natively mapped
+    if (user.isOrgOwner) return true; // Global superuser elevation pass
     return roles.includes(user.role as Role);
   }, [user]);
 
@@ -250,9 +271,9 @@ function Sidebar() {
   const visibleAudit = useMemo(() => AUDIT_ITEMS.filter(item => hasAccess(item.roles)), [hasAccess]);
   const visibleSettings = useMemo(() => SETTINGS_ITEMS.filter(item => hasAccess(item.roles)), [hasAccess]);
 
-  // 4. Active State Logic
+  // 7. Deterministic Longest Matching Route Verification Layer
   const activeKeys = useMemo(() => {
-    const all = [
+    const allItems = [
       ...MANAGEMENT_ITEMS,
       ...INVENTORY_ITEMS,
       ...POS_ITEMS,
@@ -260,18 +281,19 @@ function Sidebar() {
       ...SETTINGS_ITEMS
     ];
     
-    let longest = 0;
-    let key: string | null = null;
+    let longestMatchLength = 0;
+    let selectedItemKey: string | null = null;
 
-    for (const item of all) {
-      const match = pathname === item.href || pathname.startsWith(item.href + "/");
-      if (match && item.href.length > longest) {
-        longest = item.href.length;
-        key = item.key;
+    for (const item of allItems) {
+      // Explicit exact match or nested sub-route tracking validation
+      const isMatch = pathname === item.href || pathname.startsWith(item.href + "/");
+      if (isMatch && item.href.length > longestMatchLength) {
+        longestMatchLength = item.href.length;
+        selectedItemKey = item.key;
       }
     }
 
-    return key ? new Set([key]) : new Set<string>();
+    return selectedItemKey ? new Set([selectedItemKey]) : new Set<string>();
   }, [pathname]);
 
   const renderItem = useCallback(
@@ -288,7 +310,7 @@ function Sidebar() {
 
   return (
     <motion.aside
-      suppressHydrationWarning // Prevent initial mismatch errors since we use localstorage directly for jump-prevention
+      suppressHydrationWarning
       initial={false}
       animate={{ width: collapsed ? 52 : 180 }}
       transition={{ duration: 0.2, ease: "easeInOut" }}
@@ -296,9 +318,9 @@ function Sidebar() {
     >
       <button
         onClick={toggleCollapsed}
+        aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
         className="absolute top-3 -right-3 z-[60] w-6 h-6 rounded-full border border-gray-200 bg-white shadow-sm flex items-center justify-center hover:bg-gray-50 transition-colors"
       >
-        {/* Wait until mounted to render the correct icon, preventing server/client HTML mismatch */}
         {mounted && collapsed ? (
           <ChevronRight className="w-4 h-4 text-gray-400 flex-shrink-0" />
         ) : (
@@ -306,7 +328,6 @@ function Sidebar() {
         )}
       </button>
 
-      {/* Global Style overrides just to hide the scrollbar UI entirely but keep functionality */}
       <style dangerouslySetInnerHTML={{ __html: `
         .sidebar-scroll-mask::-webkit-scrollbar {
           display: none;
@@ -317,7 +338,6 @@ function Sidebar() {
         className="sidebar-scroll-mask flex-1 px-2 py-3 space-y-1 overflow-y-auto overflow-x-hidden pb-6"
         style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}
       >
-        {/* We use 'mounted' flag to ensure child nodes map correctly post-render without layout flashing */}
         {mounted && (
           <>
             {visibleManagement.length > 0 && (
