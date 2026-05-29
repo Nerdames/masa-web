@@ -1,5 +1,4 @@
 import { Geist, Geist_Mono } from "next/font/google";
-import "boxicons/css/boxicons.min.css";
 import "./globals.css";
 import { ClientWrappers } from "@/core/providers/ClientWrappers";
 
@@ -13,11 +12,12 @@ export const metadata = {
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en" className="scroll-smooth h-full overflow-hidden">
-      {/* 1. Removed the hardcoded blue-to-green gradient.
-          2. Added 'bg-slate-50' as a base fallback.
-          3. Ensure h-dvh (dynamic viewport height) is locked to prevent mobile browser chrome jumps.
-      */}
+    <html 
+      lang="en" 
+      className="h-full overflow-hidden" 
+      data-scroll-behavior="smooth"
+      suppressHydrationWarning // Neutralizes extension attribute injections safely
+    >
       <body 
         className={`${geistSans.variable} ${geistMono.variable} antialiased h-dvh w-full overflow-hidden bg-slate-50 text-black flex flex-col`}
       >

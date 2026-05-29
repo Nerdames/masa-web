@@ -2,10 +2,11 @@
  * C:\Users\chibu\Projects\Next\masa\src\core\lib\auth.ts
  * * PRODUCTION-READY NEXTAUTH CONFIGURATION
  * Fortified for performance, strict typing, and cookie size optimization.
- * Integrated with Forensic Audit Engine V2.6 for cryptographic integrity.
+ * Integrated with Forensic Audit Engine V2.6 and B2B Google SSO.
  */
 
 import CredentialsProvider from "next-auth/providers/credentials";
+import GoogleProvider from "next-auth/providers/google";
 import type { NextAuthOptions, DefaultSession, DefaultUser } from "next-auth";
 import type { JWT } from "next-auth/jwt";
 import bcrypt from "bcryptjs";
@@ -16,8 +17,8 @@ import { createAuditLog } from "@/core/lib/audit";
 import {
   Role,
   Severity,
-  Resource,
-  CriticalAction 
+  CriticalAction,
+  ActorType
 } from "@prisma/client";
 
 // ============================================================================
@@ -50,7 +51,7 @@ declare module "next-auth" {
       requiresPasswordChange: boolean;
       expired?: boolean;
       allowedBranches: AllowedBranch[];
-      // Permissions are injected at the Session level, NOT the JWT level, to prevent cookie bloat
+      // Permissions injected at Session level (avoids 4KB cookie bloat)
       permissions: string[];
     } & DefaultSession["user"];
   }
@@ -89,7 +90,6 @@ declare module "next-auth/jwt" {
     requiresPasswordChange: boolean;
     expired?: boolean;
     allowedBranches: AllowedBranch[];
-    // Notice: `permissions` is intentionally omitted here to keep the cookie size under 4KB
   }
 }
 
@@ -106,18 +106,16 @@ const LOCKOUT_DURATION_MS = 15 * 60 * 1000;   // 15 mins temporary lockout
 // ============================================================================
 
 /**
- * Loads organization-specific overrides from ResourcePermission table.
+ * Loads organization-specific overrides from the Permission table.
  */
 async function loadOrgPermissionsFromDb(orgId: string, role: Role): Promise<string[]> {
   try {
-    const rows = await prisma.resourcePermission.findMany({
+    const rows = await prisma.permission.findMany({
       where: { organizationId: orgId, role },
-      select: { resource: true, actions: true }
+      select: { resource: true, action: true }
     });
 
-    return rows.flatMap(row => 
-      row.actions.map(action => `${action}:${row.resource}`.toUpperCase())
-    );
+    return rows.map(row => `${row.action}:${row.resource}`.toUpperCase());
   } catch (error) {
     console.error("[Auth:Permissions] Failed to load DB permissions", error);
     return [];
@@ -129,11 +127,9 @@ async function loadOrgPermissionsFromDb(orgId: string, role: Role): Promise<stri
  * * CRITICAL PATH: Leverages O(1) Memory Cache to prevent UI rendering lag.
  */
 async function resolvePermissionsUnion(orgId: string, role: Role): Promise<string[]> {
-  // 1. FAST PATH: Memory Cache (0ms DB latency)
   const cached = getCachedPermissions(orgId, role);
   if (cached) return cached;
 
-  // 2. SLOW PATH: Compute, DB Fetch, and Cache
   if (role === Role.DEV || role === Role.ADMIN) {
     const adminPerms = ["*:*"];
     setCachedPermissions(orgId, role, adminPerms);
@@ -162,6 +158,17 @@ export const authOptions: NextAuthOptions = {
   },
 
   providers: [
+    GoogleProvider({
+      clientId: process.env.GOOGLE_CLIENT_ID!,
+      clientSecret: process.env.GOOGLE_CLIENT_SECRET!,
+      authorization: {
+        params: {
+          prompt: "consent",
+          access_type: "offline",
+          response_type: "code",
+        },
+      },
+    }),
     CredentialsProvider({
       id: "credentials",
       name: "MASA ERP Secure Access",
@@ -173,7 +180,6 @@ export const authOptions: NextAuthOptions = {
       async authorize(credentials, req) {
         if (!credentials?.identifier || !credentials?.password) return null;
 
-        // Safe IP extraction behind reverse proxies
         const forwardedFor = req?.headers?.["x-forwarded-for"] as string | undefined;
         const ipAddress = forwardedFor ? forwardedFor.split(",")[0].trim() : "127.0.0.1";
         const deviceInfo = (req?.headers?.["user-agent"] as string) || "Unknown Device";
@@ -198,9 +204,7 @@ export const authOptions: NextAuthOptions = {
         if (!personnel) throw new Error("INVALID_CREDENTIALS");
         if (personnel.organization && !personnel.organization.active) throw new Error("ORGANIZATION_SUSPENDED");
 
-        // -----------------------------------------------------
-        // Security & Brute Force Protection
-        // -----------------------------------------------------
+        // --- Security & Brute Force Protection ---
         const isTempLocked = personnel.lockoutUntil && personnel.lockoutUntil > now;
         
         if (personnel.disabled || personnel.isLocked || isTempLocked) {
@@ -208,19 +212,19 @@ export const authOptions: NextAuthOptions = {
             ? "ACCOUNT_DISABLED" 
             : personnel.isLocked 
               ? personnel.lockReason || "ACCOUNT_LOCKED_BY_ADMIN" 
-              : "TEMPORARY_SECURITY_LOCKOUT_BY";
+              : "TEMPORARY_SECURITY_LOCKOUT";
 
           await prisma.$transaction(async (tx) => {
             await createAuditLog(tx, {
               organizationId: personnel.organizationId,
               branchId: personnel.branchId,
               actorId: personnel.id,
+              actorType: ActorType.USER,
               actorRole: personnel.role,
               action: "LOGIN_ATTEMPT_ON_BLOCKED_ACCOUNT",
-              actionTrigger: CriticalAction.SUSPICIOUS_LOGIN, // Strictly linked to enum
-              resource: Resource.PERSONNEL,
-              resourceId: personnel.id,
-              description: `Blocked login attempt: ${reason}`,
+              targetType: "PERSONNEL",
+              targetId: personnel.id,
+              description: `Blocked credentials login attempt: ${reason}`,
               severity: Severity.HIGH,
               critical: true,
               ipAddress,
@@ -247,16 +251,15 @@ export const authOptions: NextAuthOptions = {
               },
             });
 
-            // Enforce forensic tracking for password failures via enum bindings
             await createAuditLog(tx, {
               organizationId: personnel.organizationId,
               branchId: personnel.branchId,
               actorId: personnel.id,
+              actorType: ActorType.USER,
               actorRole: personnel.role,
               action: shouldLock ? "MAX_FAILED_ATTEMPTS_REACHED" : "INVALID_PASSWORD_ATTEMPT",
-              actionTrigger: shouldLock ? CriticalAction.FAILED_LOGIN_LOCKOUT : CriticalAction.SUSPICIOUS_LOGIN,
-              resource: Resource.PERSONNEL,
-              resourceId: personnel.id,
+              targetType: "PERSONNEL",
+              targetId: personnel.id,
               description: `Failed login attempt ${attempts}/${MAX_FAILED_ATTEMPTS}. ${shouldLock ? 'Account systematically locked.' : ''}`,
               severity: shouldLock ? Severity.CRITICAL : Severity.MEDIUM,
               critical: shouldLock,
@@ -268,9 +271,7 @@ export const authOptions: NextAuthOptions = {
           throw new Error(shouldLock ? "EXCESSIVE_FAILED_ATTEMPTS" : "INVALID_CREDENTIALS");
         }
 
-        // -----------------------------------------------------
-        // Branch & Role Resolution
-        // -----------------------------------------------------
+        // --- Branch & Role Resolution ---
         let allowedBranches: AllowedBranch[] = [];
         let effectiveRole: Role = personnel.role;
         let activeBranchId: string | null = personnel.branchId;
@@ -291,7 +292,6 @@ export const authOptions: NextAuthOptions = {
           }));
         }
 
-        // Handle requested target branch or fallback to primary
         if (credentials.targetBranchId) {
           const target = allowedBranches.find((b) => b.id === credentials.targetBranchId);
           if (target) {
@@ -306,7 +306,6 @@ export const authOptions: NextAuthOptions = {
           effectiveRole = primary.role;
         }
 
-        // Apply successful login data
         await prisma.$transaction(async (tx) => {
           await tx.authorizedPersonnel.update({
             where: { id: personnel.id },
@@ -317,10 +316,11 @@ export const authOptions: NextAuthOptions = {
             organizationId: personnel.organizationId,
             branchId: activeBranchId,
             actorId: personnel.id,
+            actorType: ActorType.USER,
             actorRole: effectiveRole,
             action: "LOGIN_SUCCESS",
-            resource: Resource.PERSONNEL,
-            resourceId: personnel.id,
+            targetType: "PERSONNEL",
+            targetId: personnel.id,
             description: "User logged in successfully via credentials",
             severity: Severity.LOW,
             critical: false,
@@ -329,7 +329,6 @@ export const authOptions: NextAuthOptions = {
           });
         });
 
-        // Return lightweight user object (no massive permissions array here)
         return {
           id: personnel.id,
           name: personnel.name,
@@ -353,28 +352,121 @@ export const authOptions: NextAuthOptions = {
   ],
 
   callbacks: {
-    async jwt({ token, user, trigger, session }): Promise<JWT> {
+    async signIn({ user, account, profile }) {
+      // STRICT B2B CONTROL: Prevent arbitrary Google signups. 
+      // The email MUST already exist in the database, created by an admin.
+      if (account?.provider === "google") {
+        if (!user.email) return false;
+        
+        const personnel = await prisma.authorizedPersonnel.findFirst({
+          where: { email: user.email.toLowerCase(), deletedAt: null },
+          include: { organization: true },
+        });
+
+        if (!personnel) return "/signin?error=AccessDenied"; // Unregistered email
+        if (personnel.organization && !personnel.organization.active) return "/signin?error=OrgSuspended";
+        if (personnel.disabled || personnel.isLocked || (personnel.lockoutUntil && personnel.lockoutUntil > new Date())) {
+            return "/signin?error=AccountLocked";
+        }
+        return true;
+      }
+      return true; // Credentials provider resolves via `authorize`
+    },
+
+    async jwt({ token, user, account, trigger, session }) {
       const now = Date.now();
 
       // 1. Initial Sign-in Map
-      if (user) {
-        return {
-          ...token,
-          id: user.id,
-          staffCode: user.staffCode,
-          role: user.role,
-          isOrgOwner: user.isOrgOwner,
-          organizationId: user.organizationId,
-          organizationName: user.organizationName,
-          branchId: user.branchId,
-          branchName: user.branchName,
-          lastLogin: user.lastLogin,
-          lastActivityAt: now,
-          disabled: user.disabled,
-          locked: user.locked,
-          requiresPasswordChange: user.requiresPasswordChange,
-          allowedBranches: user.allowedBranches,
-        };
+      if (account && user) {
+        // If SSO via Google, we must hydrate the token with real DB data 
+        // since the `user` object only contains Google's basic profile payload.
+        if (account.provider === "google" && user.email) {
+            const personnel = await prisma.authorizedPersonnel.findFirst({
+                where: { email: user.email.toLowerCase(), deletedAt: null },
+                include: {
+                  organization: true,
+                  branch: true,
+                  branchAssignments: {
+                    where: { branch: { active: true, deletedAt: null } },
+                    include: { branch: true },
+                  },
+                },
+            });
+
+            if (personnel) {
+                let allowedBranches: AllowedBranch[] = [];
+                let effectiveRole: Role = personnel.role;
+                let activeBranchId: string | null = personnel.branchId;
+                let activeBranchName: string | null = personnel.branch?.name ?? null;
+
+                if (personnel.isOrgOwner) {
+                    const allBranches = await prisma.branch.findMany({
+                        where: { organizationId: personnel.organizationId, active: true, deletedAt: null },
+                        select: { id: true, name: true },
+                    });
+                    allowedBranches = allBranches.map((b) => ({ id: b.id, name: b.name, role: Role.ADMIN }));
+                    effectiveRole = Role.ADMIN;
+                } else {
+                    allowedBranches = personnel.branchAssignments.map((ba) => ({
+                        id: ba.branchId,
+                        name: ba.branch.name,
+                        role: ba.role,
+                    }));
+                }
+
+                if (!personnel.isOrgOwner && personnel.branchAssignments.length > 0) {
+                    const primary = personnel.branchAssignments.find((ba) => ba.isPrimary) || personnel.branchAssignments[0];
+                    activeBranchId = primary.branchId;
+                    activeBranchName = primary.branch.name;
+                    effectiveRole = primary.role;
+                }
+
+                // Update DB state asynchronously for Google Logins
+                prisma.authorizedPersonnel.update({
+                    where: { id: personnel.id },
+                    data: { lastLogin: new Date(now), lastActivityAt: new Date(now), failedLoginAttempts: 0 },
+                }).catch(console.error);
+
+                return {
+                    ...token,
+                    id: personnel.id,
+                    staffCode: personnel.staffCode,
+                    role: effectiveRole,
+                    isOrgOwner: personnel.isOrgOwner,
+                    organizationId: personnel.organizationId,
+                    organizationName: personnel.organization?.name ?? null,
+                    branchId: activeBranchId,
+                    branchName: activeBranchName,
+                    lastLogin: new Date(now).toISOString(),
+                    lastActivityAt: now,
+                    disabled: personnel.disabled,
+                    locked: personnel.isLocked,
+                    requiresPasswordChange: personnel.requiresPasswordChange,
+                    allowedBranches,
+                };
+            }
+        } 
+        
+        // If Credentials, `user` is already populated correctly via `authorize` return
+        if (account.provider === "credentials") {
+            return {
+              ...token,
+              id: user.id,
+              staffCode: user.staffCode,
+              role: user.role,
+              isOrgOwner: user.isOrgOwner,
+              organizationId: user.organizationId,
+              organizationName: user.organizationName,
+              branchId: user.branchId,
+              branchName: user.branchName,
+              lastLogin: user.lastLogin,
+              lastActivityAt: now,
+              disabled: user.disabled,
+              locked: user.locked,
+              requiresPasswordChange: user.requiresPasswordChange,
+              allowedBranches: user.allowedBranches,
+            };
+        }
       }
 
       // 2. Handle Dynamic Branch Switching
@@ -398,12 +490,10 @@ export const authOptions: NextAuthOptions = {
       if (token.id && !token.expired) {
         const idle = now - (token.lastActivityAt || 0);
         
-        // Force expiry if inactive
         if (idle > INACTIVITY_TIMEOUT_MS) {
           return { ...token, expired: true } as JWT;
         }
 
-        // Throttle DB checks to prevent connection exhaustion
         if (idle > DB_UPDATE_THROTTLE_MS) {
           try {
             const dbState = await prisma.authorizedPersonnel.findUnique({
@@ -431,7 +521,7 @@ export const authOptions: NextAuthOptions = {
 
     async session({ session, token }) {
       if (token?.id) {
-        // DYNAMIC INJECTION: Resolve permissions here via O(1) Cache instead of bloating the JWT cookie
+        // DYNAMIC INJECTION: Resolve permissions here via O(1) Cache to prevent cookie explosion
         const finalPermissions = await resolvePermissionsUnion(token.organizationId, token.role);
 
         session.user = {
@@ -451,7 +541,7 @@ export const authOptions: NextAuthOptions = {
           requiresPasswordChange: token.requiresPasswordChange,
           expired: token.expired || false,
           allowedBranches: token.allowedBranches,
-          permissions: finalPermissions, // Injected for client use
+          permissions: finalPermissions,
         };
       }
       return session;

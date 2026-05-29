@@ -19,19 +19,18 @@ interface ConfirmModalProps {
   className?: string;
 }
 
-// Simplified variants to avoid "jumping" from top to center
 const overlayVariants: Variants = {
   hidden: { opacity: 0 },
   visible: { opacity: 1 },
 };
 
 const contentVariants: Variants = {
-  hidden: { opacity: 0, scale: 0.95, y: 10 },
+  hidden: { opacity: 0, scale: 0.97, y: 6 },
   visible: { 
     opacity: 1, 
     scale: 1, 
     y: 0,
-    transition: { type: "spring", duration: 0.4, bounce: 0.3 }
+    transition: { type: "spring", duration: 0.3, bounce: 0.2 }
   },
 };
 
@@ -65,17 +64,13 @@ export default function ConfirmModal({
       <AnimatePresence>
         {open && (
           <Dialog.Portal forceMount>
-            {/* CENTRAL FIX: 
-              We make the overlay a flex container that centers its children.
-              This ensures the modal is ALWAYS centered regardless of the page height.
-            */}
             <Dialog.Overlay asChild>
               <motion.div
                 initial="hidden"
                 animate="visible"
                 exit="hidden"
                 variants={overlayVariants}
-                className="fixed inset-0 bg-slate-900/40 backdrop-blur-[4px] z-[10000] flex items-center justify-center p-4"
+                className="fixed inset-0 bg-slate-900/30 backdrop-blur-[2px] z-[10000] flex items-center justify-center p-4"
               >
                 <Dialog.Content asChild>
                   <motion.div
@@ -83,29 +78,27 @@ export default function ConfirmModal({
                     animate="visible"
                     exit="hidden"
                     variants={contentVariants}
-                    // Removed 'top-1/2 left-1/2 -translate...' as the parent flex handles it now
-                    className={`relative w-full max-w-[400px] bg-white rounded-[24px] p-6 
-                      shadow-[0_20px_50px_rgba(0,0,0,0.2)] border border-slate-100 
-                      focus:outline-none ${className}`}
+                    className={`relative w-full max-w-[320px] bg-white rounded-xl p-4 
+                      shadow-xl border border-slate-100 focus:outline-none ${className}`}
                   >
-                    <Dialog.Title className="text-xl font-bold text-slate-900 tracking-tight">
+                    <Dialog.Title className="text-sm font-semibold text-slate-900 tracking-tight">
                       {title}
                     </Dialog.Title>
 
                     {message && (
-                      <Dialog.Description className="mt-2 text-[15px] text-slate-500 leading-relaxed">
+                      <Dialog.Description className="mt-1.5 text-[11px] text-slate-500 leading-normal">
                         {message}
                       </Dialog.Description>
                     )}
 
-                    {children && <div className="mt-4">{children}</div>}
+                    {children && <div className="mt-3">{children}</div>}
 
-                    <div className="mt-8 flex items-center justify-end gap-3">
+                    <div className="mt-5 flex items-center justify-end gap-2">
                       <Dialog.Close asChild>
                         <button
                           disabled={loading}
-                          className="px-5 py-2.5 rounded-xl text-sm font-semibold text-slate-600 
-                            hover:bg-slate-50 transition-colors disabled:opacity-50"
+                          className="px-3 py-1.5 rounded-lg text-[11px] font-medium text-slate-500 
+                            hover:bg-slate-50 transition-colors disabled:opacity-40"
                         >
                           {cancelLabel}
                         </button>
@@ -114,14 +107,14 @@ export default function ConfirmModal({
                       <button
                         onClick={handleConfirm}
                         disabled={loading}
-                        className={`min-w-[100px] px-6 py-2.5 rounded-xl text-sm font-semibold 
-                          transition-all flex items-center justify-center gap-2
+                        className={`min-w-[76px] px-3.5 py-1.5 rounded-lg text-[11px] font-medium 
+                          transition-all flex items-center justify-center gap-1.5
                           ${destructive 
-                            ? "bg-red-500 text-white hover:bg-red-600 shadow-md shadow-red-200" 
-                            : "bg-slate-900 text-white hover:bg-slate-800 shadow-md shadow-slate-200"
-                          } disabled:opacity-70`}
+                            ? "bg-red-600 text-white hover:bg-red-700" 
+                            : "bg-slate-900 text-white hover:bg-slate-800"
+                          } disabled:opacity-50`}
                       >
-                        {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : confirmLabel}
+                        {loading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : confirmLabel}
                       </button>
                     </div>
                   </motion.div>

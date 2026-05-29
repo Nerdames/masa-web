@@ -60,14 +60,14 @@ export interface SidebarItem {
 /* --------------------------------------------- */
 
 const MANAGEMENT_ITEMS: SidebarItem[] = [
-  { key: "admin-ovw", name: "Overview", href: "/", icon: LayoutDashboard, roles: [Role.ADMIN, Role.DEV, Role.MANAGER] },
+  { key: "admin-ovw", name: "Overview", href: "/", icon: LayoutGrid, roles: [Role.ADMIN, Role.DEV, Role.MANAGER] },
   { key: "org", name: "Org & Defaults", href: "/admin/myorg", icon: Building2, roles: [Role.ADMIN, Role.DEV] },
   { key: "branches", name: "Branches", href: "/admin/branches", icon: MapPin, roles: [Role.ADMIN, Role.DEV] },
   { key: "personnels", name: "Personnel", href: "/admin/personnels", icon: Users, roles: [Role.ADMIN, Role.DEV] },
 ];
 
 const INVENTORY_ITEMS: SidebarItem[] = [
-  { key: "inv-ovw", name: "Overview", href: "/inventory", icon: LayoutDashboard, roles: [Role.ADMIN, Role.MANAGER, Role.INVENTORY, Role.AUDITOR, Role.DEV] },
+  { key: "inv-ovw", name: "Overview", href: "/inventory", icon: LayoutGrid, roles: [Role.ADMIN, Role.MANAGER, Role.INVENTORY, Role.AUDITOR, Role.DEV] },
   { key: "inv-fortress", name: "Stock Levels", href: "/inventory/fortress", icon: Box, roles: [Role.ADMIN, Role.MANAGER, Role.INVENTORY, Role.AUDITOR, Role.DEV] },
   { key: "inv-registry", name: "Product Registry", href: "/inventory/products", icon: Database, roles: [Role.ADMIN, Role.MANAGER, Role.INVENTORY, Role.DEV] },
   { key: "inv-proc", name: "Procurement", href: "/inventory/procurement", icon: ShoppingCart, roles: [Role.ADMIN, Role.MANAGER, Role.INVENTORY, Role.DEV] },
@@ -80,7 +80,7 @@ const INVENTORY_ITEMS: SidebarItem[] = [
 ];
 
 const POS_ITEMS: SidebarItem[] = [
-  { key: "pos-ovw", name: "Overview", href: "/pos", icon: LayoutDashboard, roles: [Role.ADMIN, Role.MANAGER, Role.SALES, Role.CASHIER, Role.DEV] },
+  { key: "pos-ovw", name: "Overview", href: "/pos", icon: LayoutGrid, roles: [Role.ADMIN, Role.MANAGER, Role.SALES, Role.CASHIER, Role.DEV] },
   { key: "pos-term", name: "Sales Terminal", href: "/pos/terminal", icon: ShoppingCart, roles: [Role.ADMIN, Role.MANAGER, Role.SALES, Role.CASHIER, Role.DEV] },
   { key: "pos-sess", name: "POS Sessions", href: "/pos/sessions", icon: History, roles: [Role.ADMIN, Role.MANAGER, Role.CASHIER, Role.DEV] },
   { key: "pos-drafts", name: "Draft Sales", href: "/pos/drafts", icon: ClipboardCheck, roles: [Role.ADMIN, Role.MANAGER, Role.SALES, Role.CASHIER, Role.DEV] },
@@ -92,7 +92,7 @@ const POS_ITEMS: SidebarItem[] = [
 ];
 
 const AUDIT_ITEMS: SidebarItem[] = [
-  { key: "aud-ovw", name: "Overview", href: "/audit", icon: LayoutDashboard, roles: [Role.AUDITOR, Role.ADMIN, Role.DEV] },
+  { key: "aud-ovw", name: "Overview", href: "/audit", icon: LayoutGrid, roles: [Role.AUDITOR, Role.ADMIN, Role.DEV] },
   { key: "aud-logs", name: "Forensic Logs", href: "/audit/logs", icon: Fingerprint, roles: [Role.AUDITOR, Role.ADMIN, Role.DEV] },
   { key: "aud-app", name: "Approval Queue", href: "/audit/approvals", icon: Scale, roles: [Role.AUDITOR, Role.ADMIN, Role.MANAGER] },
   { key: "aud-stk", name: "Stock Audit", href: "/audit/stock-takes", icon: FileSearch, roles: [Role.AUDITOR, Role.ADMIN, Role.INVENTORY] },
@@ -129,9 +129,9 @@ const SidebarItemLink = React.memo(function SidebarItemLink({ item, active, coll
         ${active ? "bg-blue-600 text-white shadow-sm" : "text-gray-700 hover:bg-gray-100"}
       `}
     >
-      <Icon className="w-[18px] h-[18px] flex-shrink-0" />
+      <Icon className="w-[16px] h-[16px] flex-shrink-0" />
       {!collapsed && (
-        <span className="text-[13px] font-medium truncate">
+        <span className="text-[11px] font-medium truncate">
           {item.name}
         </span>
       )}
@@ -298,10 +298,11 @@ function Sidebar() {
         onClick={toggleCollapsed}
         className="absolute top-3 -right-3 z-[60] w-6 h-6 rounded-full border border-gray-200 bg-white shadow-sm flex items-center justify-center hover:bg-gray-50 transition-colors"
       >
-        {collapsed ? (
-          <ChevronRight className="w-4 h-4 text-gray-500" />
+        {/* Wait until mounted to render the correct icon, preventing server/client HTML mismatch */}
+        {mounted && collapsed ? (
+          <ChevronRight className="w-4 h-4 text-gray-400 flex-shrink-0" />
         ) : (
-          <ChevronLeft className="w-4 h-4 text-gray-500" />
+          <ChevronLeft className="w-4 h-4 text-gray-400 flex-shrink-0" />
         )}
       </button>
 
@@ -321,7 +322,7 @@ function Sidebar() {
           <>
             {visibleManagement.length > 0 && (
               <>
-                <SectionHeader label="Management" icon={LayoutGrid} collapsed={collapsed} />
+                <SectionHeader label="Management" icon={LayoutDashboard} collapsed={collapsed} />
                 {visibleManagement.map(renderItem)}
               </>
             )}

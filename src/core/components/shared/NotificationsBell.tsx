@@ -7,7 +7,6 @@ import useSWR from "swr";
 import { motion, AnimatePresence } from "framer-motion";
 import { useSession } from "next-auth/react";
 import { getPusherClient } from "@/core/lib/pusher";
-import { formatDistanceToNowStrict } from "date-fns";
 import { NotificationType } from "@prisma/client";
 import {
   Bell,
@@ -84,10 +83,6 @@ export function NotificationsBell() {
     { revalidateOnFocus: false, revalidateOnReconnect: true }
   );
 
-  /**
-   * OPERATIONAL FILTER:
-   * The bell only displays items requiring immediate attention.
-   */
   const activeNotifications = useMemo(() => {
     return (data?.notifications ?? []).filter((n) => !n.read);
   }, [data]);
@@ -119,7 +114,6 @@ export function NotificationsBell() {
     if (!data) return;
     const previousData = data;
 
-    // Optimistic UI update
     mutate({ ...data, notifications: [], unreadCount: 0 }, false);
 
     try {
@@ -137,15 +131,15 @@ export function NotificationsBell() {
   return (
     <DropdownMenu.Root open={open} onOpenChange={setOpen}>
       <DropdownMenu.Trigger asChild>
-        <button className="relative w-10 h-10 flex-shrink-0 flex items-center justify-center rounded-lg hover:bg-slate-100 dark:hover:bg-white/10 transition-colors outline-none group">
+        <button className="relative w-6 h-6 flex-shrink-0 flex items-center justify-center rounded-md hover:bg-slate-50 border border-transparent transition-colors outline-none group">
           <Bell
-            className={`w-5 h-5 transition-colors ${
-              unreadCount > 0 ? "text-blue-600 dark:text-blue-400 animate-[bell-ring_2s_infinite]" : "text-slate-400 group-hover:text-slate-900 dark:group-hover:text-white"
+            className={`w-3.5 h-3.5 transition-colors ${
+              unreadCount > 0 ? "text-blue-600 animate-[bell-ring_2s_infinite]" : "text-slate-400 group-hover:text-slate-600"
             }`}
           />
           {unreadCount > 0 && (
-            <span className="absolute top-2 right-2.5 flex h-2.5 w-2.5">
-              <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-red-500 border-2 border-white dark:border-[#18181b]" />
+            <span className="absolute top-1 right-1 flex h-1 w-1">
+              <span className="relative inline-flex rounded-full h-1 w-1 bg-red-500 border border-white" />
             </span>
           )}
         </button>
@@ -154,36 +148,35 @@ export function NotificationsBell() {
       <DropdownMenu.Portal>
         <DropdownMenu.Content
           align="end"
-          sideOffset={8}
-          className="w-[calc(100vw-24px)] sm:w-[420px] max-h-[85vh] sm:max-h-[80vh] bg-white dark:bg-[#18181b] border border-slate-200 dark:border-white/10 shadow-2xl rounded-2xl overflow-hidden z-[100] outline-none flex flex-col animate-in fade-in zoom-in-95 duration-200"
+          sideOffset={6}
+          className="w-60 max-h-[70vh] bg-white border border-slate-200 shadow-xl rounded-lg overflow-hidden z-[100] outline-none flex flex-col animate-in fade-in zoom-in-95 duration-150"
           onCloseAutoFocus={(e) => e.preventDefault()}
         >
           {/* Operational Header */}
-          <div className="px-5 py-4 border-b border-slate-100 dark:border-white/5 flex items-center justify-between bg-slate-50/50 dark:bg-white/5 text-slate-900 dark:text-white shrink-0">
+          <div className="px-2 py-1 border-b border-slate-100 flex items-center justify-between bg-slate-50/60 text-slate-900 shrink-0">
             <div>
-              <h3 className="text-xs font-bold uppercase tracking-tight">System Alerts</h3>
-              <p className="text-[10px] text-slate-500 dark:text-slate-400 font-medium italic">Unresolved Notifications</p>
+              <h3 className="text-[9px] font-normal uppercase tracking-wider text-slate-400">Alerts</h3>
             </div>
-            <div className="flex items-center gap-3">
+            <div className="flex items-center gap-1.5">
               <button
                 onClick={handleMarkAllInformationalRead}
-                className="text-[10px] font-bold text-blue-600 hover:text-blue-700 dark:text-blue-400 dark:hover:text-blue-300 uppercase transition-all"
+                className="text-[9px] font-normal text-blue-500 hover:font-medium hover:text-blue-600 uppercase transition-all"
               >
                 Clear All
               </button>
-              <button onClick={() => mutate()} disabled={isValidating} className="text-slate-400 hover:text-slate-700 dark:hover:text-white transition-colors">
-                <RefreshCw className={`w-4 h-4 ${isValidating ? "animate-spin text-blue-500" : ""}`} />
+              <button onClick={() => mutate()} disabled={isValidating} className="text-slate-300 hover:text-slate-500 transition-colors">
+                <RefreshCw className={`w-2.5 h-2.5 ${isValidating ? "animate-spin text-blue-500" : ""}`} />
               </button>
             </div>
           </div>
 
           {/* Buffer List */}
-          <div className="flex-1 overflow-y-auto overscroll-contain p-2">
+          <div className="flex-1 overflow-y-auto overscroll-contain p-1 bg-white">
             <AnimatePresence initial={false} mode="popLayout">
               {activeNotifications.length === 0 ? (
-                <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="py-16 flex flex-col items-center opacity-40">
-                  <Inbox className="w-10 h-10 mb-3 text-slate-400 dark:text-slate-500" />
-                  <p className="text-[11px] font-bold uppercase tracking-widest text-slate-500 dark:text-slate-400">All Caught Up</p>
+                <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="py-6 flex flex-col items-center opacity-40">
+                  <Inbox className="w-5 h-5 mb-1 text-slate-300" />
+                  <p className="text-[8.5px] font-normal uppercase tracking-wider text-slate-400">All Caught Up</p>
                 </motion.div>
               ) : (
                 activeNotifications.map((n) => (
@@ -202,16 +195,16 @@ export function NotificationsBell() {
           </div>
 
           {/* Redirect to Persistent Feed */}
-          <div className="p-3 bg-white dark:bg-[#18181b] border-t border-slate-100 dark:border-white/5 shrink-0">
+          <div className="p-1 bg-white border-t border-slate-100 shrink-0">
             <button
               onClick={() => {
                 setOpen(false);
                 router.push("/notifications");
               }}
-              className="w-full py-3 sm:py-2.5 rounded-xl border border-slate-200 dark:border-white/10 text-[11px] font-bold text-slate-500 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-white/5 hover:text-slate-900 dark:hover:text-white active:bg-slate-100 dark:active:bg-white/10 transition-all flex items-center justify-center gap-2 group"
+              className="w-full py-1 rounded border border-slate-200 text-[9px] font-normal text-slate-400 hover:bg-slate-50 hover:font-medium hover:text-slate-700 transition-all flex items-center justify-center gap-0.5 group"
             >
-              Access Full Activity Terminal 
-              <ArrowRight className="w-3.5 h-3.5 group-hover:translate-x-1 transition-transform" />
+              Activity Terminal 
+              <ArrowRight className="w-2.5 h-2.5 group-hover:translate-x-0.5 transition-transform" />
             </button>
           </div>
         </DropdownMenu.Content>
@@ -240,7 +233,7 @@ function NotificationItem({
   const IconComponent = config.icon;
 
   const handleMarkRead = async (e: React.MouseEvent) => {
-    e.stopPropagation(); // Prevent routing when marking as read
+    e.stopPropagation();
     try {
       await fetch("/api/notifications", {
         method: "PATCH",
@@ -254,7 +247,7 @@ function NotificationItem({
   };
 
   const handleToggleExpand = (e: React.MouseEvent) => {
-    e.stopPropagation(); // Prevent routing when toggling details
+    e.stopPropagation();
     setIsExpanded(!isExpanded);
   };
 
@@ -263,28 +256,28 @@ function NotificationItem({
       layout
       initial={{ opacity: 0, scale: 0.98 }}
       animate={{ opacity: 1, scale: 1 }}
-      exit={{ opacity: 0, scale: 0.95 }}
+      exit={{ opacity: 0, scale: 0.96 }}
       onClick={onNavigate}
-      className="group bg-white dark:bg-[#202023] p-3 rounded-xl border border-transparent hover:border-black/5 dark:hover:border-white/10 mb-1.5 last:mb-0 cursor-pointer transition-colors shadow-sm shadow-black/5 dark:shadow-none"
+      className="group bg-white p-1.5 rounded border border-transparent hover:border-slate-100 mb-1 last:mb-0 cursor-pointer transition-colors"
     >
-      <div className="flex gap-3">
-        <div className={`w-8 h-8 rounded-lg flex-shrink-0 flex items-center justify-center ${config.bg} shadow-sm`}>
-          <IconComponent className="w-4 h-4 text-white" />
+      <div className="flex gap-2">
+        <div className={`w-5.5 h-5.5 rounded flex-shrink-0 flex items-center justify-center ${config.bg}`}>
+          <IconComponent className="w-3 h-3 text-white" />
         </div>
 
         <div className="flex-1 min-w-0">
           <div className="flex justify-between items-start mb-0.5">
-            <span className="text-[12px] font-semibold text-slate-900 dark:text-white truncate pr-2">
+            <span className="text-[10px] font-normal text-slate-800 group-hover:font-medium truncate pr-1">
               {n.title}
             </span>
-            <span className="text-[10px] text-slate-400 dark:text-slate-500 whitespace-nowrap">
+            <span className="text-[8px] text-slate-400 whitespace-nowrap">
               {getRelativeTime(n.createdAt)}
             </span>
           </div>
 
           <p
             ref={textRef}
-            className={`text-[11px] text-slate-500 dark:text-slate-400 leading-relaxed ${isExpanded ? "" : "line-clamp-1"}`}
+            className={`text-[9.5px] text-slate-500 leading-normal ${isExpanded ? "" : "line-clamp-1"}`}
           >
             {n.message}
           </p>
@@ -297,19 +290,19 @@ function NotificationItem({
                 exit={{ height: 0, opacity: 0 }}
                 className="overflow-hidden"
               >
-                <div className="mt-2 pt-2 border-t border-slate-100 dark:border-white/5 flex flex-col gap-2">
+                <div className="mt-1 pt-1 border-t border-slate-100 flex flex-col gap-0.5">
                   {n.actionTrigger && (
-                    <div className="flex items-center gap-2">
-                      <div className="w-1.5 h-1.5 rounded-full bg-slate-300 dark:bg-slate-600" />
-                      <span className="text-[10px] text-slate-500 dark:text-slate-400 font-medium capitalize">
+                    <div className="flex items-center gap-1">
+                      <div className="w-1 h-1 rounded-full bg-slate-300" />
+                      <span className="text-[8.5px] text-slate-400 font-normal capitalize">
                         Scope: {n.actionTrigger.toLowerCase().replace(/_/g, " ")}
                       </span>
                     </div>
                   )}
 
                   {n.context.actor && (
-                    <div className="text-[10px] text-slate-500 dark:text-slate-400 bg-slate-50 dark:bg-white/5 p-2 rounded-md border border-slate-100 dark:border-white/5">
-                      Originator: <span className="font-bold text-slate-700 dark:text-slate-300">{n.context.actor.name}</span> {n.context.ip ? `(${n.context.ip})` : ""}
+                    <div className="text-[8.5px] text-slate-400 bg-slate-50/80 p-1 rounded border border-slate-100">
+                      By: <span className="text-slate-500">{n.context.actor.name}</span> {n.context.ip ? `(${n.context.ip})` : ""}
                     </div>
                   )}
                 </div>
@@ -317,18 +310,18 @@ function NotificationItem({
             )}
           </AnimatePresence>
 
-          <div className="mt-2.5 flex items-center gap-3">
+          <div className="mt-1 flex items-center gap-2">
             <button
               onClick={handleMarkRead}
-              className="text-[10px] font-bold text-blue-600 hover:text-blue-700 dark:text-blue-400 dark:hover:text-blue-300 hover:underline flex items-center gap-1 transition-colors"
+              className="text-[8.5px] font-normal text-blue-500 hover:font-medium hover:underline flex items-center gap-0.5 transition-colors"
             >
-              <CheckCheck className="w-3 h-3" /> Mark Read
+              <CheckCheck className="w-2.5 h-2.5" /> Read
             </button>
             <button
               onClick={handleToggleExpand}
-              className="text-[10px] font-bold text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 transition-colors"
+              className="text-[8.5px] font-normal text-slate-400 hover:font-medium hover:text-slate-500 transition-colors"
             >
-              {isExpanded ? "Show Less" : "Details"}
+              {isExpanded ? "Less" : "Details"}
             </button>
           </div>
         </div>

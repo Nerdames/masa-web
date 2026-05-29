@@ -18,20 +18,10 @@ export default function TopBar({ isLoading }: TopBarProps) {
   const user = session?.user;
 
   const [unreadCount, setUnreadCount] = useState(0);
-  const [isDark, setIsDark] = useState(false);
   const [mounted, setMounted] = useState(false);
 
-  // Harmonized Theme Logic
   useEffect(() => {
-    const handleTheme = () => {
-      const hour = new Date().getHours();
-      setIsDark(hour < 7 || hour >= 19);
-    };
-    
-    handleTheme();
     setMounted(true);
-    const timer = setInterval(handleTheme, 60000);
-    return () => clearInterval(timer);
   }, []);
 
   const handleUnreadChange = useCallback((count: number) => {
@@ -40,85 +30,61 @@ export default function TopBar({ isLoading }: TopBarProps) {
 
   const userInitials = useMemo(() => getInitials(user?.name || ""), [user?.name]);
 
-  // 1. MODE-AWARE SKELETON (Prevents blinding white flashes in dark mode)
+  // 1. COMPACT SKELETON (Matched to new slim structure)
   if (!mounted || isLoading || status === "loading") {
     return (
-      <header className={cn(
-        "w-full h-12 flex items-center justify-between px-4 md:px-8 border-b transition-colors duration-1000",
-        isDark ? "bg-slate-900 border-slate-800" : "bg-white border-slate-200"
-      )}>
-        <div className="flex items-center gap-3">
-          <div className={cn("w-8 h-8 animate-pulse rounded-lg", isDark ? "bg-slate-800" : "bg-slate-200")} />
-          <div className={cn("h-4 w-32 animate-pulse rounded", isDark ? "bg-slate-800" : "bg-slate-100")} />
+      <header className="w-full h-9 flex items-center justify-between px-3 bg-white border-b border-slate-100">
+        <div className="flex items-center gap-2">
+          <div className="w-6 h-6 animate-pulse rounded bg-slate-100" />
+          <div className="h-3 w-20 animate-pulse rounded bg-slate-100" />
         </div>
-        <div className="flex items-center gap-3">
-          <div className={cn("w-8 h-8 animate-pulse rounded-full", isDark ? "bg-slate-800" : "bg-slate-100")} />
-          <div className={cn("w-24 h-8 animate-pulse rounded-full", isDark ? "bg-slate-800" : "bg-slate-100")} />
+        <div className="flex items-center gap-2">
+          <div className="w-6 h-6 animate-pulse rounded-full bg-slate-100" />
+          <div className="w-16 h-6 animate-pulse rounded-full bg-slate-100" />
         </div>
       </header>
     );
   }
 
   return (
-    <header className={cn(
-      "sticky top-0 z-[100] w-full h-12 border-b backdrop-blur-md px-2 md:px-4 flex items-center justify-between transition-all duration-1000",
-      isDark ? "bg-slate-900/50 border-slate-800" : "bg-white/80 border-slate-200"
-    )}>
+    <header className="sticky top-0 z-[100] w-full h-9  bg-white backdrop-blur-md px-3 flex items-center justify-between transition-all duration-300">
       
       {/* 1. BRANDING SECTION */}
-      <div className="flex items-center gap-4 select-none pointer-events-none">
+      <div className="flex items-center gap-2 select-none pointer-events-none">
         <div className={cn(
-          "flex items-center justify-center w-8 h-8 rounded-lg font-black text-xs text-white shadow-lg transition-all duration-500",
-          unreadCount > 0 
-            ? 'bg-blue-600 shadow-blue-500/20' 
-            : (isDark ? 'bg-blue-500 shadow-blue-500/10' : 'bg-slate-900 shadow-slate-900/20')
+          "flex items-center justify-center w-6 h-6 rounded font-black text-[10px] text-white shadow-sm transition-all duration-500 bg-blue-600",
+          unreadCount > 0 && 'shadow-blue-500/20'
         )}>
           M
         </div>
-        <div className="hidden sm:block">
-          <p className={cn("text-[9px] font-bold tracking-[0.2em] uppercase leading-none mb-1 transition-opacity", 
-            isDark ? "opacity-60 text-blue-400" : "opacity-40 text-slate-900"
-          )}>
-            Operational Node
-          </p>
-          <h2 className={cn("text-xs font-black tracking-tight uppercase transition-colors", 
-            isDark ? "text-slate-100" : "text-slate-900"
-          )}>
+        <div className="block">
+          <h2 className="text-[10px] font-black tracking-tight uppercase text-slate-800">
             {user?.organizationName || "MASA"}
           </h2>
         </div>
       </div>
 
       {/* 2. ACTIONS & PROFILE SECTION */}
-      <div className="flex items-center gap-3">
+      <div className="flex items-center gap-2">
         {user ? (
           <>
-            <div className={cn("flex items-center gap-2 pr-3 border-r mr-1 transition-colors", 
-              isDark ? "border-slate-800" : "border-slate-200/50"
-            )}>
-               <NotificationsBell onUnreadChange={handleUnreadChange} />
+            <div className="flex items-center gap-1.5 pr-2 border-r border-slate-100 mr-0.5">
+              <NotificationsBell onUnreadChange={handleUnreadChange} />
             </div>
 
             <UserMenu
               trigger={
-                <button className={cn(
-                  "flex items-center gap-2 cursor-pointer rounded-full py-0.5 pr-3 pl-0.5 transition-all border",
-                  isDark 
-                    ? "bg-slate-800/50 hover:bg-slate-800 border-slate-700 hover:border-blue-500/50" 
-                    : "bg-slate-50 hover:bg-slate-100 border-transparent hover:border-slate-200"
-                )}>
-                  <div className="w-7 h-7 rounded-full text-white flex-shrink-0 flex items-center justify-center font-bold text-[10px] bg-blue-600 shadow-sm">
+                <button className="flex items-center gap-1.5 cursor-pointer rounded-full py-0.5 pr-2 pl-0.5 transition-all border border-transparent bg-slate-50 hover:bg-slate-100 hover:border-slate-200">
+                  <div className="w-6 h-6 rounded-full text-white flex-shrink-0 flex items-center justify-center font-bold text-[9px] bg-blue-600 shadow-sm">
                     {userInitials}
                   </div>
 
                   <div className="hidden sm:flex items-center gap-1 whitespace-nowrap">
-                    <span className={cn("text-xs font-medium transition-colors", 
-                      isDark ? "text-slate-300" : "text-slate-700"
-                    )}>
+                    <span className="text-[10px] font-medium text-slate-700">
                       {user.name?.split(" ")[0]}
                     </span>
                     {user.role && (
-                      <span className="text-[10px] font-bold text-blue-500 uppercase tracking-tighter">
+                      <span className="text-[9px] font-bold text-blue-500 uppercase tracking-tighter">
                         {user.role}
                       </span>
                     )}
@@ -130,12 +96,7 @@ export default function TopBar({ isLoading }: TopBarProps) {
         ) : (
           <button
             onClick={() => router.push("/welcome")}
-            className={cn(
-              "flex items-center gap-2 rounded-full py-1.5 px-4 transition-all text-[11px] font-black uppercase tracking-widest shadow-lg",
-              isDark 
-                ? "bg-blue-600 text-white hover:bg-blue-500 shadow-blue-900/20" 
-                : "bg-slate-900 text-white hover:bg-slate-800 shadow-slate-900/20"
-            )}
+            className="flex items-center gap-1.5 rounded-full py-1 px-3 transition-all text-[9px] font-black uppercase tracking-wider bg-slate-900 text-white hover:bg-slate-800 shadow-sm shadow-slate-900/10"
           >
             Terminal Login
           </button>

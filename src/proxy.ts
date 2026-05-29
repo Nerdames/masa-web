@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse, NextFetchEvent } from "next/server";
 import { getToken } from "next-auth/jwt";
-import { Role } from "@prisma/client";
+// FIX 1: MUST use 'import type' to prevent Next.js Edge Runtime from crashing.
+import type { Role } from "@prisma/client";
 
 /**
  * Minimal Token interface for core authentication
@@ -17,7 +18,8 @@ interface MasaToken {
 
 const AUTH_ROUTES = ["/signin", "/register", "/reset-password", "/welcome"];
 const STATIC_PREFIXES = ["/_next", "/favicon.ico", "/images", "/assets", "/public"];
-const PUBLIC_API_ROUTES = ["/api/auth", "/api/logs", "/api/webhooks"];
+// FORTIFIED: Ensure exact API routes are matched to prevent trailing slash bypass
+const PUBLIC_API_ROUTES = ["/api/auth", "/api/logs", "/api/webhooks", "/api/register"];
 
 /* -------------------------------------------------- */
 /* UTILITIES                                          */
@@ -73,9 +75,15 @@ export default async function middleware(req: NextRequest, ev: NextFetchEvent) {
   const { pathname } = req.nextUrl;
 
   try {
+    // FIX 2: Allow CORS Preflight requests to pass immediately. 
+    // If we don't do this, cross-origin POSTs die silently in the browser.
+    if (req.method === "OPTIONS") {
+      return NextResponse.next();
+    }
+
     // 1. BYPASS: Allow statics, public APIs, and internal system calls
     if (
-      req.headers.get("x-masa-internal-key") === process.env.INTERNAL_API_KEY || 
+      (process.env.INTERNAL_API_KEY && req.headers.get("x-masa-internal-key") === process.env.INTERNAL_API_KEY) || 
       isStatic(pathname) || 
       isPublicApi(pathname)
     ) {
@@ -87,27 +95,37 @@ export default async function middleware(req: NextRequest, ev: NextFetchEvent) {
     const authPage = isAuthRoute(pathname);
 
     // 3. AUTHENTICATION CHECK
-    // If no session exists, redirect to signin (unless already on an auth page)
     if (!token) {
       return authPage ? NextResponse.next() : handleAuthResponse(req, "/signin", 401, "Unauthenticated");
     }
 
     // 4. AUTHENTICATED USERS ON AUTH PAGES
-    // If logged in, don't allow them to go back to /signin or /register
     if (authPage) {
-      return safeRedirect(req, "/"); // Redirect to home/dashboard
+      return safeRedirect(req, "/"); 
     }
 
     // 5. GLOBAL ACCESS
-    // All granular RBAC (hasPagePermission) and Account State checks are bypassed here.
     return NextResponse.next();
 
   } catch (err) {
-    console.error("[MIDDLEWARE_ERROR]", err);
+    // Console log will help us catch if NextAuth crashes the edge environment
+    console.error("[MIDDLEWARE_ERROR] Route:", pathname, "Error:", err);
     return handleAuthResponse(req, "/signin", 401, "ServerError");
   }
 }
 
+/* -------------------------------------------------- */
+/* MATCHER OPTIMIZATION                               */
+/* -------------------------------------------------- */
 export const config = {
-  matcher: ["/((?!api/auth|_next/static|_next/image|favicon.ico|images|assets).*)"],
+  matcher: [
+    /*
+     * Match all request paths except for the ones starting with:
+     * - _next/static (static files)
+     * - _next/image (image optimization files)
+     * - favicon.ico (favicon file)
+     * - images, assets, public (custom static folders)
+     */
+    "/((?!_next/static|_next/image|favicon.ico|images|assets|public).*)",
+  ],
 };

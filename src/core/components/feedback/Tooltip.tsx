@@ -15,28 +15,22 @@ export function Tooltip({
   children,
   content,
   side = "top",
-  sideOffset = 6,
+  sideOffset = 4,
 }: Props) {
-  // Direction-aware animation
   const getAnimation = () => {
     switch (side) {
-      case "top":
-        return { initial: { opacity: 0, y: 4 }, animate: { opacity: 1, y: 0 } };
-      case "bottom":
-        return { initial: { opacity: 0, y: -4 }, animate: { opacity: 1, y: 0 } };
-      case "left":
-        return { initial: { opacity: 0, x: 4 }, animate: { opacity: 1, x: 0 } };
-      case "right":
-        return { initial: { opacity: 0, x: -4 }, animate: { opacity: 1, x: 0 } };
-      default:
-        return { initial: { opacity: 0 }, animate: { opacity: 1 } };
+      case "top":    return { initial: { opacity: 0, y: 3 }, animate: { opacity: 1, y: 0 } };
+      case "bottom": return { initial: { opacity: 0, y: -3 }, animate: { opacity: 1, y: 0 } };
+      case "left":   return { initial: { opacity: 0, x: 3 }, animate: { opacity: 1, x: 0 } };
+      case "right":  return { initial: { opacity: 0, x: -3 }, animate: { opacity: 1, x: 0 } };
+      default:       return { initial: { opacity: 0 }, animate: { opacity: 1 } };
     }
   };
 
   const animation = getAnimation();
 
   return (
-    <TooltipPrimitive.Provider delayDuration={200}>
+    <TooltipPrimitive.Provider delayDuration={150}>
       <TooltipPrimitive.Root>
         <TooltipPrimitive.Trigger asChild>
           {children}
@@ -46,15 +40,15 @@ export function Tooltip({
           <TooltipPrimitive.Content
             side={side}
             sideOffset={sideOffset}
-            collisionPadding={8}
+            collisionPadding={6}
             className="z-50"
           >
             <motion.div
               initial={animation.initial}
               animate={animation.animate}
               exit={{ opacity: 0 }}
-              transition={{ duration: 0.15, ease: "easeOut" }}
-              className="bg-black text-white text-xs px-2 py-1 rounded shadow"
+              transition={{ duration: 0.12, ease: "easeOut" }}
+              className="bg-slate-900 text-white text-[9.5px] font-normal px-1.5 py-0.5 rounded shadow-md border border-slate-800"
             >
               {content}
             </motion.div>

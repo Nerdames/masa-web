@@ -3,7 +3,7 @@
 import React, { useState } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
 import { CriticalAction } from "@prisma/client";
-import { useAlerts } from "@/src/core/components/feedback/AlertProvider";
+import { useAlerts } from "@/core/components/feedback/AlertProvider";
 
 interface EmailChangeModalProps {
   isOpen: boolean;

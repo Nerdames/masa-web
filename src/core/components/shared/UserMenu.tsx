@@ -87,35 +87,23 @@ export function UserMenu({ trigger }: UserMenuProps) {
     }
   }, []);
 
-  /**
-   * REFINED BRANCH SWITCH LOGIC
-   * Ensures atomic transition and UI synchronization
-   */
   const handleBranchSwitch = async (branchId: string) => {
-    // Prevent redundant calls or calls during active transitions
     if (!branchId || branchId === user?.branchId || isSwitching) return;
 
     try {
       setIsSwitching(true);
       
-      // 1. Trigger the JWT update (handled by auth.ts logic)
       const newSession = await update({
         action: "SWITCH_BRANCH",
         targetBranchId: branchId,
       });
 
-      // 2. Verify the session actually updated (Security Check)
-      // next-auth 'update' returns the updated session object
       if (newSession?.user?.branchId === branchId) {
         setShowBranches(false);
-        setOpen(false); // Close the menu completely to signal transition
-        
-        // 3. Force re-validation of all server components using the new branchId context
+        setOpen(false); 
         router.refresh();
       } else {
-        // This indicates the 'jwt' callback rejected the switch (e.g., unauthorized)
         console.error("[SECURITY] Branch switch rejected by server verification.");
-        // Optional: Trigger a toast notification here
       }
     } catch (error) {
       console.error("[BRANCH_SWITCH_ERROR]:", error);
@@ -125,16 +113,16 @@ export function UserMenu({ trigger }: UserMenuProps) {
   };
 
   if (status === "loading") {
-    return <div className="w-9 h-9 rounded-full bg-slate-200 animate-pulse border border-slate-300" />;
+    return <div className="w-8 h-8 rounded-full bg-slate-100 animate-pulse border border-slate-200" />;
   }
 
   if (!user) {
     return (
       <button
         onClick={() => router.push("/signin")}
-        className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold text-white bg-slate-900 hover:bg-slate-800 transition-all active:scale-95"
+        className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-medium text-white bg-slate-900 hover:bg-slate-800 transition-all active:scale-95"
       >
-        <User size={18} />
+        <User size={14} />
         Sign in
       </button>
     );
@@ -155,12 +143,10 @@ export function UserMenu({ trigger }: UserMenuProps) {
           {trigger ?? (
             <button
               aria-label="User account menu"
-              className="group relative w-9 h-9 rounded-full p-[2px] transition-transform active:scale-95 bg-gradient-to-tr from-[#FF6B35] via-[#2A9D8F] to-[#F4A261] shadow-md"
+              className="group relative w-8 h-8 rounded-full transition-transform active:scale-95 p-0.5 border border-slate-200 bg-white"
             >
-              <div className="w-full h-full rounded-full bg-white flex items-center justify-center overflow-hidden">
-                <div className="w-full h-full flex items-center justify-center bg-slate-100 text-slate-700 text-[10px] font-black group-hover:bg-slate-50 transition-colors">
-                  {initials}
-                </div>
+              <div className="w-full h-full rounded-full flex items-center justify-center bg-blue-600 text-white text-[10px] font-medium transition-colors hover:bg-blue-700">
+                {initials}
               </div>
             </button>
           )}
@@ -172,38 +158,44 @@ export function UserMenu({ trigger }: UserMenuProps) {
               <DropdownMenu.Content
                 asChild
                 align="end"
-                sideOffset={10}
+                sideOffset={6}
                 className="z-[100] outline-none"
               >
                 <motion.div
-                  initial={{ opacity: 0, y: 10, scale: 0.95 }}
+                  initial={{ opacity: 0, y: 8, scale: 0.96 }}
                   animate={{ opacity: 1, y: 0, scale: 1 }}
-                  exit={{ opacity: 0, y: 8, scale: 0.98 }}
-                  transition={{ duration: 0.15, ease: "circOut" }}
-                  className="bg-white border border-slate-200 rounded-2xl shadow-2xl w-80 overflow-hidden flex flex-col"
+                  exit={{ opacity: 0, y: 6, scale: 0.98 }}
+                  transition={{ duration: 0.12, ease: "circOut" }}
+                  className="bg-white border border-slate-200 rounded-xl shadow-xl w-64 overflow-hidden flex flex-col"
                 >
                   {/* HEADER SECTION */}
-                  <div className="p-4 bg-slate-50/80 border-b border-slate-100">
-                    <div className="flex items-center gap-3">
-                      <div className="relative">
-                        <div className="w-11 h-11 rounded-xl bg-slate-900 text-white flex items-center justify-center font-bold text-base shadow-sm">
+                  <div className="p-3 bg-slate-50/80 border-b border-slate-100">
+                    <div className="flex flex-col gap-2">
+                      <div className="flex items-start justify-between">
+                        <div className="w-8 h-8 rounded-lg bg-blue-600 text-white flex items-center justify-center font-medium text-xs shadow-sm">
                           {initials}
                         </div>
                         {user.isOrgOwner && (
-                          <div className="absolute -top-1 -right-1 w-5 h-5 bg-emerald-500 rounded-full flex items-center justify-center border-2 border-white shadow-sm" title="System Administrator">
+                          <div className="w-4 h-4 bg-emerald-500 rounded-full flex items-center justify-center shadow-sm" title="System Administrator">
                             <ShieldCheck size={10} className="text-white" />
                           </div>
                         )}
                       </div>
+                      
                       <div className="flex flex-col min-w-0">
-                        <span className="text-sm font-black text-slate-900 truncate">
+                        <span className="text-xs font-semibold text-slate-900 truncate">
                           {user.name}
                         </span>
-                        <div className="flex items-center gap-1.5">
-                          <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded uppercase tracking-tight ${user.isOrgOwner ? 'bg-emerald-100 text-emerald-700' : 'bg-blue-100 text-blue-700'}`}>
+                        {user.email && (
+                          <span className="text-[10px] text-slate-500 truncate mb-1">
+                            {user.email}
+                          </span>
+                        )}
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          <span className={`text-[9px] font-medium px-1 py-0.2 rounded uppercase tracking-wide ${user.isOrgOwner ? 'bg-emerald-50 text-emerald-700 border border-emerald-100' : 'bg-blue-50 text-blue-700 border border-blue-100'}`}>
                             {user.isOrgOwner ? "Owner" : user.role}
                           </span>
-                          <span className="text-[10px] font-medium text-slate-400 font-mono">
+                          <span className="text-[9px] font-medium text-slate-400 font-mono">
                             #{user.staffCode ?? "SYS"}
                           </span>
                         </div>
@@ -212,30 +204,30 @@ export function UserMenu({ trigger }: UserMenuProps) {
                   </div>
 
                   {/* BRANCH SWITCHER LAYER */}
-                  <div className="p-2 border-b border-slate-100 relative">
+                  <div className="p-1 border-b border-slate-100 relative">
                     <button
                       disabled={isSwitching || !canSwitchBranches}
                       onClick={(e) => {
                         e.stopPropagation();
                         setShowBranches(!showBranches);
                       }}
-                      className="w-full group flex items-center justify-between p-2.5 rounded-xl hover:bg-slate-50 transition-colors disabled:cursor-default"
+                      className="w-full group flex items-center justify-between p-2 rounded-lg hover:bg-slate-50 transition-colors disabled:cursor-default"
                     >
-                      <div className="flex items-center gap-3 min-w-0">
-                        <div className="w-8 h-8 rounded-lg bg-orange-50 flex items-center justify-center text-orange-600">
-                          {isSwitching ? <Loader2 size={18} className="animate-spin" /> : <MapPin size={18} />}
+                      <div className="flex items-center gap-2 min-w-0">
+                        <div className="w-6 h-6 rounded-md bg-orange-50 flex items-center justify-center text-orange-600 flex-shrink-0">
+                          {isSwitching ? <Loader2 size={12} className="animate-spin" /> : <MapPin size={12} />}
                         </div>
                         <div className="flex flex-col items-start min-w-0">
-                          <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest leading-none mb-1">Active Branch</span>
-                          <span className="text-xs font-bold text-slate-700 truncate max-w-[140px]">
-                            {user.branchName || "Organization Head"}
+                          <span className="text-[8px] font-medium text-slate-400 uppercase tracking-wider leading-none mb-0.5">Branch</span>
+                          <span className="text-[11px] font-medium text-slate-700 truncate max-w-[150px]">
+                            {user.branchName || "Headquarters"}
                           </span>
                         </div>
                       </div>
                       {canSwitchBranches && (
                         <ChevronDown 
-                          size={16} 
-                          className={`text-slate-400 transition-transform duration-300 ${showBranches ? 'rotate-180' : ''}`} 
+                          size={12} 
+                          className={`text-slate-400 transition-transform duration-200 ${showBranches ? 'rotate-180' : ''}`} 
                         />
                       )}
                     </button>
@@ -248,23 +240,23 @@ export function UserMenu({ trigger }: UserMenuProps) {
                           exit={{ height: 0, opacity: 0 }}
                           className="overflow-hidden"
                         >
-                          <div className="pt-2 pb-1 flex flex-col gap-1 max-h-48 overflow-y-auto custom-scrollbar">
+                          <div className="pt-1 pb-1 flex flex-col gap-0.5 max-h-36 overflow-y-auto custom-scrollbar">
                             {user.allowedBranches.map((branch) => (
                               <button
                                 key={branch.id}
                                 disabled={isSwitching || branch.id === user.branchId}
                                 onClick={() => handleBranchSwitch(branch.id)}
-                                className={`flex items-center justify-between px-3 py-2.5 rounded-lg text-xs font-bold transition-all ${
+                                className={`flex items-center justify-between px-2 py-1.5 rounded-md text-[11px] font-medium transition-all ${
                                   branch.id === user.branchId 
-                                    ? 'bg-blue-50 text-blue-700 border border-blue-100' 
-                                    : 'text-slate-600 hover:bg-slate-100 active:scale-[0.98]'
+                                    ? 'bg-blue-50/70 text-blue-700 font-semibold' 
+                                    : 'text-slate-600 hover:bg-slate-100 active:scale-[0.99]'
                                 }`}
                               >
                                 <span className="truncate">{branch.name}</span>
                                 {branch.id === user.branchId ? (
-                                  <CheckCircle2 size={14} />
+                                  <CheckCircle2 size={12} className="text-blue-600" />
                                 ) : (
-                                  <span className="text-[9px] opacity-50 uppercase tracking-tighter">
+                                  <span className="text-[8px] text-slate-400 uppercase tracking-tight">
                                     {user.isOrgOwner ? "ADMIN" : branch.role}
                                   </span>
                                 )}
@@ -277,7 +269,7 @@ export function UserMenu({ trigger }: UserMenuProps) {
                   </div>
 
                   {/* CORE MENU ACTIONS */}
-                  <div className="p-2">
+                  <div className="p-1">
                     <MenuAction 
                       icon={User} 
                       label="My Profile" 
@@ -289,32 +281,29 @@ export function UserMenu({ trigger }: UserMenuProps) {
                       onClick={() => { setOpen(false); router.push("/settings"); }} 
                     />
                     
-                    <div className="my-1.5 border-t border-slate-100" />
+                    <div className="my-1 border-t border-slate-100" />
                     
                     <button
                       disabled={isSwitching}
                       onClick={() => { setOpen(false); setConfirmOpen(true); }}
-                      className="w-full flex items-center gap-3 px-3 py-2.5 text-xs font-bold text-red-600 rounded-xl hover:bg-red-50 transition-colors disabled:opacity-50"
+                      className="w-full flex items-center gap-2 px-2.5 py-2 text-[11px] font-medium text-red-600 rounded-lg hover:bg-red-50 transition-colors disabled:opacity-50"
                     >
-                      <LogOut size={18} />
-                      Terminate Session
+                      <LogOut size={14} />
+                      Sign Out
                     </button>
                   </div>
 
                   {/* FOOTER / ORG INFO */}
-                  <div className="px-4 py-2 bg-slate-50 border-t border-slate-100 flex items-center justify-between">
-                     <div className="flex items-center gap-2 min-w-0">
-                       <Building2 size={12} className="text-slate-400" />
-                       <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest truncate max-w-[200px]">
-                         {user.organizationName}
-                       </span>
-                     </div>
-                     {user.isOrgOwner && (
-                       <div className="flex items-center gap-1">
-                         <span className="text-[8px] font-bold text-emerald-600 uppercase">Enterprise</span>
-                         <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)]" />
-                       </div>
-                     )}
+                  <div className="px-3 py-1.5 bg-slate-50 border-t border-slate-100 flex items-center justify-between">
+                    <div className="flex items-center gap-1.5 min-w-0">
+                      <Building2 size={10} className="text-slate-400" />
+                      <span className="text-[8px] font-medium text-slate-400 uppercase tracking-wider truncate max-w-[140px]">
+                        {user.organizationName}
+                      </span>
+                    </div>
+                    {user.isOrgOwner && (
+                      <div className="w-1 h-1 rounded-full bg-emerald-500 shadow-[0_0_6px_rgba(16,185,129,0.5)]" />
+                    )}
                   </div>
                 </motion.div>
               </DropdownMenu.Content>
@@ -326,7 +315,7 @@ export function UserMenu({ trigger }: UserMenuProps) {
       <ConfirmModal
         open={confirmOpen}
         title="Confirm Sign Out"
-        message="You are about to end your session. Any unsaved progress in active terminals may be lost."
+        message="You are about to end your session. Any unsaved progress may be lost."
         confirmLabel="Sign Out"
         destructive
         loading={isSwitching}
@@ -340,9 +329,9 @@ export function UserMenu({ trigger }: UserMenuProps) {
 const MenuAction = ({ icon: Icon, label, onClick }: { icon: LucideIcon; label: string; onClick: () => void }) => (
   <DropdownMenu.Item
     onClick={onClick}
-    className="flex items-center gap-3 px-3 py-2.5 text-xs font-bold text-slate-700 rounded-xl cursor-pointer outline-none hover:bg-slate-100 transition-all active:scale-[0.98] focus:bg-slate-100"
+    className="flex items-center gap-2 px-2.5 py-2 text-[11px] font-medium text-slate-700 rounded-lg cursor-pointer outline-none hover:bg-slate-100 transition-all active:scale-[0.99] focus:bg-slate-100"
   >
-    <Icon size={18} className="text-slate-400" />
+    <Icon size={14} className="text-slate-400" />
     {label}
   </DropdownMenu.Item>
 );
