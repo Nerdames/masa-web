@@ -16,9 +16,9 @@ import {
   Lock,
 } from "lucide-react";
 import { saveAs } from "file-saver";
-import { useAlerts } from "@/core/components/feedback/AlertProvider";
+import { useAlerts } from "@/shared/components/feedback/AlertProvider";
 import { useSession } from "next-auth/react";
-import { useSidePanel } from "@/core/components/layout/SidePanelContext";
+import { useSidePanel } from "@/shared/components/layout/SidePanelContext";
 import PODetailView from "@/modules/inventory/components/PODetailView";
 import GRNDetailView from "@/modules/inventory/components/GRNDetailView";
 import CreatePOPanel from "@/modules/inventory/components/CreatePOPanel";

@@ -16,8 +16,8 @@ import {
   Download,
 } from "lucide-react";
 import { saveAs } from "file-saver";
-import { useAlerts } from "@/core/components/feedback/AlertProvider";
-import { useSidePanel } from "@/core/components/layout/SidePanelContext";
+import { useAlerts } from "@/shared/components/feedback/AlertProvider";
+import { useSidePanel } from "@/shared/components/layout/SidePanelContext";
 import { VendorDetailPanel } from "@/modules/inventory/components/VendorDetailPanel";
 import { CreateEditVendorModal } from "@/modules/inventory/components/CreateEditVendorModal";
 

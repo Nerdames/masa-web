@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect } from "react";
 import { motion } from "framer-motion";
-import { useAlerts } from "@/core/components/feedback/AlertProvider";
+import { useAlerts } from "@/shared/components/feedback/AlertProvider";
 import { format } from "date-fns";
 
 /* --- SHARED STYLES --- */

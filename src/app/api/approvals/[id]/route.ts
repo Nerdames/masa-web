@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "next-auth/next";
-import { authOptions } from "@/core/lib/auth";
-import prisma from "@/core/lib/prisma";
+import { authOptions } from "@/infrastructure/auth/config"; // Infrastructure auth engine
+import prisma from "@/infrastructure/prisma/client"; // Singleton database client
 import { z } from "zod";
 import { 
   ApprovalStatus, 
@@ -11,9 +11,9 @@ import {
   CriticalAction,
   Prisma 
 } from "@prisma/client";
-import { authorize, ROLE_WEIGHT } from "@/core/lib/permission";
-import { eventBus } from "@/core/events";
-import { createAuditLog } from "@/core/lib/audit";
+import { authorize, ROLE_WEIGHT } from "@/server/permissions/enforcer"; // Server permissions engine
+import { eventBus } from "@/server/events/bus"; // Infrastructure messaging bus
+import { createAuditLog } from "@/modules/audit/server/audit.service"; // Enterprise module service
 import crypto from "crypto";
 
 /* -------------------------------------------------------------------------- */

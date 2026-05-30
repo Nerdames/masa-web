@@ -1,8 +1,8 @@
 // app/api/calendar/route.ts
 import { NextRequest, NextResponse } from "next/server";
-import prisma from "@/core/lib/prisma";
+import prisma from "@/infrastructure/prisma/client"; // Singleton database client
 import { getServerSession } from "next-auth/next";
-import { authOptions } from "@/core/lib/auth";
+import { authOptions } from "@/infrastructure/auth/config"; // Infrastructure auth engine
 import crypto from "crypto";
 import { z } from "zod";
 import { 
@@ -13,9 +13,8 @@ import {
   ActorType, 
   Severity 
 } from "@prisma/client";
-import { ROLE_WEIGHT, ACTION_REQUIREMENTS } from "@/core/lib/permission";
-import { applyActionDirectly } from "@/core/lib/actions";
-import { createNotification } from "@/core/lib/notifications";
+import { ROLE_WEIGHT, ACTION_REQUIREMENTS } from "@/server/permissions/enforcer"; // Server permissions engine
+import { applyActionDirectly } from "@/server/security/guards"; // Critical actions domain module
 import { v4 as uuidv4 } from "uuid";
 
 /* -----------------------

@@ -1,15 +1,18 @@
+// src/app/api/support/route.ts
 import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "next-auth/next";
-import { authOptions } from "@/core/lib/auth";
-import prisma from "@/core/lib/prisma";
-import { logActivity } from "@/lib/audit";
-import { Role, CriticalAction, ApprovalStatus, NotificationType } from "@prisma/client";
-import { pusherServer } from "@/core/lib/pusher";
+import { authOptions } from "@/infrastructure/auth/config"; // Infrastructure auth engine
+import prisma from "@/infrastructure/prisma/client"; // Singleton database client
+import { createAuditLog } from "@/modules/audit/server/audit.service"; // Fortified forensic audit engine
+import { Role, CriticalAction, ApprovalStatus, NotificationType, Resource, Severity } from "@prisma/client";
+import { pusherServer } from "@/infrastructure/pusher/client"; // Infrastructure websocket server client
 
 export async function POST(req: NextRequest) {
   try {
     const session = await getServerSession(authOptions);
-    if (!session?.user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    if (!session?.user) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
 
     const body = await req.json();
     const { subject, message, category, metadata } = body;
@@ -28,7 +31,7 @@ export async function POST(req: NextRequest) {
       select: { id: true }
     });
 
-    // 2. Atomic Creation: Approval + Notification + Recipients
+    // 2. Atomic Creation: Approval + Notification + Recipients + Chained Audit Log
     const result = await prisma.$transaction(async (tx) => {
       // Create Approval Request
       const approval = await tx.approvalRequest.create({
@@ -59,6 +62,27 @@ export async function POST(req: NextRequest) {
         },
       });
 
+      // Execute Chained Cryptographic Audit within the transactional bubble
+      await createAuditLog(tx, {
+        action: "SUPPORT_TICKET_SUBMITTED",
+        resource: Resource.SUPPORT_TICKET, // Ensure this matches your Prisma Resource enum string
+        resourceId: approval.id,
+        organizationId: metadata.organizationId,
+        branchId: metadata.branchId,
+        actorId: metadata.personnelId,
+        actorRole: (session.user as any).role as Role ?? undefined,
+        severity: Severity.LOW,
+        description: `Support request submitted: ${subject}`,
+        approvalId: approval.id,
+        actionTrigger: metadata.actionKey as CriticalAction,
+        changes: {
+          to: { subject, message, category }
+        },
+        metadata: {
+          category
+        }
+      });
+
       return { approval, notification };
     });
 
@@ -75,15 +99,6 @@ export async function POST(req: NextRequest) {
         })
       )
     );
-
-    // 4. Audit Log
-    await logActivity({
-      personnelId: metadata.personnelId,
-      organizationId: metadata.organizationId,
-      branchId: metadata.branchId,
-      action: "SUPPORT_TICKET_SUBMITTED",
-      meta: JSON.stringify({ subject, approvalId: result.approval.id })
-    });
 
     return NextResponse.json({ success: true, requestId: result.approval.id });
 

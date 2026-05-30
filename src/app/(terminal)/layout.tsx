@@ -2,9 +2,9 @@
 
 import { ReactNode, useEffect, useState } from "react";
 import { useSession } from "next-auth/react";
-import TopBar from "@/core/components/layout/TopBar";
-import Sidebar from "@/core/components/layout/Sidebar"; // Adjust path as needed
-import { SidePanelProvider, useSidePanel } from "@/core/components/layout/SidePanelContext";
+import TopBar from "@/shared/components/layout/TopBar";
+import Sidebar from "@/shared/components/layout/Sidebar";
+import { SidePanelProvider, useSidePanel } from "@/shared/components/layout/SidePanelContext";
 import { motion, AnimatePresence } from "framer-motion";
 
 interface DashboardRootLayoutProps {
@@ -13,40 +13,20 @@ interface DashboardRootLayoutProps {
 
 export default function DashboardRootLayout({ children }: DashboardRootLayoutProps) {
   const { status } = useSession({ required: true });
-  const [isDark, setIsDark] = useState(false);
-
-  // Auto-Theme Logic
-  useEffect(() => {
-    const handleTheme = () => {
-      const hour = new Date().getHours();
-      setIsDark(hour < 7 || hour >= 19);
-    };
-    handleTheme();
-    const timer = setInterval(handleTheme, 60000);
-    return () => clearInterval(timer);
-  }, []);
 
   return (
     <SidePanelProvider>
-      <div className={`h-screen w-full relative overflow-hidden flex flex-col transition-colors duration-1000 
-        ${isDark ? "bg-[#020617] text-slate-200" : "bg-slate-50 text-slate-900"}`}>
+      <div className="h-screen w-full relative overflow-hidden flex flex-col bg-slate-50 text-slate-900">
         
         {/* Background Decorative Element */}
         <div className="absolute inset-0 pointer-events-none z-0">
-          <svg className={`absolute -left-20 -top-20 ${isDark ? "opacity-[0.03]" : "opacity-10"}`} viewBox="0 0 600 600" style={{ width: "min(45vw, 450px)" }}>
-            <defs>
-              <linearGradient id="gA" x1="0" x2="1">
-                <stop offset="0" stopColor="#463aed" />
-                <stop offset="1" stopColor="#06B6D4" />
-              </linearGradient>
-            </defs>
-            <circle cx="300" cy="300" r="260" fill="url(#gA)" />
+          <svg className="absolute -left-20 -top-20 opacity-40" viewBox="0 0 600 600" style={{ width: "min(45vw, 450px)" }}>
+            <circle cx="300" cy="300" r="260" className="fill-slate-100/50" />
           </svg>
         </div>
 
         {/* Global Header */}
-        <header className={`flex-none relative z-[1000] border-b backdrop-blur-md transition-colors
-          ${isDark ? "bg-slate-900/50 border-slate-800" : "bg-white/80 border-black/5"}`}>
+        <header className="flex-none relative z-[1000] border-b border-slate-200 bg-white/80 backdrop-blur-md">
           <TopBar />
           {status === "loading" && (
             <div className="absolute bottom-0 left-0 w-full h-[2px] overflow-hidden bg-transparent">
@@ -57,15 +37,15 @@ export default function DashboardRootLayout({ children }: DashboardRootLayoutPro
 
         {/* Workspace Canvas */}
         <div className="flex flex-1 min-h-0 overflow-hidden relative z-10">
-          {/* Sidebar - Remains persistent on the left */}
+          {/* Sidebar - Persistent on the left */}
           <Sidebar />
 
           <div className="flex flex-1 min-w-0 min-h-0 overflow-hidden relative">
             <main className={`flex-1 flex flex-col min-w-0 min-h-0 transition-opacity duration-300 ${status === "loading" ? "opacity-0" : "opacity-100"}`}>
-                {children}
+              {children}
             </main>
 
-            <DynamicSidePanel isDark={isDark} />
+            <DynamicSidePanel />
           </div>
         </div>
 
@@ -87,7 +67,6 @@ export default function DashboardRootLayout({ children }: DashboardRootLayoutPro
   );
 }
 
-// ... DynamicSidePanel component remains as is ...
 
 function DynamicSidePanel({ isDark }: { isDark: boolean }) {
   const { isOpen, content, width, isFullScreen, closePanel } = useSidePanel();

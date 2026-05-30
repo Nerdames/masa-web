@@ -15,8 +15,8 @@ import {
   BarChart3
 } from "lucide-react";
 import { saveAs } from "file-saver";
-import { useAlerts } from "@/core/components/feedback/AlertProvider";
-import { useSidePanel } from "@/core/components/layout/SidePanelContext";
+import { useAlerts } from "@/shared/components/feedback/AlertProvider";
+import { useSidePanel } from "@/shared/components/layout/SidePanelContext";
 import RegisterProductPanel from "@/modules/inventory/components/RegisterProductPanel";
 import ProductDetailPanel from "@/modules/inventory/components/ProductDetailPanel";
 

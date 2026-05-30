@@ -28,8 +28,8 @@ import type {
   ResourcePermission,
 } from "@prisma/client";
 
-import { useAlerts } from "@/core/components/feedback/AlertProvider";
-import { useSidePanel } from "@/core/components/layout/SidePanelContext";
+import { useAlerts } from "@/shared/components/feedback/AlertProvider";
+import { useSidePanel } from "@/shared/components/layout/SidePanelContext";
 
 // Panel Components
 import { PermissionPanel } from "@/modules/myorg/components/PermissionPanel";

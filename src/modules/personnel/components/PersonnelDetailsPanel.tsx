@@ -39,9 +39,9 @@ import {
   generateSecurePassword,
   copyToClipboard,
 } from "./utils";
-import { getInitials } from "@/core/utils";
-import { useAlerts } from "@/core/components/feedback/AlertProvider";
-import { useSidePanel } from "@/core/components/layout/SidePanelContext";
+import { getInitials } from "@/shared/utils";
+import { useAlerts } from "@/shared/components/feedback/AlertProvider";
+import { useSidePanel } from "@/shared/components/layout/SidePanelContext";
 
 /* ==========================================================================
    TYPES & INTERFACES

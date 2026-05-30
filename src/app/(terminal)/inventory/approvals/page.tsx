@@ -22,9 +22,9 @@ import {
   Clock
 } from "lucide-react";
 import { saveAs } from "file-saver";
-import { useAlerts } from "@/core/components/feedback/AlertProvider";
+import { useAlerts } from "@/shared/components/feedback/AlertProvider";
 import { useSession } from "next-auth/react";
-import { useSidePanel } from "@/core/components/layout/SidePanelContext";
+import { useSidePanel } from "@/shared/components/layout/SidePanelContext";
 
 // Component Imports
 import ApprovalDetailPanel from "@/modules/inventory/components/ApprovalDetailPanel"; 

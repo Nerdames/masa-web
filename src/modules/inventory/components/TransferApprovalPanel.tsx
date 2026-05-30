@@ -5,11 +5,10 @@ import {
   X, Maximize2, Minimize2, Loader2,
   CheckCircle2, XCircle, MapPin, ShieldCheck, 
   Truck, Activity, FileText, ClipboardList,
-  User, AlertCircle
-} from "lucide-react";
-import { useSidePanel } from "@/core/components/layout/SidePanelContext";
-import { useAlerts } from "@/core/components/feedback/AlertProvider";
-import { usePermission } from "@/core/hooks/usePermission";
+  User} from "lucide-react";
+import { useSidePanel } from "@/shared/components/layout/SidePanelContext";
+import { useAlerts } from "@/shared/components/feedback/AlertProvider";
+import { usePermission } from "@/shared/hooks/usePermission";
 import { PermissionAction, Resource, StockTransferStatus } from "@prisma/client";
 
 /* -------------------------------------------------------------------------- */

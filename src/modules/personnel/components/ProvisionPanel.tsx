@@ -12,7 +12,7 @@ import {
 } from "lucide-react";
 import { ProvisionPayload, Branch, Role, AlertAction } from "./types";
 import { generateSecurePassword, copyToClipboard } from "./utils";
-import { useAlerts } from "@/core/components/feedback/AlertProvider";
+import { useAlerts } from "@/shared/components/feedback/AlertProvider";
 
 interface ProvisionPanelProps {
   onClose: () => void;

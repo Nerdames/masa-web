@@ -7,9 +7,9 @@
 
 import { getServerSession } from "next-auth";
 import { redirect } from "next/navigation";
-import { authOptions } from "@/core/lib/auth";
-import AdminOverview from "@/core/components/layout/AdminOverview";
-import Sidebar from "@/core/components/layout/Sidebar";
+import { authOptions } from "@/infrastructure/auth/config";
+import AdminOverview from "@/shared/components/layout/AdminOverview";
+import Sidebar from "@/shared/components/layout/Sidebar";
 import { Role } from "@prisma/client";
 
 export default async function RootPage() {

@@ -15,11 +15,11 @@ import {
   Clock,
   Lock
 } from "lucide-react";
-import { useAlerts } from "@/core/components/feedback/AlertProvider";
-import { useSidePanel } from "@/core/components/layout/SidePanelContext";
+import { useAlerts } from "@/shared/components/feedback/AlertProvider";
+import { useSidePanel } from "@/shared/components/layout/SidePanelContext";
 import { InventoryEditPanel } from "@/modules/inventory/components/InventoryEditPanel";
 // Import the centralized permission hook and Prisma enums
-import { usePermission } from "@/core/hooks/usePermission"; 
+import { usePermission } from "@/shared/hooks/usePermission"; 
 import { Resource, Role } from "@prisma/client";
 
 /* -------------------------

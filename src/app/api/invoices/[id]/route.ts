@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { InvoiceStatus } from "@prisma/client";
-import prisma from "@/core/lib/prisma";
+import prisma from "@/infrastructure/prisma/client"; // Singleton database client
 
 // =====================================================
 // GET: Fetch single invoice with relations

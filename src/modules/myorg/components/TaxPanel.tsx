@@ -6,8 +6,8 @@ import {
   CheckCircle2, Square, CheckSquare,
   Maximize2, Minimize2
 } from "lucide-react";
-import { useSidePanel } from "@/core/components/layout/SidePanelContext";
-import { useAlerts } from "@/core/components/feedback/AlertProvider";
+import { useAlerts } from "@/shared/components/feedback/AlertProvider";
+import { useSidePanel } from "@/shared/components/layout/SidePanelContext";
 
 /* -------------------------
 Types

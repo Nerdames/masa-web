@@ -5,8 +5,9 @@ import { signIn, getSession } from "next-auth/react";
 import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { motion, useAnimation } from "framer-motion";
-import { useAlerts } from "@/core/components/feedback/AlertProvider";
-import { DEFAULT_TERMINALS } from "@/core/lib/permission";
+//  NEW (Updated to match the restructured layout)
+import { useAlerts } from "@/shared/components/feedback/AlertProvider";
+import { DEFAULT_TERMINALS } from "@/server/permissions/enforcer";
 import { Role, NotificationType } from "@prisma/client";
 import { Loader2 } from "lucide-react";
 

@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
-import prisma from "@/core/lib/prisma";
+import prisma from "@/infrastructure/prisma/client"; // Singleton database client
 import { InvoiceStatus } from "@prisma/client";
 import { getServerSession } from "next-auth";
-import { authOptions } from "@/core/lib/auth";
+import { authOptions } from "@/infrastructure/auth/config"; // Infrastructure auth engine
 
 export async function POST(req: NextRequest) {
   try {

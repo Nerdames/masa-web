@@ -1,16 +1,16 @@
 "use client";
 
-import React, { useState, useMemo } from "react";
+import { useState, useMemo } from "react";
 import {
   X, Maximize2, Minimize2, Loader2, CheckCircle2,
-  Archive, XCircle, MapPin, ChevronDown,
+  Archive, XCircle, MapPin, 
   ArrowRightLeft, User, Calendar, Activity, ShieldCheck,
-  AlertCircle, History, PackageSearch, ClipboardList
+  History, PackageSearch
 } from "lucide-react";
-import { StockTransferStatus, PermissionAction, Resource } from "@prisma/client";
-import { useSidePanel } from "@/core/components/layout/SidePanelContext";
-import { useAlerts } from "@/core/components/feedback/AlertProvider";
-import { usePermission } from "@/core/hooks/usePermission";
+import { StockTransferStatus, Resource } from "@prisma/client";
+import { useSidePanel } from "@/shared/components/layout/SidePanelContext";
+import { useAlerts } from "@/shared/components/feedback/AlertProvider";
+import { usePermission } from "@/shared/hooks/usePermission";
 
 /* -------------------------------------------------------------------------- */
 /* TYPES & INTERFACES                                                         */

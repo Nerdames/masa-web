@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "next-auth/next";
-import { authOptions } from "@/core/lib/auth";
-import prisma from "@/core/lib/prisma";
+import { authOptions } from "@/infrastructure/auth/config"; // Infrastructure auth engine
+import prisma from "@/infrastructure/prisma/client"; // Singleton database client
 import { z } from "zod";
 import {
   ActorType,
@@ -12,8 +12,7 @@ import {
   NotificationType,
   StockMovementType,
   TransactionType,
-  AccountType,
-  PermissionAction as AuthPermissionAction, // FIX: Import and alias from Prisma client
+  PermissionAction as AuthPermissionAction, // Alias from Prisma client
 } from "@prisma/client";
 import { Decimal } from "@prisma/client/runtime/library";
 import crypto from "crypto";
@@ -21,7 +20,7 @@ import {
   authorize, 
   RESOURCES, 
   ROLE_WEIGHT 
-} from "@/core/lib/permission"; // FIX: Removed non-existent exports PermissionAction and ACTION_REQUIREMENTS
+} from "@/server/permissions/enforcer"; // Server permissions enforcer
 
 /* -------------------------
   Zod Validation Schemas

@@ -7,9 +7,9 @@ import {
   Phone, Mail, History, XCircle, Edit3, Send,
   FileText
 } from "lucide-react";
-import { useSidePanel } from "@/core/components/layout/SidePanelContext";
-import { useAlerts } from "@/core/components/feedback/AlertProvider";
-import { usePermission } from "@/core/hooks/usePermission";
+import { useSidePanel } from "@/shared/components/layout/SidePanelContext";
+import { useAlerts } from "@/shared/components/feedback/AlertProvider";
+import { usePermission } from "@/shared/hooks/usePermission";
 import { PermissionAction, Resource } from "@prisma/client";
 import GRNDetailView from "@/modules/inventory/components/GRNDetailView";
 

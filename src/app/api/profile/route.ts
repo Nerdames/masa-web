@@ -1,15 +1,14 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import bcrypt from "bcryptjs";
-import prisma from "@/core/lib/prisma";
-import { authOptions } from "@/core/lib/auth";
-import { createAuditLog } from "@/core/lib/audit";
-import { authorize } from "@/core/lib/permission";
+import prisma from "@/infrastructure/prisma/client"; // Singleton database client
+import { authOptions } from "@/infrastructure/auth/config"; // Infrastructure auth engine
+import { createAuditLog } from "@/modules/audit/server/audit.service"; // Enterprise module service
+import { authorize } from "@/server/permissions/enforcer"; // Server permissions enforcer
 
 import {
   Role,
   Prisma,
-  ActorType,
   Severity,
   Resource,
   CriticalAction,

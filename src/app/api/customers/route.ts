@@ -1,10 +1,10 @@
 "use server";
 
 import { NextRequest, NextResponse } from "next/server";
-import prisma from "@/core/lib/prisma";
+import prisma from "@/infrastructure/prisma/client"; // Singleton database client
 import { CustomerType, Prisma, SaleStatus } from "@prisma/client";
 import { getServerSession } from "next-auth";
-import { authOptions } from "@/core/lib/auth";
+import { authOptions } from "@/infrastructure/auth/config"; // Infrastructure auth engine
 import { PrismaClientKnownRequestError } from "@prisma/client/runtime/library";
 import dayjs from "dayjs";
 

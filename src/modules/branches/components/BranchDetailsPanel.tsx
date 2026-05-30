@@ -7,11 +7,11 @@ import {
   History, Trash2, ShieldAlert, CheckCircle2, AlertCircle,
   Network
 } from "lucide-react";
-import { useSidePanel } from "@/core/components/layout/SidePanelContext";
-import { useAlerts } from "@/core/components/feedback/AlertProvider";
-import { usePermission } from "@/core/hooks/usePermission";
-import { PermissionAction, Resource } from "@prisma/client";
-import { getInitials } from "@/core/utils";
+import { useSidePanel } from "@/shared/components/layout/SidePanelContext";
+import { useAlerts } from "@/shared/components/feedback/AlertProvider";
+import { usePermission } from "@/shared/hooks/usePermission";
+import { Resource } from "@prisma/client";
+import { getInitials } from "@/shared/utils";
 
 /* -------------------------------------------------------------------------- */
 /* TYPES & INTERFACES (Synchronized with MASA Schema)                         */

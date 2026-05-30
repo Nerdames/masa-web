@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect } from "react";
 import { X, RefreshCw, Save } from "lucide-react";
-import { useAlerts } from "@/core/components/feedback/AlertProvider";
+import { useAlerts } from "@/shared/components/feedback/AlertProvider";
 
 interface IVendor {
   id: string;

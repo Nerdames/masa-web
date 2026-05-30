@@ -9,11 +9,11 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
-import { authOptions } from "@/core/lib/auth";
-import prisma from "@/core/lib/prisma";
-import { authorize } from "@/core/lib/permission";
-import { createAuditLog } from "@/core/lib/audit";
-import { pusherServer } from "@/core/lib/pusher";
+import { authOptions } from "@/infrastructure/auth/config"; // Infrastructure auth engine
+import prisma from "@/infrastructure/prisma/client"; // Singleton database client
+import { authorize } from "@/server/permissions/enforcer"; // Server permissions engine
+import { createAuditLog } from "@/modules/audit/server/audit.service"; // Enterprise module service
+import { pusherServer } from "@/infrastructure/pusher/client"; // Infrastructure real-time broadcaster
 import { 
   Role, 
   PermissionAction, 

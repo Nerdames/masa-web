@@ -1,6 +1,6 @@
-// File: /app/api/dashboard/stats/route.ts
+// File: src/app/api/dashboard/stats/route.ts
 import { NextRequest, NextResponse } from "next/server";
-import prisma from "@/core/lib/prisma";
+import prisma from "@/infrastructure/prisma/client"; // Singleton client destination
 import { getToken } from "next-auth/jwt";
 
 const secret = process.env.NEXTAUTH_SECRET as string;

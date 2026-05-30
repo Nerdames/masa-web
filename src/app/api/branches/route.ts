@@ -1,7 +1,7 @@
 import { getServerSession } from "next-auth";
-import { authOptions } from "@/core/lib/auth";
-import { authorize } from "@/core/lib/permission";
-import prisma from "@/core/lib/prisma";
+import { authOptions } from "@/infrastructure/auth/config"; // Infrastructure auth engine
+import { authorize } from "@/server/permissions/enforcer"; // Server permissions engine
+import prisma from "@/infrastructure/prisma/client"; // Singleton database client
 import { NextRequest, NextResponse } from "next/server";
 import { 
   Prisma, 
@@ -12,7 +12,7 @@ import {
   POSSessionStatus
 } from "@prisma/client";
 import { v4 as uuidv4 } from "uuid";
-import { createAuditLog } from "@/core/lib/audit";
+import { createAuditLog } from "@/modules/audit/server/audit.service"; // Enterprise module service
 
 /* -------------------- TYPES & DTOS -------------------- */
 

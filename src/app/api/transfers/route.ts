@@ -6,8 +6,8 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "next-auth/next";
-import { authOptions } from "@/core/lib/auth";
-import prisma from "@/core/lib/prisma";
+import { authOptions } from "@/infrastructure/auth/config"; // Infrastructure auth engine
+import prisma from "@/infrastructure/prisma/client"; // Singleton database client
 import { z } from "zod";
 import {
   Severity,
@@ -19,8 +19,8 @@ import {
   Resource,
 } from "@prisma/client";
 import crypto from "crypto";
-import { authorize, RESOURCES } from "@/core/lib/permission";
-import { createAuditLog } from "@/core/lib/audit";
+import { authorize, RESOURCES } from "@/server/permissions/enforcer"; // Server permissions enforcer
+import { createAuditLog } from "@/modules/audit/server/audit.service"; // Enterprise module service
 
 /* -------------------------
   Zod Validation Schemas

@@ -5,7 +5,7 @@ import React from "react";
 import { motion } from "framer-motion";
 import { Branch } from "@/modules/branches/types";
 import { StatusGridBadge } from "@/modules/personnel/components/StatusGridBadge";
-import { TrendingUp, MapPin, Building2, Fingerprint, ChevronRight } from "lucide-react";
+import { TrendingUp, MapPin, Building2, Fingerprint } from "lucide-react";
 
 interface BranchRowProps {
   branch: Branch;

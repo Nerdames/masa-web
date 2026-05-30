@@ -1,7 +1,8 @@
 import { NextResponse } from "next/server";
-import prisma from "@/core/lib/prisma"; // Adjust based on your prisma client export path
+import prisma from "@/infrastructure/prisma/client"; // Singleton database client
 import { getServerSession } from "next-auth";
-import { authOptions } from "@/core/lib/auth";
+import { authOptions } from "@/infrastructure/auth/config"; // Infrastructure auth engine
+
 
 export async function GET() {
   const session = await getServerSession(authOptions);

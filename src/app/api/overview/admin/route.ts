@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth/next";
-import prisma from "@/core/lib/prisma";
-import { authorize } from "@/core/lib/permission";
+import prisma from "@/infrastructure/prisma/client"; // Singleton database client
+import { authorize } from "@/server/permissions/enforcer"; // Server permissions enforcer
 import { Role, PermissionAction, Severity, ActorType } from "@prisma/client";
 
 // Ensure this route is never statically cached

@@ -5,7 +5,7 @@
  */
 
 import { NextRequest, NextResponse } from "next/server";
-import prisma from "@/core/lib/prisma";
+import prisma from "@/infrastructure/prisma/client"; // Singleton database client
 import {
   Prisma,
   Role,
@@ -22,8 +22,8 @@ import {
   validateManagementRights,
   canPerformAction,
   ManagementAction,
-} from "@/core/lib/permission";
-import { createAuditLog } from "@/core/lib/audit";
+} from "@/server/permissions/enforcer"; // Server permissions enforcer
+import { createAuditLog } from "@/modules/audit/server/audit.service"; // Enterprise module service
 
 const JWT_SECRET = process.env.NEXTAUTH_SECRET;
 

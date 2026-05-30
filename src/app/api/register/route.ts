@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import prisma from "@/core/lib/prisma"; // Singleton Prisma Client instance
+import prisma from "@/infrastructure/prisma/client"; // Singleton Prisma Client instance
 import bcrypt from "bcryptjs";
 import crypto from "crypto";
 import { 
@@ -14,7 +14,7 @@ import { z } from "zod";
 import { Ratelimit } from "@upstash/ratelimit";
 import { Redis } from "@upstash/redis";
 import { OAuth2Client } from "google-auth-library";
-import { createAuditLog } from "@/core/lib/audit"; // Integrated Fortified Audit Engine
+import { createAuditLog } from "@/modules/audit/server/audit.service"; // Integrated Fortified Audit Engine
 
 // Initialize Google OAuth Client for Fortified Token Verification
 const googleClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);

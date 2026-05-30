@@ -1,9 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "next-auth/next";
-import { authOptions } from "@/core/lib/auth";
-import prisma from "@/core/lib/prisma";
-import { createAuditLog } from "@/core/lib/audit"; // Import the fortified engine
-import { invalidateOrgRole } from "@/core/lib/permissionCache";
+import { authOptions } from "@/infrastructure/auth/config"; // Infrastructure auth engine
+import prisma from "@/infrastructure/prisma/client"; // Singleton database client
+import { createAuditLog } from "@/modules/audit/server/audit.service"; // Enterprise module service
+import { invalidateOrgRole } from "@/server/permissions/cache"; // Server permission caching system
 import { 
   Severity, 
   Prisma, 

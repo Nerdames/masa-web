@@ -7,8 +7,8 @@ import {
   Loader2, Receipt, Banknote,
   ShieldCheck, XCircle, Info
 } from "lucide-react";
-import { useSidePanel } from "@/core/components/layout/SidePanelContext";
-import { useAlerts } from "@/core/components/feedback/AlertProvider";
+import { useSidePanel } from "@/shared/components/layout/SidePanelContext";
+import { useAlerts } from "@/shared/components/feedback/AlertProvider";
 
 /* -------------------------
 Types & Interfaces

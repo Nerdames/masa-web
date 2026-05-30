@@ -27,14 +27,20 @@
       "@/*": [
         "./src/*"
       ],
-      "@/core/*": [
-        "./src/core/*"
+      "@/infrastructure/*": [
+        "./src/infrastructure/*"
+      ],
+      "@/server/*": [
+        "./src/server/*"
       ],
       "@/modules/*": [
         "./src/modules/*"
       ],
-      "@/types/*": [
-        "./src/types/*"
+      "@/shared/*": [
+        "./src/shared/*"
+      ],
+      "@/app/*": [
+        "./src/app/*"
       ],
       "@/public/*": [
         "./public/*"

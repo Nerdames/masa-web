@@ -2,8 +2,8 @@
 
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import { useSession } from "next-auth/react";
-import { useSidePanel } from "@/core/components/layout/SidePanelContext";
-import { useAlerts } from "@/core/components/feedback/AlertProvider";
+import { useAlerts } from "@/shared/components/feedback/AlertProvider";
+import { useSidePanel } from "@/shared/components/layout/SidePanelContext";
 import { 
   Search, Plus, RefreshCw, Users, Lock, 
   UserMinus, CheckCircle2, Loader2, Filter,
@@ -20,7 +20,7 @@ import {
 import { ProvisionPanel } from "@/modules/personnel/components/ProvisionPanel";
 import { PersonnelDetailsPanel } from "@/modules/personnel/components/PersonnelDetailsPanel";
 import { PersonnelRow } from "@/modules/personnel/components/PersonnelRow";
-import { ExportModal } from "@/core/components/shared/ExportModal";
+import { ExportModal } from "@/shared/components/modals/ExportModal";
 
 // Define the columns for the Export Modal
 const PERSONNEL_COLUMNS = [

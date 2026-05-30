@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
-import prisma from "@/core/lib/prisma";
+import prisma from "@/infrastructure/prisma/client"; // Singleton client destination
 import { getServerSession } from "next-auth/next";
-import { authOptions } from "@/core/lib/auth";
+import { authOptions } from "@/infrastructure/auth/config"; // Infrastructure auth layer mapping
 import { Preference, PreferenceCategory, PreferenceScope } from "@prisma/client";
 
 /* ============================================================

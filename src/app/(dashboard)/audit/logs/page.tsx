@@ -2,8 +2,8 @@
 
 import React, { useState, useEffect, useCallback, useMemo, useRef, Suspense } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { useAlerts } from "@/core/components/feedback/AlertProvider";
-import { usePermission } from "@/core/hooks/usePermission"; // Adjust path to your permission hook
+import { useAlerts } from "@/shared/components/feedback/AlertProvider";
+import { usePermission } from "@/shared/hooks/usePermission";
 import { Severity, ActorType, Resource } from "@prisma/client";
 
 /* ==========================================================================

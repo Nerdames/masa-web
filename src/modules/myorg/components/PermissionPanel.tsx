@@ -5,8 +5,8 @@ import {
   CheckSquare, X, Save, RefreshCw, 
   Maximize2, Minimize2, Shield, ChevronDown 
 } from "lucide-react";
-import { useSidePanel } from "@/core/components/layout/SidePanelContext";
-import { useAlerts } from "@/core/components/feedback/AlertProvider";
+import { useAlerts } from "@/shared/components/feedback/AlertProvider";
+import { useSidePanel } from "@/shared/components/layout/SidePanelContext";
 
 /* -------------------------
    Independent Types & Constants
